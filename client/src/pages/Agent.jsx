@@ -101,6 +101,14 @@ function TaskCard({ task, onUpdate, onDelete }) {
               >
                 <ThumbsDown size={13} />
               </button>
+              <button
+                onClick={e => { e.stopPropagation(); onUpdate(task.id, { status: 'pending' }) }}
+                title="Réouvrir la tâche"
+                className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg font-medium transition-colors flex items-center gap-1"
+              >
+                <RotateCcw size={11} />
+                Réouvrir
+              </button>
             </>
           )}
           {isActive && task.status === 'pending' && (

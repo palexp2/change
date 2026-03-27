@@ -327,10 +327,13 @@ export const api = {
   },
 
   agent: {
-    listTasks:  ()         => get('/agent/tasks'),
-    createTask: (data)     => post('/agent/tasks', data),
-    updateTask: (id, data) => patch(`/agent/tasks/${id}`, data),
-    deleteTask: (id)       => del(`/agent/tasks/${id}`),
+    listTasks:    ()         => get('/agent/tasks'),
+    createTask:   (data)     => post('/agent/tasks', data),
+    updateTask:   (id, data) => patch(`/agent/tasks/${id}`, data),
+    deleteTask:   (id)       => del(`/agent/tasks/${id}`),
+    status:       ()         => get('/agent/status'),
+    getMemory:    ()         => get('/agent/memory'),
+    saveMemory:   (content)  => put('/agent/memory', { content }),
   },
 }
 

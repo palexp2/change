@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Bot, Plus, CheckCircle, XCircle, Clock, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2 } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Bot, Plus, CheckCircle, XCircle, Clock, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2, ThumbsUp, ThumbsDown, Brain, Save, RotateCcw, Timer } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -10,10 +10,42 @@ const STATUS_CONFIG = {
   in_progress: { label: 'En cours',      color: 'text-amber-400',  bg: 'bg-amber-900/40',icon: Loader2 },
   done:        { label: 'Terminée',      color: 'text-green-400',  bg: 'bg-green-900/40',icon: CheckCircle },
   blocked:     { label: 'Bloquée',       color: 'text-red-400',    bg: 'bg-red-900/40',  icon: AlertTriangle },
-  rejected:    { label: 'Rejetée',       color: 'text-slate-500',  bg: 'bg-slate-800',   icon: XCircle },
+  rejected:    { label: 'Rejetée',       color: 'text-slate-400',  bg: 'bg-slate-800',   icon: XCircle },
 }
 
 const STATUS_ORDER = ['in_progress', 'approved', 'pending', 'blocked', 'done', 'rejected']
+
+// Countdown to next run
+function useCountdown(nextRunISO) {
+  const [seconds, setSeconds] = useState(0)
+
+  useEffect(() => {
+    if (!nextRunISO) return
+    function calc() {
+      const diff = Math.max(0, Math.floor((new Date(nextRunISO) - Date.now()) / 1000))
+      setSeconds(diff)
+    }
+    calc()
+    const t = setInterval(calc, 1000)
+    return () => clearInterval(t)
+  }, [nextRunISO])
+
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+}
+
+function NextRunBadge({ nextRun }) {
+  const countdown = useCountdown(nextRun)
+  if (!nextRun) return null
+  return (
+    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg">
+      <Timer size={13} className="text-indigo-400" />
+      <span className="text-xs text-slate-400">Prochain run dans</span>
+      <span className="text-xs font-mono font-semibold text-indigo-300">{countdown}</span>
+    </div>
+  )
+}
 
 function TaskCard({ task, onUpdate, onDelete }) {
   const [expanded, setExpanded] = useState(false)
@@ -29,7 +61,13 @@ function TaskCard({ task, onUpdate, onDelete }) {
     setSaving(false)
   }
 
+  async function setFeedback(value) {
+    // Toggle off if same value
+    await onUpdate(task.id, { feedback: task.feedback === value ? null : value })
+  }
+
   const isActive = !['done', 'rejected'].includes(task.status)
+  const isDone = task.status === 'done'
 
   return (
     <div className={`rounded-xl border border-slate-700/50 ${cfg.bg} transition-all`}>
@@ -43,10 +81,28 @@ function TaskCard({ task, onUpdate, onDelete }) {
             </span>
           </div>
           {task.description && !expanded && (
-            <p className="text-slate-400 text-xs mt-1 truncate">{task.description}</p>
+            <p className="text-slate-300 text-xs mt-1 truncate">{task.description}</p>
           )}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
+          {isDone && (
+            <>
+              <button
+                onClick={e => { e.stopPropagation(); setFeedback(1) }}
+                title="Bien fait"
+                className={`p-1.5 rounded transition-colors ${task.feedback === 1 ? 'text-green-400 bg-green-900/40' : 'text-slate-600 hover:text-green-400'}`}
+              >
+                <ThumbsUp size={13} />
+              </button>
+              <button
+                onClick={e => { e.stopPropagation(); setFeedback(-1) }}
+                title="À améliorer"
+                className={`p-1.5 rounded transition-colors ${task.feedback === -1 ? 'text-red-400 bg-red-900/40' : 'text-slate-600 hover:text-red-400'}`}
+              >
+                <ThumbsDown size={13} />
+              </button>
+            </>
+          )}
           {isActive && task.status === 'pending' && (
             <button
               onClick={e => { e.stopPropagation(); onUpdate(task.id, { status: 'approved' }) }}
@@ -55,15 +111,7 @@ function TaskCard({ task, onUpdate, onDelete }) {
               Approuver
             </button>
           )}
-          {isActive && task.status === 'approved' && (
-            <button
-              onClick={e => { e.stopPropagation(); onUpdate(task.id, { status: 'rejected' }) }}
-              className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg font-medium transition-colors"
-            >
-              Rejeter
-            </button>
-          )}
-          {isActive && task.status === 'pending' && (
+          {isActive && (task.status === 'approved' || task.status === 'pending') && (
             <button
               onClick={e => { e.stopPropagation(); onUpdate(task.id, { status: 'rejected' }) }}
               className="text-xs px-2 py-1 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg font-medium transition-colors"
@@ -73,7 +121,7 @@ function TaskCard({ task, onUpdate, onDelete }) {
           )}
           <button
             onClick={e => { e.stopPropagation(); onDelete(task.id) }}
-            className="text-slate-600 hover:text-red-400 p-1 rounded transition-colors"
+            className="text-slate-500 hover:text-red-400 p-1 rounded transition-colors"
           >
             <Trash2 size={13} />
           </button>
@@ -88,12 +136,12 @@ function TaskCard({ task, onUpdate, onDelete }) {
           )}
           {task.agent_result && (
             <div className="bg-slate-900/60 rounded-lg p-3">
-              <p className="text-xs text-slate-500 font-medium uppercase tracking-wide mb-1">Résultat agent</p>
+              <p className="text-xs text-slate-400 font-medium uppercase tracking-wide mb-1">Résultat agent</p>
               <p className="text-slate-300 text-xs whitespace-pre-wrap font-mono">{task.agent_result}</p>
             </div>
           )}
           <div>
-            <label className="text-xs text-slate-500 font-medium uppercase tracking-wide block mb-1">
+            <label className="text-xs text-slate-400 font-medium uppercase tracking-wide block mb-1">
               Votre commentaire
             </label>
             <textarea
@@ -106,6 +154,31 @@ function TaskCard({ task, onUpdate, onDelete }) {
             />
             {saving && <span className="text-xs text-slate-500">Enregistrement…</span>}
           </div>
+          {isDone && (
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-slate-400">Votre avis :</span>
+              <button
+                onClick={() => setFeedback(1)}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
+                  task.feedback === 1
+                    ? 'bg-green-900/40 text-green-300 border-green-700/50'
+                    : 'bg-slate-800 text-slate-400 border-slate-700 hover:border-green-700/50 hover:text-green-400'
+                }`}
+              >
+                <ThumbsUp size={12} /> Bien fait
+              </button>
+              <button
+                onClick={() => setFeedback(-1)}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors border ${
+                  task.feedback === -1
+                    ? 'bg-red-900/40 text-red-300 border-red-700/50'
+                    : 'bg-slate-800 text-slate-400 border-slate-700 hover:border-red-700/50 hover:text-red-400'
+                }`}
+              >
+                <ThumbsDown size={12} /> À améliorer
+              </button>
+            </div>
+          )}
           {task.completed_at && (
             <p className="text-xs text-slate-500">
               Terminée le {new Date(task.completed_at).toLocaleString('fr-CA')}
@@ -167,11 +240,97 @@ function NewTaskForm({ onAdd, onCancel }) {
   )
 }
 
+function MemoryEditor() {
+  const [content, setContent] = useState('')
+  const [original, setOriginal] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const { showToast } = useToast()
+  const dirty = content !== original
+
+  useEffect(() => {
+    api.agent.getMemory()
+      .then(d => { setContent(d.content); setOriginal(d.content) })
+      .catch(() => showToast('Erreur chargement mémoire', 'error'))
+      .finally(() => setLoading(false))
+  }, [showToast])
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      await api.agent.saveMemory(content)
+      setOriginal(content)
+      showToast('Mémoire sauvegardée', 'success')
+    } catch {
+      showToast('Erreur sauvegarde', 'error')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function handleReset() {
+    setContent(original)
+  }
+
+  if (loading) return (
+    <div className="flex items-center justify-center py-16">
+      <Loader2 size={20} className="animate-spin text-slate-500" />
+    </div>
+  )
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-medium text-white">Fichier mémoire</h2>
+          <p className="text-xs text-slate-500 mt-0.5">L'agent lit ce fichier à chaque run pour se souvenir du contexte.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {dirty && (
+            <button onClick={handleReset} className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs font-medium transition-colors">
+              <RotateCcw size={12} />
+              Annuler
+            </button>
+          )}
+          <button
+            onClick={handleSave}
+            disabled={saving || !dirty}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              dirty
+                ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
+                : 'bg-slate-800 text-slate-600 cursor-not-allowed'
+            }`}
+          >
+            <Save size={12} />
+            {saving ? 'Sauvegarde…' : 'Sauvegarder'}
+          </button>
+        </div>
+      </div>
+      {dirty && (
+        <p className="text-xs text-amber-400 bg-amber-900/20 border border-amber-700/30 rounded-lg px-3 py-2">
+          Modifications non sauvegardées
+        </p>
+      )}
+      <textarea
+        value={content}
+        onChange={e => setContent(e.target.value)}
+        rows={20}
+        spellCheck={false}
+        className="w-full bg-slate-900/60 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-200 font-mono resize-y focus:outline-none focus:border-indigo-500 leading-relaxed"
+        placeholder="Contenu de la mémoire…"
+      />
+      <p className="text-xs text-slate-600">{content.length} caractères · {content.split('\n').length} lignes</p>
+    </div>
+  )
+}
+
 export default function Agent() {
   const [tasks, setTasks] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [filter, setFilter] = useState('active')
+  const [tab, setTab] = useState('tasks') // 'tasks' | 'memory'
+  const [nextRun, setNextRun] = useState(null)
   const { showToast } = useToast()
 
   const load = useCallback(async () => {
@@ -186,6 +345,18 @@ export default function Agent() {
   }, [showToast])
 
   useEffect(() => { load() }, [load])
+
+  // Load agent status (next run)
+  useEffect(() => {
+    api.agent.status()
+      .then(d => setNextRun(d.next_run))
+      .catch(() => {})
+    // Refresh next_run every minute
+    const t = setInterval(() => {
+      api.agent.status().then(d => setNextRun(d.next_run)).catch(() => {})
+    }, 60_000)
+    return () => clearInterval(t)
+  }, [])
 
   async function handleUpdate(id, patch) {
     try {
@@ -229,18 +400,23 @@ export default function Agent() {
   }, {})
 
   const counts = {
-    pending: tasks.filter(t => t.status === 'pending').length,
-    approved: tasks.filter(t => t.status === 'approved').length,
+    pending:     tasks.filter(t => t.status === 'pending').length,
+    approved:    tasks.filter(t => t.status === 'approved').length,
     in_progress: tasks.filter(t => t.status === 'in_progress').length,
-    blocked: tasks.filter(t => t.status === 'blocked').length,
-    done: tasks.filter(t => t.status === 'done').length,
+    blocked:     tasks.filter(t => t.status === 'blocked').length,
+    done:        tasks.filter(t => t.status === 'done').length,
+  }
+
+  const feedbackCounts = {
+    good: tasks.filter(t => t.feedback === 1).length,
+    bad:  tasks.filter(t => t.feedback === -1).length,
   }
 
   return (
     <Layout>
       <div className="max-w-3xl mx-auto px-6 py-8">
         {/* Header */}
-        <div className="flex items-center justify-between mb-8">
+        <div className="flex items-start justify-between mb-8 gap-4 flex-wrap">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 bg-indigo-600/20 border border-indigo-500/30 rounded-xl flex items-center justify-center">
               <Bot size={18} className="text-indigo-400" />
@@ -250,17 +426,20 @@ export default function Agent() {
               <p className="text-slate-400 text-sm">Tâches exécutées toutes les 30 min</p>
             </div>
           </div>
-          <button
-            onClick={() => setShowForm(s => !s)}
-            className="flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg transition-colors"
-          >
-            <Plus size={15} />
-            Proposer une tâche
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <NextRunBadge nextRun={nextRun} />
+            <button
+              onClick={() => setShowForm(s => !s)}
+              className="flex items-center gap-2 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-medium rounded-lg transition-colors"
+            >
+              <Plus size={15} />
+              Proposer une tâche
+            </button>
+          </div>
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-5 gap-3 mb-6">
+        <div className="grid grid-cols-5 gap-3 mb-3">
           {[
             { key: 'pending',     label: 'En attente', color: 'text-slate-300' },
             { key: 'approved',    label: 'Approuvées', color: 'text-blue-400' },
@@ -275,70 +454,115 @@ export default function Agent() {
           ))}
         </div>
 
-        {/* New task form */}
-        {showForm && (
-          <div className="mb-6">
-            <NewTaskForm onAdd={handleAdd} onCancel={() => setShowForm(false)} />
+        {/* Feedback summary */}
+        {(feedbackCounts.good > 0 || feedbackCounts.bad > 0) && (
+          <div className="flex items-center gap-3 mb-6">
+            <span className="text-xs text-slate-500">Feedback :</span>
+            {feedbackCounts.good > 0 && (
+              <span className="flex items-center gap-1 text-xs text-green-400">
+                <ThumbsUp size={11} /> {feedbackCounts.good} positif{feedbackCounts.good > 1 ? 's' : ''}
+              </span>
+            )}
+            {feedbackCounts.bad > 0 && (
+              <span className="flex items-center gap-1 text-xs text-red-400">
+                <ThumbsDown size={11} /> {feedbackCounts.bad} à améliorer
+              </span>
+            )}
           </div>
         )}
 
-        {/* Filter tabs */}
-        <div className="flex gap-1 mb-4 bg-slate-800/40 p-1 rounded-lg w-fit">
-          {[
-            { key: 'active', label: 'Actives' },
-            { key: 'all',    label: 'Toutes' },
-            { key: 'done',   label: 'Terminées' },
-          ].map(({ key, label }) => (
-            <button
-              key={key}
-              onClick={() => setFilter(key)}
-              className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
-                filter === key ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
+        {/* Tabs */}
+        <div className="flex gap-1 mb-6 bg-slate-800/40 p-1 rounded-lg w-fit">
+          <button
+            onClick={() => setTab('tasks')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+              tab === 'tasks' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Bot size={13} />
+            Tâches
+          </button>
+          <button
+            onClick={() => setTab('memory')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+              tab === 'memory' ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'
+            }`}
+          >
+            <Brain size={13} />
+            Mémoire
+          </button>
         </div>
 
-        {/* Task list */}
-        {loading ? (
-          <div className="flex items-center justify-center py-16">
-            <Loader2 size={20} className="animate-spin text-slate-500" />
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="text-center py-16">
-            <Bot size={32} className="mx-auto text-slate-700 mb-3" />
-            <p className="text-slate-500 text-sm">Aucune tâche</p>
-            {filter === 'active' && (
-              <button
-                onClick={() => setShowForm(true)}
-                className="mt-3 text-indigo-400 hover:text-indigo-300 text-sm underline transition-colors"
-              >
-                Proposer la première tâche
-              </button>
-            )}
-          </div>
+        {tab === 'memory' ? (
+          <MemoryEditor />
         ) : (
-          <div className="space-y-6">
-            {Object.entries(grouped).map(([status, group]) => (
-              <div key={status}>
-                <h2 className={`text-xs font-semibold uppercase tracking-wide mb-2 ${STATUS_CONFIG[status]?.color || 'text-slate-500'}`}>
-                  {STATUS_CONFIG[status]?.label} ({group.length})
-                </h2>
-                <div className="space-y-2">
-                  {group.map(task => (
-                    <TaskCard
-                      key={task.id}
-                      task={task}
-                      onUpdate={handleUpdate}
-                      onDelete={handleDelete}
-                    />
-                  ))}
-                </div>
+          <>
+            {/* New task form */}
+            {showForm && (
+              <div className="mb-6">
+                <NewTaskForm onAdd={handleAdd} onCancel={() => setShowForm(false)} />
               </div>
-            ))}
-          </div>
+            )}
+
+            {/* Filter tabs */}
+            <div className="flex gap-1 mb-4 bg-slate-800/40 p-1 rounded-lg w-fit">
+              {[
+                { key: 'active', label: 'Actives' },
+                { key: 'all',    label: 'Toutes' },
+                { key: 'done',   label: 'Terminées' },
+              ].map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setFilter(key)}
+                  className={`px-3 py-1.5 text-sm rounded-md font-medium transition-colors ${
+                    filter === key ? 'bg-slate-700 text-white' : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* Task list */}
+            {loading ? (
+              <div className="flex items-center justify-center py-16">
+                <Loader2 size={20} className="animate-spin text-slate-500" />
+              </div>
+            ) : filtered.length === 0 ? (
+              <div className="text-center py-16">
+                <Bot size={32} className="mx-auto text-slate-700 mb-3" />
+                <p className="text-slate-400 text-sm">Aucune tâche</p>
+                {filter === 'active' && (
+                  <button
+                    onClick={() => setShowForm(true)}
+                    className="mt-3 text-indigo-400 hover:text-indigo-300 text-sm underline transition-colors"
+                  >
+                    Proposer la première tâche
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-6">
+                {Object.entries(grouped).map(([status, group]) => (
+                  <div key={status}>
+                    <h2 className={`text-xs font-semibold uppercase tracking-wide mb-2 ${STATUS_CONFIG[status]?.color || 'text-slate-500'}`}>
+                      {STATUS_CONFIG[status]?.label} ({group.length})
+                    </h2>
+                    <div className="space-y-2">
+                      {group.map(task => (
+                        <TaskCard
+                          key={task.id}
+                          task={task}
+                          onUpdate={handleUpdate}
+                          onDelete={handleDelete}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
     </Layout>

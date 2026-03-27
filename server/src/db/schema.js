@@ -851,6 +851,8 @@ export function initSchema() {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     )`,
+    // Agent tasks feedback column
+    'ALTER TABLE agent_tasks ADD COLUMN feedback INTEGER',
   ]
 
   // ── Phase 1a: Airtable-like meta-tables ───────────────────────────────────

@@ -420,8 +420,14 @@ export function getRecords(tenantId, tableId, { search, filters, sorts, limit = 
     return groupRecords(enriched, Array.isArray(activeGroupBy) ? activeGroupBy : [activeGroupBy], activeSummaries, fields)
   }
 
-  // ── Flat paginated mode ───────────────────────────────────────────────────
+  // ── Flat mode ─────────────────────────────────────────────────────────────
   const total = db.prepare(`SELECT COUNT(*) as c FROM base_records r WHERE ${whereSQL}`).get(...params).c
+  if (limit === 'all') {
+    const rows = db.prepare(`SELECT * FROM base_records r WHERE ${whereSQL} ORDER BY ${orderBy}`).all(...params)
+    const parsed = rows.map(parseRecord)
+    const enriched = enrichRecords(db, parsed, fields)
+    return { data: enriched, total, page: 1, limit: total }
+  }
   const lim = Math.min(parseInt(limit) || 50, 500)
   const off = (Math.max(parseInt(page), 1) - 1) * lim
   const rows = db.prepare(`SELECT * FROM base_records r WHERE ${whereSQL} ORDER BY ${orderBy} LIMIT ? OFFSET ?`).all(...params, lim, off)

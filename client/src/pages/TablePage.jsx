@@ -66,7 +66,7 @@ export default function TablePage() {
   }
 
   async function loadRecords(tableId, viewId, currentFilters, currentSorts, currentGroupBy, currentGroupSummaries, currentSearch) {
-    const params = { limit: 500 }
+    const params = { limit: 'all' }
     if (viewId) params.view_id = viewId
     if (filterHasRules(currentFilters)) params.filters = JSON.stringify(currentFilters)
     if (currentSorts?.length) params.sorts = JSON.stringify(currentSorts)

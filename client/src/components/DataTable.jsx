@@ -1,0 +1,165 @@
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { ChevronRight, ChevronDown } from 'lucide-react'
+import { useTableView } from '../lib/useTableView.js'
+import { ViewToolbar } from './ViewToolbar.jsx'
+import { TABLE_ALL_LABEL } from '../lib/tableDefs.js'
+
+export function DataTable({
+  table,
+  columns,
+  data,
+  loading,
+  onRowClick,
+  searchFields = [],
+  height = 'calc(100vh - 260px)',
+}) {
+  const [visibleCols, setVisibleCols] = useState([])
+  const [groupBy, setGroupBy] = useState(null)
+  const [collapsedGroups, setCollapsedGroups] = useState(new Set())
+
+  const view = useTableView({ table, columns, data, searchFields })
+  const { filteredData, configReady } = view
+
+  const parentRef = useRef(null)
+
+  // Apply view config when active view changes
+  useEffect(() => {
+    if (!view.configReady) return
+    setVisibleCols(view.viewVisibleColumns)
+    setGroupBy(view.viewGroupBy)
+  }, [view.activeViewId, view.configReady])
+
+  const visibleColumns = useMemo(
+    () => columns.filter(c => visibleCols.includes(c.id)),
+    [columns, visibleCols]
+  )
+
+  const toggleGroup = useCallback(key => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }, [])
+
+  useEffect(() => { setCollapsedGroups(new Set()) }, [groupBy])
+
+  const virtualItems = useMemo(() => {
+    if (!groupBy) return filteredData
+    const groups = new Map()
+    for (const row of filteredData) {
+      const key = String(row[groupBy] ?? '(vide)')
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key).push(row)
+    }
+    const flat = []
+    for (const [key, rows] of groups) {
+      const collapsed = collapsedGroups.has(key)
+      flat.push({ __isGroup: true, __key: key, __count: rows.length, __collapsed: collapsed })
+      if (!collapsed) flat.push(...rows)
+    }
+    return flat
+  }, [filteredData, groupBy, collapsedGroups])
+
+  const virtualizer = useVirtualizer({
+    count: virtualItems.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: i => virtualItems[i]?.__isGroup ? 34 : 48,
+    overscan: 12,
+  })
+
+  if (!configReady) return null
+
+  return (
+    <div className="card overflow-hidden flex flex-col">
+
+      <ViewToolbar
+        columns={columns}
+        sorts={view.sorts} setSorts={view.setSorts}
+        filters={view.filters} setFilters={view.setFilters}
+        search={view.search} setSearch={view.setSearch}
+        searchFields={searchFields}
+        views={view.views}
+        onReorderViews={view.reorderViews}
+        activeViewId={view.activeViewId}
+        setActiveViewId={view.setActiveViewId}
+        tableLabel={TABLE_ALL_LABEL[table] || 'Tous'}
+        processedCount={filteredData.length}
+        visibleCols={visibleCols} setVisibleCols={setVisibleCols}
+        groupBy={groupBy} setGroupBy={setGroupBy}
+      />
+
+      <div
+        className="grid border-b border-slate-200 bg-slate-50"
+        style={{ gridTemplateColumns: visibleColumns.map(() => '1fr').join(' ') }}
+      >
+        {visibleColumns.map(col => (
+          <div key={col.id} className="px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide truncate">
+            {col.label}
+          </div>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center text-slate-400 text-sm" style={{ height }}>
+          Chargement...
+        </div>
+      ) : virtualItems.length === 0 ? (
+        <div className="flex items-center justify-center text-slate-400 text-sm" style={{ height }}>
+          Aucun résultat
+        </div>
+      ) : (
+        <div ref={parentRef} className="overflow-auto" style={{ height }}>
+          <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+            {virtualizer.getVirtualItems().map(vItem => {
+              const item = virtualItems[vItem.index]
+
+              if (item.__isGroup) {
+                return (
+                  <div
+                    key={vItem.key}
+                    style={{ position: 'absolute', top: vItem.start, left: 0, right: 0, height: vItem.size }}
+                    className="flex items-center gap-2 px-3 bg-slate-100 border-b border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors select-none"
+                    onClick={() => toggleGroup(item.__key)}
+                  >
+                    {item.__collapsed
+                      ? <ChevronRight size={13} className="text-slate-400 flex-shrink-0" />
+                      : <ChevronDown size={13} className="text-slate-400 flex-shrink-0" />
+                    }
+                    <span className="text-xs font-semibold text-slate-600">{item.__key}</span>
+                    <span className="text-xs text-slate-400">({item.__count})</span>
+                  </div>
+                )
+              }
+
+              return (
+                <div
+                  key={vItem.key}
+                  style={{
+                    position: 'absolute',
+                    top: vItem.start,
+                    left: 0,
+                    right: 0,
+                    height: vItem.size,
+                    display: 'grid',
+                    gridTemplateColumns: visibleColumns.map(() => '1fr').join(' '),
+                    alignItems: 'center',
+                  }}
+                  onClick={() => onRowClick?.(item)}
+                  className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
+                >
+                  {visibleColumns.map(col => (
+                    <div key={col.id} className="px-4 truncate text-sm">
+                      {col.render ? col.render(item) : (item[col.field] ?? '—')}
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

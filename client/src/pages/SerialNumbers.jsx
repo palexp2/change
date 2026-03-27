@@ -1,0 +1,64 @@
+import { useState, useEffect, useCallback } from 'react'
+import { Link } from 'react-router-dom'
+import api from '../lib/api.js'
+import { Layout } from '../components/Layout.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+
+function fmtDate(d) {
+  if (!d) return '—'
+  return new Date(d).toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+const RENDERS = {
+  serial: row => <span className="font-mono font-medium text-slate-900">{row.serial}</span>,
+  product_name: row => row.product_id
+    ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">{row.product_name || row.sku || '—'}</Link>
+    : <span className="text-slate-400">—</span>,
+  company_name: row => row.company_id
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">{row.company_name}</Link>
+    : <span className="text-slate-400">—</span>,
+  manufacture_date: row => <span className="text-slate-500">{fmtDate(row.manufacture_date)}</span>,
+}
+
+const COLUMNS = TABLE_COLUMN_META.serial_numbers.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
+
+export default function SerialNumbers() {
+  const [serials, setSerials] = useState([])
+  const [loading, setLoading] = useState(true)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res = await api.serials.list({ limit: 'all' })
+      setSerials(res.data)
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  return (
+    <Layout>
+      <div className="p-6 max-w-7xl mx-auto">
+        <div className="flex items-center justify-between mb-6">
+          <div>
+            <h1 className="text-2xl font-bold text-slate-900">Numéros de série</h1>
+            <p className="text-sm text-slate-500 mt-0.5">{serials.length} numéro{serials.length !== 1 ? 's' : ''}</p>
+          </div>
+          <TableConfigModal table="serial_numbers" />
+        </div>
+
+        <DataTable
+          table="serial_numbers"
+          columns={COLUMNS}
+          data={serials}
+          loading={loading}
+          searchFields={['serial', 'product_name', 'company_name']}
+        />
+      </div>
+    </Layout>
+  )
+}

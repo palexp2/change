@@ -1,0 +1,26 @@
+{
+  "name": "erp-server",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "better-sqlite3": "^9.6.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^5.0.1",
+    "form-data": "^4.0.5",
+    "googleapis": "^171.4.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.1.1",
+    "node-cron": "^4.2.1",
+    "pdfkit": "^0.18.0",
+    "uuid": "^9.0.1",
+    "ws": "^8.20.0",
+    "xlsx": "^0.18.5"
+  }
+}

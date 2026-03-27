@@ -118,14 +118,14 @@ function TaskCard({ task, onUpdate, onDelete }) {
 }
 
 function NewTaskForm({ onAdd, onCancel }) {
-  const [form, setForm] = useState({ title: '', description: '' })
+  const [form, setForm] = useState({ title: '', description: '', preApprove: false })
   const [saving, setSaving] = useState(false)
 
   async function handleSubmit(e) {
     e.preventDefault()
     if (!form.title.trim()) return
     setSaving(true)
-    await onAdd(form)
+    await onAdd({ title: form.title, description: form.description, status: form.preApprove ? 'approved' : 'pending' })
     setSaving(false)
   }
 
@@ -146,11 +146,22 @@ function NewTaskForm({ onAdd, onCancel }) {
         rows={3}
         className="w-full bg-slate-900/60 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-600 resize-none focus:outline-none focus:border-indigo-500"
       />
-      <div className="flex gap-2 justify-end">
-        <button type="button" onClick={onCancel} className="btn-secondary text-sm">Annuler</button>
-        <button type="submit" disabled={saving || !form.title.trim()} className="btn-primary text-sm">
-          {saving ? 'Ajout…' : 'Ajouter la tâche'}
-        </button>
+      <div className="flex items-center justify-between">
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={form.preApprove}
+            onChange={e => setForm(f => ({ ...f, preApprove: e.target.checked }))}
+            className="w-4 h-4 rounded accent-indigo-500 cursor-pointer"
+          />
+          <span className="text-sm text-slate-300">Pré-approuver</span>
+        </label>
+        <div className="flex gap-2">
+          <button type="button" onClick={onCancel} className="btn-secondary text-sm">Annuler</button>
+          <button type="submit" disabled={saving || !form.title.trim()} className="btn-primary text-sm">
+            {saving ? 'Ajout…' : 'Ajouter la tâche'}
+          </button>
+        </div>
       </div>
     </form>
   )

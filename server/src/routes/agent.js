@@ -26,13 +26,14 @@ router.get('/tasks', (req, res) => {
 
 // POST /api/agent/tasks — create a task (user or agent)
 router.post('/tasks', (req, res) => {
-  const { title, description, priority = 0 } = req.body
+  const { title, description, priority = 0, status: reqStatus } = req.body
   if (!title) return res.status(400).json({ error: 'title required' })
+  const status = reqStatus === 'approved' ? 'approved' : 'pending'
   const task = {
     id: randomUUID(),
     title,
     description: description || null,
-    status: 'pending',
+    status,
     priority,
     user_comment: null,
     agent_result: null,

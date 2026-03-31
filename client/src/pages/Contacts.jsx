@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -116,13 +117,10 @@ export default function Contacts() {
   const [showModal, setShowModal] = useState(false)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await api.contacts.list({ limit: 'all' })
-      setContacts(res.data)
-    } finally {
-      setLoading(false)
-    }
+    await loadProgressive(
+      (page, limit) => api.contacts.list({ limit, page }),
+      setContacts, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -142,7 +140,6 @@ export default function Contacts() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Contacts</h1>
-            <p className="text-slate-500 text-sm mt-1">{contacts.length} contacts</p>
           </div>
           <div className="flex items-center gap-2">
             <TableConfigModal table="contacts" />

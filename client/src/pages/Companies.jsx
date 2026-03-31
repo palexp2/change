@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Building2 } from 'lucide-react'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, phaseBadgeColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -144,13 +145,10 @@ export default function Companies() {
   const [showModal, setShowModal] = useState(false)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await api.companies.list({ limit: 'all' })
-      setCompanies(res.data)
-    } finally {
-      setLoading(false)
-    }
+    await loadProgressive(
+      (page, limit) => api.companies.list({ limit, page }),
+      setCompanies, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -170,7 +168,6 @@ export default function Companies() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Entreprises</h1>
-            <p className="text-slate-500 text-sm mt-1">{companies.length} entreprises</p>
           </div>
           <div className="flex items-center gap-2">
             <TableConfigModal table="companies" />

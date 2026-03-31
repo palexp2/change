@@ -128,6 +128,33 @@ async function syncAccount(oauthRow) {
   }
 }
 
+/**
+ * Envoie un courriel au nom du premier compte Google OAuth du tenant.
+ * Requiert le scope gmail.send (les comptes connectés avant cette mise à jour
+ * doivent être reconnectés pour obtenir ce scope).
+ */
+export async function sendEmail(tenantId, to, subject, htmlBody) {
+  const account = db.prepare(
+    `SELECT * FROM connector_oauth WHERE tenant_id=? AND connector='google' AND refresh_token IS NOT NULL LIMIT 1`
+  ).get(tenantId)
+  if (!account) throw new Error('Aucun compte Google configuré pour ce tenant')
+
+  const gmail = await getGmailClient(account.id)
+
+  // RFC 2822 raw message, encodé en base64url
+  const rawLines = [
+    `To: ${to}`,
+    'Content-Type: text/html; charset=utf-8',
+    'MIME-Version: 1.0',
+    `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`,
+    '',
+    htmlBody,
+  ]
+  const raw = Buffer.from(rawLines.join('\r\n')).toString('base64url')
+
+  await gmail.users.messages.send({ userId: 'me', requestBody: { raw } })
+}
+
 export async function syncAllMailboxes(tenantId) {
   const accounts = db.prepare(`
     SELECT * FROM connector_oauth WHERE connector='google' AND refresh_token IS NOT NULL

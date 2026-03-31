@@ -77,6 +77,17 @@ router.get('/', (req, res) => {
     `SELECT COUNT(*) as count, SUM(value_cad) as total FROM projects WHERE tenant_id = ? AND status = 'Gagné' AND strftime('%Y-%m', updated_at) = strftime('%Y-%m', 'now')`
   ).get(tid);
 
+  // Weekly shipments (last 16 weeks)
+  const weeklyShipments = db.prepare(`
+    SELECT
+      date(shipped_at, '-' || ((cast(strftime('%w', shipped_at) as integer) + 6) % 7) || ' days') as week_start,
+      COUNT(*) as count
+    FROM shipments
+    WHERE tenant_id = ? AND shipped_at IS NOT NULL AND shipped_at >= date('now', '-112 days')
+    GROUP BY week_start
+    ORDER BY week_start ASC
+  `).all(tid);
+
   // Closing rate by month × type (last 12 months) — use close_date, fall back to updated_at
   const closingByMonth = db.prepare(`
     SELECT
@@ -118,6 +129,7 @@ router.get('/', (req, res) => {
     recentOrders,
     recentTickets,
     closingByMonth,
+    weeklyShipments,
   });
 });
 

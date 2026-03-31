@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -43,6 +44,7 @@ const RENDERS = {
     if (!val && val !== 0) return <span className="text-slate-400">—</span>
     return <span className={`font-medium ${val > 0 ? 'text-red-600' : 'text-green-600'}`}>{fmtCad(val)}</span>
   },
+  shipping_country: row => <span className="text-slate-600">{row.shipping_country || '—'}</span>,
 }
 
 const COLUMNS = TABLE_COLUMN_META.factures.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
@@ -52,13 +54,10 @@ export default function Factures() {
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await api.factures.list({ limit: 'all' })
-      setFactures(res.data)
-    } finally {
-      setLoading(false)
-    }
+    await loadProgressive(
+      (page, limit) => api.factures.list({ limit, page }),
+      setFactures, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -69,7 +68,6 @@ export default function Factures() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Factures</h1>
-            <p className="text-sm text-slate-500 mt-0.5">{factures.length} facture{factures.length !== 1 ? 's' : ''}</p>
           </div>
           <TableConfigModal table="factures" />
         </div>

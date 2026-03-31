@@ -124,9 +124,10 @@ export function initSchema() {
       company_id TEXT REFERENCES companies(id),
       project_id TEXT REFERENCES projects(id),
       assigned_to TEXT REFERENCES users(id),
-      status TEXT NOT NULL DEFAULT 'Commande vide' CHECK(status IN ('Commande vide','Gel d''envois','En attente','Items à fabriquer ou à acheter','Tous les items sont disponibles','Tout est dans la boite','Partiellement envoyé','JWT-config','Envoyé aujourd''hui','Envoyé','ERREUR SYSTÈME')),
+      status TEXT NOT NULL DEFAULT 'Commande vide' CHECK(status IN ('Commande vide','Gel d''envois','En attente','Items à fabriquer ou à acheter','Tous les items sont disponibles','Tout est dans la boite','Partiellement envoyé','Drop ship seulement','JWT-config','Envoyé aujourd''hui','Envoyé','ERREUR SYSTÈME')),
       priority TEXT,
       notes TEXT,
+      date_commande TEXT,
       airtable_id TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
@@ -192,7 +193,7 @@ export function initSchema() {
       title TEXT NOT NULL,
       description TEXT,
       type TEXT CHECK(type IN ('Aide software','Defect software','Aide hardware','Defect hardware','Erreur de commande','Formation','Installation')),
-      status TEXT NOT NULL DEFAULT 'Ouvert' CHECK(status IN ('Ouvert','En attente client','En attente nous','Fermé')),
+      status TEXT NOT NULL DEFAULT 'Waiting on us' CHECK(status IN ('Waiting on us','Waiting on them','Closed')),
       duration_minutes INTEGER DEFAULT 0,
       notes TEXT,
       created_at TEXT DEFAULT (datetime('now')),
@@ -266,7 +267,8 @@ export function initSchema() {
       transcription_status TEXT DEFAULT 'pending'
         CHECK(transcription_status IN ('pending','processing','done','error')),
       drive_file_id TEXT UNIQUE,
-      drive_filename TEXT
+      drive_filename TEXT,
+      original_filename TEXT UNIQUE
     );
 
     -- SMS
@@ -603,6 +605,93 @@ export function initSchema() {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
+
+    -- Dépenses (Expenses)
+    CREATE TABLE IF NOT EXISTS depenses (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id),
+      date_depense TEXT NOT NULL,
+      category TEXT CHECK(category IN ('Fournitures','Voyage','Repas','Loyer','Assurance','Services','Équipement','Marketing','Logiciels','Autre')),
+      description TEXT NOT NULL,
+      vendor TEXT,
+      reference TEXT,
+      amount_cad REAL DEFAULT 0,
+      tax_cad REAL DEFAULT 0,
+      total_cad REAL GENERATED ALWAYS AS (amount_cad + tax_cad) STORED,
+      payment_method TEXT CHECK(payment_method IN ('Carte de crédit','Chèque','Virement','Comptant','Autre')),
+      status TEXT NOT NULL DEFAULT 'Brouillon' CHECK(status IN ('Brouillon','Soumis','Approuvé','Refusé','Remboursé')),
+      created_by TEXT REFERENCES users(id),
+      notes TEXT,
+      quickbooks_id TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Factures fournisseurs (Bills / Accounts Payable)
+    CREATE TABLE IF NOT EXISTS factures_fournisseurs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id),
+      bill_number TEXT,
+      vendor TEXT NOT NULL,
+      vendor_invoice_number TEXT,
+      date_facture TEXT NOT NULL,
+      due_date TEXT,
+      category TEXT CHECK(category IN ('Fournitures','Voyage','Loyer','Assurance','Services','Équipement','Marketing','Logiciels','Autre')),
+      amount_cad REAL DEFAULT 0,
+      tax_cad REAL DEFAULT 0,
+      total_cad REAL DEFAULT 0,
+      amount_paid_cad REAL DEFAULT 0,
+      balance_due_cad REAL GENERATED ALWAYS AS (total_cad - amount_paid_cad) STORED,
+      status TEXT NOT NULL DEFAULT 'Reçue' CHECK(status IN ('Brouillon','Reçue','Approuvée','Payée partiellement','Payée','En retard','Annulée')),
+      notes TEXT,
+      quickbooks_id TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Tasks
+    CREATE TABLE IF NOT EXISTS tasks (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id),
+      title TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'À faire' CHECK(status IN ('À faire','En cours','Terminé','Annulé')),
+      priority TEXT NOT NULL DEFAULT 'Normal' CHECK(priority IN ('Basse','Normal','Haute','Urgente')),
+      due_date TEXT,
+      company_id TEXT REFERENCES companies(id),
+      contact_id TEXT REFERENCES contacts(id),
+      assigned_to TEXT REFERENCES users(id),
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Sale receipts (OCR/AI extraction)
+    CREATE TABLE IF NOT EXISTS sale_receipts (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id),
+      filename TEXT NOT NULL,
+      original_name TEXT,
+      file_type TEXT,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','done','error')),
+      error_message TEXT,
+      receipt_date TEXT,
+      company TEXT,
+      address TEXT,
+      receipt_number TEXT,
+      subtotal REAL,
+      tps REAL,
+      tvq REAL,
+      other_taxes REAL,
+      total REAL,
+      payment_method TEXT,
+      currency TEXT DEFAULT 'CAD',
+      items TEXT DEFAULT '[]',
+      raw_data TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
   `);
 
   // Create indexes for performance
@@ -613,6 +702,8 @@ export function initSchema() {
     'CREATE INDEX IF NOT EXISTS idx_companies_phase ON companies(tenant_id, lifecycle_phase)',
     'CREATE INDEX IF NOT EXISTS idx_contacts_tenant ON contacts(tenant_id)',
     'CREATE INDEX IF NOT EXISTS idx_contacts_company ON contacts(company_id)',
+    'CREATE INDEX IF NOT EXISTS idx_contacts_sort ON contacts(tenant_id, first_name, last_name)',
+    'CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(tenant_id, email)',
     'CREATE INDEX IF NOT EXISTS idx_projects_tenant ON projects(tenant_id)',
     'CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(tenant_id, status)',
     'CREATE INDEX IF NOT EXISTS idx_projects_company ON projects(company_id)',
@@ -652,6 +743,16 @@ export function initSchema() {
     'CREATE INDEX IF NOT EXISTS idx_assemblages_product ON assemblages(product_id)',
     'CREATE INDEX IF NOT EXISTS idx_factures_tenant ON factures(tenant_id)',
     'CREATE INDEX IF NOT EXISTS idx_factures_company ON factures(company_id)',
+    'CREATE INDEX IF NOT EXISTS idx_depenses_tenant ON depenses(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_depenses_status ON depenses(tenant_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_depenses_date ON depenses(tenant_id, date_depense DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_factures_fourn_tenant ON factures_fournisseurs(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_factures_fourn_status ON factures_fournisseurs(tenant_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_factures_fourn_due ON factures_fournisseurs(tenant_id, due_date)',
+    'CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_tasks_company ON tasks(company_id)',
+    'CREATE INDEX IF NOT EXISTS idx_tasks_contact ON tasks(contact_id)',
+    'CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(tenant_id, status)',
   ];
 
   // Add columns that may be missing from older schema versions
@@ -748,6 +849,7 @@ export function initSchema() {
     'ALTER TABLE soumissions ADD COLUMN generated_pdf_path TEXT',
     // factures enhancements
     'ALTER TABLE factures ADD COLUMN generated_pdf_path TEXT',
+    'ALTER TABLE factures ADD COLUMN shipping_country TEXT',
     // products — sellable fields (merged from catalog)
     'ALTER TABLE products ADD COLUMN price_usd REAL DEFAULT 0',
     'ALTER TABLE products ADD COLUMN monthly_price_cad REAL DEFAULT 0',
@@ -756,6 +858,7 @@ export function initSchema() {
     // soumissions — auto-numbering
     'ALTER TABLE soumissions ADD COLUMN quote_number INTEGER',
     // document_items — discounts (kept for schema compat, unused)
+    'ALTER TABLE orders ADD COLUMN date_commande TEXT',
     'ALTER TABLE document_items ADD COLUMN discount_pct REAL DEFAULT 0',
     'ALTER TABLE document_items ADD COLUMN discount_amount REAL DEFAULT 0',
     // soumissions — currency and global discount
@@ -853,7 +956,70 @@ export function initSchema() {
     )`,
     // Agent tasks feedback column
     'ALTER TABLE agent_tasks ADD COLUMN feedback INTEGER',
+    // Bon de livraison PDF
+    'ALTER TABLE orders ADD COLUMN bon_livraison_path TEXT',
+    // Déduplication FTP ingest
+    'ALTER TABLE calls ADD COLUMN original_filename TEXT',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_calls_original_filename ON calls(original_filename) WHERE original_filename IS NOT NULL',
+    // Pays de l'envoi
+    'ALTER TABLE shipments ADD COLUMN pays TEXT',
+    // Order items sort
+    'ALTER TABLE order_items ADD COLUMN sort_order INTEGER DEFAULT 0',
+    // Airtable webhooks — remplace le polling horaire
+    `CREATE TABLE IF NOT EXISTS airtable_webhooks (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      base_id TEXT NOT NULL,
+      webhook_id TEXT NOT NULL UNIQUE,
+      cursor INTEGER DEFAULT 1,
+      mac_secret TEXT,
+      expires_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(tenant_id, base_id)
+    )`,
   ]
+
+  // ── Detail page field layout (admin-configurable) ──────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS detail_field_configs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      entity_type TEXT NOT NULL,
+      field_order TEXT NOT NULL DEFAULT '[]',
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(tenant_id, entity_type)
+    );
+  `)
+
+  // ── Navigation config (admin-customizable page labels + order) ──────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS nav_config (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      nav_items TEXT NOT NULL DEFAULT '[]',
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(tenant_id)
+    );
+  `)
+
+  // ── Airtable dynamic field definitions ─────────────────────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS airtable_field_defs (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL,
+      module TEXT NOT NULL,
+      erp_table TEXT NOT NULL,
+      airtable_field_id TEXT,
+      airtable_field_name TEXT,
+      column_name TEXT NOT NULL,
+      field_type TEXT NOT NULL DEFAULT 'text',
+      options TEXT DEFAULT '{}',
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(tenant_id, erp_table, column_name)
+    );
+  `)
 
   // ── Phase 1a: Airtable-like meta-tables ───────────────────────────────────
   db.exec(`
@@ -1052,6 +1218,22 @@ export function initSchema() {
     try { db.exec(sql) } catch { /* column already exists */ }
   }
 
+  // Migrate orders status CHECK constraint to include 'Drop ship seulement'
+  const ordersDef = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'").get()
+  if (ordersDef && !ordersDef.sql.includes('Drop ship seulement')) {
+    const oldPattern = `'Commande vide','Gel d''envois','En attente','Items à fabriquer ou à acheter','Tous les items sont disponibles','Tout est dans la boite','Partiellement envoyé','JWT-config','Envoyé aujourd''hui','Envoyé','ERREUR SYSTÈME'`
+    const newPattern = `'Commande vide','Gel d''envois','En attente','Items à fabriquer ou à acheter','Tous les items sont disponibles','Tout est dans la boite','Partiellement envoyé','Drop ship seulement','JWT-config','Envoyé aujourd''hui','Envoyé','ERREUR SYSTÈME'`
+    try {
+      const newSql = ordersDef.sql.replace(oldPattern, newPattern).replace('CREATE TABLE "orders"', 'CREATE TABLE "orders_new"')
+      db.exec('PRAGMA foreign_keys = OFF')
+      db.exec(newSql)
+      db.exec('INSERT INTO "orders_new" SELECT * FROM "orders"')
+      db.exec('DROP TABLE "orders"')
+      db.exec('ALTER TABLE "orders_new" RENAME TO "orders"')
+      db.exec('PRAGMA foreign_keys = ON')
+    } catch { /* already migrated */ }
+  }
+
   // Migrate custom_field_defs if it still has the old narrow CHECK constraint
   const fieldDefsDef = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='custom_field_defs'").get()
   if (fieldDefsDef && fieldDefsDef.sql.includes("'contacts','companies'")) {
@@ -1091,8 +1273,8 @@ export function initSchema() {
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_field_values_def ON field_values(field_def_id)') } catch {}
 
   // Migrate orders table to new statuses if still using old CHECK constraint
-  const ordersDef = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'").get()
-  if (ordersDef && ordersDef.sql.includes("'Brouillon'")) {
+  const ordersDef2 = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'").get()
+  if (ordersDef2 && ordersDef2.sql.includes("'Brouillon'")) {
     db.exec(`
       PRAGMA foreign_keys = OFF;
       CREATE TABLE orders_new (
@@ -1102,7 +1284,7 @@ export function initSchema() {
         company_id TEXT REFERENCES companies(id),
         project_id TEXT REFERENCES projects(id),
         assigned_to TEXT REFERENCES users(id),
-        status TEXT NOT NULL DEFAULT 'Commande vide' CHECK(status IN ('Commande vide','Gel d''envois','En attente','Items à fabriquer ou à acheter','Tous les items sont disponibles','Tout est dans la boite','Partiellement envoyé','JWT-config','Envoyé aujourd''hui','Envoyé','ERREUR SYSTÈME')),
+        status TEXT NOT NULL DEFAULT 'Commande vide' CHECK(status IN ('Commande vide','Gel d''envois','En attente','Items à fabriquer ou à acheter','Tous les items sont disponibles','Tout est dans la boite','Partiellement envoyé','Drop ship seulement','JWT-config','Envoyé aujourd''hui','Envoyé','ERREUR SYSTÈME')),
         priority TEXT,
         notes TEXT,
         airtable_id TEXT,
@@ -1127,6 +1309,45 @@ export function initSchema() {
       PRAGMA foreign_keys = ON;
     `)
     console.log('✅ Orders table migrated to new statuses')
+  }
+
+  // Migrate tickets table to new English statuses
+  const ticketsDef = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tickets'").get()
+  if (ticketsDef && ticketsDef.sql.includes("'Ouvert'")) {
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      CREATE TABLE tickets_new (
+        id TEXT PRIMARY KEY,
+        tenant_id TEXT NOT NULL REFERENCES tenants(id),
+        company_id TEXT REFERENCES companies(id),
+        contact_id TEXT REFERENCES contacts(id),
+        assigned_to TEXT REFERENCES users(id),
+        title TEXT NOT NULL,
+        description TEXT,
+        type TEXT CHECK(type IN ('Aide software','Defect software','Aide hardware','Defect hardware','Erreur de commande','Formation','Installation')),
+        status TEXT NOT NULL DEFAULT 'Waiting on us' CHECK(status IN ('Waiting on us','Waiting on them','Closed')),
+        duration_minutes INTEGER DEFAULT 0,
+        notes TEXT,
+        airtable_id TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+      INSERT INTO tickets_new SELECT
+        id, tenant_id, company_id, contact_id, assigned_to, title, description, type,
+        CASE status
+          WHEN 'Ouvert'            THEN 'Waiting on us'
+          WHEN 'En attente nous'   THEN 'Waiting on us'
+          WHEN 'En attente client' THEN 'Waiting on them'
+          WHEN 'Fermé'             THEN 'Closed'
+          ELSE 'Waiting on us'
+        END,
+        duration_minutes, notes, airtable_id, created_at, updated_at
+      FROM tickets;
+      DROP TABLE tickets;
+      ALTER TABLE tickets_new RENAME TO tickets;
+      PRAGMA foreign_keys = ON;
+    `)
+    console.log('✅ Tickets table migrated to new statuses (Waiting on us / Waiting on them / Closed)')
   }
 
   // Rebuild document_items if it still references catalog_products (old FK)
@@ -1285,6 +1506,7 @@ const SYSTEM_FIELDS = [
     { value: 'Partiellement envoyé',                 label: 'Partiellement envoyé',                 color: 'purple' },
     { value: 'Envoyé aujourd\'hui',                  label: 'Envoyé aujourd\'hui',                  color: 'green'  },
     { value: 'Envoyé',                               label: 'Envoyé',                               color: 'green'  },
+    { value: 'Drop ship seulement',                  label: 'Drop ship seulement',                  color: 'blue'   },
     { value: 'ERREUR SYSTÈME',                       label: 'ERREUR SYSTÈME',                       color: 'red'    },
   ]},
   { entity_type: 'orders', key: 'priority',          label: 'Priorité',           field_type: 'single_line_text', sort_order: 1 },

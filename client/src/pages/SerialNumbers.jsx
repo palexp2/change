@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
@@ -29,13 +30,10 @@ export default function SerialNumbers() {
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await api.serials.list({ limit: 'all' })
-      setSerials(res.data)
-    } finally {
-      setLoading(false)
-    }
+    await loadProgressive(
+      (page, limit) => api.serials.list({ limit, page }),
+      setSerials, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -46,7 +44,6 @@ export default function SerialNumbers() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Numéros de série</h1>
-            <p className="text-sm text-slate-500 mt-0.5">{serials.length} numéro{serials.length !== 1 ? 's' : ''}</p>
           </div>
           <TableConfigModal table="serial_numbers" />
         </div>

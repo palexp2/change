@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Plus } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -118,13 +119,10 @@ export default function Pipeline() {
   const [editProject, setEditProject] = useState(null)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await api.projects.list({ limit: 'all' })
-      setProjects(res.data)
-    } finally {
-      setLoading(false)
-    }
+    await loadProgressive(
+      (page, limit) => api.projects.list({ limit, page }),
+      setProjects, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -179,7 +177,6 @@ export default function Pipeline() {
         <div className="flex items-center justify-between mb-4">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Projets</h1>
-            <p className="text-slate-500 text-sm mt-1">{projects.length} projets</p>
           </div>
           <div className="flex items-center gap-2">
             <TableConfigModal table="projects" />

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import {
   Building2, TrendingUp, ShoppingCart, Package,
   LifeBuoy, DollarSign, AlertTriangle, ArrowRight, SlidersHorizontal, X, Check
@@ -20,6 +20,7 @@ const WIDGET_DEFS = [
   { id: 'kpi_open_projects', label: 'Projets ouverts',      group: 'Chiffres' },
   { id: 'section_phases',    label: 'Entreprises par phase',group: 'Graphiques' },
   { id: 'section_closing',   label: 'Taux de closing',      group: 'Graphiques' },
+  { id: 'section_shipments', label: 'Livraisons par semaine', group: 'Graphiques' },
   { id: 'section_orders',    label: 'Commandes récentes',   group: 'Listes' },
   { id: 'section_tickets',   label: 'Tickets récents',      group: 'Listes' },
 ]
@@ -249,6 +250,121 @@ function ClosingRateChart({ data }) {
   )
 }
 
+function ShipmentsWeeklyChart({ data }) {
+  const navigate = useNavigate()
+  const [tooltip, setTooltip] = useState(null)
+
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-40 text-slate-300 text-sm">
+        Pas encore de données d'envois
+      </div>
+    )
+  }
+
+  // Build last 16 weeks grid (all weeks, even empty ones)
+  const weeks = []
+  for (let i = 15; i >= 0; i--) {
+    const d = new Date()
+    // go back i weeks from current Monday
+    const day = d.getDay()
+    const monday = new Date(d)
+    monday.setDate(d.getDate() - ((day + 6) % 7) - i * 7)
+    monday.setHours(0, 0, 0, 0)
+    const key = monday.toISOString().slice(0, 10)
+    const found = data.find(r => r.week_start === key)
+    weeks.push({ key, date: monday, count: found?.count || 0 })
+  }
+
+  const maxCount = Math.max(...weeks.map(w => w.count), 1)
+
+  const W = 600, H = 160
+  const padL = 28, padR = 8, padT = 12, padB = 28
+  const chartW = W - padL - padR
+  const chartH = H - padT - padB
+  const n = weeks.length
+  const barW = Math.floor(chartW / n) - 4
+
+  function xCenter(i) { return padL + (i + 0.5) * (chartW / n) }
+  function barHeight(count) { return (count / maxCount) * chartH }
+
+  const gridCounts = [0, Math.round(maxCount / 2), maxCount].filter((v, i, a) => a.indexOf(v) === i)
+
+  return (
+    <div className="relative w-full">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 180 }}>
+        <defs>
+          <linearGradient id="shipmentsGrad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#6366f1" stopOpacity="0.9" />
+            <stop offset="100%" stopColor="#6366f1" stopOpacity="0.5" />
+          </linearGradient>
+          <linearGradient id="shipmentsGradHover" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#4f46e5" stopOpacity="1" />
+            <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.7" />
+          </linearGradient>
+        </defs>
+        {gridCounts.map(v => {
+          const y = padT + chartH - (v / maxCount) * chartH
+          return (
+            <g key={v}>
+              <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="#f1f5f9" strokeWidth={1} />
+              <text x={padL - 4} y={y + 3.5} textAnchor="end" fontSize="9" fill="#94a3b8">{v}</text>
+            </g>
+          )
+        })}
+        {weeks.map((w, i) => {
+          const bh = barHeight(w.count)
+          const x = xCenter(i) - barW / 2
+          const y = padT + chartH - bh
+          const isHovered = tooltip?.i === i
+          const showLabel = i === 0 || i === n - 1 || w.date.getDate() <= 7
+          const label = w.date.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
+          return (
+            <g key={w.key}
+              style={{ cursor: w.count > 0 ? 'pointer' : 'default' }}
+              onClick={() => w.count > 0 && navigate(`/envois?week=${w.key}`)}
+              onMouseEnter={() => setTooltip({ i, x: xCenter(i), y: bh > 0 ? y : padT + chartH - 20, w })}
+              onMouseLeave={() => setTooltip(null)}
+            >
+              {/* invisible hit area */}
+              <rect x={x - 2} y={padT} width={barW + 4} height={chartH} fill="transparent" />
+              {bh > 0 && (
+                <rect
+                  x={x} y={y} width={barW} height={bh}
+                  rx="3"
+                  fill={isHovered ? 'url(#shipmentsGradHover)' : 'url(#shipmentsGrad)'}
+                />
+              )}
+              {showLabel && (
+                <text x={xCenter(i)} y={H - 4} textAnchor="middle" fontSize="8" fill="#94a3b8">
+                  {label}
+                </text>
+              )}
+            </g>
+          )
+        })}
+        {tooltip && (() => {
+          const tx = Math.min(Math.max(tooltip.x, 60), W - 60)
+          const ty = Math.max(tooltip.y - 8, padT + 4)
+          const label = tooltip.w.date.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
+          return (
+            <g>
+              <rect x={tx - 44} y={ty - 14} width={88} height={34} rx="5" fill="#1e293b" opacity="0.92" />
+              <text x={tx} y={ty + 1} textAnchor="middle" fontSize="11" fontWeight="bold" fill="white">
+                {tooltip.w.count} colis
+              </text>
+              <text x={tx} y={ty + 14} textAnchor="middle" fontSize="9" fill="#94a3b8">
+                Sem. du {label}
+              </text>
+            </g>
+          )
+        })()}
+      </svg>
+      <p className="text-xs text-slate-400 text-right mt-1">Cliquer sur une barre pour voir les envois</p>
+    </div>
+  )
+}
+
 function fmtCad(n) {
   if (!n) return '$0'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
@@ -393,6 +509,22 @@ export default function Dashboard() {
               <p className="text-xs text-slate-400 mt-0.5">Projets gagnés / (gagnés + perdus) par mois — 12 derniers mois</p>
             </div>
             <ClosingRateChart data={data?.closingByMonth} />
+          </div>
+        )}
+
+        {/* Shipments weekly chart */}
+        {show('section_shipments') && (
+          <div className="card p-5 mb-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="font-semibold text-slate-900">Livraisons par semaine</h2>
+                <p className="text-xs text-slate-400 mt-0.5">Colis envoyés — 16 dernières semaines</p>
+              </div>
+              <Link to="/envois" className="text-indigo-600 text-sm flex items-center gap-1 hover:underline">
+                Voir tous <ArrowRight size={14} />
+              </Link>
+            </div>
+            <ShipmentsWeeklyChart data={data?.weeklyShipments} />
           </div>
         )}
 

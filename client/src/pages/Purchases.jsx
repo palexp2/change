@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -40,13 +41,10 @@ export default function Purchases() {
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await api.purchases.list({ limit: 'all' })
-      setPurchases(res.data)
-    } finally {
-      setLoading(false)
-    }
+    await loadProgressive(
+      (page, limit) => api.purchases.list({ limit, page }),
+      setPurchases, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -57,7 +55,6 @@ export default function Purchases() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Achats</h1>
-            <p className="text-sm text-slate-500 mt-0.5">{purchases.length} achat{purchases.length !== 1 ? 's' : ''}</p>
           </div>
           <TableConfigModal table="purchases" />
         </div>

@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
+import { ExternalLink, RefreshCw, CreditCard } from 'lucide-react'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -18,6 +20,12 @@ function fmtDate(d) {
 }
 
 const STATUS_COLORS = {
+  // Stripe (anglais)
+  'active': 'green',
+  'trialing': 'blue',
+  'past_due': 'yellow',
+  'canceled': 'red',
+  // Airtable (français)
   'Actif': 'green',
   'Inactif': 'gray',
   'Suspendu': 'yellow',
@@ -36,6 +44,9 @@ const RENDERS = {
   amount_cad: row => <span className="font-medium text-slate-700">{fmtCad(row.amount_cad)}</span>,
   start_date: row => <span className="text-slate-500">{fmtDate(row.start_date)}</span>,
   end_date:   row => <span className="text-slate-500">{fmtDate(row.end_date)}</span>,
+  stripe_url: row => row.stripe_url
+    ? <a href={row.stripe_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1 text-purple-600 hover:underline text-xs"><ExternalLink size={12} /> Stripe</a>
+    : <span className="text-slate-400">—</span>,
 }
 
 const COLUMNS = TABLE_COLUMN_META.abonnements.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
@@ -43,18 +54,39 @@ const COLUMNS = TABLE_COLUMN_META.abonnements.map(meta => ({ ...meta, render: RE
 export default function Abonnements() {
   const [abonnements, setAbonnements] = useState([])
   const [loading, setLoading] = useState(true)
+  const [stripeConfigured, setStripeConfigured] = useState(false)
+  const [syncing, setSyncing] = useState(false)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await api.abonnements.list({ limit: 'all' })
-      setAbonnements(res.data)
-    } finally {
-      setLoading(false)
-    }
+    api.stripe.info().catch(() => ({ configured: false })).then(info => setStripeConfigured(!!info.configured))
+    await loadProgressive(
+      (page, limit) => api.abonnements.list({ limit, page }),
+      setAbonnements, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  const syncStripe = async () => {
+    setSyncing(true)
+    try {
+      await api.stripe.sync()
+      // Poll until sync finishes, then reload
+      const poll = setInterval(async () => {
+        try {
+          const status = await api.connectors.syncStatus()
+          if (!status?.stripe?.running) {
+            clearInterval(poll)
+            await load()
+            setSyncing(false)
+          }
+        } catch { clearInterval(poll); setSyncing(false) }
+      }, 1500)
+    } catch (e) {
+      alert(e.message)
+      setSyncing(false)
+    }
+  }
 
   return (
     <Layout>
@@ -62,10 +94,27 @@ export default function Abonnements() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Abonnements</h1>
-            <p className="text-sm text-slate-500 mt-0.5">{abonnements.length} abonnement{abonnements.length !== 1 ? 's' : ''}</p>
           </div>
-          <TableConfigModal table="abonnements" />
+          <div className="flex items-center gap-2">
+            {stripeConfigured && (
+              <button onClick={syncStripe} disabled={syncing} className="btn-secondary btn-sm text-xs">
+                <RefreshCw size={12} className={syncing ? 'animate-spin' : ''} />
+                {syncing ? 'Synchronisation…' : 'Sync Stripe'}
+              </button>
+            )}
+            <TableConfigModal table="abonnements" />
+          </div>
         </div>
+
+        {!loading && !stripeConfigured && (
+          <div className="mb-4 flex items-center gap-3 px-4 py-3 bg-purple-50 border border-purple-200 rounded-xl text-sm text-purple-800">
+            <CreditCard size={16} className="text-purple-500 flex-shrink-0" />
+            <span>Configurez le connecteur Stripe pour synchroniser les abonnements en temps réel.</span>
+            <Link to="/connectors" className="ml-auto text-xs font-semibold text-purple-700 hover:underline whitespace-nowrap">
+              Configurer →
+            </Link>
+          </div>
+        )}
 
         <DataTable
           table="abonnements"

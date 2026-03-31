@@ -18,6 +18,10 @@ db.pragma('foreign_keys = ON');
 db.pragma('synchronous = NORMAL');
 db.pragma('cache_size = 10000');
 db.pragma('temp_store = MEMORY');
+// Allow readers to wait up to 10s when a write lock is held during sync
+db.pragma('busy_timeout = 10000');
+// Checkpoint every 2000 WAL pages instead of default 1000 — reduces checkpoint frequency during heavy sync
+db.pragma('wal_autocheckpoint = 2000');
 
 // Accent-insensitive search helper available in all queries
 db.function('unaccent', (str) => {

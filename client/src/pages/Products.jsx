@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -161,13 +162,10 @@ export default function Products() {
   const [stockProduct, setStockProduct] = useState(null)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await api.products.list({ limit: 'all', active: true })
-      setProducts(res.data)
-    } finally {
-      setLoading(false)
-    }
+    await loadProgressive(
+      (page, limit) => api.products.list({ limit, page, active: true }),
+      setProducts, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -195,13 +193,6 @@ export default function Products() {
       <span className="font-bold text-slate-900">{row.stock_qty}</span>
     ) : meta.id === 'status' ? row => (
       <Badge color={stockStatusColor(row)}>{stockStatusLabel(row)}</Badge>
-    ) : meta.id === 'adjust' ? row => (
-      <button
-        onClick={e => { e.stopPropagation(); setStockProduct(row) }}
-        className="btn-secondary btn-sm whitespace-nowrap"
-      >
-        Ajuster
-      </button>
     ) : undefined
   })), [])
 
@@ -216,7 +207,6 @@ export default function Products() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Inventaire</h1>
-            <p className="text-slate-500 text-sm mt-1">{products.length} produits</p>
           </div>
           <div className="flex items-center gap-2">
             <TableConfigModal table="products" />

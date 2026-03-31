@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -19,6 +20,7 @@ const RENDERS = {
   company_name: row => row.company_id
     ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline font-medium">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
+  date_commande: row => <span className="text-slate-600">{fmtDate(row.date_commande)}</span>,
   status: row => <Badge color={orderStatusColor(row.status)}>{row.status}</Badge>,
   priority: row => row.priority
     ? <span className="text-orange-500 font-medium text-xs">{row.priority}</span>
@@ -28,7 +30,7 @@ const RENDERS = {
 const COLUMNS = TABLE_COLUMN_META.orders.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
 function NewOrderModal({ companies, users, onSave, onClose }) {
-  const [form, setForm] = useState({ company_id: '', assigned_to: '', priority: '', notes: '' })
+  const [form, setForm] = useState({ company_id: '', assigned_to: '', priority: '', notes: '', date_commande: '' })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -67,6 +69,10 @@ function NewOrderModal({ companies, users, onSave, onClose }) {
         </select>
       </div>
       <div>
+        <label className="label">Date de commande</label>
+        <input type="date" value={form.date_commande} onChange={e => setForm(f => ({ ...f, date_commande: e.target.value }))} className="input" />
+      </div>
+      <div>
         <label className="label">Notes</label>
         <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input" rows={3} />
       </div>
@@ -88,13 +94,10 @@ export default function Orders() {
   const [showModal, setShowModal] = useState(false)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await api.orders.list({ limit: 'all' })
-      setOrders(res.data)
-    } finally {
-      setLoading(false)
-    }
+    await loadProgressive(
+      (page, limit) => api.orders.list({ limit, page }),
+      setOrders, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -114,7 +117,6 @@ export default function Orders() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Commandes</h1>
-            <p className="text-slate-500 text-sm mt-1">{orders.length} commandes</p>
           </div>
           <div className="flex items-center gap-2">
             <TableConfigModal table="orders" />

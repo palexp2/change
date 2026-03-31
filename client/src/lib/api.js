@@ -91,8 +91,22 @@ export const api = {
     updateStatus: (id, status) => patch(`/orders/${id}/status`, { status }),
     addShipment: (id, data) => post(`/orders/${id}/shipments`, data),
     addItem: (id, data) => post(`/orders/${id}/items`, data),
+    updateItem: (orderId, itemId, data) => patch(`/orders/${orderId}/items/${itemId}`, data),
+    duplicateItem: (orderId, itemId) => post(`/orders/${orderId}/items/${itemId}/duplicate`, {}),
+    reorderItems: (orderId, order) => patch(`/orders/${orderId}/items/reorder`, order),
     deleteItem: (orderId, itemId) => del(`/orders/${orderId}/items/${itemId}`),
     delete: (id) => del(`/orders/${id}`),
+    generateBonLivraison: (id) => post(`/orders/${id}/bon-livraison`, {}),
+  },
+
+  // Tasks
+  tasks: {
+    list: (params = {}) => get('/tasks?' + new URLSearchParams(params)),
+    get: (id) => get(`/tasks/${id}`),
+    create: (data) => post('/tasks', data),
+    update: (id, data) => put(`/tasks/${id}`, data),
+    updateStatus: (id, status) => patch(`/tasks/${id}/status`, { status }),
+    delete: (id) => del(`/tasks/${id}`),
   },
 
   // Tickets
@@ -119,6 +133,8 @@ export const api = {
     deleteUser: (id) => del(`/admin/users/${id}`),
     health: () => get('/admin/health'),
     migrateLegacy: () => post('/admin/migrate-legacy', {}),
+    getNavConfig: () => get('/admin/nav-config'),
+    saveNavConfig: (nav_items) => put('/admin/nav-config', { nav_items }),
   },
 
   // Field Definitions
@@ -166,6 +182,14 @@ export const api = {
     whisperDownloadProgress: () => get('/connectors/whisper/download-drive/status'),
   },
 
+  // Stripe
+  stripe: {
+    info: () => get('/connectors/stripe'),
+    saveKey: (secret_key) => put('/connectors/stripe', { secret_key }),
+    deleteKey: () => del('/connectors/stripe'),
+    sync: () => post('/connectors/sync/stripe'),
+  },
+
   // Airtable
   airtable: {
     bases: () => get('/connectors/airtable/bases'),
@@ -184,6 +208,8 @@ export const api = {
     updatePill: (table, id, data) => put(`/views/${table}/pills/${id}`, data),
     deletePill: (table, id) => del(`/views/${table}/pills/${id}`),
     reorderPills: (table, order) => patch(`/views/${table}/pills/reorder`, order),
+    getDetailLayout: (entityType) => get(`/views/detail/${entityType}`),
+    saveDetailLayout: (entityType, field_order) => put(`/views/detail/${entityType}`, { field_order }),
   },
 
   // Purchases
@@ -260,6 +286,27 @@ export const api = {
     create: (data) => post('/shipments', data),
     update: (id, data) => patch(`/shipments/${id}`, data),
     delete: (id) => del(`/shipments/${id}`),
+    weeklyStats: () => get('/shipments/stats/weekly'),
+  },
+
+  // Dépenses
+  depenses: {
+    list: (params = {}) => get('/depenses?' + new URLSearchParams(params)),
+    get: (id) => get(`/depenses/${id}`),
+    create: (data) => post('/depenses', data),
+    update: (id, data) => put(`/depenses/${id}`, data),
+    updateStatus: (id, status) => patch(`/depenses/${id}/status`, { status }),
+    delete: (id) => del(`/depenses/${id}`),
+  },
+
+  // Factures fournisseurs
+  facturesFournisseurs: {
+    list: (params = {}) => get('/factures-fournisseurs?' + new URLSearchParams(params)),
+    get: (id) => get(`/factures-fournisseurs/${id}`),
+    create: (data) => post('/factures-fournisseurs', data),
+    update: (id, data) => put(`/factures-fournisseurs/${id}`, data),
+    updateStatus: (id, status) => patch(`/factures-fournisseurs/${id}/status`, { status }),
+    delete: (id) => del(`/factures-fournisseurs/${id}`),
   },
 
   // Global search
@@ -334,6 +381,25 @@ export const api = {
     status:       ()         => get('/agent/status'),
     getMemory:    ()         => get('/agent/memory'),
     saveMemory:   (content)  => put('/agent/memory', { content }),
+  },
+
+  // Sale receipts (OCR/AI extraction)
+  saleReceipts: {
+    list: (params = {}) => get('/sale-receipts?' + new URLSearchParams(params)),
+    get: (id) => get(`/sale-receipts/${id}`),
+    delete: (id) => del(`/sale-receipts/${id}`),
+    upload: (formData) => {
+      const token = getToken()
+      return fetch('/erp/api/sale-receipts/upload', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      }).then(async r => {
+        const d = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
+        return d
+      })
+    },
   },
 }
 

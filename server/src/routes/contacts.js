@@ -34,7 +34,6 @@ router.get('/', (req, res) => {
     params.push(company_id);
   }
 
-  const total = db.prepare(`SELECT COUNT(*) as c FROM contacts ct ${where}`).get(...params).c;
   const contacts = db.prepare(
     `SELECT ct.*, c.name as company_name
      FROM contacts ct
@@ -44,6 +43,7 @@ router.get('/', (req, res) => {
      LIMIT ? OFFSET ?`
   ).all(...params, limitVal, offset);
 
+  const total = limitAll ? contacts.length : db.prepare(`SELECT COUNT(*) as c FROM contacts ct ${where}`).get(...params).c;
   res.json({ data: contacts.map(parseExtra), total, page: parseInt(page), limit: parseInt(limit) });
 });
 

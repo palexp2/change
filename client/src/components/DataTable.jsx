@@ -5,6 +5,37 @@ import { useTableView } from '../lib/useTableView.js'
 import { ViewToolbar } from './ViewToolbar.jsx'
 import { TABLE_ALL_LABEL } from '../lib/tableDefs.js'
 
+function DynamicCell({ value, col }) {
+  if (value === null || value === undefined || value === '') return <span className="text-slate-300">—</span>
+  const type = col.type
+
+  if (type === 'single_select') {
+    return <span className="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">{value}</span>
+  }
+  if (type === 'multi_select') {
+    let items = value
+    try { items = JSON.parse(value) } catch {}
+    if (!Array.isArray(items)) items = [items]
+    return (
+      <div className="flex gap-1 flex-wrap">
+        {items.map((v, i) => <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700">{v}</span>)}
+      </div>
+    )
+  }
+  if (type === 'checkbox') {
+    return <span>{value === 1 || value === true || value === '1' ? '✓' : '—'}</span>
+  }
+  if (type === 'date') {
+    try { return <span className="text-slate-500 text-sm">{new Date(value).toLocaleDateString('fr-CA')}</span> } catch { return <span>{value}</span> }
+  }
+  if (type === 'number') {
+    return <span className="tabular-nums">{value}</span>
+  }
+  // text, long_text, link, etc.
+  const str = String(value)
+  return <span className="truncate">{str.length > 100 ? str.slice(0, 100) + '…' : str}</span>
+}
+
 export function DataTable({
   table,
   columns,
@@ -19,7 +50,9 @@ export function DataTable({
   const [collapsedGroups, setCollapsedGroups] = useState(new Set())
 
   const view = useTableView({ table, columns, data, searchFields })
-  const { filteredData, configReady } = view
+  const { filteredData, configReady, allColumns } = view
+  // Use allColumns (hardcoded + dynamic Airtable fields) everywhere
+  const mergedColumns = allColumns || columns
 
   const parentRef = useRef(null)
 
@@ -31,8 +64,8 @@ export function DataTable({
   }, [view.activeViewId, view.configReady])
 
   const visibleColumns = useMemo(
-    () => columns.filter(c => visibleCols.includes(c.id)),
-    [columns, visibleCols]
+    () => mergedColumns.filter(c => visibleCols.includes(c.id)),
+    [mergedColumns, visibleCols]
   )
 
   const toggleGroup = useCallback(key => {
@@ -75,7 +108,8 @@ export function DataTable({
     <div className="card overflow-hidden flex flex-col">
 
       <ViewToolbar
-        columns={columns}
+        table={table}
+        columns={mergedColumns}
         sorts={view.sorts} setSorts={view.setSorts}
         filters={view.filters} setFilters={view.setFilters}
         search={view.search} setSearch={view.setSearch}
@@ -151,7 +185,7 @@ export function DataTable({
                 >
                   {visibleColumns.map(col => (
                     <div key={col.id} className="px-4 truncate text-sm">
-                      {col.render ? col.render(item) : (item[col.field] ?? '—')}
+                      {col.render ? col.render(item) : col.dynamic ? <DynamicCell value={item[col.field]} col={col} /> : (item[col.field] ?? '—')}
                     </div>
                   ))}
                 </div>

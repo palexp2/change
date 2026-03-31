@@ -1,10 +1,13 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ChevronDown, ChevronUp, Phone, Mail, MessageSquare, Building2, PhoneCall, PhoneIncoming, PhoneOutgoing, Eye } from 'lucide-react'
+import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ChevronDown, ChevronUp, Phone, Mail, MessageSquare, Building2, PhoneCall, PhoneIncoming, PhoneOutgoing, Eye, CheckCircle2, Circle, Clock, AlertCircle } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, phaseBadgeColor, orderStatusColor, ticketStatusColor, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { useDetailLayout } from '../hooks/useDetailLayout.js'
+import { DetailFieldConfig, DetailConfigButton } from '../components/DetailFieldConfig.jsx'
+import { useAuth } from '../lib/auth.jsx'
 
 const TYPE_LABELS = { call: 'Appel', email: 'Courriel', sms: 'SMS', meeting: 'Réunion', note: 'Note' }
 const TYPE_COLORS = { call: 'bg-blue-100 text-blue-700', email: 'bg-purple-100 text-purple-700', sms: 'bg-green-100 text-green-700', meeting: 'bg-amber-100 text-amber-700', note: 'bg-slate-100 text-slate-600' }
@@ -87,9 +90,24 @@ function fieldTypeInput(type) {
   return 'text'
 }
 
+const COMPANY_FIELDS = [
+  { key: 'name',            label: 'Nom',       type: 'text',   span2: true, required: true },
+  { key: 'type',            label: 'Type',      type: 'select', options: TYPES },
+  { key: 'lifecycle_phase', label: 'Phase',     type: 'select', options: PHASES },
+  { key: 'phone',           label: 'Téléphone', type: 'text' },
+  { key: 'email',           label: 'Courriel',  type: 'email' },
+  { key: 'website',         label: 'Site web',  type: 'url', span2: true },
+  { key: 'address',         label: 'Adresse',   type: 'text', span2: true },
+  { key: 'city',            label: 'Ville',     type: 'text' },
+  { key: 'province',        label: 'Province',  type: 'text' },
+  { key: 'country',         label: 'Pays',      type: 'text' },
+  { key: 'notes',           label: 'Notes',     type: 'textarea', span2: true, defaultVisible: false },
+]
+
 export default function CompanyDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [company, setCompany] = useState(null)
   const [customFields, setCustomFields] = useState([])
   const [loading, setLoading] = useState(true)
@@ -107,6 +125,12 @@ export default function CompanyDetail() {
   const INTER_LIMIT = 30
   const [factures, setFactures] = useState([])
   const [abonnements, setAbonnements] = useState([])
+  const [tasks, setTasks] = useState([])
+  const [users, setUsers] = useState([])
+  const [showTaskModal, setShowTaskModal] = useState(false)
+  const [editingTask, setEditingTask] = useState(null)
+  const [taskForm, setTaskForm] = useState({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' })
+  const [savingTask, setSavingTask] = useState(false)
   const [serialCols, setSerialCols] = useState(['serial', 'product_name', 'status', 'manufacture_date', 'last_programmed_date'])
   const [showSerialColPicker, setShowSerialColPicker] = useState(false)
   const serialColPickerRef = useRef(null)
@@ -152,6 +176,16 @@ export default function CompanyDetail() {
     api.fieldDefs.list('companies').then(setCustomFields).catch(() => {})
   }, [])
 
+  // Merge hardcoded + custom fields for the layout system
+  const allDetailFields = useMemo(() => [
+    ...COMPANY_FIELDS,
+    ...customFields.map(cf => ({
+      key: `extra:${cf.key}`, label: cf.label, type: cf.field_type || 'text', span2: true, custom: true, customKey: cf.key,
+    })),
+  ], [customFields])
+
+  const layout = useDetailLayout('companies', allDetailFields)
+
   useEffect(() => {
     if (tab === 'interactions') {
       setLoadingInteractions(true)
@@ -173,6 +207,10 @@ export default function CompanyDetail() {
     }
     if (tab === 'abonnements') {
       api.abonnements.list({ company_id: id, limit: 'all' }).then(r => setAbonnements(r.data)).catch(() => {})
+    }
+    if (tab === 'tâches') {
+      api.tasks.list({ company_id: id, limit: 'all' }).then(r => setTasks(r.data || [])).catch(() => {})
+      api.auth.users().then(setUsers).catch(() => {})
     }
   }, [tab, id])
 
@@ -213,7 +251,7 @@ export default function CompanyDetail() {
     return <Layout><div className="p-6 text-slate-500">Entreprise introuvable.</div></Layout>
   }
 
-  const tabs = ['info', 'contacts', 'interactions', 'projets', 'commandes', 'support', 'numéros de série', 'factures', 'abonnements']
+  const tabs = ['info', 'contacts', 'interactions', 'projets', 'commandes', 'support', 'numéros de série', 'factures', 'abonnements', 'tâches']
 
   return (
     <Layout>
@@ -235,11 +273,16 @@ export default function CompanyDetail() {
               {company.phone && <span>· {company.phone}</span>}
             </div>
           </div>
-          {!editing && (
-            <button onClick={() => setEditing(true)} className="btn-secondary">
-              <Edit2 size={14} /> Modifier
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {user?.role === 'admin' && !editing && (
+              <DetailConfigButton onClick={() => layout.setConfiguring(true)} />
+            )}
+            {!editing && (
+              <button onClick={() => setEditing(true)} className="btn-secondary">
+                <Edit2 size={14} /> Modifier
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Tabs */}
@@ -255,6 +298,7 @@ export default function CompanyDetail() {
               'numéros de série': company.serials?.length,
               factures: factures.length || undefined,
               abonnements: abonnements.length || undefined,
+              tâches: tasks.length || undefined,
             }
             const count = counts[t]
             return (
@@ -282,41 +326,29 @@ export default function CompanyDetail() {
             {editing ? (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-4">
-                  <div className="col-span-2">
-                    <label className="label">Nom *</label>
-                    <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} className="input" />
-                  </div>
-                  <div>
-                    <label className="label">Type</label>
-                    <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className="select">
-                      <option value="">—</option>
-                      {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="label">Phase</label>
-                    <select value={form.lifecycle_phase} onChange={e => setForm(f => ({ ...f, lifecycle_phase: e.target.value }))} className="select">
-                      <option value="">—</option>
-                      {PHASES.map(p => <option key={p} value={p}>{p}</option>)}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="label">Téléphone</label>
-                    <input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} className="input" />
-                  </div>
-                  <div className="col-span-2">
-                    <label className="label">Site web</label>
-                    <input value={form.website} onChange={e => setForm(f => ({ ...f, website: e.target.value }))} className="input" />
-                  </div>
-                  {customFields.map(cf => (
-                    <div key={cf.key} className="col-span-2">
-                      <label className="label">{cf.label}</label>
-                      <input type={fieldTypeInput(cf.field_type)}
-                        value={form.extra_fields?.[cf.key] || ''}
-                        onChange={e => setForm(f => ({ ...f, extra_fields: { ...f.extra_fields, [cf.key]: e.target.value } }))}
-                        className="input" />
-                    </div>
-                  ))}
+                  {layout.visibleFields.map(field => {
+                    const isCustom = field.custom
+                    const val = isCustom ? (form.extra_fields?.[field.customKey] || '') : (form[field.key] || '')
+                    const onChange = e => {
+                      if (isCustom) setForm(f => ({ ...f, extra_fields: { ...f.extra_fields, [field.customKey]: e.target.value } }))
+                      else setForm(f => ({ ...f, [field.key]: e.target.value }))
+                    }
+                    return (
+                      <div key={field.key} className={field.span2 ? 'col-span-2' : ''}>
+                        <label className="label">{field.label}{field.required ? ' *' : ''}</label>
+                        {field.type === 'select' ? (
+                          <select value={val} onChange={onChange} className="select">
+                            <option value="">—</option>
+                            {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
+                          </select>
+                        ) : field.type === 'textarea' ? (
+                          <textarea value={val} onChange={onChange} className="input" rows={3} />
+                        ) : (
+                          <input type={fieldTypeInput(field.type)} value={val} onChange={onChange} className="input" />
+                        )}
+                      </div>
+                    )
+                  })}
                 </div>
                 <div className="flex justify-end gap-3">
                   <button onClick={() => setEditing(false)} className="btn-secondary"><X size={14} /> Annuler</button>
@@ -325,30 +357,35 @@ export default function CompanyDetail() {
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-x-8 gap-y-4">
-                {[
-                  ['Type', company.type],
-                  ['Phase', company.lifecycle_phase],
-                  ['Téléphone', company.phone],
-                  ['Site web', company.website],
-                ].map(([label, value]) => value ? (
-                  <div key={label}>
-                    <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">{label}</div>
-                    <div className="text-sm text-slate-900 mt-0.5">
-                      {label === 'Site web' ? (
-                        <a href={company.website} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">{value}</a>
-                      ) : value}
+                {layout.visibleFields.map(field => {
+                  if (field.key === 'name') return null // Already shown in header
+                  const isCustom = field.custom
+                  const value = isCustom ? company.extra_fields?.[field.customKey] : company[field.key]
+                  if (!value) return null
+                  return (
+                    <div key={field.key} className={field.span2 ? 'col-span-2' : ''}>
+                      <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">{field.label}</div>
+                      <div className="text-sm text-slate-900 mt-0.5">
+                        {field.type === 'url' ? (
+                          <a href={value} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">{value}</a>
+                        ) : value}
+                      </div>
                     </div>
-                  </div>
-                ) : null)}
-                {customFields.filter(cf => company.extra_fields?.[cf.key]).map(cf => (
-                  <div key={cf.key}>
-                    <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">{cf.label}</div>
-                    <div className="text-sm text-slate-900 mt-0.5">{company.extra_fields[cf.key]}</div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
           </div>
+        )}
+
+        {layout.isConfiguring && (
+          <DetailFieldConfig
+            configFields={layout.configFields}
+            onToggle={layout.toggleField}
+            onMove={layout.moveField}
+            onSave={layout.saveLayout}
+            onCancel={() => layout.setConfiguring(false)}
+          />
         )}
 
         {/* Contacts Tab */}
@@ -539,7 +576,13 @@ export default function CompanyDetail() {
                         {serialCols.includes('product_name') && (
                           <td className="px-4 py-3">
                             {s.product_id
-                              ? <Link to={`/products/${s.product_id}`} className="text-indigo-600 hover:underline">{s.product_name || s.sku || '—'}</Link>
+                              ? <Link to={`/products/${s.product_id}`} className="flex items-center gap-2 text-indigo-600 hover:underline">
+                                  {s.product_image
+                                    ? <img src={s.product_image} alt="" className="w-8 h-8 object-cover rounded border border-slate-200 shrink-0" />
+                                    : <div className="w-8 h-8 rounded border border-slate-200 bg-slate-100 shrink-0" />
+                                  }
+                                  <span>{s.product_name || s.sku || '—'}</span>
+                                </Link>
                               : '—'
                             }
                           </td>
@@ -627,7 +670,129 @@ export default function CompanyDetail() {
             )}
           </div>
         )}
+
+        {/* Tâches Tab */}
+        {tab === 'tâches' && (
+          <div>
+            <div className="flex justify-end mb-3">
+              <button onClick={() => { setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' }); setEditingTask(null); setShowTaskModal(true) }} className="btn-primary btn-sm"><Plus size={14} /> Ajouter</button>
+            </div>
+            <div className="card overflow-hidden">
+              {tasks.length === 0 ? (
+                <p className="text-center py-10 text-slate-400">Aucune tâche</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead><tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Tâche</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Priorité</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Échéance</th>
+                  </tr></thead>
+                  <tbody>
+                    {tasks.map(t => {
+                      const overdue = t.due_date && t.status !== 'Terminé' && new Date(t.due_date) < new Date()
+                      return (
+                        <tr key={t.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer" onClick={() => { setEditingTask(t); setTaskForm({ title: t.title, status: t.status, priority: t.priority, due_date: t.due_date || '', contact_id: t.contact_id || '', assigned_to: t.assigned_to || '', notes: t.notes || '' }); setShowTaskModal(true) }}>
+                          <td className="px-4 py-3 font-medium text-slate-900">{t.title}</td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${t.status === 'Terminé' ? 'bg-green-100 text-green-700' : t.status === 'En cours' ? 'bg-blue-100 text-blue-700' : t.status === 'Annulé' ? 'bg-slate-100 text-slate-500' : 'bg-amber-100 text-amber-700'}`}>{t.status}</span>
+                          </td>
+                          <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{t.priority}</td>
+                          <td className="px-4 py-3 hidden md:table-cell">
+                            {t.due_date ? <span className={overdue ? 'text-red-600 font-medium' : 'text-slate-500'}>{fmtDate(t.due_date)}</span> : <span className="text-slate-400">—</span>}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Task Modal */}
+      {showTaskModal && (
+        <Modal title={editingTask ? 'Modifier la tâche' : 'Nouvelle tâche'} onClose={() => setShowTaskModal(false)}>
+          <form onSubmit={async e => {
+            e.preventDefault()
+            setSavingTask(true)
+            try {
+              if (editingTask) {
+                await api.tasks.update(editingTask.id, { ...taskForm, company_id: id })
+              } else {
+                await api.tasks.create({ ...taskForm, company_id: id })
+              }
+              const r = await api.tasks.list({ company_id: id, limit: 'all' })
+              setTasks(r.data || [])
+              setShowTaskModal(false)
+            } catch(err) {
+              alert(err.message)
+            } finally {
+              setSavingTask(false)
+            }
+          }} className="space-y-4">
+            <div>
+              <label className="label">Titre *</label>
+              <input value={taskForm.title} onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))} className="input" required autoFocus />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="label">Statut</label>
+                <select value={taskForm.status} onChange={e => setTaskForm(f => ({ ...f, status: e.target.value }))} className="select">
+                  {['À faire','En cours','Terminé','Annulé'].map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">Priorité</label>
+                <select value={taskForm.priority} onChange={e => setTaskForm(f => ({ ...f, priority: e.target.value }))} className="select">
+                  {['Basse','Normal','Haute','Urgente'].map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="label">Échéance</label>
+              <input type="date" value={taskForm.due_date || ''} onChange={e => setTaskForm(f => ({ ...f, due_date: e.target.value }))} className="input" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="label">Contact</label>
+                <select value={taskForm.contact_id || ''} onChange={e => setTaskForm(f => ({ ...f, contact_id: e.target.value }))} className="select">
+                  <option value="">—</option>
+                  {(company.contacts || []).map(c => <option key={c.id} value={c.id}>{c.first_name} {c.last_name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="label">Responsable</label>
+                <select value={taskForm.assigned_to || ''} onChange={e => setTaskForm(f => ({ ...f, assigned_to: e.target.value }))} className="select">
+                  <option value="">—</option>
+                  {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                </select>
+              </div>
+            </div>
+            <div>
+              <label className="label">Notes</label>
+              <textarea value={taskForm.notes || ''} onChange={e => setTaskForm(f => ({ ...f, notes: e.target.value }))} className="input" rows={2} />
+            </div>
+            <div className="flex items-center justify-between pt-2">
+              {editingTask && (
+                <button type="button" onClick={async () => {
+                  if (!confirm('Supprimer cette tâche ?')) return
+                  await api.tasks.delete(editingTask.id)
+                  const r = await api.tasks.list({ company_id: id, limit: 'all' })
+                  setTasks(r.data || [])
+                  setShowTaskModal(false)
+                }} className="text-sm text-red-500 hover:text-red-700 hover:underline">Supprimer</button>
+              )}
+              <div className="flex gap-3 ml-auto">
+                <button type="button" onClick={() => setShowTaskModal(false)} className="btn-secondary"><X size={14} /> Annuler</button>
+                <button type="submit" disabled={savingTask} className="btn-primary"><Save size={14} /> {savingTask ? 'Enregistrement...' : 'Enregistrer'}</button>
+              </div>
+            </div>
+          </form>
+        </Modal>
+      )}
 
       {/* Add Contact Modal */}
       <Modal isOpen={showContactModal} onClose={() => setShowContactModal(false)} title="Ajouter un contact">

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Phone, Mail, MessageSquare, Users, FileText } from 'lucide-react'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -203,13 +204,11 @@ export default function Interactions() {
   const navigate = useNavigate()
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const data = await api.interactions.list({ limit: 'all' })
-      setItems(data.interactions || [])
-    } finally {
-      setLoading(false)
-    }
+    await loadProgressive(
+      (page, limit) => api.interactions.list({ limit, offset: (page - 1) * limit })
+        .then(r => ({ data: r.interactions || [], total: r.total || 0 })),
+      setItems, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -252,7 +251,6 @@ export default function Interactions() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Interactions</h1>
-            <p className="text-sm text-slate-500 mt-0.5">{items.length} interactions</p>
           </div>
           <TableConfigModal table="interactions" />
         </div>

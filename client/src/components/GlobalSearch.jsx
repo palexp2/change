@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, Building2, Users, TrendingUp, ShoppingCart, Package, LifeBuoy, MessageSquare, X } from 'lucide-react'
+import { Search, Building2, Users, TrendingUp, ShoppingCart, Package, LifeBuoy, MessageSquare, X, Barcode } from 'lucide-react'
 import api from '../lib/api.js'
 
 const TYPE_ICON = {
@@ -9,6 +9,7 @@ const TYPE_ICON = {
   project: TrendingUp,
   order: ShoppingCart,
   product: Package,
+  serial: Barcode,
   ticket: LifeBuoy,
   interaction: MessageSquare,
 }
@@ -19,6 +20,7 @@ const TYPE_LABEL = {
   project: 'Projet',
   order: 'Commande',
   product: 'Produit',
+  serial: 'N° de série',
   ticket: 'Ticket',
   interaction: 'Interaction',
 }

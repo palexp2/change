@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { Plus } from 'lucide-react'
+import { useNavigate, useSearchParams, Link } from 'react-router-dom'
+import { Plus, X } from 'lucide-react'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -25,6 +26,7 @@ const RENDERS = {
     : <span className="text-slate-400">—</span>,
   tracking_number: row => <span className="font-mono text-xs text-slate-700">{row.tracking_number || '—'}</span>,
   carrier: row => <span className="text-slate-700">{row.carrier || '—'}</span>,
+  pays: row => <span className="text-slate-700">{row.pays || '—'}</span>,
   status: row => <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>,
   shipped_at: row => <span className="text-slate-500">{fmtDate(row.shipped_at)}</span>,
   created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
@@ -37,7 +39,7 @@ function fmtAdresse(a) {
 }
 
 function NewEnvoiModal({ orders, adresses, onSave, onClose }) {
-  const [form, setForm] = useState({ order_id: '', tracking_number: '', carrier: '', notes: '', address_id: '' })
+  const [form, setForm] = useState({ order_id: '', tracking_number: '', carrier: '', pays: '', notes: '', address_id: '' })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -89,6 +91,16 @@ function NewEnvoiModal({ orders, adresses, onSave, onClose }) {
         />
       </div>
       <div>
+        <label className="label">Pays de l'envoi</label>
+        <input
+          type="text"
+          value={form.pays}
+          onChange={e => setForm(f => ({ ...f, pays: e.target.value }))}
+          className="input"
+          placeholder="ex. Canada, États-Unis, France…"
+        />
+      </div>
+      <div>
         <label className="label">Adresse de livraison</label>
         <select
           value={form.address_id}
@@ -121,8 +133,22 @@ function NewEnvoiModal({ orders, adresses, onSave, onClose }) {
   )
 }
 
+function parseWeekBounds(weekStr) {
+  // weekStr = 'YYYY-MM-DD' (Monday of the week)
+  if (!weekStr) return null
+  const start = new Date(weekStr + 'T00:00:00')
+  if (isNaN(start)) return null
+  const end = new Date(start)
+  end.setDate(start.getDate() + 7)
+  return { start, end }
+}
+
 export default function Envois() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const weekFilter = searchParams.get('week') // 'YYYY-MM-DD' or null
+  const weekBounds = parseWeekBounds(weekFilter)
+
   const [envois, setEnvois] = useState([])
   const [orders, setOrders] = useState([])
   const [adresses, setAdresses] = useState([])
@@ -130,13 +156,10 @@ export default function Envois() {
   const [showModal, setShowModal] = useState(false)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await api.shipments.list({ limit: 'all' })
-      setEnvois(res.data)
-    } finally {
-      setLoading(false)
-    }
+    await loadProgressive(
+      (page, limit) => api.shipments.list({ limit, page }),
+      setEnvois, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -151,13 +174,24 @@ export default function Envois() {
     navigate(`/envois/${envoi.id}`)
   }
 
+  const displayedEnvois = weekBounds
+    ? envois.filter(e => {
+        const d = new Date(e.created_at)
+        return d >= weekBounds.start && d < weekBounds.end
+      })
+    : envois
+
+  const weekLabel = weekBounds
+    ? weekBounds.start.toLocaleDateString('fr-CA', { month: 'long', day: 'numeric', year: 'numeric' })
+    : null
+
   return (
     <Layout>
       <div className="p-6 max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Envois</h1>
-            <p className="text-sm text-slate-500 mt-0.5">{envois.length} envoi{envois.length !== 1 ? 's' : ''}</p>
+            <p className="text-sm text-slate-500 mt-0.5">{displayedEnvois.length} envoi{displayedEnvois.length !== 1 ? 's' : ''}</p>
           </div>
           <div className="flex items-center gap-2">
             <TableConfigModal table="shipments" />
@@ -167,10 +201,23 @@ export default function Envois() {
           </div>
         </div>
 
+        {weekLabel && (
+          <div className="flex items-center gap-2 mb-4 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg w-fit">
+            <span className="text-sm text-indigo-700 font-medium">Semaine du {weekLabel}</span>
+            <button
+              onClick={() => setSearchParams({})}
+              className="text-indigo-400 hover:text-indigo-700 ml-1"
+              title="Effacer le filtre"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
+
         <DataTable
           table="shipments"
           columns={COLUMNS}
-          data={envois}
+          data={displayedEnvois}
           loading={loading}
           onRowClick={row => navigate(`/envois/${row.id}`)}
           searchFields={['order_number', 'tracking_number', 'company_name', 'carrier']}

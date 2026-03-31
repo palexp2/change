@@ -68,7 +68,7 @@ router.get('/:id', (req, res) => {
     'SELECT t.*, u.name as assigned_name FROM tickets t LEFT JOIN users u ON t.assigned_to = u.id WHERE t.company_id = ? AND t.tenant_id = ? ORDER BY t.created_at DESC LIMIT 20'
   ).all(req.params.id, req.user.tenant_id);
   const serials = db.prepare(`
-    SELECT sn.*, pr.name_fr as product_name, pr.sku
+    SELECT sn.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image
     FROM serial_numbers sn
     LEFT JOIN products pr ON sn.product_id = pr.id
     WHERE sn.company_id = ? AND sn.tenant_id = ?

@@ -1,70 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
-import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search } from 'lucide-react'
+import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, Save } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
-
-const OPS_BY_TYPE = {
-  text: [
-    { value: 'contains',     label: 'Contient' },
-    { value: 'not_contains', label: 'Ne contient pas' },
-    { value: 'equals',       label: 'Est égal à' },
-    { value: 'not_equals',   label: "N'est pas égal à" },
-    { value: 'is_empty',     label: 'Est vide' },
-    { value: 'is_not_empty', label: "N'est pas vide" },
-  ],
-  single_select: [
-    { value: 'equals',       label: 'Est' },
-    { value: 'not_equals',   label: "N'est pas" },
-    { value: 'is_empty',     label: 'Est vide' },
-    { value: 'is_not_empty', label: "N'est pas vide" },
-  ],
-  number: [
-    { value: 'equals',       label: 'Est égal à' },
-    { value: 'not_equals',   label: "N'est pas égal à" },
-    { value: 'gt',           label: 'Supérieur à' },
-    { value: 'lt',           label: 'Inférieur à' },
-    { value: 'is_empty',     label: 'Est vide' },
-    { value: 'is_not_empty', label: "N'est pas vide" },
-  ],
-  date: [
-    { value: 'before',       label: 'Avant le' },
-    { value: 'after',        label: 'Après le' },
-    { value: 'equals',       label: 'Le' },
-    { value: 'last_n_days',  label: 'Il y a moins de X jours' },
-    { value: 'next_n_days',  label: 'Dans les X prochains jours' },
-    { value: 'is_empty',     label: 'Est vide' },
-    { value: 'is_not_empty', label: "N'est pas vide" },
-  ],
-  boolean: [
-    { value: 'is_true',  label: 'Est vrai' },
-    { value: 'is_false', label: 'Est faux' },
-  ],
-}
-
-const VALUE_LESS_OPS = new Set(['is_empty', 'is_not_empty', 'is_true', 'is_false'])
-const DAYS_OPS = new Set(['last_n_days', 'next_n_days'])
-const DATE_OPS = new Set(['before', 'after', 'equals'])
-
-function getFieldType(columns, fieldValue) {
-  const col = columns.find(c => c.field === fieldValue)
-  return col?.type || 'text'
-}
-
-function getFieldOptions(columns, fieldValue) {
-  const col = columns.find(c => c.field === fieldValue)
-  return col?.options || []
-}
-
-function getOpsForType(type) {
-  return OPS_BY_TYPE[type] || OPS_BY_TYPE.text
-}
-
-function defaultOpForType(type) {
-  if (type === 'boolean') return 'is_true'
-  if (type === 'date') return 'before'
-  if (type === 'number') return 'equals'
-  if (type === 'single_select') return 'equals'
-  return 'contains'
-}
+import { FilterRow, defaultOpForType, getFieldType } from './FilterRow.jsx'
+import api from '../lib/api.js'
 
 function ToolbarBtn({ icon, label, active, badge, onClick }) {
   return (
@@ -129,8 +67,8 @@ function FilterPanel({ columns, filters, onChange }) {
     const type = first?.type || 'text'
     onChange(f => [...f, { field: first?.field ?? '', op: defaultOpForType(type), value: '' }])
   }
-  function update(i, patch) {
-    onChange(f => f.map((item, idx) => idx === i ? { ...item, ...patch } : item))
+  function update(i, newFilter) {
+    onChange(f => f.map((item, idx) => idx === i ? newFilter : item))
   }
   function remove(i) {
     onChange(f => f.filter((_, idx) => idx !== i))
@@ -143,51 +81,16 @@ function FilterPanel({ columns, filters, onChange }) {
         {filters.length === 0 && (
           <p className="text-sm text-slate-400 py-1">Aucun filtre actif</p>
         )}
-        {filters.map((f, i) => {
-          const fieldType = getFieldType(filterableCols, f.field)
-          const fieldOptions = getFieldOptions(filterableCols, f.field)
-          const ops = getOpsForType(fieldType)
-          const needsValue = !VALUE_LESS_OPS.has(f.op)
-          const isDays = DAYS_OPS.has(f.op)
-          const isDate = DATE_OPS.has(f.op)
-          return (
-            <div key={i} className="flex items-center gap-2">
-              <select
-                value={f.field}
-                onChange={e => {
-                  const newType = getFieldType(filterableCols, e.target.value)
-                  update(i, { field: e.target.value, op: defaultOpForType(newType), value: '' })
-                }}
-                className="select text-xs py-1.5 flex-1"
-              >
-                {filterableCols.map(c => <option key={c.id} value={c.field}>{c.label}</option>)}
-              </select>
-              <select
-                value={f.op}
-                onChange={e => update(i, { op: e.target.value, value: '' })}
-                className="select text-xs py-1.5 flex-1"
-              >
-                {ops.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
-              </select>
-              {needsValue && fieldType === 'single_select' && (
-                <select value={f.value} onChange={e => update(i, { value: e.target.value })} className="select text-xs py-1.5 flex-1">
-                  <option value="">—</option>
-                  {fieldOptions.map(o => <option key={o} value={o}>{o}</option>)}
-                </select>
-              )}
-              {needsValue && fieldType === 'date' && isDate && (
-                <input type="date" value={f.value} onChange={e => update(i, { value: e.target.value })} className="input text-xs py-1.5 flex-1" />
-              )}
-              {needsValue && fieldType === 'date' && isDays && (
-                <input type="number" min="1" value={f.value} onChange={e => update(i, { value: e.target.value })} className="input text-xs py-1.5 flex-1" placeholder="Jours" />
-              )}
-              {needsValue && fieldType !== 'single_select' && fieldType !== 'date' && fieldType !== 'boolean' && (
-                <input value={f.value} onChange={e => update(i, { value: e.target.value })} className="input text-xs py-1.5 flex-1" placeholder="Valeur" />
-              )}
-              <button onClick={() => remove(i)} className="text-slate-300 hover:text-red-500 flex-shrink-0"><X size={14} /></button>
-            </div>
-          )
-        })}
+        {filters.map((f, i) => (
+          <FilterRow
+            key={i}
+            columns={columns}
+            filter={f}
+            onChange={updated => update(i, updated)}
+            onRemove={() => remove(i)}
+            size="xs"
+          />
+        ))}
       </div>
       <button onClick={add} className="mt-3 flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-medium">
         <Plus size={13} /> Ajouter un filtre
@@ -253,6 +156,7 @@ function GroupPanel({ columns, groupBy, onChange }) {
 }
 
 export function ViewToolbar({
+  table,
   columns,
   sorts, setSorts,
   filters, setFilters,
@@ -273,6 +177,25 @@ export function ViewToolbar({
   const isAdmin = user?.role === 'admin'
   const [draggingId, setDraggingId] = useState(null)
   const [dragOverId, setDragOverId] = useState(null)
+  const [saving, setSaving] = useState(false)
+
+  async function handleSaveView() {
+    if (!table || !activeViewId) return
+    setSaving(true)
+    try {
+      await api.views.updatePill(table, activeViewId, {
+        sort: sorts,
+        filters: Array.isArray(filters) ? filters : [],
+        visible_columns: visibleCols || [],
+        group_by: groupBy || null,
+      })
+      window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
+    } catch (e) {
+      alert(e.message)
+    } finally {
+      setSaving(false)
+    }
+  }
 
   useEffect(() => {
     if (!openPanel) return
@@ -372,6 +295,18 @@ export function ViewToolbar({
           {setGroupBy && (
             <ToolbarBtn icon={<Layers size={14} />} label="Grouper" active={openPanel === 'group' || !!groupBy}
               onClick={() => setOpenPanel(p => p === 'group' ? null : 'group')} />
+          )}
+
+          {isAdmin && activeViewId !== null && table && (
+            <button
+              onClick={handleSaveView}
+              disabled={saving}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-indigo-600 hover:bg-indigo-50 transition-colors disabled:opacity-50"
+              title="Enregistrer les filtres, tris et colonnes dans cette vue"
+            >
+              <Save size={13} />
+              {saving ? 'Enregistrement...' : 'Sauvegarder la vue'}
+            </button>
           )}
 
           <span className="ml-auto text-xs text-slate-400 tabular-nums">

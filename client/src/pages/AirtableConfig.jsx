@@ -143,7 +143,7 @@ const TABS = [
   ['retour_items',  'Items de retour'],
 ]
 
-export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh }) {
+export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh, stripeConfigured = false }) {
   const {
     crm: airtableSync,
     inv: inventaireSync,
@@ -419,7 +419,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
       })()}
 
       <div className="flex gap-0.5 border-b border-slate-200 flex-wrap">
-        {TABS.map(([k, l]) => {
+        {TABS.filter(([k]) => !(k === 'abonnements' && stripeConfigured)).map(([k, l]) => {
           const configKey = (k === 'contacts' || k === 'companies') ? 'crm' : k
           const configured = syncConfigs[configKey]?.base_id
           return (
@@ -929,18 +929,39 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               { key: 'contact',          label: 'Contact (lien vers contacts)' },
               { key: 'duration_minutes', label: 'Durée (minutes)' },
               { key: 'notes',            label: 'Notes' },
+              { key: 'created_at',       label: 'Date de création' },
             ]
             return (
               <div className="border border-slate-200 rounded-lg p-3 space-y-2">
                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping des champs</p>
                 {ERP_FIELDS.map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600 w-52 flex-shrink-0">{label}</span>
-                    <FieldSelect
-                      value={billetsForm.field_map?.[key] || ''}
-                      onChange={v => setBilletsForm(f => ({ ...f, field_map: { ...f.field_map, [key]: v || undefined } }))}
-                      options={fieldNames}
-                    />
+                  <div key={key}>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-600 w-52 flex-shrink-0">{label}</span>
+                      <FieldSelect
+                        value={billetsForm.field_map?.[key] || ''}
+                        onChange={v => setBilletsForm(f => ({ ...f, field_map: { ...f.field_map, [key]: v || undefined } }))}
+                        options={fieldNames}
+                      />
+                    </div>
+                    {key === 'status' && billetsForm.field_map?.status && (
+                      <div>
+                        <ChoiceMapping
+                          fields={fields}
+                          selectedFieldName={billetsForm.field_map.status}
+                          erpOptions={['Waiting on us', 'Waiting on them', 'Closed']}
+                          currentMap={billetsForm.field_map?.status_map || {}}
+                          onChange={(choiceName, erpValue) => setBilletsForm(f => ({
+                            ...f,
+                            field_map: {
+                              ...f.field_map,
+                              status_map: { ...(f.field_map?.status_map || {}), [choiceName]: erpValue || undefined }
+                            }
+                          }))}
+                        />
+                        <p className="ml-44 mt-1 text-xs text-slate-400">Un statut vide dans Airtable est automatiquement mappé sur <span className="font-medium text-slate-600">Closed</span>.</p>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -1046,6 +1067,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               { key: 'carrier',         label: 'Transporteur' },
               { key: 'status',          label: 'Statut' },
               { key: 'shipped_at',      label: "Date d'envoi" },
+              { key: 'pays',            label: "Pays de l'envoi" },
               { key: 'notes',           label: 'Notes' },
             ]
             return (

@@ -20,7 +20,7 @@ export function getAuthUrl(state, codeChallenge) {
     client_id: clientId,
     redirect_uri: CALLBACK_URL,
     response_type: 'code',
-    scope: 'data.records:read data.records:write schema.bases:read',
+    scope: 'data.records:read data.records:write schema.bases:read webhook:manage',
     state,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
@@ -107,6 +107,19 @@ export async function getAccessToken(tenantId) {
 
   refreshLocks.set(tenantId, refreshPromise)
   return refreshPromise
+}
+
+export async function airtablePost(path, accessToken, body) {
+  const resp = await fetch(`https://api.airtable.com/v0${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+  if (!resp.ok) throw new Error(`Airtable POST ${path} ${resp.status}: ${await resp.text()}`)
+  return resp.json()
 }
 
 export async function airtableFetch(path, accessToken, retries = 3) {

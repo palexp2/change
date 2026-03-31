@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Webhook, Trash2, Plug, Database } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Webhook, Trash2, Plug, Database, Navigation, GripVertical, Eye, EyeOff, Check } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
@@ -323,10 +323,132 @@ function ResetPasswordForm({ userId, onClose }) {
 
 const TABS = [
   { key: 'systeme',     label: 'Système',     icon: Server },
+  { key: 'navigation',  label: 'Navigation',  icon: Navigation },
   { key: 'connecteurs', label: 'Connecteurs', icon: Plug },
   { key: 'webhooks',    label: 'Webhooks',    icon: Webhook },
   { key: 'corbeille',   label: 'Corbeille',   icon: Trash2 },
 ]
+
+// Default nav items (must match Layout.jsx defaultNavItems)
+const DEFAULT_NAV = [
+  { to: '/dashboard',    label: 'Dashboard' },
+  { to: '/pipeline',     label: 'Projets' },
+  { to: '/orders',       label: 'Commandes' },
+  { to: '/factures',     label: 'Factures' },
+  { to: '/abonnements',  label: 'Abonnements' },
+  { to: '/purchases',    label: 'Achats' },
+  { to: '/envois',       label: 'Envois' },
+  { to: '/retours',      label: 'Retours' },
+  { to: '/assemblages',  label: 'Assemblages' },
+  { to: '/products',     label: 'Produits' },
+  { to: '/serials',      label: 'Numéros de série' },
+  { to: '/tickets',      label: 'Billets' },
+  { to: '/interactions', label: 'Interactions' },
+]
+
+function NavigationSection() {
+  const [items, setItems] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [draggingIdx, setDraggingIdx] = useState(null)
+  const [dragOverIdx, setDragOverIdx] = useState(null)
+
+  useEffect(() => {
+    api.admin.getNavConfig().then(({ nav_items }) => {
+      if (nav_items) {
+        // Merge with defaults (add any new pages not yet in config)
+        const configMap = new Map(nav_items.map(i => [i.to, i]))
+        const merged = []
+        for (const nc of nav_items) {
+          const def = DEFAULT_NAV.find(d => d.to === nc.to)
+          if (def) merged.push({ ...nc, defaultLabel: def.label })
+        }
+        for (const d of DEFAULT_NAV) {
+          if (!configMap.has(d.to)) merged.push({ to: d.to, label: d.label, defaultLabel: d.label, visible: true })
+        }
+        setItems(merged)
+      } else {
+        setItems(DEFAULT_NAV.map(d => ({ to: d.to, label: d.label, defaultLabel: d.label, visible: true })))
+      }
+    }).catch(() => {
+      setItems(DEFAULT_NAV.map(d => ({ to: d.to, label: d.label, defaultLabel: d.label, visible: true })))
+    })
+  }, [])
+
+  function toggleVisible(idx) {
+    setItems(prev => prev.map((item, i) => i === idx ? { ...item, visible: !item.visible } : item))
+  }
+
+  function handleDrop(targetIdx) {
+    if (draggingIdx === null || draggingIdx === targetIdx) return
+    setItems(prev => {
+      const next = [...prev]
+      const [item] = next.splice(draggingIdx, 1)
+      next.splice(targetIdx, 0, item)
+      return next
+    })
+    setDraggingIdx(null)
+    setDragOverIdx(null)
+  }
+
+  async function handleSave() {
+    setSaving(true)
+    try {
+      const toSave = items.map(({ to, label, visible }) => ({ to, label, visible }))
+      await api.admin.saveNavConfig(toSave)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+      // Notify Layout to reload
+      window.dispatchEvent(new CustomEvent('nav:updated'))
+    } finally { setSaving(false) }
+  }
+
+  if (!items) return <div className="text-slate-400 text-sm">Chargement...</div>
+
+  return (
+    <div className="card p-6 mb-6">
+      <h2 className="text-lg font-semibold text-slate-900 mb-1">Navigation</h2>
+      <p className="text-sm text-slate-500 mb-4">Réordonner et masquer les pages du menu</p>
+
+      <div className="space-y-1 mb-4">
+        {items.map((item, idx) => (
+          <div
+            key={item.to}
+            draggable
+            onDragStart={() => setDraggingIdx(idx)}
+            onDragOver={e => { e.preventDefault(); setDragOverIdx(idx) }}
+            onDrop={e => { e.preventDefault(); handleDrop(idx) }}
+            onDragEnd={() => { setDraggingIdx(null); setDragOverIdx(null) }}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
+              draggingIdx === idx ? 'opacity-40' : ''
+            } ${dragOverIdx === idx && dragOverIdx !== draggingIdx ? 'border-t-2 border-indigo-400' : ''
+            } ${item.visible ? 'bg-white border border-slate-200' : 'bg-slate-50 border border-slate-100 opacity-60'}`}
+          >
+            <GripVertical size={14} className="text-slate-300 cursor-grab flex-shrink-0" />
+            <span className="flex-1 text-sm text-slate-700">{item.label}</span>
+            <span className="text-xs text-slate-400 flex-shrink-0 font-mono">{item.to}</span>
+            <button
+              onClick={() => toggleVisible(idx)}
+              className={`p-1 rounded transition-colors ${
+                item.visible ? 'text-indigo-500 hover:bg-indigo-50' : 'text-slate-300 hover:bg-slate-100'
+              }`}
+              title={item.visible ? 'Masquer' : 'Afficher'}
+            >
+              {item.visible ? <Eye size={14} /> : <EyeOff size={14} />}
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button onClick={handleSave} disabled={saving} className="btn-primary btn-sm">
+          {saving ? 'Enregistrement...' : 'Enregistrer'}
+        </button>
+        {saved && <span className="text-sm text-emerald-600 flex items-center gap-1"><Check size={14} /> Sauvegardé</span>}
+      </div>
+    </div>
+  )
+}
 
 function UsersSection({ currentUser }) {
   const [users, setUsers] = useState([])
@@ -505,6 +627,7 @@ export default function Admin() {
           </>
         )}
 
+        {activeTab === 'navigation' && <NavigationSection />}
         {activeTab === 'connecteurs' && <ConnectorsContent />}
         {activeTab === 'webhooks' && <WebhooksContent />}
         {activeTab === 'corbeille' && <CorbeilleContent />}

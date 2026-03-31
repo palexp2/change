@@ -1,0 +1,6 @@
+agent-tasks.json
+agent-tasks.json.tmp
+node_modules/
+client/dist/
+server/data/
+uploads/

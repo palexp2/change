@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -39,13 +40,10 @@ export default function Retours() {
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await api.retours.list({ limit: 'all' })
-      setRetours(res.data)
-    } finally {
-      setLoading(false)
-    }
+    await loadProgressive(
+      (page, limit) => api.retours.list({ limit, page }),
+      setRetours, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -56,7 +54,6 @@ export default function Retours() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Retours</h1>
-            <p className="text-sm text-slate-500 mt-0.5">{retours.length} retour{retours.length !== 1 ? 's' : ''}</p>
           </div>
           <TableConfigModal table="retours" />
         </div>

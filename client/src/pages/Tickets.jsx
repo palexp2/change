@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Plus } from 'lucide-react'
 import api from '../lib/api.js'
+import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, ticketStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -20,7 +21,7 @@ function fmtDuration(mins) {
 }
 
 const TICKET_TYPES = ['Aide software', 'Defect software', 'Aide hardware', 'Defect hardware', 'Erreur de commande', 'Formation', 'Installation']
-const STATUSES = ['Ouvert', 'En attente client', 'En attente nous', 'Fermé']
+const STATUSES = ['Waiting on us', 'Waiting on them', 'Closed']
 
 const RENDERS = {
   title: row => (
@@ -32,6 +33,7 @@ const RENDERS = {
   status: row => <Badge color={ticketStatusColor(row.status)}>{row.status}</Badge>,
   type: row => row.type ? <Badge color={typeColors[row.type] || 'gray'}>{row.type}</Badge> : null,
   duration_minutes: row => <span className="text-slate-500">{fmtDuration(row.duration_minutes)}</span>,
+  created_at: row => row.created_at ? <span className="text-slate-500 text-sm">{new Date(row.created_at).toLocaleDateString('fr-CA')}</span> : null,
 }
 
 const COLUMNS = TABLE_COLUMN_META.tickets.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
@@ -39,7 +41,7 @@ const COLUMNS = TABLE_COLUMN_META.tickets.map(meta => ({ ...meta, render: RENDER
 function TicketForm({ initial = {}, companies = [], users = [], contacts = [], onSave, onClose }) {
   const [form, setForm] = useState({
     title: '', company_id: '', contact_id: '', assigned_to: '',
-    type: '', status: 'Ouvert', description: '', duration_minutes: 0, notes: '',
+    type: '', status: 'Waiting on us', description: '', duration_minutes: 0, notes: '',
     ...initial
   })
   const [saving, setSaving] = useState(false)
@@ -129,13 +131,10 @@ export default function Tickets() {
   const [editTicket, setEditTicket] = useState(null)
 
   const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await api.tickets.list({ limit: 'all' })
-      setTickets(res.data)
-    } finally {
-      setLoading(false)
-    }
+    await loadProgressive(
+      (page, limit) => api.tickets.list({ limit, page }),
+      setTickets, setLoading
+    )
   }, [])
 
   useEffect(() => { load() }, [load])
@@ -153,8 +152,7 @@ export default function Tickets() {
       <div className="p-6 max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Support</h1>
-            <p className="text-slate-500 text-sm mt-1">{tickets.length} billets</p>
+            <h1 className="text-2xl font-bold text-slate-900">Billets</h1>
           </div>
           <div className="flex items-center gap-2">
             <TableConfigModal table="tickets" />

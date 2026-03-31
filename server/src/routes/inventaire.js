@@ -295,7 +295,10 @@ router.get('/abonnements', (req, res) => {
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM subscriptions s ${where}`).get(...params).c
   const rows = db.prepare(`
-    SELECT s.*, co.name as company_name
+    SELECT s.*,
+      s.amount_monthly as amount_cad,
+      s.cancel_date as end_date,
+      co.name as company_name
     FROM subscriptions s
     LEFT JOIN companies co ON s.company_id = co.id
     ${where}

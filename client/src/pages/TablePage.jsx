@@ -251,7 +251,7 @@ export default function TablePage() {
         <div className="flex-shrink-0 flex items-center gap-3 px-5 h-12 border-b border-slate-200 bg-white">
           {table?.icon && <DynamicIcon name={table.icon} size={18} className="text-slate-500" />}
           <h1 className="font-semibold text-slate-900 text-sm">{table?.name}</h1>
-          <span className="text-xs text-slate-400">{records.length} ligne{records.length !== 1 ? 's' : ''}</span>
+
 
           {/* Tabs */}
           <div className="flex items-center gap-0.5 ml-4 bg-slate-100 rounded-lg p-0.5">

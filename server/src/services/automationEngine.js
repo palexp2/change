@@ -1,6 +1,7 @@
 import { createContext, runInNewContext } from 'node:vm'
 import { newId } from '../utils/ids.js'
 import db from '../db/database.js'
+import { sendEmail as gmailSendEmail } from './gmail.js'
 
 /**
  * Exécute le script d'une automation.
@@ -138,6 +139,22 @@ function buildSandbox(tenantId, triggerData, logs) {
         clearTimeout(timeout)
         throw new Error(`Fetch failed: ${err.message}`)
       }
+    },
+
+    // Expose the current tenant ID to scripts
+    tenantId,
+
+    // Safe read-only query against native ERP tables (SELECT only)
+    query: (sql, params = []) => {
+      const trimmed = (sql || '').trim().toUpperCase()
+      if (!trimmed.startsWith('SELECT')) throw new Error('query() accepte uniquement les requêtes SELECT')
+      return db.prepare(sql).all(...(params || []))
+    },
+
+    // Send an email via the tenant's connected Google account
+    sendEmail: async (to, subject, htmlBody) => {
+      await gmailSendEmail(tenantId, to, subject, htmlBody)
+      logs.push(`📧 Email envoyé à ${to} — ${subject}`)
     },
 
     Date, Math, JSON,

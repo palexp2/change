@@ -364,24 +364,44 @@ const CONNECTORS = [
   {
     id: 'stripe',
     name: 'Stripe',
-    description: 'Suivi des paiements et abonnements directement dans l\'ERP',
+    description: 'Synchronisation des abonnements Stripe vers l\'ERP',
     icon: CreditCard,
     color: 'bg-purple-50 text-purple-600',
-    features: ['Paiements', 'Abonnements', 'Factures'],
-    available: false,
-    soon: true,
+    features: ['Abonnements', 'Statuts en temps réel', 'Lien client'],
+    available: true,
+    apiKeyManaged: true,
   },
 ]
 
 function SyncBtn({ label, syncKey, syncStatus, onSync }) {
   const serverRunning = syncStatus?.[syncKey]?.running
   const serverError = syncStatus?.[syncKey]?.error
+  const [progress, setProgress] = useState(null)
+
+  useEffect(() => {
+    function onProgress(e) {
+      const { syncKey: key, loaded, done } = e.detail
+      if (key !== syncKey) return
+      if (done) { setProgress(null); return }
+      setProgress(loaded)
+    }
+    window.addEventListener('sync:progress', onProgress)
+    return () => window.removeEventListener('sync:progress', onProgress)
+  }, [syncKey])
+
+  // Clear progress when sync stops
+  useEffect(() => { if (!serverRunning) setProgress(null) }, [serverRunning])
+
   return (
     <div className="flex items-center gap-2">
       <button onClick={onSync} disabled={serverRunning} className="btn-secondary btn-sm py-1">
         <RefreshCw size={12} className={serverRunning ? 'animate-spin' : ''} /> {label}
       </button>
-      {serverRunning && <span className="text-xs text-amber-600 font-medium animate-pulse">En cours…</span>}
+      {serverRunning && (
+        <span className="text-xs text-amber-600 font-medium tabular-nums">
+          {progress != null ? `${progress} records chargés…` : 'En cours…'}
+        </span>
+      )}
       {serverError && !serverRunning && <span className="text-xs text-red-500" title={serverError}>⚠ Erreur</span>}
     </div>
   )
@@ -454,12 +474,84 @@ function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
 }
 
 
-function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh }) {
+function StripeConfig({ configured: initialConfigured, syncStatus, onRefresh }) {
+  const [configured, setConfigured] = useState(initialConfigured)
+  const [secretKey, setSecretKey] = useState('')
+  const [showKey, setShowKey] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const saveKey = async () => {
+    setSaving(true)
+    try {
+      await api.stripe.saveKey(secretKey)
+      setSecretKey('')
+      setConfigured(true)
+      onRefresh()
+    } catch (e) { alert(e.message) }
+    finally { setSaving(false) }
+  }
+
+  const removeKey = async () => {
+    if (!confirm('Supprimer la clé Stripe ?')) return
+    try {
+      await api.stripe.deleteKey()
+      setConfigured(false)
+      onRefresh()
+    } catch (e) { alert(e.message) }
+  }
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Clé secrète Stripe</p>
+        {configured
+          ? <p className="text-sm text-green-600 font-medium flex items-center gap-1.5"><CheckCircle size={14} /> Clé configurée</p>
+          : <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5"><XCircle size={14} /> Aucune clé configurée</p>
+        }
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <input
+              type={showKey ? 'text' : 'password'}
+              className="input pr-8 font-mono text-sm"
+              placeholder="sk_live_... ou sk_test_..."
+              value={secretKey}
+              onChange={e => setSecretKey(e.target.value)}
+            />
+            <button onClick={() => setShowKey(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+              {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+          <button onClick={saveKey} disabled={saving || !secretKey} className="btn-primary btn-sm">
+            {saving ? 'Sauvegarde…' : configured ? 'Mettre à jour' : 'Enregistrer'}
+          </button>
+          {configured && (
+            <button onClick={removeKey} className="btn-secondary btn-sm text-red-500 hover:text-red-600">
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-slate-400">
+          Trouvez votre clé dans le <a href="https://dashboard.stripe.com/apikeys" target="_blank" rel="noopener noreferrer" className="underline hover:text-slate-600">tableau de bord Stripe → Développeurs → Clés API</a>
+        </p>
+      </div>
+
+      {configured && (
+        <div className="flex items-center gap-3">
+          <SyncBtn label="Synchroniser abonnements" syncKey="stripe" syncStatus={syncStatus} onSync={() => api.stripe.sync()} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured }) {
   const [expanded, setExpanded] = useState(false)
   const { icon: Icon, color } = connector
   const connectorAccounts = accounts.filter(a => a.connector === connector.id)
   // Cube ACR est toujours "connecté" (géré via FTP)
-  const isConnected = connector.ftpManaged ? true : connectorAccounts.length > 0
+  const isConnected = connector.ftpManaged ? true
+    : connector.apiKeyManaged ? (connector.id === 'stripe' ? stripeConfigured : false)
+    : connectorAccounts.length > 0
 
   return (
     <div className="card p-5">
@@ -500,7 +592,7 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
             </div>
           )}
 
-          {connector.ftpManaged && (
+          {(connector.ftpManaged || connector.apiKeyManaged) && (
             <button onClick={() => setExpanded(!expanded)} className="btn-secondary btn-sm text-xs mt-3">
               <Settings size={12} /> {expanded ? 'Masquer' : 'Configurer'}
             </button>
@@ -510,13 +602,16 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
             <GoogleConfig accounts={connectorAccounts} config={config?.google || {}} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
           {expanded && connector.id === 'airtable' && (
-            <AirtableConfig syncConfigs={syncConfigs} syncStatus={syncStatus} onRefresh={onRefresh} />
+            <AirtableConfig syncConfigs={syncConfigs} syncStatus={syncStatus} onRefresh={onRefresh} stripeConfigured={stripeConfigured} />
           )}
           {expanded && connector.id === 'cube-acr' && (
             <CubeAcrConfig onRefresh={onRefresh} />
           )}
           {expanded && connector.id === 'whisper' && (
             <WhisperConfig />
+          )}
+          {expanded && connector.id === 'stripe' && (
+            <StripeConfig configured={stripeConfigured} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
         </div>
       </div>
@@ -528,10 +623,11 @@ const SYNC_LABELS = {
   gmail: 'Gmail', drive: 'Drive', airtable: 'CRM Airtable',
   inventaire: 'Inventaire', pieces: 'Pièces', orders: 'Commandes',
   achats: 'Achats', billets: 'Billets', serials: 'N° de série', envois: 'Envois',
+  stripe: 'Stripe',
 }
 
 export function ConnectorsContent() {
-  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, inventaire_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {} })
+  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, inventaire_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false })
   const [loading, setLoading] = useState(true)
   const { status: syncStatus, anyRunning } = useSyncStatus(3000)
 
@@ -586,6 +682,7 @@ export function ConnectorsContent() {
                 connector={connector}
                 accounts={data.accounts || []}
                 config={data.config || {}}
+                stripeConfigured={!!data.stripe_configured}
                 syncConfigs={{
                   crm:           data.airtable_sync   || {},
                   inv:           data.inventaire_sync || {},

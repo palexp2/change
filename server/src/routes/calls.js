@@ -107,6 +107,14 @@ router.post('/ftp-ingest', requireFtpSecret, upload.single('recording'), async (
     resolvedCompanyId = match.company_id
   }
 
+  // Deduplication: skip if this original filename was already ingested
+  const origName = req.file.originalname
+  const existing = db.prepare('SELECT id FROM calls WHERE original_filename=?').get(origName)
+  if (existing) {
+    console.log(`📞 FTP ingest (doublon ignoré): ${origName}`)
+    return res.status(200).json({ id: existing.id, duplicate: true })
+  }
+
   const interactionId = uuid()
   const callId = uuid()
   const ts = timestamp || new Date().toISOString()
@@ -114,13 +122,13 @@ router.post('/ftp-ingest', requireFtpSecret, upload.single('recording'), async (
   db.prepare('INSERT INTO interactions (id, tenant_id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?,?)')
     .run(interactionId, tid, resolvedContactId, resolvedCompanyId, user.id, 'call', direction || 'in', ts)
 
-  db.prepare('INSERT INTO calls (id, interaction_id, recording_path, caller_number, callee_number, duration_seconds) VALUES (?,?,?,?,?,?)')
-    .run(callId, interactionId, req.file.filename, caller_number || null, callee_number || null, duration_seconds ? Number(duration_seconds) : null)
+  db.prepare('INSERT INTO calls (id, interaction_id, recording_path, caller_number, callee_number, duration_seconds, original_filename) VALUES (?,?,?,?,?,?,?)')
+    .run(callId, interactionId, req.file.filename, caller_number || null, callee_number || null, duration_seconds ? Number(duration_seconds) : null, origName)
 
   const filePath = join(uploadsDir, req.file.filename)
   enqueueTranscription(callId, filePath).catch(console.error)
 
-  console.log(`📞 FTP ingest: ${req.file.originalname} → vendeur=${ftp_username}, contact=${resolvedContactId || 'non résolu'}`)
+  console.log(`📞 FTP ingest: ${origName} → vendeur=${ftp_username}, contact=${resolvedContactId || 'non résolu'}`)
   res.status(201).json({ id: callId, interaction_id: interactionId, contact_matched: !!resolvedContactId })
 })
 

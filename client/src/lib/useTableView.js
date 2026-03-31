@@ -5,28 +5,72 @@ function norm(s) {
   return String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
 }
 
-export function applyFilter(row, { field, op, value }) {
+export function applyFilter(row, filter) {
+  // Support both old format {field, op, value} and new format {field_key, operator, value}
+  const field = filter.field_key || filter.field
+  const op = filter.operator || filter.op
+  const value = filter.value
   const v = row[field]
   const str = norm(v)
   const val = norm(value)
   switch (op) {
     case 'contains':     return str.includes(val)
     case 'not_contains': return !str.includes(val)
-    case 'equals':       return str === val
-    case 'not_equals':   return str !== val
+    case 'equals':
+    case 'is':           return str === val
+    case 'not_equals':
+    case 'is_not':       return str !== val
+    case 'starts_with':  return str.startsWith(val)
+    case 'ends_with':    return str.endsWith(val)
+    case 'eq':           return Number(v) === Number(value)
+    case 'neq':          return Number(v) !== Number(value)
     case 'gt':           return Number(v) > Number(value)
+    case 'gte':          return Number(v) >= Number(value)
     case 'lt':           return Number(v) < Number(value)
-    case 'is_empty':     return v === null || v === undefined || v === ''
-    case 'is_not_empty': return v !== null && v !== undefined && v !== ''
+    case 'lte':          return Number(v) <= Number(value)
+    case 'is_empty':     return v === null || v === undefined || v === '' || v === '[]'
+    case 'is_not_empty': return v !== null && v !== undefined && v !== '' && v !== '[]'
     case 'is_true':      return v === 1 || v === true || v === '1'
     case 'is_false':     return v === 0 || v === false || v === '0' || v === null || v === undefined
+    case 'is_before':
     case 'before': {
       if (!v || !value) return false
       return new Date(v) < new Date(value)
     }
+    case 'is_after':
     case 'after': {
       if (!v || !value) return false
       return new Date(v) > new Date(value)
+    }
+    case 'is_any_of': {
+      if (!value) return false
+      const opts = Array.isArray(value) ? value : [value]
+      return opts.some(o => norm(o) === str)
+    }
+    case 'is_none_of': {
+      if (!value) return true
+      const opts = Array.isArray(value) ? value : [value]
+      return !opts.some(o => norm(o) === str)
+    }
+    case 'has_any_of': {
+      const arr = tryParseArr(v)
+      const opts = Array.isArray(value) ? value : [value]
+      return opts.some(o => arr.includes(o))
+    }
+    case 'has_all_of': {
+      const arr = tryParseArr(v)
+      const opts = Array.isArray(value) ? value : [value]
+      return opts.every(o => arr.includes(o))
+    }
+    case 'has_none_of': {
+      const arr = tryParseArr(v)
+      const opts = Array.isArray(value) ? value : [value]
+      return !opts.some(o => arr.includes(o))
+    }
+    case 'is_exactly': {
+      const arr = tryParseArr(v)
+      const opts = Array.isArray(value) ? value : [value]
+      return arr.length === opts.length && opts.every(o => arr.includes(o))
     }
     case 'last_n_days': {
       if (!v || !value) return false
@@ -35,6 +79,12 @@ export function applyFilter(row, { field, op, value }) {
       const cutoff = new Date(now - Number(value) * 86400000)
       return d >= cutoff && d <= now
     }
+    case 'more_than_n_days_ago': {
+      if (!v || !value) return false
+      const d = new Date(v)
+      const cutoff = new Date(Date.now() - Number(value) * 86400000)
+      return d < cutoff
+    }
     case 'next_n_days': {
       if (!v || !value) return false
       const d = new Date(v)
@@ -42,8 +92,69 @@ export function applyFilter(row, { field, op, value }) {
       const cutoff = new Date(now.getTime() + Number(value) * 86400000)
       return d >= now && d <= cutoff
     }
+    case 'more_than_n_days_ahead': {
+      if (!v || !value) return false
+      const d = new Date(v)
+      const cutoff = new Date(Date.now() + Number(value) * 86400000)
+      return d > cutoff
+    }
+    case 'today': {
+      if (!v) return false
+      const d = new Date(v).toISOString().slice(0, 10)
+      const t = new Date().toISOString().slice(0, 10)
+      return d === t
+    }
+    case 'yesterday': {
+      if (!v) return false
+      const d = new Date(v).toISOString().slice(0, 10)
+      const y = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+      return d === y
+    }
+    case 'this_week': {
+      if (!v) return false
+      const d = new Date(v)
+      const now = new Date()
+      const day = now.getDay()
+      const start = new Date(now)
+      start.setDate(now.getDate() - (day === 0 ? 6 : day - 1))
+      start.setHours(0, 0, 0, 0)
+      const end = new Date(start)
+      end.setDate(start.getDate() + 7)
+      return d >= start && d < end
+    }
+    case 'this_month': {
+      if (!v) return false
+      const d = new Date(v)
+      const now = new Date()
+      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear()
+    }
+    case 'last_month': {
+      if (!v) return false
+      const d = new Date(v)
+      const now = new Date()
+      const lm = new Date(now.getFullYear(), now.getMonth() - 1, 1)
+      return d.getMonth() === lm.getMonth() && d.getFullYear() === lm.getFullYear()
+    }
     default:             return true
   }
+}
+
+function tryParseArr(v) {
+  if (Array.isArray(v)) return v
+  if (typeof v === 'string' && v.startsWith('[')) {
+    try { return JSON.parse(v) } catch { return [] }
+  }
+  return v ? [v] : []
+}
+
+// Apply a nested filter group (conjunction + rules) to a row
+function applyFilterGroup(row, group) {
+  if (!group?.rules?.length) return true
+  const method = group.conjunction === 'OR' ? 'some' : 'every'
+  return group.rules[method](rule => {
+    if (rule.conjunction && rule.rules) return applyFilterGroup(row, rule)
+    return applyFilter(row, rule)
+  })
 }
 
 export function applySort(data, sorts) {
@@ -65,13 +176,31 @@ export function useTableView({ table, columns, data, searchFields = [] }) {
   const [views, setViews] = useState([])
   const [configReady, setConfigReady] = useState(false)
   const [adminConfig, setAdminConfig] = useState(null)
+  const [dynamicFields, setDynamicFields] = useState([])
+
+  const [reloadKey, setReloadKey] = useState(0)
+
+  // Reload when views are updated via TableConfigModal
+  useEffect(() => {
+    function onViewsUpdated(e) {
+      if (e.detail?.table === table) setReloadKey(k => k + 1)
+    }
+    window.addEventListener('views:updated', onViewsUpdated)
+    return () => window.removeEventListener('views:updated', onViewsUpdated)
+  }, [table])
 
   useEffect(() => {
     api.views.get(table)
-      .then(({ config, pills }) => {
+      .then(({ config, pills, dynamicFields: df }) => {
         setViews(pills)
         setAdminConfig(config)
-        if (pills.length > 0) {
+        setDynamicFields(df || [])
+        const currentViewId = activeViewId
+        const currentView = pills.find(p => p.id === currentViewId)
+        if (currentView) {
+          setSorts(currentView.sort?.length > 0 ? currentView.sort : (config.default_sort || []))
+          setFilters(currentView.filters || [])
+        } else if (pills.length > 0) {
           const first = pills[0]
           setActiveViewIdRaw(first.id)
           setSorts(first.sort?.length > 0 ? first.sort : (config.default_sort || []))
@@ -87,7 +216,7 @@ export function useTableView({ table, columns, data, searchFields = [] }) {
         setAdminConfig({ visible_columns: [], default_sort: [] })
         setConfigReady(true)
       })
-  }, [table])
+  }, [table, reloadKey])
 
   function setActiveViewId(id, currentViews, currentConfig) {
     const vList = currentViews ?? views
@@ -121,7 +250,12 @@ export function useTableView({ table, columns, data, searchFields = [] }) {
       const q = norm(search)
       result = result.filter(row => searchFields.some(f => norm(row[f]).includes(q)))
     }
-    result = result.filter(row => filters.every(f => applyFilter(row, f)))
+    // Support both flat array format and nested group format
+    if (filters?.conjunction && filters?.rules) {
+      result = result.filter(row => applyFilterGroup(row, filters))
+    } else if (Array.isArray(filters) && filters.length > 0) {
+      result = result.filter(row => filters.every(f => applyFilter(row, f)))
+    }
     result = applySort(result, sorts)
     return result
   }, [data, search, searchFields, filters, sorts])
@@ -131,6 +265,19 @@ export function useTableView({ table, columns, data, searchFields = [] }) {
     const order = newViews.map((v, i) => ({ id: v.id, sort_order: i }))
     api.views.reorderPills(table, order).catch(() => {})
   }
+
+  // Merge hardcoded columns with dynamic Airtable fields
+  const allColumns = useMemo(() => {
+    if (!dynamicFields.length) return columns
+    const existingIds = new Set(columns.map(c => c.id))
+    const extra = dynamicFields
+      .filter(f => !existingIds.has(f.id))
+      .map(f => ({
+        ...f,
+        defaultVisible: false,
+      }))
+    return [...columns, ...extra]
+  }, [columns, dynamicFields])
 
   return {
     filteredData,
@@ -146,5 +293,7 @@ export function useTableView({ table, columns, data, searchFields = [] }) {
     activeView,
     viewVisibleColumns,
     viewGroupBy,
+    allColumns,
+    dynamicFields,
   }
 }

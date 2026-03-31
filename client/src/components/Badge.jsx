@@ -50,6 +50,7 @@ export function orderStatusColor(status) {
     'JWT-config': 'blue',
     "Envoyé aujourd'hui": 'green',
     'Envoyé': 'green',
+    'Drop ship seulement': 'teal',
     'ERREUR SYSTÈME': 'red',
   }
   return map[status] || 'gray'
@@ -57,10 +58,9 @@ export function orderStatusColor(status) {
 
 export function ticketStatusColor(status) {
   const map = {
-    'Ouvert': 'red',
-    'En attente client': 'yellow',
-    'En attente nous': 'orange',
-    'Fermé': 'green',
+    'Waiting on us': 'orange',
+    'Waiting on them': 'yellow',
+    'Closed': 'green',
   }
   return map[status] || 'gray'
 }

@@ -35,10 +35,21 @@ import { getAuthUrl as googleAuthUrl, exchangeCode as googleExchange } from '../
 import { getAuthUrl as airtableAuthUrl, exchangeCode as airtableExchange, airtableFetch, getAccessToken } from '../connectors/airtable.js'
 import { syncAllMailboxes } from '../services/gmail.js'
 import { syncDrive } from '../services/drive.js'
-import { syncAirtable, syncInventaire, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAbonnements, syncAssemblages, syncFactures } from '../services/airtable.js'
+import { syncAirtable, syncInventaire, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncFactures } from '../services/airtable.js'
 import { tracked, getStatus } from '../services/syncState.js'
+import { syncStripeSubscriptions, isStripeConfigured } from '../services/stripe.js'
+import { processWebhookPing, registerWebhookForBase } from '../services/airtableWebhooks.js'
 
 const router = Router()
+
+// ── Airtable webhook ping (pas d'auth — appelé directement par Airtable)
+router.post('/airtable/webhook-ping', (req, res) => {
+  res.status(200).json({ ok: true }) // répondre immédiatement à Airtable
+  const webhookId = req.body?.webhook?.id
+  if (webhookId) {
+    processWebhookPing(webhookId).catch(e => console.error('Webhook ping error:', e.message))
+  }
+})
 
 // ── List connected accounts
 router.get('/', requireAuth, (req, res) => {
@@ -65,7 +76,12 @@ router.get('/', requireAuth, (req, res) => {
     moduleConfigs[mod] = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module=?").get(tid, mod) || {}
   }
 
-  res.json({ accounts, config, airtable_sync: airtableSync, inventaire_sync: inventaireSync, orders_sync: ordersSync, ...moduleConfigs })
+  res.json({
+    accounts, config,
+    airtable_sync: airtableSync, inventaire_sync: inventaireSync, orders_sync: ordersSync,
+    stripe_configured: isStripeConfigured(tid),
+    ...moduleConfigs,
+  })
 })
 
 // ── Google OAuth start
@@ -148,6 +164,12 @@ router.get('/airtable/callback', async (req, res) => {
     }
 
     res.redirect('/erp/connectors?success=airtable')
+
+    // Enregistrer les webhooks pour les bases déjà configurées (fire & forget)
+    const { getConfiguredBases } = await import('../services/airtableWebhooks.js')
+    for (const baseId of getConfiguredBases(tenant_id)) {
+      registerWebhookForBase(tenant_id, baseId).catch(e => console.error('Webhook reg error:', e.message))
+    }
   } catch (e) {
     console.error('Airtable callback error:', e.message)
     res.redirect('/erp/connectors?error=airtable_failed')
@@ -212,6 +234,7 @@ function saveCrmConfig(req, res) {
     field_map_contacts ? JSON.stringify(field_map_contacts) : null,
     field_map_companies ? JSON.stringify(field_map_companies) : null)
   res.json({ ok: true })
+  if (base_id) registerWebhookForBase(tid, base_id).catch(e => console.error('Webhook reg error:', e.message))
 }
 router.put('/airtable/sync-config', requireAuth, saveCrmConfig)
 router.put('/airtable/crm-config', requireAuth, saveCrmConfig)
@@ -230,6 +253,7 @@ function saveInvConfig(req, res) {
     field_map_projects ? JSON.stringify(field_map_projects) : null,
     extra_tables?.length ? JSON.stringify(extra_tables) : null)
   res.json({ ok: true })
+  if (base_id) registerWebhookForBase(tid, base_id).catch(e => console.error('Webhook reg error:', e.message))
 }
 router.put('/airtable/inventaire-config', requireAuth, saveInvConfig)
 router.put('/airtable/inv-config', requireAuth, saveInvConfig)
@@ -261,7 +285,7 @@ router.post('/sync/inventaire', requireAuth, async (req, res) => {
 })
 
 // ── Save generic module config (pieces, achats, billets, serials, envois)
-const SIMPLE_MODULES = ['pieces', 'achats', 'billets', 'serials', 'envois', 'soumissions', 'retours', 'retour_items', 'adresses', 'bom', 'serial_changes', 'abonnements', 'assemblages', 'factures']
+const SIMPLE_MODULES = ['pieces', 'achats', 'billets', 'serials', 'envois', 'soumissions', 'retours', 'retour_items', 'adresses', 'bom', 'serial_changes', 'assemblages', 'factures']
 router.put('/airtable/module-config/:module', requireAuth, (req, res) => {
   const { module } = req.params
   if (!SIMPLE_MODULES.includes(module)) return res.status(400).json({ error: 'Module invalide' })
@@ -274,6 +298,7 @@ router.put('/airtable/module-config/:module', requireAuth, (req, res) => {
       base_id=excluded.base_id, table_id=excluded.table_id, field_map=excluded.field_map
   `).run(tid, module, base_id || null, table_id || null, field_map ? JSON.stringify(field_map) : null)
   res.json({ ok: true })
+  if (base_id) registerWebhookForBase(tid, base_id).catch(e => console.error('Webhook reg error:', e.message))
 })
 
 // ── Save Pièces config
@@ -309,6 +334,7 @@ router.put('/airtable/orders-config', requireAuth, (req, res) => {
     field_map_orders ? JSON.stringify(field_map_orders) : null,
     field_map_items ? JSON.stringify(field_map_items) : null)
   res.json({ ok: true })
+  if (base_id) registerWebhookForBase(tid, base_id).catch(e => console.error('Webhook reg error:', e.message))
 })
 
 router.post('/sync/orders', requireAuth, async (req, res) => {
@@ -412,7 +438,7 @@ router.post('/sync/serial_changes', requireAuth, async (req, res) => {
   res.json({ ok: true })
 })
 router.post('/sync/abonnements', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'abonnements', () => syncAbonnements(req.user.tenant_id)).catch(console.error)
+  tracked(req.user.tenant_id, 'stripe', () => syncStripeSubscriptions(req.user.tenant_id)).catch(console.error)
   res.json({ ok: true })
 })
 router.post('/sync/assemblages', requireAuth, async (req, res) => {
@@ -441,7 +467,6 @@ router.post('/sync/airtable-all', requireAuth, async (req, res) => {
     ['adresses',      syncAdresses],
     ['bom',           syncBomItems],
     ['serial_changes',syncSerialStateChanges],
-    ['abonnements',   syncAbonnements],
     ['assemblages',   syncAssemblages],
     ['factures',      syncFactures],
   ]
@@ -892,6 +917,43 @@ router.post('/fix-ftp-timestamps', async (req, res) => {
 
     console.log(`✅ fix-ftp-timestamps: ${fixed} corrigés sur ${scanned} fichiers Drive scannés`)
   })().catch(e => console.error('❌ fix-ftp-timestamps:', e.message))
+})
+
+// ── Stripe ───────────────────────────────────────────────────────────────────
+
+// GET /api/connectors/stripe — état de configuration
+router.get('/stripe', requireAuth, (req, res) => {
+  const configured = isStripeConfigured(req.user.tenant_id)
+  res.json({ configured })
+})
+
+// PUT /api/connectors/stripe — enregistrer la clé secrète
+router.put('/stripe', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
+  const { secret_key } = req.body
+  if (!secret_key || !secret_key.startsWith('sk_')) {
+    return res.status(400).json({ error: 'Clé Stripe invalide (doit commencer par sk_)' })
+  }
+  db.prepare(`
+    INSERT INTO connector_config (tenant_id, connector, key, value) VALUES (?,?,?,?)
+    ON CONFLICT(tenant_id, connector, key) DO UPDATE SET value=excluded.value
+  `).run(req.user.tenant_id, 'stripe', 'secret_key', secret_key)
+  res.json({ ok: true })
+})
+
+// DELETE /api/connectors/stripe — supprimer la clé
+router.delete('/stripe', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
+  db.prepare(
+    "DELETE FROM connector_config WHERE tenant_id=? AND connector='stripe' AND key='secret_key'"
+  ).run(req.user.tenant_id)
+  res.json({ ok: true })
+})
+
+// POST /api/connectors/sync/stripe — déclencher un sync manuel
+router.post('/sync/stripe', requireAuth, async (req, res) => {
+  tracked(req.user.tenant_id, 'stripe', () => syncStripeSubscriptions(req.user.tenant_id)).catch(console.error)
+  res.json({ ok: true })
 })
 
 export default router

@@ -4,18 +4,7 @@ import { useAuth } from '../lib/auth.jsx'
 import api from '../lib/api.js'
 import { TABLE_COLUMN_META, TABLE_LABELS, TABLE_ALL_LABEL } from '../lib/tableDefs.js'
 import { Modal } from './Modal.jsx'
-
-const FILTER_OPS = [
-  { value: 'contains',     label: 'Contient' },
-  { value: 'not_contains', label: 'Ne contient pas' },
-  { value: 'equals',       label: 'Est égal à' },
-  { value: 'not_equals',   label: "N'est pas égal à" },
-  { value: 'gt',           label: 'Supérieur à' },
-  { value: 'lt',           label: 'Inférieur à' },
-  { value: 'is_empty',     label: 'Est vide' },
-  { value: 'is_not_empty', label: "N'est pas vide" },
-]
-const VALUE_LESS = new Set(['is_empty', 'is_not_empty'])
+import { FilterRow, defaultOpForType } from './FilterRow.jsx'
 
 const PILL_COLORS = [
   { value: 'gray',   bg: 'bg-slate-400'  },
@@ -81,12 +70,15 @@ function ViewConfigEditor({ columns, current, selectedViewId, onSaveGlobal, onSa
     setActive(s => s.filter((_, idx) => idx !== i))
   }
 
+  const filterableCols = columns.filter(c => c.filterable !== false && c.field)
+
   function addFilter() {
-    const first = columns.find(c => c.filterable !== false && c.field)
-    setViewFilters(f => [...f, { field: first?.field || '', op: 'equals', value: '' }])
+    const first = filterableCols[0]
+    const type = first?.type || 'text'
+    setViewFilters(f => [...f, { field: first?.field || '', op: defaultOpForType(type), value: '' }])
   }
-  function updateFilter(i, patch) {
-    setViewFilters(f => f.map((item, idx) => idx === i ? { ...item, ...patch } : item))
+  function updateFilter(i, newFilter) {
+    setViewFilters(f => f.map((item, idx) => idx === i ? newFilter : item))
   }
   function removeFilter(i) {
     setViewFilters(f => f.filter((_, idx) => idx !== i))
@@ -201,21 +193,14 @@ function ViewConfigEditor({ columns, current, selectedViewId, onSaveGlobal, onSa
               <div className="space-y-2">
                 {viewFilters.length === 0 && <p className="text-sm text-slate-400">Aucun filtre</p>}
                 {viewFilters.map((f, i) => (
-                  <div key={i} className="flex items-center gap-2 flex-wrap">
-                    <select value={f.field} onChange={e => updateFilter(i, { field: e.target.value })} className="select text-sm flex-1 min-w-0">
-                      {columns.filter(c => c.filterable !== false && c.field).map(c => (
-                        <option key={c.id} value={c.field}>{c.label}</option>
-                      ))}
-                    </select>
-                    <select value={f.op} onChange={e => updateFilter(i, { op: e.target.value })} className="select text-sm flex-1 min-w-0">
-                      {FILTER_OPS.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
-                    </select>
-                    {!VALUE_LESS.has(f.op) && (
-                      <input value={f.value} onChange={e => updateFilter(i, { value: e.target.value })}
-                        className="input text-sm flex-1 min-w-0" placeholder="Valeur" />
-                    )}
-                    <button onClick={() => removeFilter(i)} className="text-slate-300 hover:text-red-500"><X size={14} /></button>
-                  </div>
+                  <FilterRow
+                    key={i}
+                    columns={columns}
+                    filter={f}
+                    onChange={updated => updateFilter(i, updated)}
+                    onRemove={() => removeFilter(i)}
+                    size="sm"
+                  />
                 ))}
                 <button onClick={addFilter} className="flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-medium mt-1">
                   <Plus size={13} /> Ajouter un filtre
@@ -261,6 +246,8 @@ export function TableConfigModal({ table }) {
     try {
       await api.views.updateConfig(table, data)
       setViewData(v => ({ ...v, config: data }))
+      window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
+      setOpen(false)
     } finally { setSaving(false) }
   }
 
@@ -269,7 +256,28 @@ export function TableConfigModal({ table }) {
     try {
       const updated = await api.views.updatePill(table, id, form)
       setViewData(v => ({ ...v, pills: v.pills.map(p => p.id === id ? updated : p) }))
+      window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
+      setOpen(false)
     } finally { setSaving(false) }
+  }
+
+  const [draggingPillId, setDraggingPillId] = useState(null)
+  const [dragOverPillId, setDragOverPillId] = useState(null)
+
+  function handlePillDrop(targetId) {
+    if (!draggingPillId || draggingPillId === targetId) return
+    const pills = [...current.pills]
+    const fromIdx = pills.findIndex(p => p.id === draggingPillId)
+    const toIdx = pills.findIndex(p => p.id === targetId)
+    const [item] = pills.splice(fromIdx, 1)
+    pills.splice(toIdx, 0, item)
+    setViewData(v => ({ ...v, pills }))
+    const order = pills.map((p, i) => ({ id: p.id, sort_order: i }))
+    api.views.reorderPills(table, order).then(() => {
+      window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
+    })
+    setDraggingPillId(null)
+    setDragOverPillId(null)
   }
 
   async function handleAddView() {
@@ -335,8 +343,15 @@ export function TableConfigModal({ table }) {
 
               {current.pills.map(pill => (
                 <div key={pill.id}
-                  className={`group flex items-center gap-2 px-4 py-2.5 text-sm transition-colors ${
-                    selectedViewId === pill.id
+                  draggable
+                  onDragStart={() => setDraggingPillId(pill.id)}
+                  onDragOver={e => { e.preventDefault(); setDragOverPillId(pill.id) }}
+                  onDrop={e => { e.preventDefault(); handlePillDrop(pill.id) }}
+                  onDragEnd={() => { setDraggingPillId(null); setDragOverPillId(null) }}
+                  className={`group flex items-center gap-2 px-4 py-2.5 text-sm transition-colors cursor-grab ${
+                    draggingPillId === pill.id ? 'opacity-40' : ''
+                  } ${dragOverPillId === pill.id && dragOverPillId !== draggingPillId ? 'border-t-2 border-indigo-400' : ''
+                  } ${selectedViewId === pill.id
                       ? 'bg-indigo-50 text-indigo-700'
                       : 'text-slate-700 hover:bg-slate-50'
                   }`}

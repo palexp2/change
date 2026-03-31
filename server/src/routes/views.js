@@ -7,7 +7,8 @@ const router = Router()
 
 const ALLOWED_TABLES = new Set([
   'companies', 'contacts', 'projects', 'products',
-  'orders', 'tickets', 'purchases', 'serial_numbers', 'interactions'
+  'orders', 'tickets', 'purchases', 'serial_numbers', 'interactions', 'shipments',
+  'abonnements', 'retours', 'factures', 'assemblages', 'depenses', 'factures_fournisseurs', 'tasks',
 ])
 
 function validateTable(req, res) {
@@ -41,11 +42,24 @@ router.get('/:table', requireAuth, (req, res) => {
     'SELECT id, label, color, filters, visible_columns, sort, group_by, sort_order FROM table_view_pills WHERE tenant_id=? AND table_name=? ORDER BY sort_order, created_at'
   ).all(tenant_id, table)
 
+  // Dynamic fields from Airtable auto-sync
+  const dynamicFields = db.prepare(
+    'SELECT column_name, airtable_field_name, field_type, options, sort_order FROM airtable_field_defs WHERE tenant_id=? AND erp_table=? ORDER BY sort_order'
+  ).all(tenant_id, table).map(f => ({
+    id: f.column_name,
+    label: f.airtable_field_name,
+    field: f.column_name,
+    type: f.field_type,
+    options: JSON.parse(f.options || '{}'),
+    dynamic: true,
+  }))
+
   res.json({
     config: config
       ? { visible_columns: JSON.parse(config.visible_columns), default_sort: JSON.parse(config.default_sort) }
       : { visible_columns: [], default_sort: [] },
-    pills: pills.map(parsePill)
+    pills: pills.map(parsePill),
+    dynamicFields,
   })
 })
 
@@ -158,6 +172,37 @@ router.delete('/:table/pills/:id', requireAdmin, (req, res) => {
   if (!pill) return res.status(404).json({ error: 'Vue introuvable' })
 
   db.prepare('DELETE FROM table_view_pills WHERE id=?').run(id)
+  res.json({ ok: true })
+})
+
+// ── Detail page field layout ─────────────────────────────────────────────────
+
+// GET /api/views/detail/:entityType
+router.get('/detail/:entityType', requireAuth, (req, res) => {
+  const { tenant_id } = req.user
+  const config = db.prepare(
+    'SELECT field_order FROM detail_field_configs WHERE tenant_id=? AND entity_type=?'
+  ).get(tenant_id, req.params.entityType)
+  res.json({ field_order: config ? JSON.parse(config.field_order) : null })
+})
+
+// PUT /api/views/detail/:entityType
+router.put('/detail/:entityType', requireAdmin, (req, res) => {
+  const { tenant_id } = req.user
+  const { field_order } = req.body
+  if (!Array.isArray(field_order)) return res.status(400).json({ error: 'field_order array required' })
+
+  const existing = db.prepare(
+    'SELECT id FROM detail_field_configs WHERE tenant_id=? AND entity_type=?'
+  ).get(tenant_id, req.params.entityType)
+
+  if (existing) {
+    db.prepare('UPDATE detail_field_configs SET field_order=?, updated_at=datetime(\'now\') WHERE id=?')
+      .run(JSON.stringify(field_order), existing.id)
+  } else {
+    db.prepare('INSERT INTO detail_field_configs (id, tenant_id, entity_type, field_order) VALUES (?,?,?,?)')
+      .run(uuidv4(), tenant_id, req.params.entityType, JSON.stringify(field_order))
+  }
   res.json({ ok: true })
 })
 

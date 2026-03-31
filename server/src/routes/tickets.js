@@ -83,7 +83,7 @@ router.post('/', (req, res) => {
     `INSERT INTO tickets (id, tenant_id, company_id, contact_id, assigned_to, title, description, type, status, duration_minutes, notes)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(id, req.user.tenant_id, company_id || null, contact_id || null, assigned_to || null,
-    title, description || null, type || null, status || 'Ouvert', duration_minutes || 0, notes || null);
+    title, description || null, type || null, status || 'Waiting on us', duration_minutes || 0, notes || null);
 
   res.status(201).json(db.prepare(
     `SELECT t.*, c.name as company_name, u.name as assigned_name FROM tickets t LEFT JOIN companies c ON t.company_id = c.id LEFT JOIN users u ON t.assigned_to = u.id WHERE t.id = ?`
@@ -113,7 +113,7 @@ router.patch('/:id/status', (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Ticket not found' });
 
   const { status } = req.body;
-  const validStatuses = ['Ouvert', 'En attente client', 'En attente nous', 'Fermé'];
+  const validStatuses = ['Waiting on us', 'Waiting on them', 'Closed'];
   if (!validStatuses.includes(status)) {
     return res.status(400).json({ error: 'Invalid status' });
   }

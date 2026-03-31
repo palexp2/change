@@ -84,3 +84,18 @@ export function broadcast(tenantId, message) {
     } catch {}
   }
 }
+
+/**
+ * Broadcast a message to all connected clients across all tenants.
+ * Fire-and-forget — never throws.
+ */
+export function broadcastAll(message) {
+  const json = JSON.stringify(message)
+  for (const sockets of clients.values()) {
+    for (const ws of sockets) {
+      try {
+        if (ws.readyState === 1) ws.send(json)
+      } catch {}
+    }
+  }
+}

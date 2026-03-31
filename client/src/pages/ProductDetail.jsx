@@ -1,9 +1,12 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.jsx'
+import { useDetailLayout } from '../hooks/useDetailLayout.js'
+import { DetailFieldConfig, DetailConfigButton } from '../components/DetailFieldConfig.jsx'
+import { useAuth } from '../lib/auth.jsx'
 
 function fmtDate(d) {
   if (!d) return '—'
@@ -11,6 +14,27 @@ function fmtDate(d) {
 }
 
 const PROCUREMENT_TYPES = ['Acheté', 'Fabriqué', 'Drop ship']
+
+const PRODUCT_FIELDS = [
+  { key: 'sku',                label: 'SKU',                type: 'text' },
+  { key: 'type',               label: 'Type',               type: 'text' },
+  { key: 'name_fr',            label: 'Nom (FR)',           type: 'text', span2: true },
+  { key: 'name_en',            label: 'Nom (EN)',           type: 'text', span2: true },
+  { key: 'unit_cost',          label: 'Coût unitaire (CAD)',type: 'number', step: '0.01' },
+  { key: 'price_cad',          label: 'Prix CAD',           type: 'number', step: '0.01' },
+  { key: 'price_usd',          label: 'Prix USD',           type: 'number', step: '0.01', defaultVisible: false },
+  { key: 'monthly_price_cad',  label: 'Prix mensuel CAD',   type: 'number', step: '0.01', defaultVisible: false },
+  { key: 'monthly_price_usd',  label: 'Prix mensuel USD',   type: 'number', step: '0.01', defaultVisible: false },
+  { key: 'stock_qty',          label: 'Stock actuel',       type: 'readonly' },
+  { key: 'min_stock',          label: 'Stock minimum',      type: 'number' },
+  { key: 'order_qty',          label: 'Qté à commander',    type: 'number', defaultVisible: false },
+  { key: 'supplier',           label: 'Fournisseur',        type: 'text' },
+  { key: 'procurement_type',   label: 'Approvisionnement',  type: 'select', options: PROCUREMENT_TYPES },
+  { key: 'weight_lbs',         label: 'Poids (lbs)',        type: 'number', step: '0.01', defaultVisible: false },
+  { key: 'notes',              label: 'Notes',              type: 'textarea', span2: true, defaultVisible: false },
+  { key: 'is_sellable',        label: 'Vendable',           type: 'checkbox' },
+  { key: 'active',             label: 'Produit actif',      type: 'checkbox' },
+]
 const movTypeColor = { in: 'green', out: 'red', adjustment: 'blue' }
 const movTypeLabel = { in: 'Entrée', out: 'Sortie', adjustment: 'Ajustement' }
 
@@ -26,12 +50,14 @@ function Field({ label, children, span2 = false }) {
 export default function ProductDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [product, setProduct] = useState(null)
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('info')
   const [form, setForm] = useState({})
   const [bom, setBom] = useState([])
   const saveTimer = useRef(null)
+  const layout = useDetailLayout('products', PRODUCT_FIELDS)
 
   async function load() {
     setLoading(true)
@@ -109,6 +135,9 @@ export default function ProductDetail() {
               <span>Stock: <strong>{product.stock_qty}</strong> / min: {form.min_stock || 0}</span>
             </div>
           </div>
+          {user?.role === 'admin' && (
+            <DetailConfigButton onClick={() => layout.setConfiguring(true)} />
+          )}
         </div>
 
         {/* Tabs */}
@@ -133,76 +162,55 @@ export default function ProductDetail() {
         {tab === 'info' && (
           <div className="card p-6">
             <div className="grid grid-cols-2 gap-4">
-
-              <Field label="SKU">
-                <input className={inp} value={form.sku} onChange={e => change('sku', e.target.value)} />
-              </Field>
-              <Field label="Type">
-                <input className={inp} value={form.type} onChange={e => change('type', e.target.value)} />
-              </Field>
-
-              <Field label="Nom (FR)" span2>
-                <input className={inp} value={form.name_fr} onChange={e => change('name_fr', e.target.value)} />
-              </Field>
-              <Field label="Nom (EN)" span2>
-                <input className={inp} value={form.name_en} onChange={e => change('name_en', e.target.value)} />
-              </Field>
-
-              <Field label="Coût unitaire (CAD)">
-                <input type="number" min="0" step="0.01" className={inp} value={form.unit_cost} onChange={e => change('unit_cost', parseFloat(e.target.value) || 0)} />
-              </Field>
-              <Field label="Prix CAD">
-                <input type="number" min="0" step="0.01" className={inp} value={form.price_cad} onChange={e => change('price_cad', parseFloat(e.target.value) || 0)} />
-              </Field>
-              <Field label="Prix USD">
-                <input type="number" min="0" step="0.01" className={inp} value={form.price_usd} onChange={e => change('price_usd', parseFloat(e.target.value) || 0)} />
-              </Field>
-              <Field label="Prix mensuel CAD">
-                <input type="number" min="0" step="0.01" className={inp} value={form.monthly_price_cad} onChange={e => change('monthly_price_cad', parseFloat(e.target.value) || 0)} />
-              </Field>
-              <Field label="Prix mensuel USD">
-                <input type="number" min="0" step="0.01" className={inp} value={form.monthly_price_usd} onChange={e => change('monthly_price_usd', parseFloat(e.target.value) || 0)} />
-              </Field>
-
-              <Field label="Stock actuel">
-                <div className={`${inp} bg-slate-50 cursor-default`}>{product.stock_qty ?? 0}</div>
-              </Field>
-              <Field label="Stock minimum">
-                <input type="number" min="0" className={inp} value={form.min_stock} onChange={e => change('min_stock', parseInt(e.target.value) || 0)} />
-              </Field>
-              <Field label="Qté à commander">
-                <input type="number" min="0" className={inp} value={form.order_qty} onChange={e => change('order_qty', parseInt(e.target.value) || 0)} />
-              </Field>
-
-              <Field label="Fournisseur">
-                <input className={inp} value={form.supplier} onChange={e => change('supplier', e.target.value)} />
-              </Field>
-              <Field label="Approvisionnement">
-                <select className={inp} value={form.procurement_type} onChange={e => change('procurement_type', e.target.value)}>
-                  <option value="">—</option>
-                  {PROCUREMENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                </select>
-              </Field>
-
-              <Field label="Poids (lbs)">
-                <input type="number" min="0" step="0.01" className={inp} value={form.weight_lbs} onChange={e => change('weight_lbs', parseFloat(e.target.value) || 0)} />
-              </Field>
-
-              <Field label="Notes" span2>
-                <textarea className={inp} rows={3} value={form.notes} onChange={e => change('notes', e.target.value)} />
-              </Field>
-
-              <div className="col-span-2 flex gap-6 pt-1">
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input type="checkbox" className="rounded" checked={form.is_sellable} onChange={e => change('is_sellable', e.target.checked)} />
-                  <span className="text-sm text-slate-700">Vendable (soumissions / factures)</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer select-none">
-                  <input type="checkbox" className="rounded" checked={form.active} onChange={e => change('active', e.target.checked)} />
-                  <span className="text-sm text-slate-700">Produit actif</span>
-                </label>
-              </div>
-
+              {layout.visibleFields.map(field => {
+                if (field.type === 'readonly') {
+                  return (
+                    <Field key={field.key} label={field.label} span2={field.span2}>
+                      <div className={`${inp} bg-slate-50 cursor-default`}>{product[field.key] ?? 0}</div>
+                    </Field>
+                  )
+                }
+                if (field.type === 'checkbox') {
+                  return (
+                    <div key={field.key} className="flex items-center">
+                      <label className="flex items-center gap-2 cursor-pointer select-none">
+                        <input type="checkbox" className="rounded" checked={!!form[field.key]} onChange={e => change(field.key, e.target.checked)} />
+                        <span className="text-sm text-slate-700">{field.label}</span>
+                      </label>
+                    </div>
+                  )
+                }
+                if (field.type === 'select') {
+                  return (
+                    <Field key={field.key} label={field.label} span2={field.span2}>
+                      <select className={inp} value={form[field.key] || ''} onChange={e => change(field.key, e.target.value)}>
+                        <option value="">—</option>
+                        {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
+                      </select>
+                    </Field>
+                  )
+                }
+                if (field.type === 'textarea') {
+                  return (
+                    <Field key={field.key} label={field.label} span2={field.span2}>
+                      <textarea className={inp} rows={3} value={form[field.key] || ''} onChange={e => change(field.key, e.target.value)} />
+                    </Field>
+                  )
+                }
+                if (field.type === 'number') {
+                  return (
+                    <Field key={field.key} label={field.label} span2={field.span2}>
+                      <input type="number" min="0" step={field.step || '1'} className={inp}
+                        value={form[field.key] ?? ''} onChange={e => change(field.key, parseFloat(e.target.value) || 0)} />
+                    </Field>
+                  )
+                }
+                return (
+                  <Field key={field.key} label={field.label} span2={field.span2}>
+                    <input className={inp} value={form[field.key] || ''} onChange={e => change(field.key, e.target.value)} />
+                  </Field>
+                )
+              })}
             </div>
           </div>
         )}
@@ -271,6 +279,16 @@ export default function ProductDetail() {
         )}
 
       </div>
+
+      {layout.isConfiguring && (
+        <DetailFieldConfig
+          configFields={layout.configFields}
+          onToggle={layout.toggleField}
+          onMove={layout.moveField}
+          onSave={layout.saveLayout}
+          onCancel={() => layout.setConfiguring(false)}
+        />
+      )}
     </Layout>
   )
 }

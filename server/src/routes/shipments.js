@@ -59,6 +59,21 @@ router.get('/', (req, res) => {
   res.json({ data: rows, total, page: parseInt(page), limit: parseInt(limit) })
 })
 
+// GET /api/shipments/stats/weekly — colis envoyés par semaine (16 dernières semaines)
+router.get('/stats/weekly', (req, res) => {
+  const tid = req.user.tenant_id
+  const rows = db.prepare(`
+    SELECT
+      date(created_at, '-' || ((cast(strftime('%w', created_at) as integer) + 6) % 7) || ' days') as week_start,
+      COUNT(*) as count
+    FROM shipments
+    WHERE tenant_id = ? AND created_at >= date('now', '-112 days')
+    GROUP BY week_start
+    ORDER BY week_start ASC
+  `).all(tid)
+  res.json(rows)
+})
+
 // GET /api/shipments/:id
 router.get('/:id', (req, res) => {
   const row = db.prepare(`
@@ -85,7 +100,7 @@ router.get('/:id', (req, res) => {
 
 // POST /api/shipments
 router.post('/', (req, res) => {
-  const { order_id, tracking_number, carrier, status, shipped_at, notes, address_id } = req.body
+  const { order_id, tracking_number, carrier, status, shipped_at, notes, address_id, pays } = req.body
   if (!order_id) return res.status(400).json({ error: 'order_id est requis' })
 
   const tid = req.user.tenant_id
@@ -94,10 +109,10 @@ router.post('/', (req, res) => {
 
   const id = uuidv4()
   db.prepare(`
-    INSERT INTO shipments (id, tenant_id, order_id, tracking_number, carrier, status, shipped_at, notes, address_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO shipments (id, tenant_id, order_id, tracking_number, carrier, status, shipped_at, notes, address_id, pays)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, tid, order_id, tracking_number || null, carrier || null,
-    status || 'À envoyer', shipped_at || null, notes || null, address_id || null)
+    status || 'À envoyer', shipped_at || null, notes || null, address_id || null, pays || null)
 
   const created = db.prepare(`
     SELECT s.*, o.order_number, o.company_id, c.name as company_name, ${ADDRESS_COLS}
@@ -113,7 +128,7 @@ router.post('/', (req, res) => {
 
 // PATCH /api/shipments/:id
 router.patch('/:id', (req, res) => {
-  const { tracking_number, carrier, status, shipped_at, notes, address_id } = req.body
+  const { tracking_number, carrier, status, shipped_at, notes, address_id, pays } = req.body
   const tid = req.user.tenant_id
 
   const existing = db.prepare('SELECT id FROM shipments WHERE id = ? AND tenant_id = ?').get(req.params.id, tid)
@@ -126,7 +141,8 @@ router.patch('/:id', (req, res) => {
       status = COALESCE(?, status),
       shipped_at = COALESCE(?, shipped_at),
       notes = COALESCE(?, notes),
-      address_id = CASE WHEN ? THEN ? ELSE address_id END
+      address_id = CASE WHEN ? THEN ? ELSE address_id END,
+      pays = COALESCE(?, pays)
     WHERE id = ? AND tenant_id = ?
   `).run(
     tracking_number !== undefined ? tracking_number : null,
@@ -135,6 +151,7 @@ router.patch('/:id', (req, res) => {
     shipped_at !== undefined ? shipped_at : null,
     notes !== undefined ? notes : null,
     address_id !== undefined ? 1 : 0, address_id !== undefined ? address_id : null,
+    pays !== undefined ? pays : null,
     req.params.id, tid
   )
 

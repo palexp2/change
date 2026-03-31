@@ -27,20 +27,24 @@ import catalogRouter from './routes/catalog.js'
 import documentsRouter from './routes/documents.js'
 import searchRouter from './routes/search.js'
 import shipmentsRouter from './routes/shipments.js'
-import baseRouter from './routes/base.js'
+// import baseRouter from './routes/base.js' // Dynamic tables — disabled
 import webhooksRouter from './routes/webhooks.js'
 import notificationsRouter from './routes/notifications.js'
 import automationsRouter from './routes/automations.js'
-import interfacesRouter from './routes/interfaces.js'
-import baseInteractionsRouter from './routes/base_interactions.js'
+import tasksRouter from './routes/tasks.js'
 import agentRouter from './routes/agent.js'
+import depensesRouter from './routes/depenses.js'
+import facturesFournisseursRouter from './routes/factures-fournisseurs.js'
+import saleReceiptsRouter from './routes/sale-receipts.js'
 import { createRealtimeServer } from './services/realtime.js'
+import { initTaskRunner, shutdownTaskRunner } from './services/taskRunner.js'
 import { initScheduler } from './services/automationScheduler.js'
-import { initConnectorSync } from './services/connectorSync.js'
 import { syncAllMailboxes } from './services/gmail.js'
 import { syncDrive } from './services/drive.js'
-import { syncAirtable, syncInventaire, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAbonnements, syncAssemblages, syncFactures } from './services/airtable.js'
+import { syncAirtable, syncInventaire, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncFactures } from './services/airtable.js'
 import { tracked } from './services/syncState.js'
+import { syncStripeSubscriptions, isStripeConfigured } from './services/stripe.js'
+import { initAirtableWebhooks } from './services/airtableWebhooks.js'
 import db from './db/database.js'
 
 dotenv.config()
@@ -61,6 +65,8 @@ app.use((req, res, next) => {
 
 // Serve call recordings
 app.use('/api/recordings', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls')))
+// Serve bons de livraison
+app.use('/api/bons-livraison', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'bons-livraison')))
 // Serve product images
 app.use('/api/product-images', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'products')))
 // Serve record attachments
@@ -94,13 +100,16 @@ app.use('/api/catalog', catalogRouter)
 app.use('/api/documents', documentsRouter)
 app.use('/api/search', searchRouter)
 app.use('/api/shipments', shipmentsRouter)
-app.use('/api/base', baseRouter)
+// app.use('/api/base', baseRouter) // Dynamic tables — disabled
 app.use('/api/webhooks', webhooksRouter)
 app.use('/api/notifications', notificationsRouter)
 app.use('/api/automations', automationsRouter)
-app.use('/api/interfaces', interfacesRouter)
-app.use('/api/base/interactions', baseInteractionsRouter)
+app.use('/api/tasks', tasksRouter)
 app.use('/api/agent', agentRouter)
+app.use('/api/depenses', depensesRouter)
+app.use('/api/factures-fournisseurs', facturesFournisseursRouter)
+app.use('/api/sale-receipts', saleReceiptsRouter)
+app.use('/api/receipt-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')))
 app.use('/api/interaction-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'interactions')))
 
 // Serve client build
@@ -123,16 +132,22 @@ app.use((err, req, res, next) => {
 const server = app.listen(PORT, () => {
   console.log(`ERP Server running on http://localhost:${PORT}`)
   createRealtimeServer(server)
+  initTaskRunner()
   initScheduler()
-  initConnectorSync(db)
 
-  // Cron-style sync — run every hour
-  function scheduleSyncs() {
+  // Gmail sync — toutes les heures
+  function scheduleGmailSync() {
     const tenants = db.prepare('SELECT id FROM tenants').all().map(t => t.id)
     for (const tenantId of tenants) {
       tracked(tenantId, 'gmail', () => syncAllMailboxes(tenantId)).catch(e => console.error('Gmail sync error:', e.message))
-      // Drive sync désactivé — intégration appels migrée vers FTP (Cube ARC)
-      // tracked(tenantId, 'drive', () => syncDrive(tenantId)).catch(e => console.error('Drive sync error:', e.message))
+      try { rematchCalls(tenantId) } catch(e) { console.error('Rematch error:', e.message) }
+    }
+  }
+
+  // Airtable fallback sync — une fois par jour (au cas où des webhooks auraient manqué des événements)
+  function scheduleAirtableFallback() {
+    const tenants = db.prepare('SELECT id FROM tenants').all().map(t => t.id)
+    for (const tenantId of tenants) {
       tracked(tenantId, 'airtable', () => syncAirtable(tenantId)).catch(e => console.error('Airtable sync error:', e.message))
       tracked(tenantId, 'inventaire', () => syncInventaire(tenantId)).catch(e => console.error('Inventaire sync error:', e.message))
       tracked(tenantId, 'pieces', () => syncPieces(tenantId)).catch(e => console.error('Pièces sync error:', e.message))
@@ -147,16 +162,27 @@ const server = app.listen(PORT, () => {
       tracked(tenantId, 'adresses', () => syncAdresses(tenantId)).catch(e => console.error('Adresses sync error:', e.message))
       tracked(tenantId, 'bom', () => syncBomItems(tenantId)).catch(e => console.error('BOM sync error:', e.message))
       tracked(tenantId, 'serial_changes', () => syncSerialStateChanges(tenantId)).catch(e => console.error('Serial changes sync error:', e.message))
-      tracked(tenantId, 'abonnements', () => syncAbonnements(tenantId)).catch(e => console.error('Abonnements sync error:', e.message))
+      if (isStripeConfigured(tenantId)) {
+        tracked(tenantId, 'stripe', () => syncStripeSubscriptions(tenantId)).catch(e => console.error('Stripe sync error:', e.message))
+      }
       tracked(tenantId, 'assemblages', () => syncAssemblages(tenantId)).catch(e => console.error('Assemblages sync error:', e.message))
       tracked(tenantId, 'factures', () => syncFactures(tenantId)).catch(e => console.error('Factures sync error:', e.message))
-      try { rematchCalls(tenantId) } catch(e) { console.error('Rematch error:', e.message) }
     }
   }
 
-  // Initial sync after 30s, then every hour
-  setTimeout(scheduleSyncs, 30_000)
-  setInterval(scheduleSyncs, 60 * 60 * 1000)
+  // Gmail : démarrage après 30s, puis toutes les heures
+  setTimeout(scheduleGmailSync, 30_000)
+  setInterval(scheduleGmailSync, 60 * 60 * 1000)
+
+  // Airtable webhooks : enregistrement au démarrage
+  setTimeout(() => initAirtableWebhooks().catch(e => console.error('Webhook init error:', e.message)), 5_000)
+
+  // Airtable fallback : sync complet une fois par jour
+  setInterval(scheduleAirtableFallback, 24 * 60 * 60 * 1000)
 })
+
+// Kill Claude process on shutdown so pm2 restart doesn't leave orphans
+process.on('SIGINT',  () => { shutdownTaskRunner(); process.exit(0) })
+process.on('SIGTERM', () => { shutdownTaskRunner(); process.exit(0) })
 
 export default app

@@ -274,4 +274,25 @@ router.post('/migrate-legacy', (req, res) => {
   }
 })
 
+// ── Navigation config ─────────────────────────────────────────────────────────
+
+router.get('/nav-config', (req, res) => {
+  const row = db.prepare('SELECT nav_items FROM nav_config WHERE tenant_id=?').get(req.user.tenant_id)
+  res.json({ nav_items: row ? JSON.parse(row.nav_items) : null })
+})
+
+router.put('/nav-config', (req, res) => {
+  const { nav_items } = req.body
+  if (!Array.isArray(nav_items)) return res.status(400).json({ error: 'nav_items array required' })
+  const existing = db.prepare('SELECT id FROM nav_config WHERE tenant_id=?').get(req.user.tenant_id)
+  if (existing) {
+    db.prepare("UPDATE nav_config SET nav_items=?, updated_at=datetime('now') WHERE id=?")
+      .run(JSON.stringify(nav_items), existing.id)
+  } else {
+    db.prepare('INSERT INTO nav_config (id, tenant_id, nav_items) VALUES (?,?,?)')
+      .run(uuidv4(), req.user.tenant_id, JSON.stringify(nav_items))
+  }
+  res.json({ ok: true })
+})
+
 export default router;

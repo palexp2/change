@@ -174,53 +174,6 @@ router.post('/records/:id/duplicate', (req, res) => {
   }
 })
 
-router.get('/records/:id/interactions', (req, res) => {
-  const { type, limit = 20, page = 1 } = req.query
-  const recordId = req.params.id
-  const tenantId = req.user.tenant_id
-
-  let query = `
-    SELECT i.*, u.name as user_name
-    FROM base_interactions i
-    JOIN base_interaction_links il ON il.interaction_id = i.id
-    LEFT JOIN users u ON i.user_id = u.id
-    WHERE il.record_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL
-  `
-  const params = [recordId, tenantId]
-  if (type) { query += ' AND i.type = ?'; params.push(type) }
-
-  const countQuery = query.replace('SELECT i.*, u.name as user_name', 'SELECT COUNT(DISTINCT i.id) as total')
-  const total = db.prepare(countQuery).get(...params).total
-
-  query += ' GROUP BY i.id ORDER BY COALESCE(i.completed_at, i.created_at) DESC LIMIT ? OFFSET ?'
-  params.push(Number(limit), (Number(page) - 1) * Number(limit))
-
-  const interactions = db.prepare(query).all(...params)
-  for (const itr of interactions) {
-    itr.links = db.prepare(`
-      SELECT il.*, bt.name as table_name, bt.icon as table_icon, bt.slug as table_slug,
-             json_extract(br.data, '$.' || (SELECT key FROM base_fields WHERE table_id = bt.id AND is_primary = 1 LIMIT 1)) as primary_value
-      FROM base_interaction_links il
-      LEFT JOIN base_tables bt ON il.table_id = bt.id
-      LEFT JOIN base_records br ON il.record_id = br.id
-      WHERE il.interaction_id = ?
-    `).all(itr.id)
-    itr.attachments = db.prepare(
-      'SELECT * FROM base_interaction_attachments WHERE interaction_id = ?'
-    ).all(itr.id)
-  }
-
-  const typeCounts = db.prepare(`
-    SELECT i.type, COUNT(DISTINCT i.id) as count
-    FROM base_interactions i
-    JOIN base_interaction_links il ON il.interaction_id = i.id
-    WHERE il.record_id = ? AND i.tenant_id = ? AND i.deleted_at IS NULL
-    GROUP BY i.type
-  `).all(recordId, tenantId)
-
-  res.json({ data: interactions, total, type_counts: typeCounts, page: Number(page), limit: Number(limit) })
-})
-
 router.patch('/tables/:id/records/reorder', (req, res) => {
   if (!Array.isArray(req.body)) return res.status(400).json({ error: 'Tableau attendu' })
   handle(res, () => svc.reorderRecords(req.user.tenant_id, req.params.id, req.body))

@@ -3,7 +3,6 @@ import { X, Copy, Trash2, Link } from 'lucide-react'
 import { baseAPI } from '../../hooks/useBaseAPI.js'
 import { CellRenderer } from './CellRenderer.jsx'
 import { useUndoRedo } from '../../hooks/useUndoRedo.jsx'
-import InteractionsTab from '../interactions/InteractionsTab.jsx'
 
 const READ_ONLY_TYPES = ['formula', 'lookup', 'rollup', 'created_at', 'updated_at', 'autonumber']
 
@@ -325,23 +324,11 @@ export function RecordSidePanel({
         >
           Historique
         </button>
-        <button
-          onClick={() => setActiveTab('interactions')}
-          className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-            activeTab === 'interactions'
-              ? 'border-indigo-500 text-indigo-600'
-              : 'border-transparent text-slate-500 hover:text-slate-700'
-          }`}
-        >
-          Interactions
-        </button>
       </div>
 
       {/* Body */}
       <div className="flex-1 overflow-hidden flex flex-col">
-        {activeTab === 'interactions' ? (
-          <InteractionsTab recordId={recordId} tableId={tableId} />
-        ) : activeTab === 'details' ? (
+        {activeTab === 'details' ? (
           <div className="p-5 space-y-3">
             {/* Primary field first */}
             {primaryField && (

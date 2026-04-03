@@ -14,7 +14,7 @@ router.get('/', (req, res) => {
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
 
-  let where = 'WHERE tenant_id = ?';
+  let where = 'WHERE tenant_id = ? AND deleted_at IS NULL';
   const params = [tid];
 
   if (search) {
@@ -82,13 +82,13 @@ router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM products WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
   if (!existing) return res.status(404).json({ error: 'Product not found' });
 
-  const { sku, name_fr, name_en, type, unit_cost, price_cad, price_usd, monthly_price_cad, monthly_price_usd, is_sellable, min_stock, order_qty, supplier, procurement_type, weight_lbs, notes, active } = req.body;
+  const { sku, name_fr, name_en, type, unit_cost, price_cad, price_usd, monthly_price_cad, monthly_price_usd, is_sellable, min_stock, order_qty, location, supplier, procurement_type, weight_lbs, notes, active } = req.body;
   db.prepare(
-    `UPDATE products SET sku=?, name_fr=?, name_en=?, type=?, unit_cost=?, price_cad=?, price_usd=?, monthly_price_cad=?, monthly_price_usd=?, is_sellable=?, min_stock=?, order_qty=?, supplier=?, procurement_type=?, weight_lbs=?, notes=?, active=?, updated_at=datetime('now')
+    `UPDATE products SET sku=?, name_fr=?, name_en=?, type=?, unit_cost=?, price_cad=?, price_usd=?, monthly_price_cad=?, monthly_price_usd=?, is_sellable=?, min_stock=?, order_qty=?, location=?, supplier=?, procurement_type=?, weight_lbs=?, notes=?, active=?, updated_at=datetime('now')
      WHERE id = ? AND tenant_id = ?`
   ).run(sku || null, name_fr, name_en || null, type || null, unit_cost || 0, price_cad || 0,
     price_usd || 0, monthly_price_cad || 0, monthly_price_usd || 0, is_sellable ? 1 : 0,
-    min_stock || 0, order_qty || 0, supplier || null, procurement_type || null, weight_lbs || 0, notes || null,
+    min_stock || 0, order_qty || 0, location || null, supplier || null, procurement_type || null, weight_lbs || 0, notes || null,
     active !== undefined ? (active ? 1 : 0) : 1, req.params.id, req.user.tenant_id);
 
   res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id));
@@ -136,8 +136,8 @@ router.post('/:id/stock', (req, res) => {
 router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM products WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
   if (!existing) return res.status(404).json({ error: 'Product not found' });
-  db.prepare('UPDATE products SET active=0, updated_at=datetime(\'now\') WHERE id = ? AND tenant_id = ?').run(req.params.id, req.user.tenant_id);
-  res.json({ message: 'Product deactivated' });
+  db.prepare("UPDATE products SET active=0, deleted_at=datetime('now'), updated_at=datetime('now') WHERE id = ? AND tenant_id = ?").run(req.params.id, req.user.tenant_id);
+  res.json({ message: 'Deleted' });
 });
 
 export default router;

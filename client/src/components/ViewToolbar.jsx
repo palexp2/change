@@ -36,11 +36,28 @@ function PanelTitle({ children }) {
 }
 
 function FieldsPanel({ columns, visibleCols, onChange }) {
+  const [search, setSearch] = useState('')
+  const filtered = search
+    ? columns.filter(c => c.label.toLowerCase().includes(search.toLowerCase()))
+    : columns
+
   return (
     <Panel className="w-64">
       <PanelTitle>Colonnes visibles</PanelTitle>
-      <div className="space-y-0.5 max-h-72 overflow-y-auto">
-        {columns.map(col => (
+      <div className="relative mb-2">
+        <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-indigo-400"
+          placeholder="Rechercher..."
+          autoFocus
+        />
+      </div>
+      <div className="space-y-0.5 max-h-64 overflow-y-auto">
+        {filtered.length === 0
+          ? <p className="text-xs text-slate-400 text-center py-2">Aucun résultat</p>
+          : filtered.map(col => (
           <label key={col.id} className="flex items-center gap-2.5 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
             <input
               type="checkbox"
@@ -62,34 +79,62 @@ function FieldsPanel({ columns, visibleCols, onChange }) {
 function FilterPanel({ columns, filters, onChange }) {
   const filterableCols = columns.filter(c => c.filterable !== false && c.field)
 
+  // Normalize to {conjunction, rules} format
+  const normalized = Array.isArray(filters)
+    ? { conjunction: 'AND', rules: filters }
+    : (filters?.rules ? filters : { conjunction: 'AND', rules: [] })
+  const { conjunction, rules } = normalized
+
   function add() {
     const first = filterableCols[0]
     const type = first?.type || 'text'
-    onChange(f => [...f, { field: first?.field ?? '', op: defaultOpForType(type), value: '' }])
+    onChange({ ...normalized, rules: [...rules, { field: first?.field ?? '', op: defaultOpForType(type), value: '' }] })
   }
   function update(i, newFilter) {
-    onChange(f => f.map((item, idx) => idx === i ? newFilter : item))
+    onChange({ ...normalized, rules: rules.map((item, idx) => idx === i ? newFilter : item) })
   }
   function remove(i) {
-    onChange(f => f.filter((_, idx) => idx !== i))
+    onChange({ ...normalized, rules: rules.filter((_, idx) => idx !== i) })
   }
 
   return (
     <Panel className="w-[540px]">
-      <PanelTitle>Filtres</PanelTitle>
-      <div className="space-y-2 max-h-64 overflow-y-auto">
-        {filters.length === 0 && (
+      <div className="flex items-center justify-between mb-3">
+        <PanelTitle className="mb-0">Filtres</PanelTitle>
+        {rules.length > 1 && (
+          <div className="flex items-center gap-0.5 bg-slate-100 rounded p-0.5">
+            <button onClick={() => onChange({ ...normalized, conjunction: 'AND' })}
+              className={`text-xs px-2.5 py-1 rounded transition-colors font-medium ${conjunction === 'AND' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+              ET
+            </button>
+            <button onClick={() => onChange({ ...normalized, conjunction: 'OR' })}
+              className={`text-xs px-2.5 py-1 rounded transition-colors font-medium ${conjunction === 'OR' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+              OU
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="space-y-1 max-h-64 overflow-y-auto">
+        {rules.length === 0 && (
           <p className="text-sm text-slate-400 py-1">Aucun filtre actif</p>
         )}
-        {filters.map((f, i) => (
-          <FilterRow
-            key={i}
-            columns={columns}
-            filter={f}
-            onChange={updated => update(i, updated)}
-            onRemove={() => remove(i)}
-            size="xs"
-          />
+        {rules.map((f, i) => (
+          <div key={i}>
+            {i > 0 && (
+              <div className="flex items-center gap-2 my-1.5">
+                <div className="flex-1 h-px bg-slate-100" />
+                <span className="text-[10px] font-bold text-slate-400 tracking-wide">{conjunction === 'OR' ? 'OU' : 'ET'}</span>
+                <div className="flex-1 h-px bg-slate-100" />
+              </div>
+            )}
+            <FilterRow
+              columns={columns}
+              filter={f}
+              onChange={updated => update(i, updated)}
+              onRemove={() => remove(i)}
+              size="xs"
+            />
+          </div>
         ))}
       </div>
       <button onClick={add} className="mt-3 flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-medium">
@@ -163,6 +208,7 @@ export function ViewToolbar({
   search, setSearch,
   searchFields = [],
   views = [],
+  allViewSortOrder = -1,
   onReorderViews,
   activeViewId,
   setActiveViewId,
@@ -177,6 +223,13 @@ export function ViewToolbar({
   const isAdmin = user?.role === 'admin'
   const [draggingId, setDraggingId] = useState(null)
   const [dragOverId, setDragOverId] = useState(null)
+
+  // Merged list: real views + virtual "Tous" entry, sorted by their sort_order
+  const ALL_ID = '__all__'
+  const mergedViews = [
+    ...views.map((v, i) => ({ ...v, __sortOrder: v.sort_order ?? i })),
+    { id: ALL_ID, label: tableLabel, __sortOrder: allViewSortOrder },
+  ].sort((a, b) => a.__sortOrder - b.__sortOrder)
   const [saving, setSaving] = useState(false)
 
   async function handleSaveView() {
@@ -200,7 +253,7 @@ export function ViewToolbar({
   useEffect(() => {
     if (!openPanel) return
     function handler(e) {
-      if (toolbarRef.current && !toolbarRef.current.contains(e.target)) setOpenPanel(null)
+      if (toolbarRef.current && !toolbarRef.current.contains(e.target) && !document.getElementById('field-select-portal')?.contains(e.target)) setOpenPanel(null)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -216,45 +269,49 @@ export function ViewToolbar({
   return (
     <div className="border-b border-slate-200">
 
-      {/* View tabs */}
-      {views.length > 0 && (
+      {/* View tabs — "Tous" est draggable comme les autres */}
+      {mergedViews.length > 1 && (
         <div className="flex items-end gap-0 px-2 overflow-x-auto border-b border-slate-200">
-          {views.map(v => (
-            <button
-              key={v.id}
-              className={`${tabCls(v.id)} ${draggingId === v.id ? 'opacity-40' : ''} ${dragOverId === v.id && dragOverId !== draggingId ? 'border-b-2 border-indigo-300' : ''}`}
-              onClick={() => setActiveViewId(v.id)}
-              draggable={isAdmin && !!onReorderViews}
-              onDragStart={isAdmin && onReorderViews ? (e) => {
-                setDraggingId(v.id)
-                e.dataTransfer.effectAllowed = 'move'
-              } : undefined}
-              onDragOver={isAdmin && onReorderViews ? (e) => {
-                e.preventDefault()
-                e.dataTransfer.dropEffect = 'move'
-                setDragOverId(v.id)
-              } : undefined}
-              onDrop={isAdmin && onReorderViews ? (e) => {
-                e.preventDefault()
-                if (!draggingId || draggingId === v.id) return
-                const from = views.findIndex(x => x.id === draggingId)
-                const to = views.findIndex(x => x.id === v.id)
-                const reordered = [...views]
-                const [item] = reordered.splice(from, 1)
-                reordered.splice(to, 0, item)
-                onReorderViews(reordered)
-                setDraggingId(null)
-                setDragOverId(null)
-              } : undefined}
-              onDragEnd={() => { setDraggingId(null); setDragOverId(null) }}
-              style={isAdmin && onReorderViews ? { cursor: 'grab' } : undefined}
-            >
-              {v.label}
-            </button>
-          ))}
-          <button className={tabCls(null)} onClick={() => setActiveViewId(null)}>
-            {tableLabel}
-          </button>
+          {mergedViews.map(v => {
+            const realId = v.id === ALL_ID ? null : v.id
+            const isAll = v.id === ALL_ID
+            return (
+              <button
+                key={v.id}
+                className={`${tabCls(realId)} ${draggingId === v.id ? 'opacity-40' : ''} ${dragOverId === v.id && dragOverId !== draggingId ? 'border-b-2 border-indigo-300' : ''}`}
+                onClick={() => setActiveViewId(realId)}
+                draggable={isAdmin && !!onReorderViews}
+                onDragStart={isAdmin && onReorderViews ? (e) => {
+                  setDraggingId(v.id)
+                  e.dataTransfer.effectAllowed = 'move'
+                } : undefined}
+                onDragOver={isAdmin && onReorderViews ? (e) => {
+                  e.preventDefault()
+                  e.dataTransfer.dropEffect = 'move'
+                  setDragOverId(v.id)
+                } : undefined}
+                onDrop={isAdmin && onReorderViews ? (e) => {
+                  e.preventDefault()
+                  if (!draggingId || draggingId === v.id) return
+                  const from = mergedViews.findIndex(x => x.id === draggingId)
+                  const to = mergedViews.findIndex(x => x.id === v.id)
+                  const reordered = [...mergedViews]
+                  const [item] = reordered.splice(from, 1)
+                  reordered.splice(to, 0, item)
+                  // Recalculate sort_order for each entry
+                  const newAllPos = reordered.findIndex(x => x.id === ALL_ID)
+                  const realReordered = reordered.filter(x => x.id !== ALL_ID)
+                  onReorderViews(realReordered, newAllPos)
+                  setDraggingId(null)
+                  setDragOverId(null)
+                } : undefined}
+                onDragEnd={() => { setDraggingId(null); setDragOverId(null) }}
+                style={isAdmin && onReorderViews ? { cursor: 'grab' } : undefined}
+              >
+                {v.label}
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -285,7 +342,7 @@ export function ViewToolbar({
           )}
 
           <ToolbarBtn icon={<Filter size={14} />} label="Filtrer" active={openPanel === 'filter'}
-            badge={filters.length}
+            badge={Array.isArray(filters) ? filters.length : (filters?.rules?.length || 0)}
             onClick={() => setOpenPanel(p => p === 'filter' ? null : 'filter')} />
 
           <ToolbarBtn icon={<ArrowUpDown size={14} />} label="Trier" active={openPanel === 'sort'}

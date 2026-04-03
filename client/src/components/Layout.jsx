@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { NavLink } from 'react-router-dom'
+import { useState, useEffect, useRef } from 'react'
+import { NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Settings,
   ChevronLeft, ChevronRight, LogOut, Menu, X,
@@ -7,24 +7,25 @@ import {
   TrendingUp, ShoppingCart, Package, LifeBuoy,
   ShoppingBag, Truck, RotateCcw, FileText, RefreshCw, Wrench,
   Barcode, MessageSquare, Plug, Zap, Bot, CheckSquare,
-  Receipt, CreditCard, ReceiptText
+  Receipt, CreditCard, ReceiptText, Sparkles, Landmark, Users
 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
 import { api } from '../lib/api.js'
 import { Modal } from './Modal.jsx'
 import { GlobalSearch as CRMSearch } from './GlobalSearch.jsx'
-import { NotificationBell } from './ui/NotificationBell.jsx'
 
 const defaultNavItems = [
   { to: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/pipeline',     icon: TrendingUp,      label: 'Projets' },
-  { to: '/orders',       icon: ShoppingCart,     label: 'Commandes' },
-  { to: '/factures',              icon: FileText,    label: 'Factures' },
-  { to: '/abonnements',           icon: RefreshCw,   label: 'Abonnements' },
-  { to: '/factures-fournisseurs', icon: Receipt,      label: 'Fact. fournisseurs' },
-  { to: '/depenses',              icon: CreditCard,  label: 'Dépenses' },
-  { to: '/sale-receipts',         icon: ReceiptText, label: 'Reçus de vente' },
+  { to: '/orders',       icon: ShoppingCart,    label: 'Commandes' },
+  { to: '/factures',     icon: FileText,        label: 'Factures' },
+  { to: '/abonnements',  icon: RefreshCw,       label: 'Abonnements' },
+  { group: 'Comptabilité', icon: Landmark, items: [
+    { to: '/factures-fournisseurs', icon: Receipt,    label: 'Fact. fournisseurs' },
+    { to: '/depenses',              icon: CreditCard, label: 'Dépenses' },
+    { to: '/sale-receipts',         icon: ReceiptText,label: 'Reçus de vente' },
+  ]},
   { to: '/purchases',    icon: ShoppingBag,     label: 'Achats' },
   { to: '/envois',       icon: Truck,           label: 'Envois' },
   { to: '/retours',      icon: RotateCcw,       label: 'Retours' },
@@ -33,14 +34,12 @@ const defaultNavItems = [
   { to: '/serials',      icon: Barcode,         label: 'Numéros de série' },
   { to: '/tasks',        icon: CheckSquare,     label: 'Tâches' },
   { to: '/tickets',      icon: LifeBuoy,        label: 'Billets' },
-  { to: '/interactions', icon: MessageSquare,    label: 'Interactions' },
+  { to: '/interactions', icon: MessageSquare,   label: 'Interactions' },
+  { to: '/opportunities', icon: Sparkles,       label: 'Opportunités IA' },
+  { to: '/employees',    icon: Users,           label: 'Employés' },
 ]
 
-const bottomNavItems = [
-  { to: '/connectors', icon: Plug, label: 'Connecteurs', adminOnly: false },
-  { to: '/automations', icon: Zap,  label: 'Automations' },
-  { to: '/agent',       icon: Bot,  label: 'Agent', adminOnly: true },
-]
+const bottomNavItems = []
 
 function NavItem({ to, icon: Icon, label, collapsed, badge }) {
   return (
@@ -67,6 +66,76 @@ function NavItem({ to, icon: Icon, label, collapsed, badge }) {
         <span className="text-xs text-amber-400 font-medium">sync</span>
       )}
     </NavLink>
+  )
+}
+
+function NavGroup({ group, icon: Icon, items, collapsed }) {
+  const [open, setOpen] = useState(false)
+  const [flyoutPos, setFlyoutPos] = useState({ top: 0, left: 0 })
+  const triggerRef = useRef(null)
+  const closeTimer = useRef(null)
+  const location = useLocation()
+  const isActive = items.some(item => location.pathname === item.to || location.pathname.startsWith(item.to + '/'))
+
+  function openMenu() {
+    clearTimeout(closeTimer.current)
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect()
+      setFlyoutPos({ top: rect.top, left: rect.right + 6 })
+    }
+    setOpen(true)
+  }
+
+  function scheduleClose() {
+    closeTimer.current = setTimeout(() => setOpen(false), 80)
+  }
+
+  function cancelClose() {
+    clearTimeout(closeTimer.current)
+  }
+
+  useEffect(() => () => clearTimeout(closeTimer.current), [])
+
+  return (
+    <>
+      <div ref={triggerRef} onMouseEnter={openMenu} onMouseLeave={scheduleClose}>
+        <div
+          className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium select-none cursor-default transition-all
+            ${isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'}
+            ${collapsed ? 'justify-center' : ''}`}
+        >
+          <Icon size={16} className="flex-shrink-0" />
+          {!collapsed && <span className="flex-1">{group}</span>}
+          {!collapsed && (
+            <ChevronRight size={12} className={`flex-shrink-0 ${isActive ? 'text-indigo-200' : 'text-slate-500'}`} />
+          )}
+        </div>
+      </div>
+
+      {open && (
+        <div
+          className="fixed bg-slate-800 rounded-lg shadow-2xl border border-slate-700 py-1.5 min-w-52 z-[200]"
+          style={{ top: flyoutPos.top, left: flyoutPos.left }}
+          onMouseEnter={cancelClose}
+          onMouseLeave={scheduleClose}
+        >
+          <p className="px-3 pt-0.5 pb-1 text-xs font-semibold text-slate-400 uppercase tracking-wider">{group}</p>
+          {items.map(item => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              className={({ isActive }) =>
+                `flex items-center gap-2.5 px-3 py-2 mx-1 rounded-md text-sm font-medium transition-colors
+                ${isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700'}`
+              }
+            >
+              <item.icon size={15} className="flex-shrink-0" />
+              {item.label}
+            </NavLink>
+          ))}
+        </div>
+      )}
+    </>
   )
 }
 
@@ -119,21 +188,8 @@ export function Layout({ children }) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [showChangePw, setShowChangePw] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
-  const [navConfig, setNavConfig] = useState(null)
   const { user, logout } = useAuth()
   const { anyRunning } = useSyncStatus()
-
-  // Load nav config (custom labels + order)
-  useEffect(() => {
-    function loadNav() {
-      api.admin.getNavConfig()
-        .then(({ nav_items }) => setNavConfig(nav_items))
-        .catch(() => {})
-    }
-    loadNav()
-    window.addEventListener('nav:updated', loadNav)
-    return () => window.removeEventListener('nav:updated', loadNav)
-  }, [])
 
   // Cmd+K → recherche globale
   useEffect(() => {
@@ -162,9 +218,6 @@ export function Layout({ children }) {
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data)
-          if (msg.type === 'notification') {
-            window.dispatchEvent(new CustomEvent('new-notification', { detail: msg.notification }))
-          }
           if (msg.type === 'agent:task:updated') {
             window.dispatchEvent(new CustomEvent('agent:task:updated', { detail: msg.task }))
           }
@@ -226,28 +279,11 @@ export function Layout({ children }) {
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-1 px-2 space-y-0.5">
-        {(() => {
-          // Merge default items with custom config (labels + order + visibility)
-          if (navConfig) {
-            const itemMap = new Map(defaultNavItems.map(i => [i.to, i]))
-            const configuredTos = new Set(navConfig.map(nc => nc.to))
-            const configuredItems = navConfig
-              .filter(nc => nc.visible !== false)
-              .map(nc => {
-                const item = itemMap.get(nc.to)
-                if (!item) return null
-                return <NavItem key={nc.to} {...item} label={nc.label || item.label} collapsed={collapsed && !mobile} />
-              })
-              .filter(Boolean)
-            const newItems = defaultNavItems
-              .filter(i => !configuredTos.has(i.to))
-              .map(item => <NavItem key={item.to} {...item} collapsed={collapsed && !mobile} />)
-            return [...configuredItems, ...newItems]
-          }
-          return defaultNavItems.map(item => (
-            <NavItem key={item.to} {...item} collapsed={collapsed && !mobile} />
-          ))
-        })()}
+        {defaultNavItems.map(item =>
+          item.group
+            ? <NavGroup key={item.group} {...item} collapsed={collapsed && !mobile} />
+            : <NavItem key={item.to} {...item} collapsed={collapsed && !mobile} />
+        )}
       </nav>
 
       {/* Bottom items */}
@@ -275,14 +311,6 @@ export function Layout({ children }) {
           )}
           {(!collapsed || mobile) && (
             <div className="flex items-center gap-0.5 flex-shrink-0">
-              <NotificationBell />
-              <button
-                onClick={() => setShowChangePw(true)}
-                className="text-slate-400 hover:text-white p-1 rounded transition-colors"
-                title="Changer mon mot de passe"
-              >
-                <KeyRound size={13} />
-              </button>
               <button
                 onClick={logout}
                 className="text-slate-400 hover:text-white p-1 rounded transition-colors"

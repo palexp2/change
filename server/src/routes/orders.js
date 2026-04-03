@@ -20,7 +20,7 @@ router.get('/', (req, res) => {
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
   const tid = req.user.tenant_id;
 
-  let where = 'WHERE o.tenant_id = ?';
+  let where = 'WHERE o.tenant_id = ? AND o.deleted_at IS NULL';
   const params = [tid];
 
   if (search) {
@@ -72,7 +72,7 @@ router.get('/:id', (req, res) => {
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
   const items = db.prepare(
-    `SELECT oi.*, pr.name_fr as product_name, pr.name_en as product_name_en, pr.sku, pr.image_url as product_image
+    `SELECT oi.*, pr.name_fr as product_name, pr.name_en as product_name_en, pr.sku, pr.image_url as product_image, pr.stock_qty as product_stock, pr.location as product_location
      FROM order_items oi
      LEFT JOIN products pr ON oi.product_id = pr.id
      WHERE oi.order_id = ?
@@ -201,13 +201,23 @@ router.post('/:id/shipments', (req, res) => {
   const order = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
-  const { tracking_number, carrier, status, shipped_at, notes } = req.body;
+  const { tracking_number, carrier, status, shipped_at, notes, item_ids = [] } = req.body;
   const id = uuidv4();
-  db.prepare(
-    `INSERT INTO shipments (id, tenant_id, order_id, tracking_number, carrier, status, shipped_at, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, req.user.tenant_id, req.params.id, tracking_number || null, carrier || null,
-    status || 'À envoyer', shipped_at || null, notes || null);
+  const run = db.transaction(() => {
+    db.prepare(
+      `INSERT INTO shipments (id, tenant_id, order_id, tracking_number, carrier, status, shipped_at, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, req.user.tenant_id, req.params.id, tracking_number || null, carrier || null,
+      status || 'À envoyer', shipped_at || null, notes || null);
+
+    if (item_ids.length > 0) {
+      const stmt = db.prepare(`UPDATE order_items SET shipment_id = ?, fulfillment_status = 'Dans l''envoi' WHERE id = ? AND order_id = ?`);
+      for (const itemId of item_ids) {
+        stmt.run(id, itemId, req.params.id);
+      }
+    }
+  });
+  run();
 
   res.status(201).json(db.prepare('SELECT * FROM shipments WHERE id = ?').get(id));
 });
@@ -248,7 +258,7 @@ router.patch('/:id/items/reorder', (req, res) => {
 router.patch('/:id/items/:itemId', (req, res) => {
   const order = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
-  const allowed = ['product_id', 'qty', 'unit_cost', 'item_type', 'notes'];
+  const allowed = ['product_id', 'qty', 'unit_cost', 'item_type', 'notes', 'replaced_serial', 'fulfillment_status', 'fulfilled_qty', 'shipment_id'];
   const updates = [];
   const values = [];
   for (const key of allowed) {
@@ -281,11 +291,115 @@ router.delete('/:id/items/:itemId', (req, res) => {
   res.json({ message: 'Item deleted' });
 });
 
+// POST /api/orders/:id/scan — barcode scanner (serial or SKU)
+router.post('/:id/scan', (req, res) => {
+  const order = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id)
+  if (!order) return res.status(404).json({ error: 'Order not found' })
+
+  const { value, mode } = req.body
+  if (!value || !value.trim()) return res.status(400).json({ error: 'value required' })
+
+  const tid = req.user.tenant_id
+  const v = value.trim()
+
+  // ── PICKING MODE: each scan increments fulfilled_qty by 1 ───────────────────
+  if (mode === 'pick') {
+    function pickItem(item, serialObj) {
+      const newQty = Math.min((item.fulfilled_qty || 0) + 1, item.qty)
+      const newStatus = newQty >= item.qty ? 'Prélevé' : item.fulfillment_status || 'À prélever'
+      db.prepare(`UPDATE order_items SET fulfilled_qty = ?, fulfillment_status = ? WHERE id = ?`).run(newQty, newStatus, item.id)
+      if (serialObj && !serialObj.order_item_id) db.prepare('UPDATE serial_numbers SET order_item_id = ? WHERE id = ?').run(item.id, serialObj.id)
+      return db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(item.id)
+    }
+
+    const serial = db.prepare(
+      `SELECT sn.*, pr.name_fr as product_name FROM serial_numbers sn
+       LEFT JOIN products pr ON sn.product_id = pr.id
+       WHERE sn.serial = ? AND sn.tenant_id = ?`
+    ).get(v, tid)
+
+    if (serial) {
+      const item = db.prepare(
+        `SELECT * FROM order_items WHERE order_id = ? AND product_id = ? AND fulfillment_status NOT IN ('Envoyé', 'Dans l''envoi')`
+      ).get(req.params.id, serial.product_id)
+      if (!item) return res.json({ type: 'serial', action: 'not_in_order', serial })
+      const updated = pickItem(item, serial)
+      return res.json({ type: 'serial', action: 'picked', serial, item: updated })
+    }
+
+    const product = db.prepare('SELECT * FROM products WHERE sku = ? AND tenant_id = ?').get(v, tid)
+    if (product) {
+      const item = db.prepare(
+        `SELECT * FROM order_items WHERE order_id = ? AND product_id = ? AND fulfillment_status NOT IN ('Envoyé', 'Dans l''envoi')`
+      ).get(req.params.id, product.id)
+      if (!item) return res.json({ type: 'sku', action: 'not_in_order', product })
+      const updated = pickItem(item, null)
+      return res.json({ type: 'sku', action: 'picked', product, item: updated })
+    }
+
+    return res.json({ type: 'not_found', value: v })
+  }
+
+  // ── ADD MODE (default): scan adds or links items ────────────────────────────
+
+  // 1. Try serial number
+  const serial = db.prepare(
+    `SELECT sn.*, pr.name_fr as product_name, pr.sku, pr.unit_cost as product_cost
+     FROM serial_numbers sn
+     LEFT JOIN products pr ON sn.product_id = pr.id
+     WHERE sn.serial = ? AND sn.tenant_id = ?`
+  ).get(v, tid)
+
+  if (serial) {
+    let item = serial.product_id
+      ? db.prepare('SELECT * FROM order_items WHERE order_id = ? AND product_id = ?').get(req.params.id, serial.product_id)
+      : null
+
+    let action = 'linked'
+    if (!item) {
+      const itemId = uuidv4()
+      db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type) VALUES (?, ?, ?, 1, ?, ?)')
+        .run(itemId, req.params.id, serial.product_id || null, serial.product_cost || 0, 'Facturable')
+      item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId)
+      action = 'added'
+    }
+
+    db.prepare('UPDATE serial_numbers SET order_item_id = ? WHERE id = ?').run(item.id, serial.id)
+    db.prepare(`UPDATE orders SET updated_at=datetime('now') WHERE id=?`).run(req.params.id)
+    return res.json({ type: 'serial', action, serial, item })
+  }
+
+  // 2. Try SKU
+  const product = db.prepare('SELECT * FROM products WHERE sku = ? AND tenant_id = ?').get(v, tid)
+
+  if (product) {
+    let item = db.prepare('SELECT * FROM order_items WHERE order_id = ? AND product_id = ?').get(req.params.id, product.id)
+    let action
+
+    if (item) {
+      db.prepare('UPDATE order_items SET qty = qty + 1 WHERE id = ?').run(item.id)
+      item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(item.id)
+      action = 'incremented'
+    } else {
+      const itemId = uuidv4()
+      db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type) VALUES (?, ?, ?, 1, ?, ?)')
+        .run(itemId, req.params.id, product.id, product.unit_cost || 0, 'Facturable')
+      item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId)
+      action = 'added'
+    }
+
+    db.prepare(`UPDATE orders SET updated_at=datetime('now') WHERE id=?`).run(req.params.id)
+    return res.json({ type: 'sku', action, product, item })
+  }
+
+  return res.json({ type: 'not_found', value: v })
+})
+
 // DELETE /api/orders/:id
 router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
   if (!existing) return res.status(404).json({ error: 'Order not found' });
-  db.prepare('DELETE FROM orders WHERE id = ? AND tenant_id = ?').run(req.params.id, req.user.tenant_id);
+  db.prepare("UPDATE orders SET deleted_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(req.params.id, req.user.tenant_id);
   res.json({ message: 'Deleted' });
 });
 

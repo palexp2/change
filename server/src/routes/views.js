@@ -35,7 +35,7 @@ router.get('/:table', requireAuth, (req, res) => {
   const { table } = req.params
 
   const config = db.prepare(
-    'SELECT visible_columns, default_sort FROM table_view_configs WHERE tenant_id=? AND table_name=?'
+    'SELECT visible_columns, default_sort, all_view_sort_order FROM table_view_configs WHERE tenant_id=? AND table_name=?'
   ).get(tenant_id, table)
 
   const pills = db.prepare(
@@ -56,8 +56,8 @@ router.get('/:table', requireAuth, (req, res) => {
 
   res.json({
     config: config
-      ? { visible_columns: JSON.parse(config.visible_columns), default_sort: JSON.parse(config.default_sort) }
-      : { visible_columns: [], default_sort: [] },
+      ? { visible_columns: JSON.parse(config.visible_columns), default_sort: JSON.parse(config.default_sort), all_view_sort_order: config.all_view_sort_order ?? -1 }
+      : { visible_columns: [], default_sort: [], all_view_sort_order: -1 },
     pills: pills.map(parsePill),
     dynamicFields,
   })
@@ -115,16 +115,26 @@ router.patch('/:table/pills/reorder', requireAdmin, (req, res) => {
   if (!validateTable(req, res)) return
   const { tenant_id } = req.user
   const { table } = req.params
-  const order = req.body
+  const { order, all_view_sort_order } = req.body
   if (!Array.isArray(order)) return res.status(400).json({ error: 'Un tableau est requis' })
 
   const update = db.prepare(
     'UPDATE table_view_pills SET sort_order=? WHERE id=? AND tenant_id=? AND table_name=?'
   )
-  const updateAll = db.transaction(items => {
-    for (const { id, sort_order } of items) update.run(sort_order, id, tenant_id, table)
+  const updateAll = db.transaction(() => {
+    for (const { id, sort_order } of order) update.run(sort_order, id, tenant_id, table)
+    if (all_view_sort_order !== undefined) {
+      const existing = db.prepare('SELECT id FROM table_view_configs WHERE tenant_id=? AND table_name=?').get(tenant_id, table)
+      if (existing) {
+        db.prepare("UPDATE table_view_configs SET all_view_sort_order=?, updated_at=datetime('now') WHERE tenant_id=? AND table_name=?")
+          .run(all_view_sort_order, tenant_id, table)
+      } else {
+        db.prepare('INSERT INTO table_view_configs (id, tenant_id, table_name, visible_columns, default_sort, all_view_sort_order) VALUES (?,?,?,?,?,?)')
+          .run(uuidv4(), tenant_id, table, '[]', '[]', all_view_sort_order)
+      }
+    }
   })
-  updateAll(order)
+  updateAll()
 
   res.json({ ok: true })
 })

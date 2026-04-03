@@ -95,6 +95,7 @@ export const api = {
     duplicateItem: (orderId, itemId) => post(`/orders/${orderId}/items/${itemId}/duplicate`, {}),
     reorderItems: (orderId, order) => patch(`/orders/${orderId}/items/reorder`, order),
     deleteItem: (orderId, itemId) => del(`/orders/${orderId}/items/${itemId}`),
+    scan: (orderId, value, mode = 'add') => post(`/orders/${orderId}/scan`, { value, mode }),
     delete: (id) => del(`/orders/${id}`),
     generateBonLivraison: (id) => post(`/orders/${id}/bon-livraison`, {}),
   },
@@ -132,17 +133,9 @@ export const api = {
     resetPassword: (id, new_password) => post(`/admin/users/${id}/reset-password`, { password: new_password }),
     deleteUser: (id) => del(`/admin/users/${id}`),
     health: () => get('/admin/health'),
-    migrateLegacy: () => post('/admin/migrate-legacy', {}),
-    getNavConfig: () => get('/admin/nav-config'),
-    saveNavConfig: (nav_items) => put('/admin/nav-config', { nav_items }),
-  },
-
-  // Field Definitions
-  fieldDefs: {
-    list: (entity_type) => get(`/admin/field-defs${entity_type ? '?entity_type=' + entity_type : ''}`),
-    create: (data) => post('/admin/field-defs', data),
-    update: (id, data) => patch(`/admin/field-defs/${id}`, data),
-    delete: (id) => del(`/admin/field-defs/${id}`),
+    trash: () => get('/admin/trash'),
+    restoreTrash: (table, id) => post(`/admin/trash/${table}/${id}/restore`, {}),
+    purgeTrash: () => del('/admin/trash'),
   },
 
   // Interactions
@@ -170,6 +163,7 @@ export const api = {
     fixFtpTimestamps: () => post('/connectors/fix-ftp-timestamps'),
     deduplicateFtpCalls: () => post('/connectors/deduplicate-ftp-calls'),
     syncStatus: () => get('/connectors/sync/status'),
+    importQB: () => post('/connectors/sync/qb-import'),
     ftpInfo: () => get('/connectors/ftp'),
     ftpAddPhone: (data) => post('/connectors/ftp/phones', data),
     ftpDeletePhone: (ftpUser) => del(`/connectors/ftp/phones/${ftpUser}`),
@@ -190,6 +184,25 @@ export const api = {
     sync: () => post('/connectors/sync/stripe'),
   },
 
+  // Novoxpress shipping labels
+  novoxpress: {
+    status: () => get('/novoxpress/status'),
+    saveConfig: (data) => put('/novoxpress/config', data),
+    deleteConfig: () => del('/novoxpress/config'),
+    getRates: (shipmentId, data) => post(`/novoxpress/rates/${shipmentId}`, data),
+    createLabel: (shipmentId, data) => post(`/novoxpress/label/${shipmentId}`, data),
+    schedulePickup: (shipmentId, data) => post(`/novoxpress/pickup/${shipmentId}`, data),
+    cancelPickup: (shipmentId) => del(`/novoxpress/pickup/${shipmentId}`),
+  },
+
+  // QuickBooks
+  quickbooks: {
+    accounts: () => get('/connectors/quickbooks/accounts'),
+    vendors: () => get('/connectors/quickbooks/vendors'),
+    syncDepenses: () => post('/connectors/sync/qb-depenses'),
+    syncFactures: () => post('/connectors/sync/qb-factures'),
+  },
+
   // Airtable
   airtable: {
     bases: () => get('/connectors/airtable/bases'),
@@ -207,7 +220,7 @@ export const api = {
     createPill: (table, data) => post(`/views/${table}/pills`, data),
     updatePill: (table, id, data) => put(`/views/${table}/pills/${id}`, data),
     deletePill: (table, id) => del(`/views/${table}/pills/${id}`),
-    reorderPills: (table, order) => patch(`/views/${table}/pills/reorder`, order),
+    reorderPills: (table, order, all_view_sort_order) => patch(`/views/${table}/pills/reorder`, { order, all_view_sort_order }),
     getDetailLayout: (entityType) => get(`/views/detail/${entityType}`),
     saveDetailLayout: (entityType, field_order) => put(`/views/detail/${entityType}`, { field_order }),
   },
@@ -234,6 +247,9 @@ export const api = {
   adresses: {
     list: (params = {}) => get('/inventaire/adresses?' + new URLSearchParams(params)),
     get: (id) => get(`/inventaire/adresses/${id}`),
+    create: (data) => post('/inventaire/adresses', data),
+    update: (id, data) => put(`/inventaire/adresses/${id}`, data),
+    delete: (id) => del(`/inventaire/adresses/${id}`),
   },
 
   // BOM
@@ -269,6 +285,7 @@ export const api = {
   abonnements: {
     list: (params = {}) => get('/inventaire/abonnements?' + new URLSearchParams(params)),
     get: (id) => get(`/inventaire/abonnements/${id}`),
+    patch: (id, body) => patch(`/inventaire/abonnements/${id}`, body),
   },
 
   // Catalog products
@@ -279,6 +296,19 @@ export const api = {
     delete: (id) => del(`/catalog/${id}`),
   },
 
+  employees: {
+    list: (params = {}) => get('/employees?' + new URLSearchParams(params)),
+    get: (id) => get(`/employees/${id}`),
+    create: (data) => post('/employees', data),
+    update: (id, data) => patch(`/employees/${id}`, data),
+    delete: (id) => del(`/employees/${id}`),
+  },
+
+  // Returns (RMA)
+  returns: {
+    listByCompany: (companyId) => get(`/companies/${companyId}/returns`),
+  },
+
   // Shipments (Envois)
   shipments: {
     list: (params = {}) => get('/shipments?' + new URLSearchParams(params)),
@@ -287,6 +317,8 @@ export const api = {
     update: (id, data) => patch(`/shipments/${id}`, data),
     delete: (id) => del(`/shipments/${id}`),
     weeklyStats: () => get('/shipments/stats/weekly'),
+    sendTracking: (id, to) => post(`/shipments/${id}/send-tracking`, { to }),
+    generateBonLivraison: (id) => post(`/shipments/${id}/bon-livraison`, {}),
   },
 
   // Dépenses
@@ -312,13 +344,6 @@ export const api = {
   // Global search
   search: {
     query: (q) => get(`/search?q=${encodeURIComponent(q)}`),
-  },
-
-  // Notifications
-  notifications: {
-    list: (params = {}) => get('/notifications?' + new URLSearchParams(params)),
-    markRead: (id) => patch(`/notifications/${id}/read`),
-    markAllRead: () => post('/notifications/read-all'),
   },
 
   // Webhooks
@@ -388,6 +413,7 @@ export const api = {
     list: (params = {}) => get('/sale-receipts?' + new URLSearchParams(params)),
     get: (id) => get(`/sale-receipts/${id}`),
     delete: (id) => del(`/sale-receipts/${id}`),
+    pushToQb: (id, params) => post(`/sale-receipts/${id}/push-to-qb`, params),
     upload: (formData) => {
       const token = getToken()
       return fetch('/erp/api/sale-receipts/upload', {
@@ -400,6 +426,13 @@ export const api = {
         return d
       })
     },
+  },
+
+  opportunities: {
+    list: () => get('/opportunities'),
+    scan: () => post('/opportunities/scan'),
+    update: (id, data) => patch(`/opportunities/${id}`, data),
+    send: (id) => post(`/opportunities/${id}/send`),
   },
 }
 

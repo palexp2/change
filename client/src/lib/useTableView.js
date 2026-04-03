@@ -168,7 +168,7 @@ export function applySort(data, sorts) {
   })
 }
 
-export function useTableView({ table, columns, data, searchFields = [] }) {
+export function useTableView({ table, columns, data, searchFields = [], forceAllView = false }) {
   const [activeViewId, setActiveViewIdRaw] = useState(null)
   const [sorts, setSorts] = useState([])
   const [filters, setFilters] = useState([])
@@ -178,6 +178,7 @@ export function useTableView({ table, columns, data, searchFields = [] }) {
   const [adminConfig, setAdminConfig] = useState(null)
   const [dynamicFields, setDynamicFields] = useState([])
 
+  const [allViewSortOrder, setAllViewSortOrder] = useState(-1)
   const [reloadKey, setReloadKey] = useState(0)
 
   // Reload when views are updated via TableConfigModal
@@ -194,17 +195,19 @@ export function useTableView({ table, columns, data, searchFields = [] }) {
       .then(({ config, pills, dynamicFields: df }) => {
         setViews(pills)
         setAdminConfig(config)
+        setAllViewSortOrder(config.all_view_sort_order ?? -1)
         setDynamicFields(df || [])
         const currentViewId = activeViewId
         const currentView = pills.find(p => p.id === currentViewId)
         if (currentView) {
           setSorts(currentView.sort?.length > 0 ? currentView.sort : (config.default_sort || []))
           setFilters(currentView.filters || [])
-        } else if (pills.length > 0) {
-          const first = pills[0]
-          setActiveViewIdRaw(first.id)
-          setSorts(first.sort?.length > 0 ? first.sort : (config.default_sort || []))
-          setFilters(first.filters || [])
+        } else if (pills.length > 0 && !forceAllView) {
+          // Default to first view sorted by sort_order
+          const firstView = [...pills].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))[0]
+          setActiveViewIdRaw(firstView.id)
+          setSorts(firstView.sort?.length > 0 ? firstView.sort : (config.default_sort || []))
+          setFilters(firstView.filters || [])
         } else {
           setActiveViewIdRaw(null)
           setSorts(config.default_sort?.length > 0 ? config.default_sort : [])
@@ -260,10 +263,12 @@ export function useTableView({ table, columns, data, searchFields = [] }) {
     return result
   }, [data, search, searchFields, filters, sorts])
 
-  function reorderViews(newViews) {
-    setViews(newViews)
-    const order = newViews.map((v, i) => ({ id: v.id, sort_order: i }))
-    api.views.reorderPills(table, order).catch(() => {})
+  function reorderViews(newViews, newAllViewSortOrder) {
+    const realViews = newViews.filter(v => v.id !== null)
+    setViews(realViews)
+    if (newAllViewSortOrder !== undefined) setAllViewSortOrder(newAllViewSortOrder)
+    const order = realViews.map((v, i) => ({ id: v.id, sort_order: i }))
+    api.views.reorderPills(table, order, newAllViewSortOrder).catch(() => {})
   }
 
   // Merge hardcoded columns with dynamic Airtable fields
@@ -287,6 +292,7 @@ export function useTableView({ table, columns, data, searchFields = [] }) {
     filters, setFilters,
     search, setSearch,
     views,
+    allViewSortOrder,
     reorderViews,
     activeViewId,
     setActiveViewId,

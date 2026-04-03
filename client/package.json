@@ -7,6 +7,8 @@
     "build": "vite build"
   },
   "dependencies": {
+    "@svg-maps/canada": "^2.0.0",
+    "@svg-maps/usa": "^2.0.0",
     "@tanstack/react-virtual": "^3.13.23",
     "lucide-react": "^0.378.0",
     "react": "^18.3.1",

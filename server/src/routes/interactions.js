@@ -13,7 +13,7 @@ router.get('/', requireAuth, (req, res) => {
   const offsetVal = limitAll ? 0 : Number(offset)
   const tid = req.user.tenant_id
 
-  const where = ['i.tenant_id=?']
+  const where = ['i.tenant_id=?', 'i.deleted_at IS NULL']
   const params = [tid]
 
   if (type) { where.push('i.type=?'); params.push(type) }
@@ -41,7 +41,7 @@ router.get('/', requireAuth, (req, res) => {
         WHEN i.type='call' THEN COALESCE(ca.callee_number, ca.caller_number)
         ELSE NULL
       END as phone_number,
-      e.subject, e.from_address, e.to_address, e.body_text,
+      e.subject, e.from_address, e.to_address, e.body_text, e.body_html, e.automated, e.open_count,
       m.title AS meeting_title, m.duration_minutes, m.notes AS meeting_notes
     FROM interactions i
     LEFT JOIN contacts c ON i.contact_id = c.id
@@ -95,7 +95,7 @@ router.post('/', requireAuth, (req, res) => {
 router.delete('/:id', requireAuth, (req, res) => {
   const row = db.prepare('SELECT * FROM interactions WHERE id=? AND tenant_id=?').get(req.params.id, req.user.tenant_id)
   if (!row) return res.status(404).json({ error: 'Not found' })
-  db.prepare('DELETE FROM interactions WHERE id=?').run(req.params.id)
+  db.prepare("UPDATE interactions SET deleted_at = datetime('now') WHERE id=?").run(req.params.id)
   res.json({ ok: true })
 })
 

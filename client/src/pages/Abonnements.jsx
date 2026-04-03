@@ -33,11 +33,55 @@ const STATUS_COLORS = {
   'Expiré': 'orange',
 }
 
+const RACHAT_COLORS = {
+  'rachat complet':  'bg-green-100 text-green-700',
+  'rachat partiel':  'bg-yellow-100 text-yellow-700',
+  'fusion':          'bg-purple-100 text-purple-700',
+}
+
+function RachatCell({ row, onChange }) {
+  const [saving, setSaving] = useState(false)
+
+  async function handleChange(e) {
+    e.stopPropagation()
+    const val = e.target.value || null
+    setSaving(true)
+    try {
+      await api.abonnements.patch(row.id, { rachat: val })
+      onChange(row.id, val)
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="relative inline-block" onClick={e => e.stopPropagation()}>
+      <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full pointer-events-none select-none ${
+        row.rachat ? RACHAT_COLORS[row.rachat] : 'text-slate-300'
+      } ${saving ? 'opacity-50' : ''}`}>
+        {row.rachat || '+ ajouter'}
+      </span>
+      <select
+        value={row.rachat || ''}
+        onChange={handleChange}
+        disabled={saving}
+        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+      >
+        <option value="">— aucun</option>
+        <option value="rachat complet">Rachat complet</option>
+        <option value="rachat partiel">Rachat partiel</option>
+        <option value="fusion">Fusion</option>
+      </select>
+    </div>
+  )
+}
+
 const RENDERS = {
   company_name: row => row.company_id
     ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
-  type:       row => <span className="text-slate-700">{row.type || '—'}</span>,
   status:     row => row.status
     ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
     : <span className="text-slate-400">—</span>,
@@ -49,13 +93,22 @@ const RENDERS = {
     : <span className="text-slate-400">—</span>,
 }
 
-const COLUMNS = TABLE_COLUMN_META.abonnements.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
-
 export default function Abonnements() {
   const [abonnements, setAbonnements] = useState([])
   const [loading, setLoading] = useState(true)
   const [stripeConfigured, setStripeConfigured] = useState(false)
   const [syncing, setSyncing] = useState(false)
+
+  function handleRachatChange(id, val) {
+    setAbonnements(prev => prev.map(a => a.id === id ? { ...a, rachat: val } : a))
+  }
+
+  const COLUMNS = TABLE_COLUMN_META.abonnements.map(meta => ({
+    ...meta,
+    render: meta.id === 'rachat'
+      ? row => <RachatCell row={row} onChange={handleRachatChange} />
+      : RENDERS[meta.id],
+  }))
 
   const load = useCallback(async () => {
     api.stripe.info().catch(() => ({ configured: false })).then(info => setStripeConfigured(!!info.configured))
@@ -121,7 +174,7 @@ export default function Abonnements() {
           columns={COLUMNS}
           data={abonnements}
           loading={loading}
-          searchFields={['company_name', 'type']}
+          searchFields={['company_name']}
         />
       </div>
     </Layout>

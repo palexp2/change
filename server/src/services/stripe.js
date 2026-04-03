@@ -62,16 +62,23 @@ export async function syncStripeSubscriptions(tenantId) {
   let created = 0
   let updated = 0
 
-  // Collect all subscriptions via auto-paging
+  // Collect all subscriptions via auto-paging (actifs + annulés)
   const allSubs = []
   for await (const sub of stripe.subscriptions.list({
     limit: 100,
-    expand: ['data.customer', 'data.items.data.price.product'],
+    expand: ['data.customer', 'data.items.data.price'],
+  })) {
+    allSubs.push(sub)
+  }
+  for await (const sub of stripe.subscriptions.list({
+    status: 'canceled',
+    limit: 100,
+    expand: ['data.customer', 'data.items.data.price'],
   })) {
     allSubs.push(sub)
   }
 
-  console.log(`🔄 Stripe: ${allSubs.length} abonnement(s) récupérés`)
+  console.log(`🔄 Stripe: ${allSubs.length} abonnement(s) récupérés (actifs + annulés)`)
 
   for (const sub of allSubs) {
     const customer = sub.customer
@@ -102,12 +109,6 @@ export async function syncStripeSubscriptions(tenantId) {
     if (intervalType === 'year') amountMonthly = amountMonthly / 12
     else if (intervalType === 'week') amountMonthly = amountMonthly * 4.333
 
-    // Product name → type
-    const product = price?.product
-    const productName = typeof product === 'object'
-      ? (product.name || null)
-      : (price?.nickname || null)
-
     const status = mapStatus(sub.status)
     const startDate = sub.start_date
       ? new Date(sub.start_date * 1000).toISOString().split('T')[0]
@@ -127,13 +128,13 @@ export async function syncStripeSubscriptions(tenantId) {
           status=?, amount_monthly=?, currency=?,
           start_date=?, cancel_date=?, trial_end_date=?,
           stripe_url=?, customer_id=?, customer_email=?,
-          interval_count=?, interval_type=?, type=?
+          interval_count=?, interval_type=?
         WHERE id=? AND tenant_id=?
       `).run(
         companyId, status, amountMonthly, currency,
         startDate, cancelDate, trialEndDate,
         stripeUrl, customerId, customerEmail,
-        intervalCount, intervalType, productName,
+        intervalCount, intervalType,
         existingRow.id, tenantId
       )
       updated++
@@ -142,13 +143,13 @@ export async function syncStripeSubscriptions(tenantId) {
         INSERT INTO subscriptions (
           id, tenant_id, company_id, stripe_id, status, amount_monthly, currency,
           start_date, cancel_date, trial_end_date, stripe_url, customer_id, customer_email,
-          interval_count, interval_type, type
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          interval_count, interval_type
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(
         uuid(), tenantId, companyId, sub.id, status, amountMonthly, currency,
         startDate, cancelDate, trialEndDate,
         stripeUrl, customerId, customerEmail,
-        intervalCount, intervalType, productName
+        intervalCount, intervalType
       )
       created++
     }

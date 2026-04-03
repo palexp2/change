@@ -175,26 +175,13 @@ export async function syncAirtable(tenantId, changes = null) {
           const phaseRaw = getVal(rec.fields, fieldMap?.lifecycle_phase)
           const lifecycle_phase = phaseRaw ? (fieldMap?.phase_choices?.[phaseRaw] || phaseRaw) : null
 
-          const extra = {}
-          if (fieldMap) {
-            for (const [k, v] of Object.entries(fieldMap)) {
-              if (k.startsWith('cf_')) {
-                const cfKey = k.slice(3)
-                const val = getVal(rec.fields, v)
-                if (val) extra[cfKey] = val
-              }
-            }
-          }
-          const extraJson = JSON.stringify(extra)
-
-          const existing = db.prepare('SELECT id, extra_fields FROM companies WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+          const existing = db.prepare('SELECT id FROM companies WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
           if (existing) {
-            const merged = { ...JSON.parse(existing.extra_fields || '{}'), ...extra }
-            db.prepare(`UPDATE companies SET name=?, phone=COALESCE(?,phone), email=COALESCE(?,email), website=COALESCE(?,website), address=COALESCE(?,address), city=COALESCE(?,city), province=COALESCE(?,province), country=COALESCE(?,country), type=COALESCE(?,type), lifecycle_phase=COALESCE(?,lifecycle_phase), notes=COALESCE(?,notes), extra_fields=?, updated_at=datetime('now') WHERE id=?`)
-              .run(name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), JSON.stringify(merged), existing.id)
+            db.prepare(`UPDATE companies SET name=?, phone=COALESCE(?,phone), email=COALESCE(?,email), website=COALESCE(?,website), address=COALESCE(?,address), city=COALESCE(?,city), province=COALESCE(?,province), country=COALESCE(?,country), type=COALESCE(?,type), lifecycle_phase=COALESCE(?,lifecycle_phase), notes=COALESCE(?,notes), updated_at=datetime('now') WHERE id=?`)
+              .run(name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), existing.id)
           } else {
-            db.prepare('INSERT INTO companies (id, tenant_id, name, phone, email, website, address, city, province, country, type, lifecycle_phase, notes, extra_fields, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-              .run(uuid(), tenantId, name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), extraJson, rec.id)
+            db.prepare('INSERT INTO companies (id, tenant_id, name, phone, email, website, address, city, province, country, type, lifecycle_phase, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+              .run(uuid(), tenantId, name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), rec.id)
             companiesImported++
           }
         }
@@ -241,26 +228,13 @@ export async function syncAirtable(tenantId, changes = null) {
             : rawLang === 'English' || rawLang === 'Anglais' || rawLang === 'anglais' ? 'English'
             : null
 
-          const extra = {}
-          if (fieldMap) {
-            for (const [k, v] of Object.entries(fieldMap)) {
-              if (k.startsWith('cf_')) {
-                const cfKey = k.slice(3)
-                const val = getVal(rec.fields, v)
-                if (val) extra[cfKey] = val
-              }
-            }
-          }
-          const extraJson = JSON.stringify(extra)
-
-          const existing = db.prepare('SELECT id, extra_fields FROM contacts WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+          const existing = db.prepare('SELECT id FROM contacts WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
           if (existing) {
-            const merged = { ...JSON.parse(existing.extra_fields || '{}'), ...extra }
-            db.prepare('UPDATE contacts SET first_name=?, last_name=?, email=?, phone=?, mobile=COALESCE(?,mobile), company_id=?, language=?, notes=COALESCE(?,notes), extra_fields=? WHERE id=?')
-              .run(getVal(rec.fields, fieldMap?.first_name) || '', lastName, getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.mobile), companyId, language, getVal(rec.fields, fieldMap?.notes), JSON.stringify(merged), existing.id)
+            db.prepare('UPDATE contacts SET first_name=?, last_name=?, email=?, phone=?, mobile=COALESCE(?,mobile), company_id=?, language=?, notes=COALESCE(?,notes) WHERE id=?')
+              .run(getVal(rec.fields, fieldMap?.first_name) || '', lastName, getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.mobile), companyId, language, getVal(rec.fields, fieldMap?.notes), existing.id)
           } else {
-            db.prepare('INSERT INTO contacts (id, tenant_id, first_name, last_name, email, phone, mobile, company_id, language, notes, extra_fields, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-              .run(uuid(), tenantId, getVal(rec.fields, fieldMap?.first_name) || '', lastName, getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.mobile), companyId, language, getVal(rec.fields, fieldMap?.notes), extraJson, rec.id)
+            db.prepare('INSERT INTO contacts (id, tenant_id, first_name, last_name, email, phone, mobile, company_id, language, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+              .run(uuid(), tenantId, getVal(rec.fields, fieldMap?.first_name) || '', lastName, getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.mobile), companyId, language, getVal(rec.fields, fieldMap?.notes), rec.id)
             contactsImported++
           }
         }
@@ -1411,56 +1385,6 @@ export async function syncSerialStateChanges(tenantId, changes = null) {
   } catch (e) { console.error('❌ Serial changes sync:', e.message) }
 }
 
-export async function syncAbonnements(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='abonnements'").get(tenantId)
-  if (!config?.base_id || !config?.table_id) return
-  if (changes?.[config.table_id]?.destroyedIds?.length) {
-    for (const id of changes[config.table_id].destroyedIds)
-      db.prepare('DELETE FROM subscriptions WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
-  }
-  const _recordIds = changes?.[config.table_id]?.recordIds
-  if (changes && !_recordIds?.length) return
-  let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
-  catch (e) { console.error('❌ Airtable token:', e.message); return }
-  try {
-    const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'abonnements', _recordIds)
-    const fm = config.field_map ? JSON.parse(config.field_map) : {}
-    let imported = 0, updated = 0
-    db.transaction((recs) => {
-      for (const rec of recs) {
-        const companyId = lookupCompany(tenantId, rec.fields, fm.company)
-        const stripeId = getVal(rec.fields, fm.stripe_id)
-        const startDate = getVal(rec.fields, fm.start_date)
-        const canceledAt = getVal(rec.fields, fm.canceled_at)
-        const monthlyAmountCad = parseFloat(String(rec.fields[fm.monthly_amount_cad] ?? 0).replace(/[^0-9.-]/g, '')) || 0
-        const type = getVal(rec.fields, fm.type)
-        const status = getVal(rec.fields, fm.status) || 'active'
-        const intervalCount = parseInt(String(rec.fields[fm.interval_count] ?? 1)) || 1
-        const intervalType = getVal(rec.fields, fm.interval_type)
-        const currency = getVal(rec.fields, fm.currency) || 'CAD'
-        const customerId = getVal(rec.fields, fm.customer_id)
-        const customerEmail = getVal(rec.fields, fm.customer_email)
-        const trialEndDate = getVal(rec.fields, fm.trial_end_date)
-        const stripeUrl = getVal(rec.fields, fm.stripe_url)
-        const amountAfterDiscount = parseFloat(String(rec.fields[fm.amount_after_discount] ?? 0).replace(/[^0-9.-]/g, '')) || 0
-        const existing = db.prepare('SELECT id FROM subscriptions WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
-        if (existing) {
-          db.prepare(`UPDATE subscriptions SET company_id=?, stripe_id=?, start_date=?, cancel_date=?, amount_monthly=?, type=?, status=?, interval_count=?, interval_type=?, currency=?, customer_id=?, customer_email=?, trial_end_date=?, stripe_url=?, amount_after_discount=? WHERE id=?`)
-            .run(companyId, stripeId, startDate, canceledAt, monthlyAmountCad, type, status, intervalCount, intervalType, currency, customerId, customerEmail, trialEndDate, stripeUrl, amountAfterDiscount, existing.id)
-          updated++
-        } else {
-          db.prepare('INSERT INTO subscriptions (id, tenant_id, airtable_id, company_id, stripe_id, start_date, cancel_date, amount_monthly, type, status, interval_count, interval_type, currency, customer_id, customer_email, trial_end_date, stripe_url, amount_after_discount) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), tenantId, rec.id, companyId, stripeId, startDate, canceledAt, monthlyAmountCad, type, status, intervalCount, intervalType, currency, customerId, customerEmail, trialEndDate, stripeUrl, amountAfterDiscount)
-          imported++
-        }
-      }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='abonnements'").run(tenantId)
-    })(records)
-    console.log(`💳 Abonnements: ${imported} importés, ${updated} mis à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'abonnements', 'abonnements', config.base_id, config.table_id, fieldMap, records)
-  } catch (e) { console.error('❌ Abonnements sync:', e.message) }
-}
 
 export async function syncAssemblages(tenantId, changes = null) {
   const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='assemblages'").get(tenantId)

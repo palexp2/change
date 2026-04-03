@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 
@@ -53,17 +54,22 @@ router.get('/adresses', (req, res) => {
 
   let where = 'WHERE a.tenant_id = ?'
   const params = [tid]
-  if (company_id) { where += ' AND a.company_id = ?'; params.push(company_id) }
-  if (contact_id) { where += ' AND a.contact_id = ?'; params.push(contact_id) }
+  if (company_id) {
+    where += ' AND a.company_id = ?'
+    params.push(company_id)
+  } else if (contact_id) {
+    where += ' AND a.contact_id = ?'; params.push(contact_id)
+  }
   if (address_type) { where += ' AND a.address_type = ?'; params.push(address_type) }
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM adresses a ${where}`).get(...params).c
   const rows = db.prepare(`
-    SELECT a.*, co.name as company_name
+    SELECT a.*, co.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name
     FROM adresses a
     LEFT JOIN companies co ON a.company_id = co.id
+    LEFT JOIN contacts ct ON a.contact_id = ct.id
     ${where}
-    ORDER BY a.created_at DESC
+    ORDER BY a.address_type ASC, a.created_at DESC
     LIMIT ? OFFSET ?
   `).all(...params, limitVal, offset)
 
@@ -79,6 +85,30 @@ router.get('/adresses/:id', (req, res) => {
   `).get(req.params.id, req.user.tenant_id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
+})
+
+router.post('/adresses', (req, res) => {
+  const { line1, city, province, postal_code, country, address_type, company_id, contact_id, language } = req.body
+  const tid = req.user.tenant_id
+  const id = randomUUID()
+  db.prepare(`INSERT INTO adresses (id, tenant_id, line1, city, province, postal_code, country, address_type, company_id, contact_id, language)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, tid, line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, company_id||null, contact_id||null, language||null)
+  res.json(db.prepare('SELECT * FROM adresses WHERE id = ?').get(id))
+})
+
+router.put('/adresses/:id', (req, res) => {
+  const { line1, city, province, postal_code, country, address_type, contact_id } = req.body
+  const tid = req.user.tenant_id
+  db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, address_type=?, contact_id=?, updated_at=datetime('now')
+    WHERE id = ? AND tenant_id = ?`)
+    .run(line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, contact_id||null, req.params.id, tid)
+  res.json(db.prepare('SELECT * FROM adresses WHERE id = ?').get(req.params.id))
+})
+
+router.delete('/adresses/:id', (req, res) => {
+  db.prepare('DELETE FROM adresses WHERE id = ? AND tenant_id = ?').run(req.params.id, req.user.tenant_id)
+  res.json({ ok: true })
 })
 
 // ── BOM Items ────────────────────────────────────────────────────────────────
@@ -281,7 +311,7 @@ router.get('/retours/:id', (req, res) => {
 // ── Abonnements ──────────────────────────────────────────────────────────────
 
 router.get('/abonnements', (req, res) => {
-  const { company_id, status, type, page = 1, limit = 50 } = req.query
+  const { company_id, status, page = 1, limit = 50 } = req.query
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
@@ -291,7 +321,6 @@ router.get('/abonnements', (req, res) => {
   const params = [tid]
   if (company_id) { where += ' AND s.company_id = ?'; params.push(company_id) }
   if (status) { where += ' AND s.status = ?'; params.push(status) }
-  if (type) { where += ' AND s.type = ?'; params.push(type) }
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM subscriptions s ${where}`).get(...params).c
   const rows = db.prepare(`
@@ -318,6 +347,17 @@ router.get('/abonnements/:id', (req, res) => {
   `).get(req.params.id, req.user.tenant_id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
+})
+
+router.patch('/abonnements/:id', (req, res) => {
+  const { rachat } = req.body
+  const VALID = ['rachat complet', 'rachat partiel', 'fusion', null]
+  if (!VALID.includes(rachat)) return res.status(400).json({ error: 'Valeur invalide' })
+  const existing = db.prepare('SELECT id FROM subscriptions WHERE id=? AND tenant_id=?')
+    .get(req.params.id, req.user.tenant_id)
+  if (!existing) return res.status(404).json({ error: 'Not found' })
+  db.prepare('UPDATE subscriptions SET rachat=? WHERE id=?').run(rachat, req.params.id)
+  res.json({ ok: true })
 })
 
 export default router

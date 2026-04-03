@@ -2,7 +2,6 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth.jsx'
 import { ToastProvider } from './contexts/ToastContext.jsx'
 import { UndoRedoProvider } from './hooks/useUndoRedo.jsx'
-import Notifications from './pages/Notifications.jsx'
 
 import Login from './pages/Login.jsx'
 import Setup from './pages/Setup.jsx'
@@ -36,6 +35,8 @@ import Agent from './pages/Agent.jsx'
 import Depenses from './pages/Depenses.jsx'
 import FacturesFournisseurs from './pages/FacturesFournisseurs.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
+import Opportunities from './pages/Opportunities.jsx'
+import Employees from './pages/Employees.jsx'
 import Contacts from './pages/Contacts.jsx'
 import ContactDetail from './pages/ContactDetail.jsx'
 import Companies from './pages/Companies.jsx'
@@ -82,6 +83,8 @@ function AppRoutes() {
       <Route path="/depenses" element={<ProtectedRoute><Depenses /></ProtectedRoute>} />
       <Route path="/factures-fournisseurs" element={<ProtectedRoute><FacturesFournisseurs /></ProtectedRoute>} />
       <Route path="/sale-receipts" element={<ProtectedRoute><SaleReceipts /></ProtectedRoute>} />
+      <Route path="/opportunities" element={<ProtectedRoute><Opportunities /></ProtectedRoute>} />
+      <Route path="/employees" element={<ProtectedRoute><Employees /></ProtectedRoute>} />
       <Route path="/contacts" element={<ProtectedRoute><Contacts /></ProtectedRoute>} />
       <Route path="/contacts/:id" element={<ProtectedRoute><ContactDetail /></ProtectedRoute>} />
       <Route path="/companies" element={<ProtectedRoute><Companies /></ProtectedRoute>} />
@@ -91,7 +94,6 @@ function AppRoutes() {
       <Route path="/automations" element={<ProtectedRoute><Automations /></ProtectedRoute>} />
       <Route path="/automations/:id" element={<ProtectedRoute><AutomationDetail /></ProtectedRoute>} />
       <Route path="/webhooks" element={<ProtectedRoute><Webhooks /></ProtectedRoute>} />
-      <Route path="/notifications" element={<ProtectedRoute><Notifications /></ProtectedRoute>} />
       <Route path="/agent" element={<ProtectedRoute adminOnly><Agent /></ProtectedRoute>} />
 
       <Route path="*" element={<Navigate to="/" replace />} />

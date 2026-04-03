@@ -14,7 +14,7 @@ router.get('/', (req, res) => {
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
   const tid = req.user.tenant_id;
 
-  let where = 'WHERE t.tenant_id = ?';
+  let where = 'WHERE t.tenant_id = ? AND t.deleted_at IS NULL';
   const params = [tid];
 
   if (search) {
@@ -145,7 +145,7 @@ router.patch('/:id/status', (req, res) => {
 router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM tasks WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
   if (!existing) return res.status(404).json({ error: 'Task not found' });
-  db.prepare('DELETE FROM tasks WHERE id = ? AND tenant_id = ?').run(req.params.id, req.user.tenant_id);
+  db.prepare("UPDATE tasks SET deleted_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(req.params.id, req.user.tenant_id);
   res.json({ ok: true });
 });
 

@@ -1,4 +1,84 @@
-import { X } from 'lucide-react'
+import { useState, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
+import { X, Search, ChevronDown } from 'lucide-react'
+
+function FieldSelect({ columns, value, onChange, cls }) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const [pos, setPos] = useState({ top: 0, left: 0, width: 0 })
+  const btnRef = useRef(null)
+  const inputRef = useRef(null)
+
+  const selected = columns.find(c => c.field === value)
+  const filtered = search
+    ? columns.filter(c => c.label.toLowerCase().includes(search.toLowerCase()))
+    : columns
+
+  useEffect(() => {
+    if (!open) return
+    // Position dropdown relative to button using fixed coords
+    const rect = btnRef.current?.getBoundingClientRect()
+    if (rect) setPos({ top: rect.bottom + 4, left: rect.left, width: Math.max(rect.width, 224) })
+    inputRef.current?.focus()
+    function handler(e) {
+      if (!btnRef.current?.contains(e.target) && !document.getElementById('field-select-portal')?.contains(e.target)) {
+        setOpen(false)
+        setSearch('')
+      }
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div className="relative flex-1 min-w-0">
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className={`select ${cls} w-full flex items-center justify-between gap-1 text-left`}
+      >
+        <span className="truncate">{selected?.label || '—'}</span>
+        <ChevronDown size={12} className="flex-shrink-0 text-slate-400" />
+      </button>
+      {open && createPortal(
+        <div
+          id="field-select-portal"
+          style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width, zIndex: 9999 }}
+          className="bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden"
+        >
+          <div className="p-2 border-b border-slate-100">
+            <div className="relative">
+              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                ref={inputRef}
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                placeholder="Rechercher un champ..."
+              />
+            </div>
+          </div>
+          <div className="max-h-52 overflow-y-auto">
+            {filtered.length === 0 ? (
+              <p className="text-xs text-slate-400 text-center py-3">Aucun résultat</p>
+            ) : filtered.map(c => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => { onChange(c.field); setOpen(false); setSearch('') }}
+                className={`w-full text-left px-3 py-2 text-xs hover:bg-slate-50 transition-colors ${c.field === value ? 'text-indigo-600 font-medium bg-indigo-50' : 'text-slate-700'}`}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+        </div>,
+        document.body
+      )}
+    </div>
+  )
+}
 
 export const OPS_BY_TYPE = {
   text: [
@@ -106,16 +186,15 @@ export function FilterRow({ columns, filter, onChange, onRemove, size = 'sm' }) 
 
   return (
     <div className="flex items-start gap-2 flex-wrap">
-      <select
+      <FieldSelect
+        columns={filterableCols}
         value={filter.field}
-        onChange={e => {
-          const newType = getFieldType(filterableCols, e.target.value)
-          onChange({ field: e.target.value, op: defaultOpForType(newType), value: '' })
+        cls={cls}
+        onChange={field => {
+          const newType = getFieldType(filterableCols, field)
+          onChange({ field, op: defaultOpForType(newType), value: '' })
         }}
-        className={`select ${cls} flex-1 min-w-0`}
-      >
-        {filterableCols.map(c => <option key={c.id} value={c.field}>{c.label}</option>)}
-      </select>
+      />
       <select
         value={filter.op}
         onChange={e => {

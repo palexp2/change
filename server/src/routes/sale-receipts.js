@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'fs'
 import { spawnSync } from 'child_process'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+import { pushSaleReceiptToQB } from '../services/quickbooks.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -180,6 +181,29 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     console.error('Receipt extraction error:', err.message)
     db.prepare(`UPDATE sale_receipts SET status='error', error_message=?, updated_at=datetime('now') WHERE id=?`)
       .run(err.message, id)
+  }
+})
+
+router.get('/:id/file', (req, res) => {
+  const row = db.prepare('SELECT filename, file_type FROM sale_receipts WHERE id=? AND tenant_id=?')
+    .get(req.params.id, req.user.tenant_id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+
+  const filePath = join(uploadsDir, row.filename)
+  if (!existsSync(filePath)) return res.status(404).json({ error: 'File not found' })
+
+  const mime = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp', '.pdf': 'application/pdf' }
+  res.set('Content-Type', mime[row.file_type] || 'application/octet-stream')
+  res.sendFile(filePath)
+})
+
+router.post('/:id/push-to-qb', async (req, res) => {
+  try {
+    const { expenseAccountId, paymentAccountId, vendorId, newVendorName } = req.body
+    const qbId = await pushSaleReceiptToQB(req.user.tenant_id, req.params.id, { expenseAccountId, paymentAccountId, vendorId, newVendorName })
+    res.json({ ok: true, quickbooks_id: qbId })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
   }
 })
 

@@ -5,6 +5,14 @@ import { useTableView } from '../lib/useTableView.js'
 import { ViewToolbar } from './ViewToolbar.jsx'
 import { TABLE_ALL_LABEL } from '../lib/tableDefs.js'
 
+export function fmtPhone(val) {
+  if (!val) return ''
+  const digits = String(val).replace(/\D/g, '')
+  const d = digits.length === 11 && digits[0] === '1' ? digits.slice(1) : digits
+  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`
+  return val
+}
+
 function DynamicCell({ value, col }) {
   if (value === null || value === undefined || value === '') return <span className="text-slate-300">—</span>
   const type = col.type
@@ -31,6 +39,9 @@ function DynamicCell({ value, col }) {
   if (type === 'number') {
     return <span className="tabular-nums">{value}</span>
   }
+  if (type === 'phone') {
+    return <span className="font-mono text-sm">{fmtPhone(value)}</span>
+  }
   // text, long_text, link, etc.
   const str = String(value)
   return <span className="truncate">{str.length > 100 ? str.slice(0, 100) + '…' : str}</span>
@@ -44,12 +55,14 @@ export function DataTable({
   onRowClick,
   searchFields = [],
   height = 'calc(100vh - 260px)',
+  initialGroupBy = null,
+  forceAllView = false,
 }) {
   const [visibleCols, setVisibleCols] = useState([])
-  const [groupBy, setGroupBy] = useState(null)
+  const [groupBy, setGroupBy] = useState(initialGroupBy)
   const [collapsedGroups, setCollapsedGroups] = useState(new Set())
 
-  const view = useTableView({ table, columns, data, searchFields })
+  const view = useTableView({ table, columns, data, searchFields, forceAllView })
   const { filteredData, configReady, allColumns } = view
   // Use allColumns (hardcoded + dynamic Airtable fields) everywhere
   const mergedColumns = allColumns || columns
@@ -60,7 +73,7 @@ export function DataTable({
   useEffect(() => {
     if (!view.configReady) return
     setVisibleCols(view.viewVisibleColumns)
-    setGroupBy(view.viewGroupBy)
+    if (!forceAllView) setGroupBy(view.viewGroupBy)
   }, [view.activeViewId, view.configReady])
 
   const visibleColumns = useMemo(
@@ -115,6 +128,7 @@ export function DataTable({
         search={view.search} setSearch={view.setSearch}
         searchFields={searchFields}
         views={view.views}
+        allViewSortOrder={view.allViewSortOrder}
         onReorderViews={view.reorderViews}
         activeViewId={view.activeViewId}
         setActiveViewId={view.setActiveViewId}

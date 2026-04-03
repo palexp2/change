@@ -4,7 +4,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import dotenv from 'dotenv'
 
-import { initSchema, seedSystemFields, seedCatalogProducts, seedSellableProducts } from './db/schema.js'
+import { initSchema, seedCatalogProducts, seedSellableProducts } from './db/schema.js'
 import { runPurge } from './services/purge.js'
 import { seedBaseTables } from './services/baseSeed.js'
 import authRouter from './routes/auth.js'
@@ -29,13 +29,16 @@ import searchRouter from './routes/search.js'
 import shipmentsRouter from './routes/shipments.js'
 // import baseRouter from './routes/base.js' // Dynamic tables — disabled
 import webhooksRouter from './routes/webhooks.js'
-import notificationsRouter from './routes/notifications.js'
 import automationsRouter from './routes/automations.js'
 import tasksRouter from './routes/tasks.js'
 import agentRouter from './routes/agent.js'
 import depensesRouter from './routes/depenses.js'
 import facturesFournisseursRouter from './routes/factures-fournisseurs.js'
+import opportunitiesRouter from './routes/opportunities.js'
+import employeesRouter from './routes/employees.js'
 import saleReceiptsRouter from './routes/sale-receipts.js'
+import novoxpressRouter from './routes/novoxpress.js'
+import trackRouter from './routes/track.js'
 import { createRealtimeServer } from './services/realtime.js'
 import { initTaskRunner, shutdownTaskRunner } from './services/taskRunner.js'
 import { initScheduler } from './services/automationScheduler.js'
@@ -45,6 +48,7 @@ import { syncAirtable, syncInventaire, syncPieces, syncOrders, syncAchats, syncB
 import { tracked } from './services/syncState.js'
 import { syncStripeSubscriptions, isStripeConfigured } from './services/stripe.js'
 import { initAirtableWebhooks } from './services/airtableWebhooks.js'
+import { getAccessToken as getAirtableToken } from './connectors/airtable.js'
 import db from './db/database.js'
 
 dotenv.config()
@@ -73,7 +77,6 @@ app.use('/api/product-images', express.static(path.join(process.cwd(), process.e
 app.use('/api/attachments', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'attachments')))
 
 initSchema()
-seedSystemFields()
 seedCatalogProducts()
 seedSellableProducts()
 seedBaseTables()
@@ -102,14 +105,18 @@ app.use('/api/search', searchRouter)
 app.use('/api/shipments', shipmentsRouter)
 // app.use('/api/base', baseRouter) // Dynamic tables — disabled
 app.use('/api/webhooks', webhooksRouter)
-app.use('/api/notifications', notificationsRouter)
 app.use('/api/automations', automationsRouter)
 app.use('/api/tasks', tasksRouter)
 app.use('/api/agent', agentRouter)
 app.use('/api/depenses', depensesRouter)
 app.use('/api/factures-fournisseurs', facturesFournisseursRouter)
 app.use('/api/sale-receipts', saleReceiptsRouter)
+app.use('/api/opportunities', opportunitiesRouter)
+app.use('/api/employees', employeesRouter)
 app.use('/api/receipt-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')))
+app.use('/api/novoxpress/labels', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')))
+app.use('/api/novoxpress', novoxpressRouter)
+app.use('/api/track', trackRouter)
 app.use('/api/interaction-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'interactions')))
 
 // Serve client build
@@ -179,6 +186,26 @@ const server = app.listen(PORT, () => {
 
   // Airtable fallback : sync complet une fois par jour
   setInterval(scheduleAirtableFallback, 24 * 60 * 60 * 1000)
+
+  // Airtable token proactive refresh — évite que le token expire entre deux webhooks
+  // Refresh tout token qui expire dans les 15 prochaines minutes
+  async function refreshExpiringAirtableTokens() {
+    const soon = Date.now() + 15 * 60 * 1000
+    const rows = db.prepare(`
+      SELECT DISTINCT tenant_id FROM connector_oauth
+      WHERE connector='airtable' AND (expiry_date IS NULL OR expiry_date <= ?)
+    `).all(soon)
+    for (const { tenant_id } of rows) {
+      try {
+        await getAirtableToken(tenant_id)
+        console.log(`✅ Airtable token rafraîchi proactivement pour tenant ${tenant_id}`)
+      } catch (e) {
+        console.error(`⚠️ Airtable proactive refresh échoué pour ${tenant_id}:`, e.message)
+      }
+    }
+  }
+  setTimeout(refreshExpiringAirtableTokens, 60_000)
+  setInterval(refreshExpiringAirtableTokens, 10 * 60 * 1000)
 })
 
 // Kill Claude process on shutdown so pm2 restart doesn't leave orphans

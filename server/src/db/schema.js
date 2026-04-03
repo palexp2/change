@@ -1,5 +1,4 @@
 import db from './database.js';
-import { randomUUID } from 'crypto';
 
 export function initSchema() {
   db.exec(`
@@ -435,41 +434,6 @@ export function initSchema() {
       PRIMARY KEY (tenant_id, module)
     );
 
-    -- Custom field definitions (per tenant) — system fields seeded at startup
-    CREATE TABLE IF NOT EXISTS custom_field_defs (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
-      entity_type TEXT NOT NULL,
-      key TEXT NOT NULL,
-      label TEXT NOT NULL,
-      field_type TEXT NOT NULL DEFAULT 'single_line_text',
-      options TEXT,
-      is_system INTEGER NOT NULL DEFAULT 0,
-      required INTEGER NOT NULL DEFAULT 0,
-      sort_order INTEGER DEFAULT 0,
-      airtable_field_id TEXT,
-      airtable_value_map TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(tenant_id, entity_type, key)
-    );
-
-    -- Field values — EAV storage for custom (non-system) fields
-    CREATE TABLE IF NOT EXISTS field_values (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      entity_type TEXT NOT NULL,
-      record_id TEXT NOT NULL,
-      field_def_id TEXT NOT NULL REFERENCES custom_field_defs(id) ON DELETE CASCADE,
-      value_text TEXT,
-      value_number REAL,
-      value_date TEXT,
-      value_json TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(tenant_id, entity_type, record_id, field_def_id)
-    );
-
     -- Table view configs (admin-defined per table)
     CREATE TABLE IF NOT EXISTS table_view_configs (
       id TEXT PRIMARY KEY,
@@ -688,6 +652,7 @@ export function initSchema() {
       currency TEXT DEFAULT 'CAD',
       items TEXT DEFAULT '[]',
       raw_data TEXT,
+      quickbooks_id TEXT,
       created_by TEXT REFERENCES users(id),
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
@@ -768,8 +733,6 @@ export function initSchema() {
     'ALTER TABLE serial_numbers ADD COLUMN manufacture_date TEXT',
     'ALTER TABLE serial_numbers ADD COLUMN last_programmed_date TEXT',
     'ALTER TABLE serial_numbers ADD COLUMN manufacture_value REAL DEFAULT 0',
-    "ALTER TABLE contacts ADD COLUMN extra_fields TEXT DEFAULT '{}'",
-    "ALTER TABLE companies ADD COLUMN extra_fields TEXT DEFAULT '{}'",
     'ALTER TABLE users ADD COLUMN ftp_username TEXT',
     'ALTER TABLE users ADD COLUMN phone_number TEXT',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ftp_username ON users(ftp_username) WHERE ftp_username IS NOT NULL',
@@ -811,6 +774,7 @@ export function initSchema() {
     'ALTER TABLE subscriptions ADD COLUMN trial_end_date TEXT',
     'ALTER TABLE subscriptions ADD COLUMN stripe_url TEXT',
     'ALTER TABLE subscriptions ADD COLUMN amount_after_discount REAL',
+    'ALTER TABLE sale_receipts ADD COLUMN quickbooks_id TEXT',
     // catalog products & document items
     `CREATE TABLE IF NOT EXISTS catalog_products (
       id TEXT PRIMARY KEY,
@@ -965,6 +929,30 @@ export function initSchema() {
     'ALTER TABLE shipments ADD COLUMN pays TEXT',
     // Order items sort
     'ALTER TABLE order_items ADD COLUMN sort_order INTEGER DEFAULT 0',
+    'ALTER TABLE order_items ADD COLUMN replaced_serial TEXT',
+    // Novoxpress shipping labels
+    'ALTER TABLE shipments ADD COLUMN novoxpress_shipment_id TEXT',
+    'ALTER TABLE shipments ADD COLUMN label_pdf_path TEXT',
+    'ALTER TABLE emails ADD COLUMN automated INTEGER DEFAULT 0',
+    'ALTER TABLE emails ADD COLUMN open_count INTEGER DEFAULT 0',
+    'ALTER TABLE shipments ADD COLUMN novoxpress_pickup_id TEXT',
+    'ALTER TABLE shipments ADD COLUMN tracking_email_sent_at TEXT',
+    'ALTER TABLE shipments ADD COLUMN tracking_email_interaction_id TEXT',
+    'ALTER TABLE shipments ADD COLUMN tracking_email_contact_id TEXT',
+    // Fulfillment — expedition mode
+    'ALTER TABLE products ADD COLUMN location TEXT',
+    "ALTER TABLE order_items ADD COLUMN fulfillment_status TEXT DEFAULT 'À prélever'",
+    'ALTER TABLE order_items ADD COLUMN shipment_id TEXT REFERENCES shipments(id)',
+    'ALTER TABLE order_items ADD COLUMN fulfilled_qty INTEGER DEFAULT 0',
+    'ALTER TABLE shipments ADD COLUMN bon_livraison_path TEXT',
+    // Line items sur factures fournisseurs et dépenses
+    'ALTER TABLE factures_fournisseurs ADD COLUMN lines TEXT',
+    'ALTER TABLE depenses ADD COLUMN lines TEXT',
+    // Fournisseurs — lien companies ↔ QB ↔ factures/dépenses
+    'ALTER TABLE companies ADD COLUMN quickbooks_vendor_id TEXT',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_qb_vendor ON companies(tenant_id, quickbooks_vendor_id) WHERE quickbooks_vendor_id IS NOT NULL',
+    'ALTER TABLE factures_fournisseurs ADD COLUMN vendor_id TEXT REFERENCES companies(id)',
+    'ALTER TABLE depenses ADD COLUMN vendor_id TEXT REFERENCES companies(id)',
     // Airtable webhooks — remplace le polling horaire
     `CREATE TABLE IF NOT EXISTS airtable_webhooks (
       id TEXT PRIMARY KEY,
@@ -978,6 +966,30 @@ export function initSchema() {
       UNIQUE(tenant_id, base_id)
     )`,
   ]
+
+  // ── Opportunities (AI-generated action suggestions) ───────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS opportunities (
+      id TEXT PRIMARY KEY,
+      tenant_id TEXT NOT NULL REFERENCES tenants(id),
+      type TEXT NOT NULL,
+      priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+      title TEXT NOT NULL,
+      description TEXT,
+      entity_type TEXT,
+      entity_id TEXT,
+      entity_name TEXT,
+      action_type TEXT NOT NULL DEFAULT 'review' CHECK(action_type IN ('email','review','order')),
+      email_to TEXT,
+      email_subject TEXT,
+      email_body TEXT,
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','dismissed','done')),
+      scanned_at TEXT DEFAULT (datetime('now')),
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_opportunities_tenant ON opportunities(tenant_id, status, scanned_at);
+  `)
 
   // ── Detail page field layout (admin-configurable) ──────────────────────────
   db.exec(`
@@ -1234,44 +1246,6 @@ export function initSchema() {
     } catch { /* already migrated */ }
   }
 
-  // Migrate custom_field_defs if it still has the old narrow CHECK constraint
-  const fieldDefsDef = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='custom_field_defs'").get()
-  if (fieldDefsDef && fieldDefsDef.sql.includes("'contacts','companies'")) {
-    db.exec(`
-      PRAGMA foreign_keys = OFF;
-      CREATE TABLE custom_field_defs_new (
-        id TEXT PRIMARY KEY,
-        tenant_id TEXT NOT NULL REFERENCES tenants(id),
-        entity_type TEXT NOT NULL,
-        key TEXT NOT NULL,
-        label TEXT NOT NULL,
-        field_type TEXT NOT NULL DEFAULT 'single_line_text',
-        options TEXT,
-        is_system INTEGER NOT NULL DEFAULT 0,
-        required INTEGER NOT NULL DEFAULT 0,
-        sort_order INTEGER DEFAULT 0,
-        airtable_field_id TEXT,
-        airtable_value_map TEXT,
-        created_at TEXT DEFAULT (datetime('now')),
-        updated_at TEXT DEFAULT (datetime('now')),
-        UNIQUE(tenant_id, entity_type, key)
-      );
-      INSERT INTO custom_field_defs_new (id, tenant_id, entity_type, key, label, field_type, sort_order, created_at)
-        SELECT id, tenant_id, entity_type, key, label,
-          CASE field_type WHEN 'text' THEN 'single_line_text' ELSE field_type END,
-          sort_order, created_at
-        FROM custom_field_defs;
-      DROP TABLE custom_field_defs;
-      ALTER TABLE custom_field_defs_new RENAME TO custom_field_defs;
-      PRAGMA foreign_keys = ON;
-    `)
-    console.log('✅ custom_field_defs migrated to support all entity types')
-  }
-
-  // Add field_values index
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_field_values_record ON field_values(tenant_id, entity_type, record_id)') } catch {}
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_field_values_def ON field_values(field_def_id)') } catch {}
-
   // Migrate orders table to new statuses if still using old CHECK constraint
   const ordersDef2 = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='orders'").get()
   if (ordersDef2 && ordersDef2.sql.includes("'Brouillon'")) {
@@ -1396,163 +1370,6 @@ export function initSchema() {
   console.log('Database schema initialized');
 }
 
-// ─── Champs système — seeding par tenant ──────────────────────────────────────
-
-const OPTION_COLORS = ['gray','blue','green','red','yellow','purple','orange','pink']
-
-const SYSTEM_FIELDS = [
-  // ── Billets ──────────────────────────────────────────────────────────────
-  { entity_type: 'tickets', key: 'title',            label: 'Titre',              field_type: 'single_line_text', sort_order: 0 },
-  { entity_type: 'tickets', key: 'status',           label: 'Statut',             field_type: 'single_select',    sort_order: 1, options: [
-    { value: 'Ouvert',             label: 'Ouvert',             color: 'green'  },
-    { value: 'En attente client',  label: 'En attente client',  color: 'yellow' },
-    { value: 'En attente nous',    label: 'En attente nous',    color: 'orange' },
-    { value: 'Fermé',              label: 'Fermé',              color: 'gray'   },
-  ]},
-  { entity_type: 'tickets', key: 'type',             label: 'Type',               field_type: 'single_select',    sort_order: 2, options: [
-    { value: 'Aide software',      label: 'Aide software',      color: 'blue'   },
-    { value: 'Defect software',    label: 'Defect software',    color: 'red'    },
-    { value: 'Aide hardware',      label: 'Aide hardware',      color: 'blue'   },
-    { value: 'Defect hardware',    label: 'Defect hardware',    color: 'red'    },
-    { value: 'Erreur de commande', label: 'Erreur de commande', color: 'orange' },
-    { value: 'Formation',          label: 'Formation',          color: 'purple' },
-    { value: 'Installation',       label: 'Installation',       color: 'gray'   },
-  ]},
-  { entity_type: 'tickets', key: 'company_id',       label: 'Entreprise',         field_type: 'relation',         sort_order: 3 },
-  { entity_type: 'tickets', key: 'contact_id',       label: 'Contact',            field_type: 'relation',         sort_order: 4 },
-  { entity_type: 'tickets', key: 'assigned_to',      label: 'Assigné à',          field_type: 'user',             sort_order: 5 },
-  { entity_type: 'tickets', key: 'duration_minutes', label: 'Durée (min)',         field_type: 'number',           sort_order: 6 },
-  { entity_type: 'tickets', key: 'description',      label: 'Description',        field_type: 'long_text',        sort_order: 7 },
-  { entity_type: 'tickets', key: 'notes',            label: 'Notes',              field_type: 'long_text',        sort_order: 8 },
-
-  // ── Entreprises ───────────────────────────────────────────────────────────
-  { entity_type: 'companies', key: 'name',           label: 'Nom',                field_type: 'single_line_text', sort_order: 0 },
-  { entity_type: 'companies', key: 'type',           label: 'Type',               field_type: 'single_select',    sort_order: 1, options: [] },
-  { entity_type: 'companies', key: 'lifecycle_phase',label: 'Phase du cycle',      field_type: 'single_select',    sort_order: 2, options: [] },
-  { entity_type: 'companies', key: 'phone',          label: 'Téléphone',          field_type: 'phone',            sort_order: 3 },
-  { entity_type: 'companies', key: 'email',          label: 'Courriel',           field_type: 'email',            sort_order: 4 },
-  { entity_type: 'companies', key: 'website',        label: 'Site web',           field_type: 'url',              sort_order: 5 },
-  { entity_type: 'companies', key: 'address',        label: 'Adresse',            field_type: 'single_line_text', sort_order: 6 },
-  { entity_type: 'companies', key: 'city',           label: 'Ville',              field_type: 'single_line_text', sort_order: 7 },
-  { entity_type: 'companies', key: 'province',       label: 'Province',           field_type: 'single_select',    sort_order: 8, options: [
-    { value: 'QC', label: 'Québec',               color: 'blue'  },
-    { value: 'ON', label: 'Ontario',              color: 'green' },
-    { value: 'BC', label: 'Colombie-Britannique', color: 'green' },
-    { value: 'AB', label: 'Alberta',              color: 'yellow'},
-    { value: 'SK', label: 'Saskatchewan',         color: 'yellow'},
-    { value: 'MB', label: 'Manitoba',             color: 'orange'},
-    { value: 'NS', label: 'Nouvelle-Écosse',      color: 'gray'  },
-    { value: 'NB', label: 'Nouveau-Brunswick',    color: 'gray'  },
-    { value: 'PE', label: 'Î.-P.-É.',             color: 'gray'  },
-    { value: 'NL', label: 'Terre-Neuve',          color: 'gray'  },
-  ]},
-  { entity_type: 'companies', key: 'notes',          label: 'Notes',              field_type: 'long_text',        sort_order: 9 },
-
-  // ── Contacts ──────────────────────────────────────────────────────────────
-  { entity_type: 'contacts', key: 'first_name',      label: 'Prénom',             field_type: 'single_line_text', sort_order: 0 },
-  { entity_type: 'contacts', key: 'last_name',       label: 'Nom',               field_type: 'single_line_text', sort_order: 1 },
-  { entity_type: 'contacts', key: 'email',           label: 'Courriel',           field_type: 'email',            sort_order: 2 },
-  { entity_type: 'contacts', key: 'phone',           label: 'Téléphone',          field_type: 'phone',            sort_order: 3 },
-  { entity_type: 'contacts', key: 'mobile',          label: 'Cellulaire',         field_type: 'phone',            sort_order: 4 },
-  { entity_type: 'contacts', key: 'language',        label: 'Langue',             field_type: 'single_select',    sort_order: 5, options: [
-    { value: 'French',  label: 'Français', color: 'blue'  },
-    { value: 'English', label: 'Anglais',  color: 'green' },
-  ]},
-  { entity_type: 'contacts', key: 'notes',           label: 'Notes',              field_type: 'long_text',        sort_order: 6 },
-
-  // ── Projets ───────────────────────────────────────────────────────────────
-  { entity_type: 'projects', key: 'name',            label: 'Nom',               field_type: 'single_line_text', sort_order: 0 },
-  { entity_type: 'projects', key: 'status',          label: 'Statut',             field_type: 'single_select',    sort_order: 1, options: [
-    { value: 'Ouvert', label: 'Ouvert', color: 'green' },
-    { value: 'Gagné',  label: 'Gagné',  color: 'blue'  },
-    { value: 'Perdu',  label: 'Perdu',  color: 'red'   },
-  ]},
-  { entity_type: 'projects', key: 'type',            label: 'Type',               field_type: 'single_select',    sort_order: 2, options: [
-    { value: 'Nouveau client',    label: 'Nouveau client',    color: 'blue'   },
-    { value: 'Expansion',         label: 'Expansion',         color: 'green'  },
-    { value: 'Ajouts mineurs',    label: 'Ajouts mineurs',    color: 'yellow' },
-    { value: 'Pièces de rechange',label: 'Pièces de rechange',color: 'gray'   },
-  ]},
-  { entity_type: 'projects', key: 'probability',     label: 'Probabilité (%)',    field_type: 'number',           sort_order: 3 },
-  { entity_type: 'projects', key: 'value_cad',       label: 'Valeur (CAD)',        field_type: 'number',           sort_order: 4 },
-  { entity_type: 'projects', key: 'close_date',      label: 'Date de clôture',    field_type: 'date',             sort_order: 5 },
-  { entity_type: 'projects', key: 'notes',           label: 'Notes',              field_type: 'long_text',        sort_order: 6 },
-
-  // ── Produits ──────────────────────────────────────────────────────────────
-  { entity_type: 'products', key: 'sku',             label: 'SKU',                field_type: 'single_line_text', sort_order: 0 },
-  { entity_type: 'products', key: 'name_fr',         label: 'Nom (FR)',           field_type: 'single_line_text', sort_order: 1 },
-  { entity_type: 'products', key: 'name_en',         label: 'Nom (EN)',           field_type: 'single_line_text', sort_order: 2 },
-  { entity_type: 'products', key: 'type',            label: 'Type',               field_type: 'single_select',    sort_order: 3, options: [] },
-  { entity_type: 'products', key: 'unit_cost',       label: 'Coût unitaire (CAD)',field_type: 'number',           sort_order: 4 },
-  { entity_type: 'products', key: 'price_cad',       label: 'Prix (CAD)',          field_type: 'number',           sort_order: 5 },
-  { entity_type: 'products', key: 'stock_qty',       label: 'Stock',              field_type: 'number',           sort_order: 6 },
-  { entity_type: 'products', key: 'min_stock',       label: 'Stock minimum',      field_type: 'number',           sort_order: 7 },
-  { entity_type: 'products', key: 'supplier',        label: 'Fournisseur',        field_type: 'single_line_text', sort_order: 8 },
-  { entity_type: 'products', key: 'procurement_type',label: 'Approvisionnement',  field_type: 'single_select',    sort_order: 9, options: [
-    { value: 'Acheté',    label: 'Acheté',    color: 'blue'  },
-    { value: 'Fabriqué',  label: 'Fabriqué',  color: 'green' },
-    { value: 'Drop ship', label: 'Drop ship', color: 'orange'},
-  ]},
-  { entity_type: 'products', key: 'notes',           label: 'Notes',              field_type: 'long_text',        sort_order: 10 },
-
-  // ── Commandes ─────────────────────────────────────────────────────────────
-  { entity_type: 'orders', key: 'status',            label: 'Statut',             field_type: 'single_select',    sort_order: 0, options: [
-    { value: 'Commande vide',                        label: 'Commande vide',                        color: 'gray'   },
-    { value: 'Gel d\'envois',                        label: 'Gel d\'envois',                        color: 'red'    },
-    { value: 'En attente',                           label: 'En attente',                           color: 'yellow' },
-    { value: 'Items à fabriquer ou à acheter',       label: 'Items à fabriquer ou à acheter',       color: 'orange' },
-    { value: 'Tous les items sont disponibles',      label: 'Tous les items sont disponibles',      color: 'blue'   },
-    { value: 'Tout est dans la boite',               label: 'Tout est dans la boite',               color: 'blue'   },
-    { value: 'Partiellement envoyé',                 label: 'Partiellement envoyé',                 color: 'purple' },
-    { value: 'Envoyé aujourd\'hui',                  label: 'Envoyé aujourd\'hui',                  color: 'green'  },
-    { value: 'Envoyé',                               label: 'Envoyé',                               color: 'green'  },
-    { value: 'Drop ship seulement',                  label: 'Drop ship seulement',                  color: 'blue'   },
-    { value: 'ERREUR SYSTÈME',                       label: 'ERREUR SYSTÈME',                       color: 'red'    },
-  ]},
-  { entity_type: 'orders', key: 'priority',          label: 'Priorité',           field_type: 'single_line_text', sort_order: 1 },
-  { entity_type: 'orders', key: 'notes',             label: 'Notes',              field_type: 'long_text',        sort_order: 2 },
-
-  // ── Achats ────────────────────────────────────────────────────────────────
-  { entity_type: 'purchases', key: 'status',         label: 'Statut',             field_type: 'single_select',    sort_order: 0, options: [
-    { value: 'Commandé',           label: 'Commandé',           color: 'blue'   },
-    { value: 'Reçu partiellement', label: 'Reçu partiellement', color: 'yellow' },
-    { value: 'Reçu',               label: 'Reçu',               color: 'green'  },
-    { value: 'Annulé',             label: 'Annulé',             color: 'red'    },
-  ]},
-  { entity_type: 'purchases', key: 'qty_ordered',    label: 'Qté commandée',      field_type: 'number',           sort_order: 1 },
-  { entity_type: 'purchases', key: 'qty_received',   label: 'Qté reçue',          field_type: 'number',           sort_order: 2 },
-  { entity_type: 'purchases', key: 'unit_cost',      label: 'Coût unitaire',      field_type: 'number',           sort_order: 3 },
-  { entity_type: 'purchases', key: 'order_date',     label: 'Date de commande',   field_type: 'date',             sort_order: 4 },
-  { entity_type: 'purchases', key: 'expected_date',  label: 'Date prévue',        field_type: 'date',             sort_order: 5 },
-  { entity_type: 'purchases', key: 'notes',          label: 'Notes',              field_type: 'long_text',        sort_order: 6 },
-]
-
-export function seedSystemFields() {
-  const tenants = db.prepare('SELECT id FROM tenants').all()
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO custom_field_defs
-      (id, tenant_id, entity_type, key, label, field_type, options, is_system, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)
-  `)
-  const insertMany = db.transaction((tenantId) => {
-    for (const f of SYSTEM_FIELDS) {
-      insert.run(
-        randomUUID(),
-        tenantId,
-        f.entity_type,
-        f.key,
-        f.label,
-        f.field_type,
-        f.options ? JSON.stringify(f.options) : null,
-        f.sort_order
-      )
-    }
-  })
-  for (const tenant of tenants) {
-    insertMany(tenant.id)
-  }
-  console.log(`✅ System fields seeded for ${tenants.length} tenant(s)`)
-}
 
 const SELLABLE_DEFAULTS = [
   { name_fr: 'Assistant',               name_en: 'Helper',                       sku: 'SVC-001', sort: 0 },

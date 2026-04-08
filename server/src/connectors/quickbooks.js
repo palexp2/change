@@ -42,14 +42,14 @@ export async function exchangeCode(code) {
   return resp.json()
 }
 
-// Mutex par tenant pour éviter les refreshs concurrents
-const refreshLocks = new Map()
+// Mutex pour éviter les refreshs concurrents
+let refreshLock = null
 
-export async function getAccessToken(tenantId) {
+export async function getAccessToken() {
   const row = db.prepare(`
-    SELECT * FROM connector_oauth WHERE tenant_id=? AND connector='quickbooks'
+    SELECT * FROM connector_oauth WHERE connector='quickbooks'
     ORDER BY updated_at DESC LIMIT 1
-  `).get(tenantId)
+  `).get()
   if (!row) throw new Error('QuickBooks non connecté')
 
   const meta = JSON.parse(row.metadata || '{}')
@@ -58,14 +58,14 @@ export async function getAccessToken(tenantId) {
     return { accessToken: row.access_token, realmId: meta.realm_id }
   }
 
-  if (refreshLocks.has(tenantId)) return refreshLocks.get(tenantId)
+  if (refreshLock) return refreshLock
 
   const refreshPromise = (async () => {
     try {
       const fresh = db.prepare(`
-        SELECT * FROM connector_oauth WHERE tenant_id=? AND connector='quickbooks'
+        SELECT * FROM connector_oauth WHERE connector='quickbooks'
         ORDER BY updated_at DESC LIMIT 1
-      `).get(tenantId)
+      `).get()
       if (fresh && (!fresh.expiry_date || Date.now() <= fresh.expiry_date - 60_000)) {
         return { accessToken: fresh.access_token, realmId: JSON.parse(fresh.metadata || '{}').realm_id }
       }
@@ -92,16 +92,16 @@ export async function getAccessToken(tenantId) {
       `).run(t.access_token, t.refresh_token || null, t.expires_in ? Date.now() + t.expires_in * 1000 : null, fresh.id)
       return { accessToken: t.access_token, realmId: JSON.parse(fresh.metadata || '{}').realm_id }
     } finally {
-      refreshLocks.delete(tenantId)
+      refreshLock = null
     }
   })()
 
-  refreshLocks.set(tenantId, refreshPromise)
+  refreshLock = refreshPromise
   return refreshPromise
 }
 
-export async function qbRequest(method, path, tenantId, body) {
-  const { accessToken, realmId } = await getAccessToken(tenantId)
+export async function qbRequest(method, path, body) {
+  const { accessToken, realmId } = await getAccessToken()
   const sep = path.includes('?') ? '&' : '?'
   const url = `${QB_API_BASE}/${realmId}${path}${sep}minorversion=65`
   const resp = await fetch(url, {
@@ -120,5 +120,5 @@ export async function qbRequest(method, path, tenantId, body) {
   return resp.json()
 }
 
-export const qbGet  = (path, tenantId)       => qbRequest('GET',  path, tenantId)
-export const qbPost = (path, tenantId, body) => qbRequest('POST', path, tenantId, body)
+export const qbGet  = (path)       => qbRequest('GET',  path)
+export const qbPost = (path, body) => qbRequest('POST', path, body)

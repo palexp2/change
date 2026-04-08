@@ -78,15 +78,14 @@ export function runNextTask() {
   const userComment = next.user_comment ? `\n\nCommentaire humain: ${next.user_comment}` : ''
   const prompt = [
     'Tu es un agent ERP Orisha. Exécute UNIQUEMENT la tâche suivante — ne lis pas agent-tasks.json ni aucun autre fichier de gestion des tâches.\n\n',
-    `Titre: ${next.title}`,
-    next.description ? `\n\nDescription:\n${next.description}` : '',
+    `Description:\n${next.description}`,
     userComment,
     '\n\nSi la tâche est trop complexe ou nécessite une approbation humaine pour une sous-étape, ',
     'crée une sous-tâche (elle restera en attente jusqu\'à approbation humaine):\n',
     `curl -s -X POST http://localhost:3004/api/agent/tasks/internal \\
   -H 'Content-Type: application/json' \\
   -H 'X-Agent-Secret: ${internalSecret}' \\
-  -d '{"title":"...","description":"...","priority":0}'\n\n`,
+  -d '{"description":"...","priority":0}'\n\n`,
     'Rapporte en détail ce que tu as accompli (ou pourquoi tu es bloqué).',
   ].join('')
 

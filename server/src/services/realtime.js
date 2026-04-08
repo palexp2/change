@@ -5,8 +5,7 @@ dotenv.config()
 
 const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-production'
 
-// tenantId → Set<ws>
-const clients = new Map()
+const clients = new Set()
 
 export function createRealtimeServer(httpServer) {
   if (process.env.REALTIME_ENABLED !== 'true') {
@@ -17,7 +16,6 @@ export function createRealtimeServer(httpServer) {
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' })
 
   wss.on('connection', (ws) => {
-    let tenantId = null
     let authenticated = false
 
     const authTimeout = setTimeout(() => {
@@ -28,14 +26,10 @@ export function createRealtimeServer(httpServer) {
       try {
         const data = JSON.parse(message.toString())
         if (data.type === 'auth') {
-          const decoded = jwt.verify(data.token, JWT_SECRET)
-          tenantId = decoded.tenant_id
+          jwt.verify(data.token, JWT_SECRET)
           authenticated = true
           clearTimeout(authTimeout)
-
-          if (!clients.has(tenantId)) clients.set(tenantId, new Set())
-          clients.get(tenantId).add(ws)
-
+          clients.add(ws)
           ws.send(JSON.stringify({ type: 'auth:success' }))
         }
       } catch {
@@ -45,10 +39,7 @@ export function createRealtimeServer(httpServer) {
 
     ws.on('close', () => {
       clearTimeout(authTimeout)
-      if (tenantId && clients.has(tenantId)) {
-        clients.get(tenantId).delete(ws)
-        if (clients.get(tenantId).size === 0) clients.delete(tenantId)
-      }
+      clients.delete(ws)
     })
 
     ws.on('error', () => {}) // Swallow per-socket errors
@@ -72,30 +63,17 @@ export function createRealtimeServer(httpServer) {
 }
 
 /**
- * Broadcast a message to all connected clients of a tenant.
+ * Broadcast a message to all connected clients.
  * Fire-and-forget — never throws.
  */
-export function broadcast(tenantId, message) {
-  if (!tenantId || !clients.has(tenantId)) return
+export function broadcast(message) {
   const json = JSON.stringify(message)
-  for (const ws of clients.get(tenantId)) {
+  for (const ws of clients) {
     try {
       if (ws.readyState === 1) ws.send(json) // WebSocket.OPEN = 1
     } catch {}
   }
 }
 
-/**
- * Broadcast a message to all connected clients across all tenants.
- * Fire-and-forget — never throws.
- */
-export function broadcastAll(message) {
-  const json = JSON.stringify(message)
-  for (const sockets of clients.values()) {
-    for (const ws of sockets) {
-      try {
-        if (ws.readyState === 1) ws.send(json)
-      } catch {}
-    }
-  }
-}
+// Alias for backward compatibility — both do the same thing now
+export const broadcastAll = broadcast

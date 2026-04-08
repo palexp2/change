@@ -2,31 +2,21 @@ import db from './database.js';
 
 export function initSchema() {
   db.exec(`
-    -- Tenants
-    CREATE TABLE IF NOT EXISTS tenants (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      slug TEXT UNIQUE NOT NULL,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-
     -- Users
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       email TEXT NOT NULL,
       password_hash TEXT NOT NULL,
       name TEXT NOT NULL,
       role TEXT NOT NULL CHECK(role IN ('admin','sales','support','ops')),
       active INTEGER NOT NULL DEFAULT 1,
       created_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(tenant_id, email)
+      UNIQUE(email)
     );
 
     -- Companies
     CREATE TABLE IF NOT EXISTS companies (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       name TEXT NOT NULL,
       type TEXT,
       lifecycle_phase TEXT,
@@ -46,7 +36,6 @@ export function initSchema() {
     -- Contacts
     CREATE TABLE IF NOT EXISTS contacts (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       first_name TEXT NOT NULL,
       last_name TEXT NOT NULL,
       email TEXT,
@@ -61,7 +50,6 @@ export function initSchema() {
     -- Projects
     CREATE TABLE IF NOT EXISTS projects (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       name TEXT NOT NULL,
       company_id TEXT REFERENCES companies(id),
       contact_id TEXT REFERENCES contacts(id),
@@ -83,7 +71,6 @@ export function initSchema() {
     -- Products
     CREATE TABLE IF NOT EXISTS products (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       sku TEXT,
       name_fr TEXT NOT NULL,
       name_en TEXT,
@@ -105,7 +92,6 @@ export function initSchema() {
     -- Stock Movements
     CREATE TABLE IF NOT EXISTS stock_movements (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       product_id TEXT NOT NULL REFERENCES products(id),
       type TEXT NOT NULL CHECK(type IN ('in','out','adjustment')),
       qty INTEGER NOT NULL,
@@ -118,7 +104,6 @@ export function initSchema() {
     -- Orders
     CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       order_number INTEGER NOT NULL,
       company_id TEXT REFERENCES companies(id),
       project_id TEXT REFERENCES projects(id),
@@ -147,7 +132,6 @@ export function initSchema() {
     -- Shipments
     CREATE TABLE IF NOT EXISTS shipments (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       order_id TEXT NOT NULL REFERENCES orders(id),
       tracking_number TEXT,
       carrier TEXT,
@@ -160,7 +144,6 @@ export function initSchema() {
     -- Returns
     CREATE TABLE IF NOT EXISTS returns (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       company_id TEXT REFERENCES companies(id),
       order_id TEXT REFERENCES orders(id),
       status TEXT DEFAULT 'Ouvert' CHECK(status IN ('Ouvert','Reçu','Analysé','Fermé')),
@@ -185,7 +168,6 @@ export function initSchema() {
     -- Support Tickets
     CREATE TABLE IF NOT EXISTS tickets (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       company_id TEXT REFERENCES companies(id),
       contact_id TEXT REFERENCES contacts(id),
       assigned_to TEXT REFERENCES users(id),
@@ -202,7 +184,6 @@ export function initSchema() {
     -- Subscriptions
     CREATE TABLE IF NOT EXISTS subscriptions (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       company_id TEXT REFERENCES companies(id),
       stripe_id TEXT,
       status TEXT CHECK(status IN ('active','past_due','canceled','trialing')),
@@ -214,10 +195,9 @@ export function initSchema() {
       created_at TEXT DEFAULT (datetime('now'))
     );
 
-    -- Connector OAuth tokens (per-tenant, per-connector, per-account)
+    -- Connector OAuth tokens (per-connector, per-account)
     CREATE TABLE IF NOT EXISTS connector_oauth (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       connector TEXT NOT NULL,
       account_key TEXT NOT NULL,
       account_email TEXT,
@@ -227,22 +207,20 @@ export function initSchema() {
       metadata TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(tenant_id, connector, account_key)
+      UNIQUE(connector, account_key)
     );
 
-    -- Connector config (per-tenant, per-connector key-value)
+    -- Connector config (per-connector key-value)
     CREATE TABLE IF NOT EXISTS connector_config (
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       connector TEXT NOT NULL,
       key TEXT NOT NULL,
       value TEXT,
-      PRIMARY KEY(tenant_id, connector, key)
+      PRIMARY KEY(connector, key)
     );
 
     -- Interactions (unified feed)
     CREATE TABLE IF NOT EXISTS interactions (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       contact_id TEXT REFERENCES contacts(id) ON DELETE SET NULL,
       company_id TEXT REFERENCES companies(id) ON DELETE SET NULL,
       user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -268,15 +246,6 @@ export function initSchema() {
       drive_file_id TEXT UNIQUE,
       drive_filename TEXT,
       original_filename TEXT UNIQUE
-    );
-
-    -- SMS
-    CREATE TABLE IF NOT EXISTS sms (
-      id TEXT PRIMARY KEY,
-      interaction_id TEXT UNIQUE REFERENCES interactions(id) ON DELETE CASCADE,
-      body TEXT,
-      from_number TEXT,
-      to_number TEXT
     );
 
     -- Emails
@@ -321,16 +290,16 @@ export function initSchema() {
       last_synced_at TEXT
     );
 
-    -- Drive sync state (per tenant)
+    -- Drive sync state
     CREATE TABLE IF NOT EXISTS drive_sync_state (
-      tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
+      id TEXT PRIMARY KEY DEFAULT 'default',
       last_page_token TEXT,
       last_synced_at TEXT
     );
 
-    -- Airtable CRM sync config (per tenant)
+    -- Airtable CRM sync config
     CREATE TABLE IF NOT EXISTS airtable_sync_config (
-      tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
+      id TEXT PRIMARY KEY DEFAULT 'default',
       base_id TEXT,
       contacts_table_id TEXT,
       companies_table_id TEXT,
@@ -339,27 +308,18 @@ export function initSchema() {
       last_synced_at TEXT
     );
 
-    -- Airtable Inventaire config (per tenant)
-    CREATE TABLE IF NOT EXISTS airtable_inventaire_config (
-      tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
+    -- Airtable Projets config
+    CREATE TABLE IF NOT EXISTS airtable_projets_config (
+      id TEXT PRIMARY KEY DEFAULT 'default',
       base_id TEXT,
       projects_table_id TEXT,
       field_map_projects TEXT,
       last_synced_at TEXT
     );
 
-    -- Airtable Pièces config (per tenant)
-    CREATE TABLE IF NOT EXISTS airtable_pieces_config (
-      tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
-      base_id TEXT,
-      table_id TEXT,
-      field_map TEXT,
-      last_synced_at TEXT
-    );
-
-    -- Airtable Orders config (per tenant)
+    -- Airtable Orders config
     CREATE TABLE IF NOT EXISTS airtable_orders_config (
-      tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
+      id TEXT PRIMARY KEY DEFAULT 'default',
       base_id TEXT,
       orders_table_id TEXT,
       items_table_id TEXT,
@@ -368,19 +328,9 @@ export function initSchema() {
       last_synced_at TEXT
     );
 
-    -- Airtable Achats config (per tenant)
-    CREATE TABLE IF NOT EXISTS airtable_achats_config (
-      tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
-      base_id TEXT,
-      table_id TEXT,
-      field_map TEXT,
-      last_synced_at TEXT
-    );
-
     -- Serial Numbers
     CREATE TABLE IF NOT EXISTS serial_numbers (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       airtable_id TEXT UNIQUE,
       serial TEXT NOT NULL,
       product_id TEXT REFERENCES products(id),
@@ -396,59 +346,28 @@ export function initSchema() {
       updated_at TEXT DEFAULT (datetime('now'))
     );
 
-    -- Airtable Serial Numbers config (per tenant)
-    CREATE TABLE IF NOT EXISTS airtable_serials_config (
-      tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
-      base_id TEXT,
-      table_id TEXT,
-      field_map TEXT,
-      last_synced_at TEXT
-    );
-
-    -- Airtable Billets config (per tenant)
-    CREATE TABLE IF NOT EXISTS airtable_billets_config (
-      tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
-      base_id TEXT,
-      table_id TEXT,
-      field_map TEXT,
-      last_synced_at TEXT
-    );
-
-    -- Airtable Envois config (per tenant)
-    CREATE TABLE IF NOT EXISTS airtable_envois_config (
-      tenant_id TEXT PRIMARY KEY REFERENCES tenants(id),
-      base_id TEXT,
-      table_id TEXT,
-      field_map TEXT,
-      last_synced_at TEXT
-    );
-
     -- Unified Airtable module config (pieces, achats, billets, serials, envois)
     CREATE TABLE IF NOT EXISTS airtable_module_config (
-      tenant_id TEXT NOT NULL,
-      module TEXT NOT NULL,
+      module TEXT NOT NULL PRIMARY KEY,
       base_id TEXT,
       table_id TEXT,
       field_map TEXT,
-      last_synced_at TEXT,
-      PRIMARY KEY (tenant_id, module)
+      last_synced_at TEXT
     );
 
     -- Table view configs (admin-defined per table)
     CREATE TABLE IF NOT EXISTS table_view_configs (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       table_name TEXT NOT NULL,
       visible_columns TEXT NOT NULL DEFAULT '[]',
       default_sort TEXT NOT NULL DEFAULT '[]',
       updated_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(tenant_id, table_name)
+      UNIQUE(table_name)
     );
 
     -- Table view pills (admin-defined quick filters per table)
     CREATE TABLE IF NOT EXISTS table_view_pills (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       table_name TEXT NOT NULL,
       label TEXT NOT NULL,
       color TEXT NOT NULL DEFAULT 'gray',
@@ -460,7 +379,6 @@ export function initSchema() {
     -- Purchases
     CREATE TABLE IF NOT EXISTS purchases (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       airtable_id TEXT UNIQUE,
       product_id TEXT REFERENCES products(id),
       supplier TEXT,
@@ -480,7 +398,6 @@ export function initSchema() {
     -- Soumissions (quotes linked to projects)
     CREATE TABLE IF NOT EXISTS soumissions (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       airtable_id TEXT UNIQUE,
       project_id TEXT REFERENCES projects(id),
       quote_url TEXT,
@@ -495,7 +412,6 @@ export function initSchema() {
     -- Adresses
     CREATE TABLE IF NOT EXISTS adresses (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       airtable_id TEXT UNIQUE,
       line1 TEXT,
       city TEXT,
@@ -513,7 +429,6 @@ export function initSchema() {
     -- BOM Items (bill of materials)
     CREATE TABLE IF NOT EXISTS bom_items (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       airtable_id TEXT UNIQUE,
       product_id TEXT REFERENCES products(id),
       component_id TEXT REFERENCES products(id),
@@ -526,7 +441,6 @@ export function initSchema() {
     -- Serial state changes (history)
     CREATE TABLE IF NOT EXISTS serial_state_changes (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       airtable_id TEXT UNIQUE,
       serial_id TEXT REFERENCES serial_numbers(id),
       previous_status TEXT,
@@ -538,7 +452,6 @@ export function initSchema() {
     -- Assemblages (production runs)
     CREATE TABLE IF NOT EXISTS assemblages (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       airtable_id TEXT UNIQUE,
       product_id TEXT REFERENCES products(id),
       qty_produced INTEGER DEFAULT 0,
@@ -551,7 +464,6 @@ export function initSchema() {
     -- Factures (invoices, read-only from Airtable)
     CREATE TABLE IF NOT EXISTS factures (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       airtable_id TEXT UNIQUE,
       invoice_id TEXT,
       company_id TEXT REFERENCES companies(id),
@@ -573,7 +485,6 @@ export function initSchema() {
     -- Dépenses (Expenses)
     CREATE TABLE IF NOT EXISTS depenses (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       date_depense TEXT NOT NULL,
       category TEXT CHECK(category IN ('Fournitures','Voyage','Repas','Loyer','Assurance','Services','Équipement','Marketing','Logiciels','Autre')),
       description TEXT NOT NULL,
@@ -594,7 +505,6 @@ export function initSchema() {
     -- Factures fournisseurs (Bills / Accounts Payable)
     CREATE TABLE IF NOT EXISTS factures_fournisseurs (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       bill_number TEXT,
       vendor TEXT NOT NULL,
       vendor_invoice_number TEXT,
@@ -616,7 +526,6 @@ export function initSchema() {
     -- Tasks
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       title TEXT NOT NULL,
       description TEXT,
       status TEXT NOT NULL DEFAULT 'À faire' CHECK(status IN ('À faire','En cours','Terminé','Annulé')),
@@ -633,7 +542,6 @@ export function initSchema() {
     -- Sale receipts (OCR/AI extraction)
     CREATE TABLE IF NOT EXISTS sale_receipts (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       filename TEXT NOT NULL,
       original_name TEXT,
       file_type TEXT,
@@ -661,63 +569,46 @@ export function initSchema() {
 
   // Create indexes for performance
   const indexes = [
-    'CREATE INDEX IF NOT EXISTS idx_users_tenant ON users(tenant_id)',
     'CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)',
-    'CREATE INDEX IF NOT EXISTS idx_companies_tenant ON companies(tenant_id)',
-    'CREATE INDEX IF NOT EXISTS idx_companies_phase ON companies(tenant_id, lifecycle_phase)',
-    'CREATE INDEX IF NOT EXISTS idx_contacts_tenant ON contacts(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_companies_phase ON companies(lifecycle_phase)',
     'CREATE INDEX IF NOT EXISTS idx_contacts_company ON contacts(company_id)',
-    'CREATE INDEX IF NOT EXISTS idx_contacts_sort ON contacts(tenant_id, first_name, last_name)',
-    'CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(tenant_id, email)',
-    'CREATE INDEX IF NOT EXISTS idx_projects_tenant ON projects(tenant_id)',
-    'CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(tenant_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_contacts_sort ON contacts(first_name, last_name)',
+    'CREATE INDEX IF NOT EXISTS idx_contacts_email ON contacts(email)',
+    'CREATE INDEX IF NOT EXISTS idx_projects_status ON projects(status)',
     'CREATE INDEX IF NOT EXISTS idx_projects_company ON projects(company_id)',
-    'CREATE INDEX IF NOT EXISTS idx_products_tenant ON products(tenant_id)',
-    'CREATE INDEX IF NOT EXISTS idx_products_sku ON products(tenant_id, sku)',
+    'CREATE INDEX IF NOT EXISTS idx_products_sku ON products(sku)',
     'CREATE INDEX IF NOT EXISTS idx_stock_movements_product ON stock_movements(product_id)',
-    'CREATE INDEX IF NOT EXISTS idx_orders_tenant ON orders(tenant_id)',
-    'CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(tenant_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)',
     'CREATE INDEX IF NOT EXISTS idx_orders_company ON orders(company_id)',
     'CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)',
     'CREATE INDEX IF NOT EXISTS idx_shipments_order ON shipments(order_id)',
-    'CREATE INDEX IF NOT EXISTS idx_tickets_tenant ON tickets(tenant_id)',
-    'CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(tenant_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)',
     'CREATE INDEX IF NOT EXISTS idx_tickets_company ON tickets(company_id)',
-    'CREATE INDEX IF NOT EXISTS idx_subscriptions_tenant ON subscriptions(tenant_id)',
-    'CREATE INDEX IF NOT EXISTS idx_connector_oauth_tenant ON connector_oauth(tenant_id, connector)',
-    'CREATE INDEX IF NOT EXISTS idx_interactions_tenant ON interactions(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_connector_oauth_connector ON connector_oauth(connector)',
     'CREATE INDEX IF NOT EXISTS idx_interactions_contact ON interactions(contact_id)',
     'CREATE INDEX IF NOT EXISTS idx_interactions_company ON interactions(company_id)',
-    'CREATE INDEX IF NOT EXISTS idx_interactions_timestamp ON interactions(tenant_id, timestamp DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_interactions_timestamp ON interactions(timestamp DESC)',
     'CREATE INDEX IF NOT EXISTS idx_calls_interaction ON calls(interaction_id)',
     'CREATE INDEX IF NOT EXISTS idx_emails_gmail ON emails(gmail_message_id)',
     'CREATE INDEX IF NOT EXISTS idx_emails_interaction ON emails(interaction_id)',
-    'CREATE INDEX IF NOT EXISTS idx_purchases_tenant ON purchases(tenant_id)',
     'CREATE INDEX IF NOT EXISTS idx_purchases_product ON purchases(product_id)',
-    'CREATE INDEX IF NOT EXISTS idx_serials_tenant ON serial_numbers(tenant_id)',
     'CREATE INDEX IF NOT EXISTS idx_serials_product ON serial_numbers(product_id)',
     'CREATE INDEX IF NOT EXISTS idx_serials_company ON serial_numbers(company_id)',
-    'CREATE INDEX IF NOT EXISTS idx_view_configs_tenant ON table_view_configs(tenant_id, table_name)',
-    'CREATE INDEX IF NOT EXISTS idx_view_pills_tenant ON table_view_pills(tenant_id, table_name)',
-    'CREATE INDEX IF NOT EXISTS idx_soumissions_tenant ON soumissions(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_view_configs_table ON table_view_configs(table_name)',
+    'CREATE INDEX IF NOT EXISTS idx_view_pills_table ON table_view_pills(table_name)',
     'CREATE INDEX IF NOT EXISTS idx_soumissions_project ON soumissions(project_id)',
-    'CREATE INDEX IF NOT EXISTS idx_adresses_tenant ON adresses(tenant_id)',
     'CREATE INDEX IF NOT EXISTS idx_adresses_company ON adresses(company_id)',
     'CREATE INDEX IF NOT EXISTS idx_bom_items_product ON bom_items(product_id)',
     'CREATE INDEX IF NOT EXISTS idx_serial_state_changes_serial ON serial_state_changes(serial_id)',
     'CREATE INDEX IF NOT EXISTS idx_assemblages_product ON assemblages(product_id)',
-    'CREATE INDEX IF NOT EXISTS idx_factures_tenant ON factures(tenant_id)',
     'CREATE INDEX IF NOT EXISTS idx_factures_company ON factures(company_id)',
-    'CREATE INDEX IF NOT EXISTS idx_depenses_tenant ON depenses(tenant_id)',
-    'CREATE INDEX IF NOT EXISTS idx_depenses_status ON depenses(tenant_id, status)',
-    'CREATE INDEX IF NOT EXISTS idx_depenses_date ON depenses(tenant_id, date_depense DESC)',
-    'CREATE INDEX IF NOT EXISTS idx_factures_fourn_tenant ON factures_fournisseurs(tenant_id)',
-    'CREATE INDEX IF NOT EXISTS idx_factures_fourn_status ON factures_fournisseurs(tenant_id, status)',
-    'CREATE INDEX IF NOT EXISTS idx_factures_fourn_due ON factures_fournisseurs(tenant_id, due_date)',
-    'CREATE INDEX IF NOT EXISTS idx_tasks_tenant ON tasks(tenant_id)',
+    'CREATE INDEX IF NOT EXISTS idx_depenses_status ON depenses(status)',
+    'CREATE INDEX IF NOT EXISTS idx_depenses_date ON depenses(date_depense DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_factures_fourn_status ON factures_fournisseurs(status)',
+    'CREATE INDEX IF NOT EXISTS idx_factures_fourn_due ON factures_fournisseurs(due_date)',
     'CREATE INDEX IF NOT EXISTS idx_tasks_company ON tasks(company_id)',
     'CREATE INDEX IF NOT EXISTS idx_tasks_contact ON tasks(contact_id)',
-    'CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(tenant_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)',
   ];
 
   // Add columns that may be missing from older schema versions
@@ -737,12 +628,8 @@ export function initSchema() {
     'ALTER TABLE users ADD COLUMN phone_number TEXT',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ftp_username ON users(ftp_username) WHERE ftp_username IS NOT NULL',
     'ALTER TABLE products ADD COLUMN order_qty INTEGER DEFAULT 0',
-    `INSERT OR IGNORE INTO airtable_module_config (tenant_id, module, base_id, table_id, field_map, last_synced_at) SELECT tenant_id, 'pieces', base_id, table_id, field_map, last_synced_at FROM airtable_pieces_config`,
-    `INSERT OR IGNORE INTO airtable_module_config (tenant_id, module, base_id, table_id, field_map, last_synced_at) SELECT tenant_id, 'achats', base_id, table_id, field_map, last_synced_at FROM airtable_achats_config`,
-    `INSERT OR IGNORE INTO airtable_module_config (tenant_id, module, base_id, table_id, field_map, last_synced_at) SELECT tenant_id, 'billets', base_id, table_id, field_map, last_synced_at FROM airtable_billets_config`,
-    `INSERT OR IGNORE INTO airtable_module_config (tenant_id, module, base_id, table_id, field_map, last_synced_at) SELECT tenant_id, 'serials', base_id, table_id, field_map, last_synced_at FROM airtable_serials_config`,
-    `INSERT OR IGNORE INTO airtable_module_config (tenant_id, module, base_id, table_id, field_map, last_synced_at) SELECT tenant_id, 'envois', base_id, table_id, field_map, last_synced_at FROM airtable_envois_config`,
     'ALTER TABLE airtable_inventaire_config ADD COLUMN extra_tables TEXT',
+    'ALTER TABLE airtable_inventaire_config RENAME TO airtable_projets_config',
     // returns enhancements
     'ALTER TABLE returns ADD COLUMN airtable_id TEXT',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_returns_airtable ON returns(airtable_id) WHERE airtable_id IS NOT NULL',
@@ -775,23 +662,9 @@ export function initSchema() {
     'ALTER TABLE subscriptions ADD COLUMN stripe_url TEXT',
     'ALTER TABLE subscriptions ADD COLUMN amount_after_discount REAL',
     'ALTER TABLE sale_receipts ADD COLUMN quickbooks_id TEXT',
-    // catalog products & document items
-    `CREATE TABLE IF NOT EXISTS catalog_products (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
-      name_fr TEXT NOT NULL,
-      name_en TEXT NOT NULL,
-      description_fr TEXT,
-      description_en TEXT,
-      unit_price_cad REAL DEFAULT 0,
-      active INTEGER DEFAULT 1,
-      sort_order INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
-    )`,
+    // document items
     `CREATE TABLE IF NOT EXISTS document_items (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       document_type TEXT NOT NULL,
       document_id TEXT NOT NULL,
       catalog_product_id TEXT REFERENCES catalog_products(id),
@@ -844,7 +717,7 @@ export function initSchema() {
     'ALTER TABLE base_fields ADD COLUMN required INTEGER DEFAULT 0',
     'ALTER TABLE base_fields ADD COLUMN default_value TEXT',
     'ALTER TABLE base_views ADD COLUMN is_default INTEGER DEFAULT 0',
-    'ALTER TABLE webhooks ADD COLUMN last_triggered_at TEXT',
+    'DROP TABLE IF EXISTS webhooks',
     'ALTER TABLE notifications ADD COLUMN read_at TEXT',
     // Phase 3 — Automations engine columns
     'ALTER TABLE automations ADD COLUMN description TEXT',
@@ -859,7 +732,6 @@ export function initSchema() {
     // Phase 6 — Airtable-like interactions
     `CREATE TABLE IF NOT EXISTS base_interactions (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
       type TEXT NOT NULL CHECK(type IN ('call','email','sms','note','meeting')),
       direction TEXT CHECK(direction IN ('inbound','outbound')),
       subject TEXT,
@@ -883,10 +755,9 @@ export function initSchema() {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     )`,
-    'CREATE UNIQUE INDEX IF NOT EXISTS idx_base_interactions_dedup ON base_interactions(source, external_id, tenant_id) WHERE external_id IS NOT NULL',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_base_interactions_dedup ON base_interactions(source, external_id) WHERE external_id IS NOT NULL',
     `CREATE TABLE IF NOT EXISTS base_interaction_links (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
       interaction_id TEXT NOT NULL REFERENCES base_interactions(id) ON DELETE CASCADE,
       table_id TEXT,
       record_id TEXT,
@@ -896,7 +767,6 @@ export function initSchema() {
     'CREATE INDEX IF NOT EXISTS idx_base_interaction_links_itr ON base_interaction_links(interaction_id)',
     `CREATE TABLE IF NOT EXISTS base_interaction_attachments (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
       interaction_id TEXT NOT NULL REFERENCES base_interactions(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
       url TEXT NOT NULL,
@@ -906,7 +776,6 @@ export function initSchema() {
     )`,
     `CREATE TABLE IF NOT EXISTS base_connector_configs (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
       connector TEXT NOT NULL,
       enabled INTEGER DEFAULT 1,
       config TEXT DEFAULT '{}',
@@ -950,67 +819,121 @@ export function initSchema() {
     'ALTER TABLE depenses ADD COLUMN lines TEXT',
     // Fournisseurs — lien companies ↔ QB ↔ factures/dépenses
     'ALTER TABLE companies ADD COLUMN quickbooks_vendor_id TEXT',
-    'CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_qb_vendor ON companies(tenant_id, quickbooks_vendor_id) WHERE quickbooks_vendor_id IS NOT NULL',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_qb_vendor ON companies(quickbooks_vendor_id) WHERE quickbooks_vendor_id IS NOT NULL',
     'ALTER TABLE factures_fournisseurs ADD COLUMN vendor_id TEXT REFERENCES companies(id)',
     'ALTER TABLE depenses ADD COLUMN vendor_id TEXT REFERENCES companies(id)',
+    // Champ abonnement sur les commandes
+    'ALTER TABLE orders ADD COLUMN is_subscription INTEGER DEFAULT 0',
     // Airtable webhooks — remplace le polling horaire
     `CREATE TABLE IF NOT EXISTS airtable_webhooks (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
       base_id TEXT NOT NULL,
       webhook_id TEXT NOT NULL UNIQUE,
       cursor INTEGER DEFAULT 1,
       mac_secret TEXT,
       expires_at TEXT,
       created_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(tenant_id, base_id)
+      UNIQUE(base_id)
+    )`,
+    // Webhook sync retry queue — stores failed webhook changes for retry
+    `CREATE TABLE IF NOT EXISTS webhook_sync_retry (
+      id TEXT PRIMARY KEY,
+      module TEXT NOT NULL,
+      changes TEXT NOT NULL,
+      attempts INTEGER DEFAULT 0,
+      last_error TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      next_retry_at TEXT DEFAULT (datetime('now'))
+    )`,
+    // Sync log — 7-day rolling history of all Airtable syncs
+    `CREATE TABLE IF NOT EXISTS sync_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      module TEXT NOT NULL,
+      trigger TEXT NOT NULL CHECK(trigger IN ('webhook','manual','scheduled')),
+      status TEXT NOT NULL CHECK(status IN ('success','error')),
+      records_modified INTEGER DEFAULT 0,
+      records_destroyed INTEGER DEFAULT 0,
+      error_message TEXT,
+      duration_ms INTEGER,
+      created_at TEXT DEFAULT (datetime('now'))
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_sync_log_created ON sync_log(created_at)',
+    'CREATE INDEX IF NOT EXISTS idx_sync_log_module ON sync_log(module, created_at)',
+    // Chemin local du PDF de facture téléchargé depuis Airtable
+    'ALTER TABLE factures ADD COLUMN airtable_pdf_path TEXT',
+    // Prix unitaire gelé au moment de l'envoi
+    'ALTER TABLE order_items ADD COLUMN shipped_unit_cost REAL',
+    // Lien facture → abonnement
+    'ALTER TABLE factures ADD COLUMN subscription_id TEXT REFERENCES subscriptions(id)',
+    // Stripe → QB Sales Receipt queue
+    `CREATE TABLE IF NOT EXISTS stripe_invoice_queue (
+      id TEXT PRIMARY KEY,
+      stripe_invoice_id TEXT NOT NULL,
+      stripe_customer_id TEXT,
+      customer_name TEXT,
+      customer_email TEXT,
+      company_id TEXT REFERENCES companies(id),
+      invoice_number TEXT,
+      invoice_date TEXT,
+      currency TEXT DEFAULT 'CAD',
+      subtotal INTEGER DEFAULT 0,
+      tax_amount INTEGER DEFAULT 0,
+      total INTEGER DEFAULT 0,
+      stripe_fee INTEGER DEFAULT 0,
+      line_items TEXT DEFAULT '[]',
+      tax_details TEXT DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','pushed','rejected','error')),
+      error_message TEXT,
+      quickbooks_id TEXT,
+      qb_customer_id TEXT,
+      qb_income_account_id TEXT,
+      qb_deposit_account_id TEXT,
+      qb_tax_code TEXT,
+      stripe_raw TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(stripe_invoice_id)
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_stripe_queue_status ON stripe_invoice_queue(status)',
+    'CREATE INDEX IF NOT EXISTS idx_stripe_queue_stripe ON stripe_invoice_queue(stripe_invoice_id)',
+    `CREATE TABLE IF NOT EXISTS stripe_qb_tax_mapping (
+      id TEXT PRIMARY KEY,
+      stripe_tax_id TEXT NOT NULL,
+      stripe_tax_description TEXT,
+      stripe_tax_percentage REAL,
+      qb_tax_code TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(stripe_tax_id)
     )`,
   ]
 
-  // ── Opportunities (AI-generated action suggestions) ───────────────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS opportunities (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
-      type TEXT NOT NULL,
-      priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
-      title TEXT NOT NULL,
-      description TEXT,
-      entity_type TEXT,
-      entity_id TEXT,
-      entity_name TEXT,
-      action_type TEXT NOT NULL DEFAULT 'review' CHECK(action_type IN ('email','review','order')),
-      email_to TEXT,
-      email_subject TEXT,
-      email_body TEXT,
-      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','dismissed','done')),
-      scanned_at TEXT DEFAULT (datetime('now')),
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_opportunities_tenant ON opportunities(tenant_id, status, scanned_at);
-  `)
+  // Backfill shipped_unit_cost from Airtable's "Coût total au moment de l'envoi" (total cost / qty)
+  // Falls back to current unit_cost for shipped items without Airtable data
+  try {
+    db.prepare(`
+      UPDATE order_items SET shipped_unit_cost = CAST(cout_total_au_moment_de_l_envoi AS REAL) / MAX(qty, 1)
+      WHERE shipped_unit_cost IS NULL
+        AND cout_total_au_moment_de_l_envoi IS NOT NULL
+        AND cout_total_au_moment_de_l_envoi != ''
+        AND CAST(cout_total_au_moment_de_l_envoi AS REAL) > 0
+    `).run()
+  } catch {}
+  try {
+    db.prepare(`
+      UPDATE order_items SET shipped_unit_cost = unit_cost
+      WHERE shipment_id IS NOT NULL AND shipped_unit_cost IS NULL AND unit_cost > 0
+    `).run()
+  } catch {}
+
 
   // ── Detail page field layout (admin-configurable) ──────────────────────────
   db.exec(`
     CREATE TABLE IF NOT EXISTS detail_field_configs (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
       entity_type TEXT NOT NULL,
       field_order TEXT NOT NULL DEFAULT '[]',
       updated_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(tenant_id, entity_type)
-    );
-  `)
-
-  // ── Navigation config (admin-customizable page labels + order) ──────────────
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS nav_config (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
-      nav_items TEXT NOT NULL DEFAULT '[]',
-      updated_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(tenant_id)
+      UNIQUE(entity_type)
     );
   `)
 
@@ -1018,7 +941,6 @@ export function initSchema() {
   db.exec(`
     CREATE TABLE IF NOT EXISTS airtable_field_defs (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL,
       module TEXT NOT NULL,
       erp_table TEXT NOT NULL,
       airtable_field_id TEXT,
@@ -1029,7 +951,7 @@ export function initSchema() {
       sort_order INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(tenant_id, erp_table, column_name)
+      UNIQUE(erp_table, column_name)
     );
   `)
 
@@ -1038,7 +960,6 @@ export function initSchema() {
     -- Dynamic tables registry
     CREATE TABLE IF NOT EXISTS base_tables (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       name TEXT NOT NULL,
       icon TEXT,
       description TEXT,
@@ -1046,13 +967,12 @@ export function initSchema() {
       deleted_at TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(tenant_id, name)
+      UNIQUE(name)
     );
 
     -- Dynamic fields registry
     CREATE TABLE IF NOT EXISTS base_fields (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       table_id TEXT NOT NULL REFERENCES base_tables(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
       type TEXT NOT NULL DEFAULT 'single_line_text',
@@ -1069,7 +989,6 @@ export function initSchema() {
     -- Dynamic records
     CREATE TABLE IF NOT EXISTS base_records (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       table_id TEXT NOT NULL REFERENCES base_tables(id) ON DELETE CASCADE,
       data TEXT NOT NULL DEFAULT '{}',
       sort_order INTEGER DEFAULT 0,
@@ -1081,7 +1000,6 @@ export function initSchema() {
     -- Record links (many-to-many between records of different tables)
     CREATE TABLE IF NOT EXISTS base_record_links (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       field_id TEXT NOT NULL REFERENCES base_fields(id) ON DELETE CASCADE,
       source_record_id TEXT NOT NULL REFERENCES base_records(id) ON DELETE CASCADE,
       target_record_id TEXT NOT NULL REFERENCES base_records(id) ON DELETE CASCADE,
@@ -1092,7 +1010,6 @@ export function initSchema() {
     -- Views (grid, etc.)
     CREATE TABLE IF NOT EXISTS base_views (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       table_id TEXT NOT NULL REFERENCES base_tables(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
       type TEXT NOT NULL DEFAULT 'grid',
@@ -1106,7 +1023,6 @@ export function initSchema() {
     -- Record history (audit trail)
     CREATE TABLE IF NOT EXISTS record_history (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       table_id TEXT NOT NULL,
       record_id TEXT NOT NULL,
       user_id TEXT REFERENCES users(id),
@@ -1118,7 +1034,6 @@ export function initSchema() {
     -- Automations
     CREATE TABLE IF NOT EXISTS automations (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       table_id TEXT REFERENCES base_tables(id),
       name TEXT NOT NULL,
       trigger_type TEXT NOT NULL,
@@ -1145,7 +1060,6 @@ export function initSchema() {
     -- Interface pages builder
     CREATE TABLE IF NOT EXISTS base_interfaces (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       name TEXT NOT NULL,
       icon TEXT,
       sort_order INTEGER DEFAULT 0,
@@ -1176,24 +1090,9 @@ export function initSchema() {
       updated_at TEXT DEFAULT (datetime('now'))
     );
 
-    -- Webhooks
-    CREATE TABLE IF NOT EXISTS webhooks (
-      id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
-      table_id TEXT REFERENCES base_tables(id),
-      name TEXT NOT NULL,
-      url TEXT NOT NULL,
-      events TEXT DEFAULT '[]',
-      active INTEGER DEFAULT 1,
-      secret TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
-    );
-
     -- Notifications
     CREATE TABLE IF NOT EXISTS notifications (
       id TEXT PRIMARY KEY,
-      tenant_id TEXT NOT NULL REFERENCES tenants(id),
       user_id TEXT REFERENCES users(id),
       type TEXT NOT NULL,
       title TEXT NOT NULL,
@@ -1206,7 +1105,6 @@ export function initSchema() {
     -- Agent autonomous tasks queue
     CREATE TABLE IF NOT EXISTS agent_tasks (
       id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
       description TEXT,
       status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','approved','in_progress','done','blocked','rejected')),
       priority INTEGER NOT NULL DEFAULT 0,
@@ -1219,13 +1117,13 @@ export function initSchema() {
   `)
 
   // Phase 1a indexes
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_base_records_table ON base_records(tenant_id, table_id, deleted_at)') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_base_records_table ON base_records(table_id, deleted_at)') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_base_fields_table ON base_fields(table_id, deleted_at, sort_order)') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_base_views_table ON base_views(table_id, deleted_at)') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_record_history_record ON record_history(table_id, record_id, created_at)') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_automation_logs_auto ON automation_logs(automation_id, created_at)') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_base_record_links_source ON base_record_links(field_id, source_record_id)') } catch {}
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(tenant_id, user_id, read, created_at)') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read, created_at)') } catch {}
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
   }
@@ -1253,7 +1151,6 @@ export function initSchema() {
       PRAGMA foreign_keys = OFF;
       CREATE TABLE orders_new (
         id TEXT PRIMARY KEY,
-        tenant_id TEXT NOT NULL REFERENCES tenants(id),
         order_number INTEGER NOT NULL,
         company_id TEXT REFERENCES companies(id),
         project_id TEXT REFERENCES projects(id),
@@ -1266,7 +1163,7 @@ export function initSchema() {
         updated_at TEXT DEFAULT (datetime('now'))
       );
       INSERT INTO orders_new SELECT
-        id, tenant_id, order_number, company_id, project_id, assigned_to,
+        id, order_number, company_id, project_id, assigned_to,
         CASE status
           WHEN 'Brouillon'             THEN 'Commande vide'
           WHEN 'Confirmée'             THEN 'En attente'
@@ -1292,7 +1189,6 @@ export function initSchema() {
       PRAGMA foreign_keys = OFF;
       CREATE TABLE tickets_new (
         id TEXT PRIMARY KEY,
-        tenant_id TEXT NOT NULL REFERENCES tenants(id),
         company_id TEXT REFERENCES companies(id),
         contact_id TEXT REFERENCES contacts(id),
         assigned_to TEXT REFERENCES users(id),
@@ -1307,7 +1203,7 @@ export function initSchema() {
         updated_at TEXT DEFAULT (datetime('now'))
       );
       INSERT INTO tickets_new SELECT
-        id, tenant_id, company_id, contact_id, assigned_to, title, description, type,
+        id, company_id, contact_id, assigned_to, title, description, type,
         CASE status
           WHEN 'Ouvert'            THEN 'Waiting on us'
           WHEN 'En attente nous'   THEN 'Waiting on us'
@@ -1331,7 +1227,6 @@ export function initSchema() {
       PRAGMA foreign_keys = OFF;
       CREATE TABLE document_items_new (
         id TEXT PRIMARY KEY,
-        tenant_id TEXT NOT NULL REFERENCES tenants(id),
         document_type TEXT NOT NULL,
         document_id TEXT NOT NULL,
         catalog_product_id TEXT REFERENCES products(id),
@@ -1345,7 +1240,7 @@ export function initSchema() {
         created_at TEXT DEFAULT (datetime('now'))
       );
       INSERT INTO document_items_new
-        SELECT id, tenant_id, document_type, document_id,
+        SELECT id, document_type, document_id,
           NULL,
           qty, unit_price_cad,
           COALESCE(discount_pct, 0), COALESCE(discount_amount, 0),
@@ -1380,41 +1275,16 @@ const SELLABLE_DEFAULTS = [
 ]
 
 export function seedSellableProducts() {
-  const tenants = db.prepare('SELECT id FROM tenants').all()
   const insert = db.prepare(`
-    INSERT OR IGNORE INTO products (id, tenant_id, sku, name_fr, name_en, type, is_sellable, price_cad, price_usd, monthly_price_cad, monthly_price_usd)
-    VALUES (?, ?, ?, ?, ?, 'Service', 1, 0, 0, 0, 0)
+    INSERT OR IGNORE INTO products (id, sku, name_fr, name_en, type, is_sellable, price_cad, price_usd, monthly_price_cad, monthly_price_usd)
+    VALUES (?, ?, ?, ?, 'Service', 1, 0, 0, 0, 0)
   `)
-  const run = db.transaction((tenantId) => {
+  const run = db.transaction(() => {
     for (const p of SELLABLE_DEFAULTS) {
-      insert.run(`sellable-${tenantId}-${p.sort}`, tenantId, p.sku, p.name_fr, p.name_en)
+      insert.run(`sellable-${p.sort}`, p.sku, p.name_fr, p.name_en)
     }
   })
-  for (const t of tenants) run(t.id)
-  console.log(`✅ Sellable products seeded for ${tenants.length} tenant(s)`)
+  run()
+  console.log(`✅ Sellable products seeded`)
 }
 
-const CATALOG_DEFAULTS = [
-  { name_fr: 'Assistant',                  name_en: 'Helper',                        description_fr: 'Service d\'assistance technique',           description_en: 'Technical assistance service',          unit_price_cad: 0, sort_order: 0 },
-  { name_fr: 'Chef de culture',            name_en: 'Chief grower',                  description_fr: 'Service de chef de culture',                description_en: 'Chief grower service',                  unit_price_cad: 0, sort_order: 1 },
-  { name_fr: 'Accès internet mobile',      name_en: 'Mobile Internet Access',        description_fr: 'Accès internet mobile pour la serre',       description_en: 'Mobile internet access for greenhouse', unit_price_cad: 0, sort_order: 2 },
-  { name_fr: 'Orisha dans la serre',       name_en: 'Get Orisha in the greenhouse',  description_fr: 'Installation Orisha dans votre serre',      description_en: 'Get Orisha installed in your greenhouse', unit_price_cad: 0, sort_order: 3 },
-  { name_fr: 'Prévention des maladies',    name_en: 'Disease Prevention',            description_fr: 'Service de prévention des maladies',        description_en: 'Disease prevention service',            unit_price_cad: 0, sort_order: 4 },
-]
-
-export function seedCatalogProducts() {
-  const tenants = db.prepare('SELECT id FROM tenants').all()
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO catalog_products (id, tenant_id, name_fr, name_en, description_fr, description_en, unit_price_cad, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-  // Use a deterministic ID per tenant+sort_order so INSERT OR IGNORE works
-  const insertMany = db.transaction((tenantId) => {
-    for (const p of CATALOG_DEFAULTS) {
-      const deterministicId = `catalog-${tenantId}-${p.sort_order}`
-      insert.run(deterministicId, tenantId, p.name_fr, p.name_en, p.description_fr, p.description_en, p.unit_price_cad, p.sort_order)
-    }
-  })
-  for (const tenant of tenants) insertMany(tenant.id)
-  console.log(`✅ Catalog products seeded for ${tenants.length} tenant(s)`)
-}

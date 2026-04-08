@@ -10,10 +10,8 @@ router.get('/', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE sn.tenant_id = ?'
-  const params = [tid]
+  let where = 'WHERE 1=1'
+  const params = []
 
   if (company_id) { where += ' AND sn.company_id = ?'; params.push(company_id) }
   if (product_id) { where += ' AND sn.product_id = ?'; params.push(product_id) }
@@ -50,8 +48,8 @@ router.get('/:id', (req, res) => {
     FROM serial_numbers sn
     LEFT JOIN products pr ON sn.product_id = pr.id
     LEFT JOIN companies co ON sn.company_id = co.id
-    WHERE sn.id = ? AND sn.tenant_id = ?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE sn.id = ?
+  `).get(req.params.id)
   if (!serial) return res.status(404).json({ error: 'Not found' })
   res.json(serial)
 })

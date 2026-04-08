@@ -13,10 +13,8 @@ router.get('/soumissions', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE s.tenant_id = ?'
-  const params = [tid]
+  let where = 'WHERE 1=1'
+  const params = []
   if (project_id) { where += ' AND s.project_id = ?'; params.push(project_id) }
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM soumissions s ${where}`).get(...params).c
@@ -37,8 +35,8 @@ router.get('/soumissions/:id', (req, res) => {
     SELECT s.*, p.name as project_name
     FROM soumissions s
     LEFT JOIN projects p ON s.project_id = p.id
-    WHERE s.id = ? AND s.tenant_id = ?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE s.id = ?
+  `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
 })
@@ -50,10 +48,8 @@ router.get('/adresses', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE a.tenant_id = ?'
-  const params = [tid]
+  let where = 'WHERE 1=1'
+  const params = []
   if (company_id) {
     where += ' AND a.company_id = ?'
     params.push(company_id)
@@ -81,33 +77,31 @@ router.get('/adresses/:id', (req, res) => {
     SELECT a.*, co.name as company_name
     FROM adresses a
     LEFT JOIN companies co ON a.company_id = co.id
-    WHERE a.id = ? AND a.tenant_id = ?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE a.id = ?
+  `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
 })
 
 router.post('/adresses', (req, res) => {
   const { line1, city, province, postal_code, country, address_type, company_id, contact_id, language } = req.body
-  const tid = req.user.tenant_id
   const id = randomUUID()
-  db.prepare(`INSERT INTO adresses (id, tenant_id, line1, city, province, postal_code, country, address_type, company_id, contact_id, language)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, tid, line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, company_id||null, contact_id||null, language||null)
+  db.prepare(`INSERT INTO adresses (id, line1, city, province, postal_code, country, address_type, company_id, contact_id, language)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, company_id||null, contact_id||null, language||null)
   res.json(db.prepare('SELECT * FROM adresses WHERE id = ?').get(id))
 })
 
 router.put('/adresses/:id', (req, res) => {
   const { line1, city, province, postal_code, country, address_type, contact_id } = req.body
-  const tid = req.user.tenant_id
   db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, address_type=?, contact_id=?, updated_at=datetime('now')
-    WHERE id = ? AND tenant_id = ?`)
-    .run(line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, contact_id||null, req.params.id, tid)
+    WHERE id = ?`)
+    .run(line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, contact_id||null, req.params.id)
   res.json(db.prepare('SELECT * FROM adresses WHERE id = ?').get(req.params.id))
 })
 
 router.delete('/adresses/:id', (req, res) => {
-  db.prepare('DELETE FROM adresses WHERE id = ? AND tenant_id = ?').run(req.params.id, req.user.tenant_id)
+  db.prepare('DELETE FROM adresses WHERE id = ?').run(req.params.id)
   res.json({ ok: true })
 })
 
@@ -118,10 +112,8 @@ router.get('/bom', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE b.tenant_id = ?'
-  const params = [tid]
+  let where = 'WHERE 1=1'
+  const params = []
   if (product_id) { where += ' AND b.product_id = ?'; params.push(product_id) }
   if (component_id) { where += ' AND b.component_id = ?'; params.push(component_id) }
 
@@ -149,8 +141,8 @@ router.get('/bom/:id', (req, res) => {
     FROM bom_items b
     LEFT JOIN products p ON b.product_id = p.id
     LEFT JOIN products c ON b.component_id = c.id
-    WHERE b.id = ? AND b.tenant_id = ?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE b.id = ?
+  `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
 })
@@ -162,10 +154,8 @@ router.get('/serial-changes', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE sc.tenant_id = ?'
-  const params = [tid]
+  let where = 'WHERE 1=1'
+  const params = []
   if (serial_id) { where += ' AND sc.serial_id = ?'; params.push(serial_id) }
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM serial_state_changes sc ${where}`).get(...params).c
@@ -189,10 +179,8 @@ router.get('/assemblages', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE a.tenant_id = ?'
-  const params = [tid]
+  let where = 'WHERE 1=1'
+  const params = []
   if (product_id) { where += ' AND a.product_id = ?'; params.push(product_id) }
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM assemblages a ${where}`).get(...params).c
@@ -213,8 +201,8 @@ router.get('/assemblages/:id', (req, res) => {
     SELECT a.*, p.name_fr as product_name, p.sku
     FROM assemblages a
     LEFT JOIN products p ON a.product_id = p.id
-    WHERE a.id = ? AND a.tenant_id = ?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE a.id = ?
+  `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
 })
@@ -226,12 +214,14 @@ router.get('/factures', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE f.tenant_id = ?'
-  const params = [tid]
+  let where = 'WHERE 1=1'
+  const params = []
   if (company_id) { where += ' AND f.company_id = ?'; params.push(company_id) }
-  if (project_id) { where += ' AND f.project_id = ?'; params.push(project_id) }
+  if (project_id) {
+    // Direct link OR linked via an order belonging to this project
+    where += ' AND (f.project_id = ? OR f.order_id IN (SELECT id FROM orders WHERE project_id = ?))'
+    params.push(project_id, project_id)
+  }
   if (status) { where += ' AND f.status = ?'; params.push(status) }
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM factures f ${where}`).get(...params).c
@@ -250,13 +240,39 @@ router.get('/factures', (req, res) => {
 
 router.get('/factures/:id', (req, res) => {
   const row = db.prepare(`
+    SELECT f.*, co.name as company_name, p.name as project_name,
+      o.order_number, o.id as order_id_resolved,
+      s.stripe_id as subscription_stripe_id
+    FROM factures f
+    LEFT JOIN companies co ON f.company_id = co.id
+    LEFT JOIN projects p ON f.project_id = p.id
+    LEFT JOIN orders o ON f.order_id = o.id
+    LEFT JOIN subscriptions s ON f.subscription_id = s.id
+    WHERE f.id = ?
+  `).get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  res.json(row)
+})
+
+router.get('/factures/:id/pdf', (req, res) => {
+  const row = db.prepare('SELECT airtable_pdf_path FROM factures WHERE id=?').get(req.params.id)
+  if (!row?.airtable_pdf_path) return res.status(404).json({ error: 'PDF non disponible' })
+  res.sendFile(row.airtable_pdf_path)
+})
+
+router.patch('/factures/:id', (req, res) => {
+  const { project_id } = req.body
+  const existing = db.prepare('SELECT id FROM factures WHERE id = ?').get(req.params.id)
+  if (!existing) return res.status(404).json({ error: 'Not found' })
+  db.prepare(`UPDATE factures SET project_id=?, updated_at=datetime('now') WHERE id = ?`)
+    .run(project_id || null, req.params.id)
+  const row = db.prepare(`
     SELECT f.*, co.name as company_name, p.name as project_name
     FROM factures f
     LEFT JOIN companies co ON f.company_id = co.id
     LEFT JOIN projects p ON f.project_id = p.id
-    WHERE f.id = ? AND f.tenant_id = ?
-  `).get(req.params.id, req.user.tenant_id)
-  if (!row) return res.status(404).json({ error: 'Not found' })
+    WHERE f.id = ?
+  `).get(req.params.id)
   res.json(row)
 })
 
@@ -267,10 +283,8 @@ router.get('/retours', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE r.tenant_id = ?'
-  const params = [tid]
+  let where = 'WHERE 1=1'
+  const params = []
   if (company_id) { where += ' AND r.company_id = ?'; params.push(company_id) }
   if (processing_status) { where += ' AND r.processing_status = ?'; params.push(processing_status) }
 
@@ -292,8 +306,8 @@ router.get('/retours/:id', (req, res) => {
     SELECT r.*, co.name as company_name
     FROM returns r
     LEFT JOIN companies co ON r.company_id = co.id
-    WHERE r.id = ? AND r.tenant_id = ?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE r.id = ?
+  `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
   const items = db.prepare(`
@@ -315,10 +329,8 @@ router.get('/abonnements', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE s.tenant_id = ?'
-  const params = [tid]
+  let where = 'WHERE 1=1'
+  const params = []
   if (company_id) { where += ' AND s.company_id = ?'; params.push(company_id) }
   if (status) { where += ' AND s.status = ?'; params.push(status) }
 
@@ -343,8 +355,8 @@ router.get('/abonnements/:id', (req, res) => {
     SELECT s.*, co.name as company_name
     FROM subscriptions s
     LEFT JOIN companies co ON s.company_id = co.id
-    WHERE s.id = ? AND s.tenant_id = ?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE s.id = ?
+  `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
 })
@@ -353,8 +365,8 @@ router.patch('/abonnements/:id', (req, res) => {
   const { rachat } = req.body
   const VALID = ['rachat complet', 'rachat partiel', 'fusion', null]
   if (!VALID.includes(rachat)) return res.status(400).json({ error: 'Valeur invalide' })
-  const existing = db.prepare('SELECT id FROM subscriptions WHERE id=? AND tenant_id=?')
-    .get(req.params.id, req.user.tenant_id)
+  const existing = db.prepare('SELECT id FROM subscriptions WHERE id=?')
+    .get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
   db.prepare('UPDATE subscriptions SET rachat=? WHERE id=?').run(rachat, req.params.id)
   res.json({ ok: true })

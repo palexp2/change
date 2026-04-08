@@ -2,15 +2,15 @@ import Stripe from 'stripe'
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 
-function getStripeKey(tenantId) {
+function getStripeKey() {
   const row = db.prepare(
-    "SELECT value FROM connector_config WHERE tenant_id=? AND connector='stripe' AND key='secret_key'"
-  ).get(tenantId)
+    "SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'"
+  ).get()
   return row?.value || null
 }
 
-export function isStripeConfigured(tenantId) {
-  return !!getStripeKey(tenantId)
+export function isStripeConfigured() {
+  return !!getStripeKey()
 }
 
 function mapStatus(stripeStatus) {
@@ -27,35 +27,35 @@ function mapStatus(stripeStatus) {
   return map[stripeStatus] || 'canceled'
 }
 
-function findCompanyByEmail(tenantId, email) {
+function findCompanyByEmail(email) {
   if (!email) return null
   // Try contacts first
   const byContact = db.prepare(`
     SELECT c.id FROM companies c
     INNER JOIN contacts ct ON ct.company_id = c.id
-    WHERE c.tenant_id=? AND LOWER(ct.email)=LOWER(?)
+    WHERE LOWER(ct.email)=LOWER(?)
     LIMIT 1
-  `).get(tenantId, email)
+  `).get(email)
   if (byContact) return byContact.id
 
   // Try company email field directly
   const byCompany = db.prepare(
-    "SELECT id FROM companies WHERE tenant_id=? AND LOWER(email)=LOWER(?) LIMIT 1"
-  ).get(tenantId, email)
+    "SELECT id FROM companies WHERE LOWER(email)=LOWER(?) LIMIT 1"
+  ).get(email)
   return byCompany?.id || null
 }
 
-function findCompanyByName(tenantId, name) {
+function findCompanyByName(name) {
   if (!name) return null
   const row = db.prepare(
-    "SELECT id FROM companies WHERE tenant_id=? AND name LIKE ? LIMIT 1"
-  ).get(tenantId, `%${name}%`)
+    "SELECT id FROM companies WHERE name LIKE ? LIMIT 1"
+  ).get(`%${name}%`)
   return row?.id || null
 }
 
-export async function syncStripeSubscriptions(tenantId) {
-  const secretKey = getStripeKey(tenantId)
-  if (!secretKey) throw new Error('Stripe non configuré pour ce tenant')
+export async function syncStripeSubscriptions() {
+  const secretKey = getStripeKey()
+  if (!secretKey) throw new Error('Stripe non configuré')
 
   const stripe = new Stripe(secretKey)
 
@@ -87,13 +87,13 @@ export async function syncStripeSubscriptions(tenantId) {
     const customerName = typeof customer === 'object' ? (customer.name || null) : null
 
     // Resolve company
-    let companyId = findCompanyByEmail(tenantId, customerEmail)
-    if (!companyId && customerName) companyId = findCompanyByName(tenantId, customerName)
+    let companyId = findCompanyByEmail(customerEmail)
+    if (!companyId && customerName) companyId = findCompanyByName(customerName)
 
     // If still no match, keep existing link if updating
     const existingRow = db.prepare(
-      "SELECT id, company_id FROM subscriptions WHERE tenant_id=? AND stripe_id=?"
-    ).get(tenantId, sub.id)
+      "SELECT id, company_id FROM subscriptions WHERE stripe_id=?"
+    ).get(sub.id)
     if (!companyId && existingRow?.company_id) companyId = existingRow.company_id
 
     // Price / interval info
@@ -129,24 +129,24 @@ export async function syncStripeSubscriptions(tenantId) {
           start_date=?, cancel_date=?, trial_end_date=?,
           stripe_url=?, customer_id=?, customer_email=?,
           interval_count=?, interval_type=?
-        WHERE id=? AND tenant_id=?
+        WHERE id=?
       `).run(
         companyId, status, amountMonthly, currency,
         startDate, cancelDate, trialEndDate,
         stripeUrl, customerId, customerEmail,
         intervalCount, intervalType,
-        existingRow.id, tenantId
+        existingRow.id
       )
       updated++
     } else {
       db.prepare(`
         INSERT INTO subscriptions (
-          id, tenant_id, company_id, stripe_id, status, amount_monthly, currency,
+          id, company_id, stripe_id, status, amount_monthly, currency,
           start_date, cancel_date, trial_end_date, stripe_url, customer_id, customer_email,
           interval_count, interval_type
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(
-        uuid(), tenantId, companyId, sub.id, status, amountMonthly, currency,
+        uuid(), companyId, sub.id, status, amountMonthly, currency,
         startDate, cancelDate, trialEndDate,
         stripeUrl, customerId, customerEmail,
         intervalCount, intervalType

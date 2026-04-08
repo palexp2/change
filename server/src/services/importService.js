@@ -76,9 +76,9 @@ function coerceValue(raw, fieldType) {
 
 // ── Main import function ──────────────────────────────────────────────────────
 
-export async function importRecords(tenantId, tableId, filePath, mapping, mode, userId) {
-  // 1. Verify table ownership
-  const table = db.prepare('SELECT * FROM base_tables WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(tableId, tenantId)
+export async function importRecords(tableId, filePath, mapping, mode, userId) {
+  // 1. Verify table exists
+  const table = db.prepare('SELECT * FROM base_tables WHERE id = ? AND deleted_at IS NULL').get(tableId)
   if (!table) throw Object.assign(new Error('Table introuvable'), { status: 404 })
 
   // 2. Load fields for type coercion
@@ -114,8 +114,8 @@ export async function importRecords(tenantId, tableId, filePath, mapping, mode, 
 
   // 6. If replace mode → soft-delete existing records
   if (mode === 'replace') {
-    db.prepare("UPDATE base_records SET deleted_at = datetime('now') WHERE table_id = ? AND tenant_id = ? AND deleted_at IS NULL")
-      .run(tableId, tenantId)
+    db.prepare("UPDATE base_records SET deleted_at = datetime('now') WHERE table_id = ? AND deleted_at IS NULL")
+      .run(tableId)
   }
 
   // 7. Process rows
@@ -165,11 +165,11 @@ export async function importRecords(tenantId, tableId, filePath, mapping, mode, 
         data[autonumField.key] = seq
       }
 
-      db.prepare(`INSERT INTO base_records (id, tenant_id, table_id, data, sort_order) VALUES (?, ?, ?, ?, ?)`)
-        .run(recId, tenantId, tableId, JSON.stringify(data), maxSort + i + 1)
+      db.prepare(`INSERT INTO base_records (id, table_id, data, sort_order) VALUES (?, ?, ?, ?)`)
+        .run(recId, tableId, JSON.stringify(data), maxSort + i + 1)
 
-      db.prepare(`INSERT INTO record_history (id, tenant_id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, ?, 'create', ?)`)
-        .run(newId('record'), tenantId, tableId, recId, userId, JSON.stringify({ source: 'import' }))
+      db.prepare(`INSERT INTO record_history (id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, 'create', ?)`)
+        .run(newId('record'), tableId, recId, userId, JSON.stringify({ source: 'import' }))
 
       imported++
     }

@@ -10,7 +10,6 @@ const PREFIXES = {
   iface:     'ifc',
   page:      'pag',
   block:     'blk',
-  webhook:   'wbh',
   notif:     'ntf',
   int:       'int',
   itl:       'itl',

@@ -4,8 +4,6 @@ import { ArrowLeft } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.jsx'
-import { useDetailLayout } from '../hooks/useDetailLayout.js'
-import { DetailFieldConfig, DetailConfigButton } from '../components/DetailFieldConfig.jsx'
 import { useAuth } from '../lib/auth.jsx'
 
 function fmtDate(d) {
@@ -28,6 +26,7 @@ const PRODUCT_FIELDS = [
   { key: 'stock_qty',          label: 'Stock actuel',       type: 'readonly' },
   { key: 'min_stock',          label: 'Stock minimum',      type: 'number' },
   { key: 'order_qty',          label: 'Qté à commander',    type: 'number', defaultVisible: false },
+  { key: 'location',           label: 'Emplacement',        type: 'text' },
   { key: 'supplier',           label: 'Fournisseur',        type: 'text' },
   { key: 'procurement_type',   label: 'Approvisionnement',  type: 'select', options: PROCUREMENT_TYPES },
   { key: 'weight_lbs',         label: 'Poids (lbs)',        type: 'number', step: '0.01', defaultVisible: false },
@@ -57,7 +56,7 @@ export default function ProductDetail() {
   const [form, setForm] = useState({})
   const [bom, setBom] = useState([])
   const saveTimer = useRef(null)
-  const layout = useDetailLayout('products', PRODUCT_FIELDS)
+  const visibleFields = PRODUCT_FIELDS.filter(f => f.defaultVisible !== false)
 
   async function load() {
     setLoading(true)
@@ -77,6 +76,7 @@ export default function ProductDetail() {
         is_sellable: data.is_sellable === 1,
         min_stock: data.min_stock ?? 0,
         order_qty: data.order_qty ?? 0,
+        location: data.location || '',
         supplier: data.supplier || '',
         procurement_type: data.procurement_type || '',
         weight_lbs: data.weight_lbs ?? 0,
@@ -135,9 +135,6 @@ export default function ProductDetail() {
               <span>Stock: <strong>{product.stock_qty}</strong> / min: {form.min_stock || 0}</span>
             </div>
           </div>
-          {user?.role === 'admin' && (
-            <DetailConfigButton onClick={() => layout.setConfiguring(true)} />
-          )}
         </div>
 
         {/* Tabs */}
@@ -162,7 +159,7 @@ export default function ProductDetail() {
         {tab === 'info' && (
           <div className="card p-6">
             <div className="grid grid-cols-2 gap-4">
-              {layout.visibleFields.map(field => {
+              {visibleFields.map(field => {
                 if (field.type === 'readonly') {
                   return (
                     <Field key={field.key} label={field.label} span2={field.span2}>
@@ -280,15 +277,7 @@ export default function ProductDetail() {
 
       </div>
 
-      {layout.isConfiguring && (
-        <DetailFieldConfig
-          configFields={layout.configFields}
-          onToggle={layout.toggleField}
-          onMove={layout.moveField}
-          onSave={layout.saveLayout}
-          onCancel={() => layout.setConfiguring(false)}
-        />
-      )}
+
     </Layout>
   )
 }

@@ -242,10 +242,8 @@ router.get('/soumissions', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE s.tenant_id = ?'
-  const params = [tid]
+  let where = 'WHERE 1=1'
+  const params = []
   if (company_id) { where += ' AND s.company_id = ?'; params.push(company_id) }
   if (project_id) { where += ' AND s.project_id = ?'; params.push(project_id) }
   if (status) { where += ' AND s.status = ?'; params.push(status) }
@@ -269,7 +267,6 @@ router.get('/soumissions', (req, res) => {
 })
 
 router.get('/soumissions/:id', (req, res) => {
-  const tid = req.user.tenant_id
   const row = db.prepare(`
     SELECT s.*,
       p.name as project_name,
@@ -280,8 +277,8 @@ router.get('/soumissions/:id', (req, res) => {
     LEFT JOIN projects p ON s.project_id = p.id
     LEFT JOIN companies co ON s.company_id = co.id
     LEFT JOIN contacts c ON s.contact_id = c.id
-    WHERE s.id = ? AND s.tenant_id = ?
-  `).get(req.params.id, tid)
+    WHERE s.id = ?
+  `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
   const items = db.prepare(`
@@ -304,12 +301,11 @@ const ITEMS_QUERY = `
 `
 const INSERT_ITEM = `
   INSERT INTO document_items
-    (id, tenant_id, document_type, document_id, catalog_product_id, qty, unit_price_cad, discount_pct, discount_amount, description_fr, description_en, sort_order)
-  VALUES (?, ?, 'soumission', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (id, document_type, document_id, catalog_product_id, qty, unit_price_cad, discount_pct, discount_amount, description_fr, description_en, sort_order)
+  VALUES (?, 'soumission', ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 router.post('/soumissions', async (req, res) => {
-  const tid = req.user.tenant_id
   const {
     company_id, contact_id, project_id, language = 'French', currency = 'CAD',
     notes, discount_pct = 0, discount_amount = 0, items = []
@@ -317,25 +313,25 @@ router.post('/soumissions', async (req, res) => {
 
   // Auto-number: next quote_number for this tenant
   const { next_num } = db.prepare(
-    `SELECT COALESCE(MAX(quote_number), 0) + 1 AS next_num FROM soumissions WHERE tenant_id = ?`
-  ).get(tid)
+    `SELECT COALESCE(MAX(quote_number), 0) + 1 AS next_num FROM soumissions`
+  ).get()
   const autoTitle = `QTE-Z-${next_num}`
   const autoExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   const id = randomUUID()
   db.prepare(`
     INSERT INTO soumissions
-      (id, tenant_id, company_id, contact_id, project_id, language, currency, status, title, notes,
+      (id, company_id, contact_id, project_id, language, currency, status, title, notes,
        expiration_date, quote_number, discount_pct, discount_amount)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'Brouillon', ?, ?, ?, ?, ?, ?)
-  `).run(id, tid, company_id || null, contact_id || null, project_id || null,
+    VALUES (?, ?, ?, ?, ?, ?, 'Brouillon', ?, ?, ?, ?, ?, ?)
+  `).run(id, company_id || null, contact_id || null, project_id || null,
          language, currency, autoTitle, notes || null, autoExpiry, next_num,
          discount_pct, discount_amount)
 
   const insertItem = db.prepare(INSERT_ITEM)
   for (let i = 0; i < items.length; i++) {
     const it = items[i]
-    insertItem.run(randomUUID(), tid, id, it.catalog_product_id || null,
+    insertItem.run(randomUUID(), id, it.catalog_product_id || null,
                    it.qty || 1, it.unit_price_cad ?? 0, it.discount_pct ?? 0, it.discount_amount ?? 0,
                    it.description_fr || null, it.description_en || null, i)
   }
@@ -345,7 +341,7 @@ router.post('/soumissions', async (req, res) => {
     const allItems = db.prepare(ITEMS_QUERY).all(id)
     const company = company_id ? db.prepare('SELECT * FROM companies WHERE id = ?').get(company_id) : null
     const contact = contact_id ? db.prepare('SELECT * FROM contacts WHERE id = ?').get(contact_id) : null
-    const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tid)
+    const tenant = db.prepare('SELECT * FROM tenants LIMIT 1').get()
     const pdfPath = await generateSoumissionPdf(soumission, allItems, company, contact, tenant)
     const relPath = path.relative(path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads'), pdfPath)
     db.prepare('UPDATE soumissions SET generated_pdf_path = ? WHERE id = ?').run(relPath, id)
@@ -360,8 +356,7 @@ router.post('/soumissions', async (req, res) => {
 })
 
 router.put('/soumissions/:id', async (req, res) => {
-  const tid = req.user.tenant_id
-  const existing = db.prepare('SELECT id FROM soumissions WHERE id = ? AND tenant_id = ?').get(req.params.id, tid)
+  const existing = db.prepare('SELECT id FROM soumissions WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
 
   const { language, currency, status, notes, discount_pct, discount_amount, discount_valid_until, items } = req.body
@@ -376,16 +371,16 @@ router.put('/soumissions/:id', async (req, res) => {
       discount_amount = COALESCE(?, discount_amount),
       discount_valid_until = ?,
       updated_at = datetime('now')
-    WHERE id = ? AND tenant_id = ?
+    WHERE id = ?
   `).run(language ?? null, currency ?? null, status ?? null, notes ?? null,
-         discount_pct ?? null, discount_amount ?? null, discount_valid_until ?? null, req.params.id, tid)
+         discount_pct ?? null, discount_amount ?? null, discount_valid_until ?? null, req.params.id)
 
   if (Array.isArray(items)) {
     db.prepare("DELETE FROM document_items WHERE document_id = ? AND document_type = 'soumission'").run(req.params.id)
     const insertItem = db.prepare(INSERT_ITEM)
     for (let i = 0; i < items.length; i++) {
       const it = items[i]
-      insertItem.run(randomUUID(), tid, req.params.id, it.catalog_product_id || null,
+      insertItem.run(randomUUID(), req.params.id, it.catalog_product_id || null,
                      it.qty || 1, it.unit_price_cad ?? 0, it.discount_pct ?? 0, it.discount_amount ?? 0,
                      it.description_fr || null, it.description_en || null, i)
     }
@@ -396,7 +391,7 @@ router.put('/soumissions/:id', async (req, res) => {
     const allItems = db.prepare(ITEMS_QUERY).all(req.params.id)
     const company = soumission.company_id ? db.prepare('SELECT * FROM companies WHERE id = ?').get(soumission.company_id) : null
     const contact = soumission.contact_id ? db.prepare('SELECT * FROM contacts WHERE id = ?').get(soumission.contact_id) : null
-    const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tid)
+    const tenant = db.prepare('SELECT * FROM tenants LIMIT 1').get()
     const pdfPath = await generateSoumissionPdf(soumission, allItems, company, contact, tenant)
     const relPath = path.relative(path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads'), pdfPath)
     db.prepare('UPDATE soumissions SET generated_pdf_path = ? WHERE id = ?').run(relPath, req.params.id)
@@ -408,8 +403,7 @@ router.put('/soumissions/:id', async (req, res) => {
 })
 
 router.delete('/soumissions/:id', (req, res) => {
-  const tid = req.user.tenant_id
-  const row = db.prepare('SELECT * FROM soumissions WHERE id = ? AND tenant_id = ?').get(req.params.id, tid)
+  const row = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   if (row.airtable_id) return res.status(400).json({ error: 'Cannot delete Airtable-synced soumission' })
   db.prepare("DELETE FROM document_items WHERE document_id = ? AND document_type = 'soumission'").run(req.params.id)
@@ -417,7 +411,10 @@ router.delete('/soumissions/:id', (req, res) => {
   // Clean up PDF
   if (row.generated_pdf_path) {
     try {
-      fs.unlinkSync(path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads', row.generated_pdf_path))
+      const uploadsBase = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads')
+      const fromUploads = path.join(uploadsBase, row.generated_pdf_path)
+      const fromCwd     = path.resolve(process.cwd(), row.generated_pdf_path)
+      fs.unlinkSync(fs.existsSync(fromUploads) ? fromUploads : fromCwd)
     } catch {}
   }
   res.json({ ok: true })
@@ -426,13 +423,16 @@ router.delete('/soumissions/:id', (req, res) => {
 // ── PDF download ──────────────────────────────────────────────────────────────
 
 router.get('/soumissions/:id/pdf', async (req, res) => {
-  const tid = req.user.tenant_id
-  const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ? AND tenant_id = ?').get(req.params.id, tid)
+  const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
   if (!soumission) return res.status(404).json({ error: 'Not found' })
 
   let pdfPath
   if (soumission.generated_pdf_path) {
-    pdfPath = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads', soumission.generated_pdf_path)
+    // Essaie uploads-relative (nouvelles soumissions), puis cwd-relative (legacy)
+    const uploadsBase = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads')
+    const fromUploads = path.join(uploadsBase, soumission.generated_pdf_path)
+    const fromCwd     = path.resolve(process.cwd(), soumission.generated_pdf_path)
+    pdfPath = fs.existsSync(fromUploads) ? fromUploads : fromCwd
   }
 
   // Regenerate if missing
@@ -440,7 +440,7 @@ router.get('/soumissions/:id/pdf', async (req, res) => {
     const allItems = db.prepare(ITEMS_QUERY).all(req.params.id)
     const company = soumission.company_id ? db.prepare('SELECT * FROM companies WHERE id = ?').get(soumission.company_id) : null
     const contact = soumission.contact_id ? db.prepare('SELECT * FROM contacts WHERE id = ?').get(soumission.contact_id) : null
-    const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tid)
+    const tenant = db.prepare('SELECT * FROM tenants LIMIT 1').get()
     try {
       pdfPath = await generateSoumissionPdf(soumission, allItems, company, contact, tenant)
       const relPath = path.relative(path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads'), pdfPath)
@@ -462,23 +462,22 @@ router.get('/soumissions/:id/pdf', async (req, res) => {
 // ── Duplicate ─────────────────────────────────────────────────────────────────
 
 router.post('/soumissions/:id/duplicate', async (req, res) => {
-  const tid = req.user.tenant_id
-  const src = db.prepare('SELECT * FROM soumissions WHERE id = ? AND tenant_id = ?').get(req.params.id, tid)
+  const src = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
   if (!src) return res.status(404).json({ error: 'Not found' })
 
   const newId = randomUUID()
   // Auto-number for the copy
   const { next_num: copyNum } = db.prepare(
-    `SELECT COALESCE(MAX(quote_number), 0) + 1 AS next_num FROM soumissions WHERE tenant_id = ?`
-  ).get(tid)
+    `SELECT COALESCE(MAX(quote_number), 0) + 1 AS next_num FROM soumissions`
+  ).get()
   const copyExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   db.prepare(`
     INSERT INTO soumissions
-      (id, tenant_id, project_id, company_id, contact_id, language, currency, status, title, notes,
+      (id, project_id, company_id, contact_id, language, currency, status, title, notes,
        expiration_date, quote_number, discount_pct, discount_amount)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 'Brouillon', ?, ?, ?, ?, ?, ?)
-  `).run(newId, tid, src.project_id, src.company_id, src.contact_id,
+    VALUES (?, ?, ?, ?, ?, ?, 'Brouillon', ?, ?, ?, ?, ?, ?)
+  `).run(newId, src.project_id, src.company_id, src.contact_id,
          src.language, src.currency || 'CAD',
          `Copie de ${src.title || 'soumission'}`, src.notes,
          copyExpiry, copyNum, src.discount_pct || 0, src.discount_amount || 0)
@@ -488,11 +487,11 @@ router.post('/soumissions/:id/duplicate', async (req, res) => {
     SELECT * FROM document_items WHERE document_id = ? AND document_type = 'soumission' ORDER BY sort_order
   `).all(req.params.id)
   const insertItem = db.prepare(`
-    INSERT INTO document_items (id, tenant_id, document_type, document_id, catalog_product_id, qty, unit_price_cad, discount_pct, discount_amount, description_fr, description_en, sort_order)
-    VALUES (?, ?, 'soumission', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO document_items (id, document_type, document_id, catalog_product_id, qty, unit_price_cad, discount_pct, discount_amount, description_fr, description_en, sort_order)
+    VALUES (?, 'soumission', ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   for (const it of srcItems) {
-    insertItem.run(randomUUID(), tid, newId, it.catalog_product_id, it.qty, it.unit_price_cad, it.discount_pct ?? 0, it.discount_amount ?? 0, it.description_fr, it.description_en, it.sort_order)
+    insertItem.run(randomUUID(), newId, it.catalog_product_id, it.qty, it.unit_price_cad, it.discount_pct ?? 0, it.discount_amount ?? 0, it.description_fr, it.description_en, it.sort_order)
   }
 
   // Generate PDF
@@ -501,7 +500,7 @@ router.post('/soumissions/:id/duplicate', async (req, res) => {
     const allItems = db.prepare(ITEMS_QUERY).all(newId)
     const company = src.company_id ? db.prepare('SELECT * FROM companies WHERE id = ?').get(src.company_id) : null
     const contact = src.contact_id ? db.prepare('SELECT * FROM contacts WHERE id = ?').get(src.contact_id) : null
-    const tenant = db.prepare('SELECT * FROM tenants WHERE id = ?').get(tid)
+    const tenant = db.prepare('SELECT * FROM tenants LIMIT 1').get()
     const pdfPath = await generateSoumissionPdf(soumission, allItems, company, contact, tenant)
     const relPath = path.relative(path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads'), pdfPath)
     db.prepare('UPDATE soumissions SET generated_pdf_path = ? WHERE id = ?').run(relPath, newId)

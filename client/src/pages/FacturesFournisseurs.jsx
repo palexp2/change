@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -7,6 +8,8 @@ import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { VendorSelect } from '../components/VendorSelect.jsx'
+import { LineItemsTable } from '../components/LineItemsTable.jsx'
 
 const STATUS_COLORS = {
   'Brouillon': 'gray',
@@ -29,6 +32,9 @@ function fmtDate(d) {
 }
 
 const RENDERS = {
+  vendor: row => row.vendor_id
+    ? <Link to={`/companies/${row.vendor_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">{row.vendor}</Link>
+    : <span>{row.vendor}</span>,
   date_facture: row => <span className="text-slate-500">{fmtDate(row.date_facture)}</span>,
   due_date: row => {
     if (!row.due_date) return <span className="text-slate-400">—</span>
@@ -47,7 +53,7 @@ const RENDERS = {
 const COLUMNS = TABLE_COLUMN_META.factures_fournisseurs.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
 const CATEGORIES = ['Fournitures', 'Voyage', 'Loyer', 'Assurance', 'Services', 'Équipement', 'Marketing', 'Logiciels', 'Autre']
-const EMPTY_FORM = { bill_number: '', vendor: '', vendor_invoice_number: '', date_facture: new Date().toISOString().slice(0, 10), due_date: '', category: '', amount_cad: '', tax_cad: '', amount_paid_cad: '', status: 'Reçue', notes: '' }
+const EMPTY_FORM = { bill_number: '', vendor: '', vendor_id: null, vendor_invoice_number: '', date_facture: new Date().toISOString().slice(0, 10), due_date: '', category: '', amount_cad: '', tax_cad: '', amount_paid_cad: '', status: 'Reçue', notes: '' }
 
 function FactureModal({ facture, onClose, onSaved }) {
   const [form, setForm] = useState(facture
@@ -63,7 +69,7 @@ function FactureModal({ facture, onClose, onSaved }) {
     try {
       const amt = parseFloat(form.amount_cad) || 0
       const tax = parseFloat(form.tax_cad) || 0
-      const payload = { ...form, amount_cad: amt, tax_cad: tax, total_cad: amt + tax, amount_paid_cad: parseFloat(form.amount_paid_cad) || 0 }
+      const payload = { ...form, amount_cad: amt, tax_cad: tax, total_cad: amt + tax, amount_paid_cad: parseFloat(form.amount_paid_cad) || 0, vendor_id: form.vendor_id || null }
       if (facture) {
         await api.facturesFournisseurs.update(facture.id, payload)
       } else {
@@ -85,7 +91,12 @@ function FactureModal({ facture, onClose, onSaved }) {
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="label">Fournisseur *</label>
-          <input type="text" value={form.vendor} onChange={f('vendor')} className="input" required />
+          <VendorSelect
+            value={form.vendor}
+            vendorId={form.vendor_id}
+            onChange={({ vendor, vendor_id }) => setForm(p => ({ ...p, vendor, vendor_id }))}
+            required
+          />
         </div>
         <div>
           <label className="label">Statut</label>
@@ -139,6 +150,7 @@ function FactureModal({ facture, onClose, onSaved }) {
         <label className="label">Notes</label>
         <textarea value={form.notes} onChange={f('notes')} className="input" rows={2} />
       </div>
+      <LineItemsTable lines={form.lines} />
       <div className="flex justify-end gap-2 pt-2">
         <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
         <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
@@ -152,6 +164,8 @@ export default function FacturesFournisseurs() {
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState(null)
+  const [syncing, setSyncing] = useState(false)
+  const [syncResult, setSyncResult] = useState(null)
 
   const load = useCallback(async () => {
     await loadProgressive(
@@ -168,6 +182,20 @@ export default function FacturesFournisseurs() {
     load()
   }
 
+  async function handleQBImport() {
+    setSyncing(true)
+    setSyncResult(null)
+    try {
+      const result = await api.connectors.importQB()
+      setSyncResult(result)
+      load()
+    } catch (e) {
+      setSyncResult({ error: e.message })
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   return (
     <Layout>
       <div className="p-6 max-w-7xl mx-auto">
@@ -177,6 +205,19 @@ export default function FacturesFournisseurs() {
             <p className="text-sm text-slate-500 mt-1">Comptes à payer</p>
           </div>
           <div className="flex items-center gap-2">
+            {syncResult && !syncResult.error && (
+              <span className="text-sm text-green-700 bg-green-50 border border-green-200 rounded px-2 py-1">
+                Factures : {syncResult.bills?.inserted ?? 0} ajoutées, {syncResult.bills?.updated ?? 0} mises à jour
+                {' · '}
+                Dépenses : {syncResult.depenses?.inserted ?? 0} ajoutées, {syncResult.depenses?.updated ?? 0} mises à jour
+              </span>
+            )}
+            {syncResult?.error && (
+              <span className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1">{syncResult.error}</span>
+            )}
+            <button onClick={handleQBImport} disabled={syncing} className="btn-secondary">
+              {syncing ? 'Importation…' : 'Importer depuis QB'}
+            </button>
             <TableConfigModal table="factures_fournisseurs" />
             <button onClick={() => { setEditing(null); setShowModal(true) }} className="btn-primary">+ Nouvelle facture</button>
           </div>
@@ -192,11 +233,9 @@ export default function FacturesFournisseurs() {
         />
       </div>
 
-      {showModal && (
-        <Modal title={editing ? 'Modifier la facture fournisseur' : 'Nouvelle facture fournisseur'} onClose={() => { setShowModal(false); setEditing(null) }}>
-          <FactureModal facture={editing} onClose={() => { setShowModal(false); setEditing(null) }} onSaved={handleSaved} />
-        </Modal>
-      )}
+      <Modal isOpen={showModal} title={editing ? 'Modifier la facture fournisseur' : 'Nouvelle facture fournisseur'} onClose={() => { setShowModal(false); setEditing(null) }}>
+        <FactureModal facture={editing} onClose={() => { setShowModal(false); setEditing(null) }} onSaved={handleSaved} />
+      </Modal>
     </Layout>
   )
 }

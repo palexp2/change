@@ -7,20 +7,20 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const BASE_URL = 'https://api.novoxpress.ca/prod'
 const LABELS_DIR = path.join(__dirname, '../../../uploads/labels')
 
-// In-memory JWT cache: tenantId → { jwt_token, refresh_token, expires_at }
-const tokenCache = new Map()
+// In-memory JWT cache
+let tokenCache = null
 
-export function isNovoxpressConfigured(tenantId) {
+export function isNovoxpressConfigured() {
   const row = db.prepare(
-    "SELECT value FROM connector_config WHERE tenant_id=? AND connector='novoxpress' AND key='username'"
-  ).get(tenantId)
+    "SELECT value FROM connector_config WHERE connector='novoxpress' AND key='username'"
+  ).get()
   return !!row?.value
 }
 
-function getCredentials(tenantId) {
+function getCredentials() {
   const get = key => db.prepare(
-    "SELECT value FROM connector_config WHERE tenant_id=? AND connector='novoxpress' AND key=?"
-  ).get(tenantId, key)?.value
+    "SELECT value FROM connector_config WHERE connector='novoxpress' AND key=?"
+  ).get(key)?.value
   return { username: get('username'), password: get('password') }
 }
 
@@ -38,39 +38,36 @@ async function fetchNewToken(username, password) {
   return data.response || data
 }
 
-async function getToken(tenantId) {
-  const cached = tokenCache.get(tenantId)
-  if (cached && cached.expires_at > Date.now() + 5 * 60 * 1000) return cached.jwt_token
+async function getToken() {
+  if (tokenCache && tokenCache.expires_at > Date.now() + 5 * 60 * 1000) return tokenCache.jwt_token
 
   // Try refresh
-  if (cached?.refresh_token) {
+  if (tokenCache?.refresh_token) {
     try {
-      const res = await fetch(`${BASE_URL}/auth/refresh-token?refresh_token=${encodeURIComponent(cached.refresh_token)}`)
+      const res = await fetch(`${BASE_URL}/auth/refresh-token?refresh_token=${encodeURIComponent(tokenCache.refresh_token)}`)
       if (res.ok) {
         const raw = await res.json()
         const data = raw.response || raw
-        const entry = { jwt_token: data.token || data.jwt_token, refresh_token: data.refresh_token, expires_at: Date.now() + 55 * 60 * 1000 }
-        tokenCache.set(tenantId, entry)
-        return entry.jwt_token
+        tokenCache = { jwt_token: data.token || data.jwt_token, refresh_token: data.refresh_token, expires_at: Date.now() + 55 * 60 * 1000 }
+        return tokenCache.jwt_token
       }
     } catch { /* fall through to full auth */ }
   }
 
-  const { username, password } = getCredentials(tenantId)
+  const { username, password } = getCredentials()
   if (!username || !password) throw new Error('Novoxpress non configuré')
   const data = await fetchNewToken(username, password)
   // Field is "token" not "jwt_token"
-  const entry = { jwt_token: data.token || data.jwt_token, refresh_token: data.refresh_token, expires_at: Date.now() + 55 * 60 * 1000 }
-  tokenCache.set(tenantId, entry)
-  return entry.jwt_token
+  tokenCache = { jwt_token: data.token || data.jwt_token, refresh_token: data.refresh_token, expires_at: Date.now() + 55 * 60 * 1000 }
+  return tokenCache.jwt_token
 }
 
-export function clearTokenCache(tenantId) {
-  tokenCache.delete(tenantId)
+export function clearTokenCache() {
+  tokenCache = null
 }
 
-async function apiPost(tenantId, endpoint, body) {
-  const token = await getToken(tenantId)
+async function apiPost(endpoint, body) {
+  const token = await getToken()
   const res = await fetch(`${BASE_URL}${endpoint}`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -121,7 +118,7 @@ function buildRecipient(shipment) {
   const country = countryMap[shipment.address_country] || shipment.address_country || 'CA'
 
   return {
-    company_name: shipment.company_name || 'Client',
+    company_name: (shipment.company_name || 'Client').slice(0, 30),
     email_address: shipment.company_email || '',
     address: {
       street_address: extractStreet(shipment.address_line1, shipment.address_city),
@@ -147,15 +144,15 @@ function buildPayload(shipment, packaging_type, packages, declaredValue = '100')
   }
 }
 
-export async function getRates(tenantId, shipment, { packaging_type, packages, declared_value }) {
-  const data = await apiPost(tenantId, '/services/rate-estimate',
+export async function getRates(shipment, { packaging_type, packages, declared_value }) {
+  const data = await apiPost('/services/rate-estimate',
     buildPayload(shipment, packaging_type, packages, declared_value || '100'))
   const rates = (data.ratelist || []).sort((a, b) => parseFloat(a.total?.value ?? 0) - parseFloat(b.total?.value ?? 0))
   return { request_id: data.request_id || null, rates }
 }
 
-export async function cancelPickup(tenantId, pickupId) {
-  const token = await getToken(tenantId)
+export async function cancelPickup(pickupId) {
+  const token = await getToken()
   const res = await fetch(`${BASE_URL}/pickup/cancel-pickup?pickup_id=${encodeURIComponent(pickupId)}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${token}` },
@@ -167,7 +164,7 @@ export async function cancelPickup(tenantId, pickupId) {
   return res.json().catch(() => ({}))
 }
 
-export async function schedulePickup(tenantId, novoxpressShipmentId, { date, ready_at, ready_until, quantity, weight, pickup_location, pickup_instructions }) {
+export async function schedulePickup(novoxpressShipmentId, { date, ready_at, ready_until, quantity, weight, pickup_location, pickup_instructions }) {
   const body = {
     shipment_id: novoxpressShipmentId,
     sender: SENDER,
@@ -183,11 +180,11 @@ export async function schedulePickup(tenantId, novoxpressShipmentId, { date, rea
       pickup_location: pickup_location || 'OutsideDoor'
     }
   }
-  const data = await apiPost(tenantId, '/pickup/create-pickup', body)
+  const data = await apiPost('/pickup/create-pickup', body)
   return data
 }
 
-export async function createLabel(tenantId, shipment, erpShipmentId, { request_id, service_id, packaging_type, packages, declared_value }) {
+export async function createLabel(shipment, erpShipmentId, { request_id, service_id, packaging_type, packages, declared_value }) {
   const details = buildPayload(shipment, packaging_type, packages, declared_value || '100')
 
   // International shipment — add customs declaration
@@ -219,13 +216,13 @@ export async function createLabel(tenantId, shipment, erpShipmentId, { request_i
       }
     })
   }
-  const data = await apiPost(tenantId, '/shipment/create-shipment', { request_id, service_id, details })
+  const data = await apiPost('/shipment/create-shipment', { request_id, service_id, details })
 
   const novoxShipmentId = data.shipment_id
   if (!novoxShipmentId) throw new Error(`Novoxpress: shipment_id manquant — réponse: ${JSON.stringify(data)}`)
 
   // Fetch label PDF
-  const token = await getToken(tenantId)
+  const token = await getToken()
   const labelRes = await fetch(`${BASE_URL}/shipment/print-label`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -236,7 +233,20 @@ export async function createLabel(tenantId, shipment, erpShipmentId, { request_i
     throw new Error(`Novoxpress print-label (${labelRes.status}): ${text}`)
   }
 
-  const pdfBuffer = Buffer.from(await labelRes.arrayBuffer())
+  let pdfBuffer
+  const contentType = labelRes.headers.get('content-type') || ''
+  if (contentType.includes('application/json')) {
+    // API returns JSON with a URL to the actual PDF
+    const json = await labelRes.json()
+    const pdfUrl = json?.label?.shipping_label
+    if (!pdfUrl) throw new Error(`Novoxpress: pas d'URL d'étiquette dans la réponse — ${JSON.stringify(json)}`)
+    const pdfRes = await fetch(pdfUrl)
+    if (!pdfRes.ok) throw new Error(`Novoxpress: échec téléchargement étiquette (${pdfRes.status})`)
+    pdfBuffer = Buffer.from(await pdfRes.arrayBuffer())
+  } else {
+    pdfBuffer = Buffer.from(await labelRes.arrayBuffer())
+  }
+
   const filename = `${erpShipmentId}.pdf`
   fs.mkdirSync(LABELS_DIR, { recursive: true })
   fs.writeFileSync(path.join(LABELS_DIR, filename), pdfBuffer)

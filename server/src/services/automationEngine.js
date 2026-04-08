@@ -11,7 +11,7 @@ export async function runAutomation(automation, triggerData = {}) {
   const logs = []
 
   try {
-    const sandbox = buildSandbox(automation.tenant_id, triggerData, logs)
+    const sandbox = buildSandbox(triggerData, logs)
     const context = createContext(sandbox)
 
     await runInNewContext(
@@ -52,7 +52,7 @@ function logRun(automationId, status, triggerData, output, error, duration) {
   `).run(newId('log'), automationId, status, JSON.stringify(triggerData), output, error, duration)
 }
 
-function buildSandbox(tenantId, triggerData, logs) {
+function buildSandbox(triggerData, logs) {
   return {
     record: triggerData.record || null,
     table: triggerData.table || null,
@@ -61,7 +61,7 @@ function buildSandbox(tenantId, triggerData, logs) {
     newValue: triggerData.newValue ?? null,
 
     updateRecord: (recordId, data) => {
-      const row = db.prepare('SELECT * FROM base_records WHERE id = ? AND tenant_id = ?').get(recordId, tenantId)
+      const row = db.prepare('SELECT * FROM base_records WHERE id = ?').get(recordId)
       if (!row) throw new Error(`Record ${recordId} introuvable`)
       const existing = JSON.parse(row.data)
       const merged = { ...existing, ...data }
@@ -70,9 +70,9 @@ function buildSandbox(tenantId, triggerData, logs) {
       for (const [key, val] of Object.entries(data)) {
         if (JSON.stringify(existing[key]) !== JSON.stringify(val)) {
           db.prepare(`
-            INSERT INTO record_history (id, tenant_id, table_id, record_id, action, diff)
-            VALUES (?, ?, ?, ?, 'update', ?)
-          `).run(newId('record'), tenantId, row.table_id, recordId,
+            INSERT INTO record_history (id, table_id, record_id, action, diff)
+            VALUES (?, ?, ?, 'update', ?)
+          `).run(newId('record'), row.table_id, recordId,
             JSON.stringify({ field_key: key, old_value: existing[key], new_value: val, source: 'automation' }))
         }
       }
@@ -83,24 +83,24 @@ function buildSandbox(tenantId, triggerData, logs) {
       const id = newId('record')
       const maxOrder = db.prepare('SELECT MAX(sort_order) as m FROM base_records WHERE table_id = ?').get(tableId)
       db.prepare(`
-        INSERT INTO base_records (id, tenant_id, table_id, data, sort_order)
-        VALUES (?, ?, ?, ?, ?)
-      `).run(id, tenantId, tableId, JSON.stringify(data), (maxOrder?.m || 0) + 1)
+        INSERT INTO base_records (id, table_id, data, sort_order)
+        VALUES (?, ?, ?, ?)
+      `).run(id, tableId, JSON.stringify(data), (maxOrder?.m || 0) + 1)
       db.prepare(`
-        INSERT INTO record_history (id, tenant_id, table_id, record_id, action, diff)
-        VALUES (?, ?, ?, ?, 'create', ?)
-      `).run(newId('record'), tenantId, tableId, id, JSON.stringify({ source: 'automation' }))
+        INSERT INTO record_history (id, table_id, record_id, action, diff)
+        VALUES (?, ?, ?, 'create', ?)
+      `).run(newId('record'), tableId, id, JSON.stringify({ source: 'automation' }))
       return { id, data }
     },
 
     deleteRecord: (recordId) => {
-      db.prepare("UPDATE base_records SET deleted_at = datetime('now') WHERE id = ? AND tenant_id = ?")
-        .run(recordId, tenantId)
+      db.prepare("UPDATE base_records SET deleted_at = datetime('now') WHERE id = ?")
+        .run(recordId)
     },
 
     getRecords: (tableId, filters = {}) => {
-      let query = 'SELECT * FROM base_records WHERE table_id = ? AND tenant_id = ? AND deleted_at IS NULL'
-      const params = [tableId, tenantId]
+      let query = 'SELECT * FROM base_records WHERE table_id = ? AND deleted_at IS NULL'
+      const params = [tableId]
       if (filters.where) {
         for (const [key, val] of Object.entries(filters.where)) {
           query += ` AND json_extract(data, '$.${key}') = ?`
@@ -112,7 +112,7 @@ function buildSandbox(tenantId, triggerData, logs) {
     },
 
     getRecord: (recordId) => {
-      const r = db.prepare('SELECT * FROM base_records WHERE id = ? AND tenant_id = ?').get(recordId, tenantId)
+      const r = db.prepare('SELECT * FROM base_records WHERE id = ?').get(recordId)
       return r ? { ...r, data: JSON.parse(r.data) } : null
     },
 
@@ -141,9 +141,6 @@ function buildSandbox(tenantId, triggerData, logs) {
       }
     },
 
-    // Expose the current tenant ID to scripts
-    tenantId,
-
     // Safe read-only query against native ERP tables (SELECT only)
     query: (sql, params = []) => {
       const trimmed = (sql || '').trim().toUpperCase()
@@ -151,9 +148,9 @@ function buildSandbox(tenantId, triggerData, logs) {
       return db.prepare(sql).all(...(params || []))
     },
 
-    // Send an email via the tenant's connected Google account
+    // Send an email via the connected Google account
     sendEmail: async (to, subject, htmlBody) => {
-      await gmailSendEmail(tenantId, to, subject, htmlBody)
+      await gmailSendEmail(to, subject, htmlBody)
       logs.push(`📧 Email envoyé à ${to} — ${subject}`)
     },
 

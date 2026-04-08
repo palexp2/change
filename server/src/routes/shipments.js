@@ -30,10 +30,8 @@ router.get('/', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE s.tenant_id = ? AND s.deleted_at IS NULL'
-  const params = [tid]
+  let where = 'WHERE s.deleted_at IS NULL'
+  const params = []
 
   if (search) {
     where += ' AND (s.tracking_number LIKE ? OR s.carrier LIKE ? OR CAST(o.order_number AS TEXT) LIKE ? OR c.name LIKE ?)'
@@ -77,16 +75,15 @@ router.get('/', (req, res) => {
 
 // GET /api/shipments/stats/weekly — colis envoyés par semaine (16 dernières semaines)
 router.get('/stats/weekly', (req, res) => {
-  const tid = req.user.tenant_id
   const rows = db.prepare(`
     SELECT
       date(created_at, '-' || ((cast(strftime('%w', created_at) as integer) + 6) % 7) || ' days') as week_start,
       COUNT(*) as count
     FROM shipments
-    WHERE tenant_id = ? AND created_at >= date('now', '-112 days')
+    WHERE created_at >= date('now', '-112 days')
     GROUP BY week_start
     ORDER BY week_start ASC
-  `).all(tid)
+  `).all()
   res.json(rows)
 })
 
@@ -99,8 +96,8 @@ router.get('/:id', (req, res) => {
     LEFT JOIN companies c ON o.company_id = c.id
     LEFT JOIN adresses a ON s.address_id = a.id
     LEFT JOIN contacts ct ON a.contact_id = ct.id
-    WHERE s.id = ? AND s.tenant_id = ?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE s.id = ?
+  `).get(req.params.id)
 
   if (!row) return res.status(404).json({ error: 'Envoi introuvable' })
 
@@ -120,15 +117,14 @@ router.post('/', (req, res) => {
   const { order_id, tracking_number, carrier, status, shipped_at, notes, address_id, pays } = req.body
   if (!order_id) return res.status(400).json({ error: 'order_id est requis' })
 
-  const tid = req.user.tenant_id
-  const order = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(order_id, tid)
+  const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(order_id)
   if (!order) return res.status(400).json({ error: 'Commande introuvable' })
 
   const id = uuidv4()
   db.prepare(`
-    INSERT INTO shipments (id, tenant_id, order_id, tracking_number, carrier, status, shipped_at, notes, address_id, pays)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, tid, order_id, tracking_number || null, carrier || null,
+    INSERT INTO shipments (id, order_id, tracking_number, carrier, status, shipped_at, notes, address_id, pays)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(id, order_id, tracking_number || null, carrier || null,
     status || 'À envoyer', shipped_at || null, notes || null, address_id || null, pays || null)
 
   const created = db.prepare(`
@@ -147,9 +143,7 @@ router.post('/', (req, res) => {
 // PATCH /api/shipments/:id
 router.patch('/:id', (req, res) => {
   const { tracking_number, carrier, status, shipped_at, notes, address_id, pays } = req.body
-  const tid = req.user.tenant_id
-
-  const existing = db.prepare('SELECT id FROM shipments WHERE id = ? AND tenant_id = ?').get(req.params.id, tid)
+  const existing = db.prepare('SELECT id FROM shipments WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Envoi introuvable' })
 
   db.prepare(`
@@ -161,7 +155,7 @@ router.patch('/:id', (req, res) => {
       notes = COALESCE(?, notes),
       address_id = CASE WHEN ? THEN ? ELSE address_id END,
       pays = COALESCE(?, pays)
-    WHERE id = ? AND tenant_id = ?
+    WHERE id = ?
   `).run(
     tracking_number !== undefined ? tracking_number : null,
     carrier !== undefined ? carrier : null,
@@ -170,8 +164,16 @@ router.patch('/:id', (req, res) => {
     notes !== undefined ? notes : null,
     address_id !== undefined ? 1 : 0, address_id !== undefined ? address_id : null,
     pays !== undefined ? pays : null,
-    req.params.id, tid
+    req.params.id
   )
+
+  // Freeze unit cost on items when shipment is marked as Envoyé
+  if (status === 'Envoyé') {
+    db.prepare(`
+      UPDATE order_items SET shipped_unit_cost = unit_cost
+      WHERE shipment_id = ? AND shipped_unit_cost IS NULL
+    `).run(req.params.id)
+  }
 
   const updated = db.prepare(`
     SELECT s.*, o.order_number, o.company_id, c.name as company_name, ${ADDRESS_COLS}
@@ -285,7 +287,6 @@ router.post('/:id/send-tracking', async (req, res) => {
   const { to } = req.body
   if (!to || !to.includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
 
-  const tid = req.user.tenant_id
   const row = db.prepare(`
     SELECT s.*, o.order_number, o.company_id, c.name as company_name,
            a.contact_id as address_contact_id, a.line1 as address_line1,
@@ -296,8 +297,8 @@ router.post('/:id/send-tracking', async (req, res) => {
     LEFT JOIN companies c ON o.company_id = c.id
     LEFT JOIN adresses a ON s.address_id = a.id
     LEFT JOIN contacts ct ON a.contact_id = ct.id
-    WHERE s.id = ? AND s.tenant_id = ?
-  `).get(req.params.id, tid)
+    WHERE s.id = ?
+  `).get(req.params.id)
 
   if (!row) return res.status(404).json({ error: 'Envoi introuvable' })
   if (!row.tracking_number) return res.status(400).json({ error: 'Aucun numéro de suivi sur cet envoi' })
@@ -323,9 +324,9 @@ router.post('/:id/send-tracking', async (req, res) => {
     // Logger l'interaction
     const interactionId = uuidv4()
     db.prepare(`
-      INSERT INTO interactions (id, tenant_id, contact_id, company_id, type, direction, timestamp)
-      VALUES (?, ?, ?, ?, 'email', 'out', datetime('now'))
-    `).run(interactionId, tid, row.address_contact_id || null, row.company_id || null)
+      INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
+      VALUES (?, ?, ?, 'email', 'out', datetime('now'))
+    `).run(interactionId, row.address_contact_id || null, row.company_id || null)
     db.prepare(`
       INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, automated)
       VALUES (?, ?, ?, ?, ?, ?, 1)
@@ -347,8 +348,6 @@ router.post('/:id/send-tracking', async (req, res) => {
 
 // POST /api/shipments/:id/bon-livraison
 router.post('/:id/bon-livraison', async (req, res) => {
-  const tid = req.user.tenant_id
-
   const shipment = db.prepare(`
     SELECT s.*, o.order_number, o.id as order_id, o.date_commande,
            c.name as company_name,
@@ -360,8 +359,8 @@ router.post('/:id/bon-livraison', async (req, res) => {
     LEFT JOIN companies c ON o.company_id = c.id
     LEFT JOIN adresses a ON s.address_id = a.id
     LEFT JOIN contacts ct ON a.contact_id = ct.id
-    WHERE s.id = ? AND s.tenant_id = ?
-  `).get(req.params.id, tid)
+    WHERE s.id = ?
+  `).get(req.params.id)
   if (!shipment) return res.status(404).json({ error: 'Envoi introuvable' })
 
   // Items linked to this shipment explicitly (exclude JWT type)
@@ -652,19 +651,18 @@ router.post('/:id/bon-livraison', async (req, res) => {
   })
 
   const relPath = `bons-livraison/${filename}`
-  db.prepare(`UPDATE shipments SET bon_livraison_path = ? WHERE id = ? AND tenant_id = ?`)
-    .run(relPath, req.params.id, tid)
+  db.prepare(`UPDATE shipments SET bon_livraison_path = ? WHERE id = ?`)
+    .run(relPath, req.params.id)
 
   res.json({ bon_livraison_path: relPath, url: `/api/bons-livraison/${filename}` })
 })
 
 // DELETE /api/shipments/:id
 router.delete('/:id', (req, res) => {
-  const tid = req.user.tenant_id
-  const existing = db.prepare('SELECT id FROM shipments WHERE id = ? AND tenant_id = ?').get(req.params.id, tid)
+  const existing = db.prepare('SELECT id FROM shipments WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Envoi introuvable' })
 
-  db.prepare("UPDATE shipments SET deleted_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(req.params.id, tid)
+  db.prepare("UPDATE shipments SET deleted_at = datetime('now') WHERE id = ?").run(req.params.id)
   res.json({ success: true })
 })
 

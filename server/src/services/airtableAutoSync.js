@@ -99,7 +99,7 @@ function slugify(name) {
 
 // Reserved SQLite / ERP column names to avoid collisions
 const RESERVED = new Set([
-  'id', 'tenant_id', 'airtable_id', 'created_at', 'updated_at', 'deleted_at',
+  'id', 'airtable_id', 'created_at', 'updated_at', 'deleted_at',
   'rowid', 'oid', '_rowid_',
 ])
 
@@ -145,7 +145,7 @@ function convertValue(val, fieldType) {
     default:
       if (Array.isArray(val)) {
         // Attachments, lookups, etc. — flatten to text
-        return val.map(v => typeof v === 'object' ? (v.url || v.name || JSON.stringify(v)) : String(v)).join(', ')
+        return val.map(v => v == null ? '' : typeof v === 'object' ? (v.url || v.name || JSON.stringify(v)) : String(v)).join(', ')
       }
       if (typeof val === 'object') return JSON.stringify(val)
       return String(val)
@@ -180,7 +180,6 @@ function ensureColumn(table, colName) {
  * Sync ALL Airtable fields (not just hardcoded ones) for a given module.
  * Call this AFTER the regular sync has already handled the known fields.
  *
- * @param {string} tenantId
  * @param {string} module - e.g. 'billets', 'achats'
  * @param {string} erpTable - e.g. 'tickets', 'purchases'
  * @param {string} airtableBaseId
@@ -188,9 +187,9 @@ function ensureColumn(table, colName) {
  * @param {Object} hardcodedFieldMap - the existing field_map (to skip already-mapped fields)
  * @param {Array} records - Airtable records (already fetched by the regular sync)
  */
-export async function syncDynamicFields(tenantId, module, erpTable, airtableBaseId, airtableTableId, hardcodedFieldMap, records) {
+export async function syncDynamicFields(module, erpTable, airtableBaseId, airtableTableId, hardcodedFieldMap, records) {
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) } catch { return }
+  try { accessToken = await getAccessToken() } catch { return }
 
   // 1. Fetch table metadata from Airtable
   let tableFields
@@ -205,11 +204,11 @@ export async function syncDynamicFields(tenantId, module, erpTable, airtableBase
   }
 
   // 2. Determine which fields are NOT in the hardcoded map
-  const mappedAirtableFields = new Set(Object.values(hardcodedFieldMap || {}).filter(Boolean))
+  const mappedAirtableFields = new Set(Object.values(hardcodedFieldMap || {}).filter(v => typeof v === 'string'))
   const existingCols = getTableColumns(erpTable)
   const existingDefs = db.prepare(
-    'SELECT * FROM airtable_field_defs WHERE tenant_id=? AND erp_table=?'
-  ).all(tenantId, erpTable)
+    'SELECT * FROM airtable_field_defs WHERE erp_table=?'
+  ).all(erpTable)
   const defsByAtId = new Map(existingDefs.map(d => [d.airtable_field_id, d]))
 
   let newFields = 0
@@ -245,9 +244,9 @@ export async function syncDynamicFields(tenantId, module, erpTable, airtableBase
 
       const sortOrder = existingDefs.length + newFields
       db.prepare(
-        `INSERT INTO airtable_field_defs (id, tenant_id, module, erp_table, airtable_field_id, airtable_field_name, column_name, field_type, options, sort_order)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`
-      ).run(uuid(), tenantId, module, erpTable, atField.id, atField.name, colName, mapped.field_type, JSON.stringify(mapped.options), sortOrder)
+        `INSERT INTO airtable_field_defs (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, field_type, options, sort_order)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      ).run(uuid(), module, erpTable, atField.id, atField.name, colName, mapped.field_type, JSON.stringify(mapped.options), sortOrder)
 
       dynamicFieldMap.push({
         airtableFieldName: atField.name,
@@ -263,14 +262,14 @@ export async function syncDynamicFields(tenantId, module, erpTable, airtableBase
   if (dynamicFieldMap.length > 0 && records.length > 0) {
     const updateStmt = dynamicFieldMap.map(f => `${f.columnName}=?`).join(', ')
     const stmt = db.prepare(
-      `UPDATE ${erpTable} SET ${updateStmt} WHERE tenant_id=? AND airtable_id=?`
+      `UPDATE ${erpTable} SET ${updateStmt} WHERE airtable_id=?`
     )
 
     const populated = db.transaction((recs) => {
       let count = 0
       for (const rec of recs) {
         const values = dynamicFieldMap.map(f => convertValue(rec.fields[f.airtableFieldName], f.fieldType))
-        const result = stmt.run(...values, tenantId, rec.id)
+        const result = stmt.run(...values, rec.id)
         if (result.changes > 0) count++
       }
       return count
@@ -280,4 +279,65 @@ export async function syncDynamicFields(tenantId, module, erpTable, airtableBase
 
   if (newFields > 0) console.log(`✨ ${module}: ${newFields} nouveaux champs créés`)
   if (updatedFields > 0) console.log(`🔄 ${module}: ${updatedFields} types de champs mis à jour`)
+}
+
+/**
+ * Lightweight dynamic field update for webhook records.
+ * Uses existing airtable_field_defs (no Airtable metadata fetch needed).
+ * New fields not yet in field_defs are auto-created as TEXT columns.
+ */
+export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
+  if (!records?.length) return
+
+  const defs = db.prepare('SELECT * FROM airtable_field_defs WHERE erp_table=?').all(erpTable)
+  const defsByName = new Map(defs.map(d => [d.airtable_field_name, d]))
+  const mappedFields = new Set(Object.values(hardcodedFieldMap || {}).filter(v => typeof v === 'string'))
+  const existingCols = getTableColumns(erpTable)
+
+  // Detect new fields from records that aren't in hardcoded map or field_defs
+  const seenNewFields = new Map() // airtableFieldName → colName
+  for (const rec of records) {
+    for (const fieldName of Object.keys(rec.fields || {})) {
+      if (mappedFields.has(fieldName)) continue
+      if (defsByName.has(fieldName)) continue
+      if (seenNewFields.has(fieldName)) continue
+      // New field — create column and field_def
+      const colName = safeColumnName(fieldName, existingCols)
+      ensureColumn(erpTable, colName)
+      existingCols.add(colName)
+      const module = defs[0]?.module || erpTable
+      db.prepare(
+        `INSERT INTO airtable_field_defs (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, field_type, options, sort_order)
+         VALUES (?,?,?,?,?,?,?,?,?)`
+      ).run(uuid(), module, erpTable, `webhook_${slugify(fieldName)}`, fieldName, colName, 'text', '{}', defs.length + seenNewFields.size)
+      seenNewFields.set(fieldName, colName)
+    }
+  }
+
+  // Build dynamic field list (existing defs + newly created)
+  const dynamicFields = []
+  for (const d of defs) {
+    dynamicFields.push({ airtableFieldName: d.airtable_field_name, columnName: d.column_name, fieldType: d.field_type })
+  }
+  for (const [fieldName, colName] of seenNewFields) {
+    dynamicFields.push({ airtableFieldName: fieldName, columnName: colName, fieldType: 'text' })
+  }
+
+  if (!dynamicFields.length) return
+
+  const updateStmt = dynamicFields.map(f => `${f.columnName}=?`).join(', ')
+  const stmt = db.prepare(`UPDATE ${erpTable} SET ${updateStmt} WHERE airtable_id=?`)
+
+  const count = db.transaction((recs) => {
+    let n = 0
+    for (const rec of recs) {
+      const values = dynamicFields.map(f => convertValue(rec.fields[f.airtableFieldName], f.fieldType))
+      const result = stmt.run(...values, rec.id)
+      if (result.changes > 0) n++
+    }
+    return n
+  })(records)
+
+  if (seenNewFields.size > 0) console.log(`✨ ${erpTable}: ${seenNewFields.size} nouveaux champs (webhook)`)
+  if (count > 0) console.log(`🔄 ${erpTable}: ${count} records enrichis (webhook)`)
 }

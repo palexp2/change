@@ -27,12 +27,12 @@ function safeKey(key) {
   return /^[a-zA-Z0-9_]+$/.test(key) ? key : null
 }
 
-function uniqueSlug(tenantId, name, excludeId = null) {
+function uniqueSlug(name, excludeId = null) {
   const base = slugify(name)
   let slug = base
   let n = 1
   while (true) {
-    const row = db.prepare('SELECT id FROM base_tables WHERE tenant_id = ? AND slug = ?').get(tenantId, slug)
+    const row = db.prepare('SELECT id FROM base_tables WHERE slug = ?').get(slug)
     if (!row || row.id === excludeId) return slug
     slug = `${base}-${++n}`
   }
@@ -59,33 +59,30 @@ function parseView(row) {
   try { return { ...row, config: JSON.parse(row.config || '{}') } } catch { return { ...row, config: {} } }
 }
 
-function ownsTable(tenantId, tableId) {
-  return db.prepare('SELECT id FROM base_tables WHERE id = ? AND tenant_id = ?').get(tableId, tenantId)
+function ownsTable(tableId) {
+  return db.prepare('SELECT id FROM base_tables WHERE id = ?').get(tableId)
 }
 
-function ownsField(tenantId, fieldId) {
+function ownsField(fieldId) {
   return db.prepare(`
     SELECT f.id, f.table_id, f.is_primary, f.type, f.options, f.key, f.deleted_at
     FROM base_fields f
-    JOIN base_tables t ON f.table_id = t.id
-    WHERE f.id = ? AND t.tenant_id = ?
-  `).get(fieldId, tenantId)
+    WHERE f.id = ?
+  `).get(fieldId)
 }
 
-function ownsRecord(tenantId, recordId) {
+function ownsRecord(recordId) {
   return db.prepare(`
     SELECT r.* FROM base_records r
-    JOIN base_tables t ON r.table_id = t.id
-    WHERE r.id = ? AND t.tenant_id = ?
-  `).get(recordId, tenantId)
+    WHERE r.id = ?
+  `).get(recordId)
 }
 
-function ownsView(tenantId, viewId) {
+function ownsView(viewId) {
   return db.prepare(`
     SELECT v.* FROM base_views v
-    JOIN base_tables t ON v.table_id = t.id
-    WHERE v.id = ? AND t.tenant_id = ?
-  `).get(viewId, tenantId)
+    WHERE v.id = ?
+  `).get(viewId)
 }
 
 function recordCount(tableId) {
@@ -94,35 +91,35 @@ function recordCount(tableId) {
 
 // ── Tables ────────────────────────────────────────────────────────────────────
 
-export function getTables(tenantId) {
+export function getTables() {
   const tables = db.prepare(`
-    SELECT * FROM base_tables WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY sort_order ASC, created_at ASC
-  `).all(tenantId)
+    SELECT * FROM base_tables WHERE deleted_at IS NULL ORDER BY sort_order ASC, created_at ASC
+  `).all()
   return tables.map(t => ({ ...t, record_count: recordCount(t.id) }))
 }
 
-export function createTable(tenantId, { name, icon = null, color = null, description = null }) {
+export function createTable({ name, icon = null, color = null, description = null }) {
   const tableId = newId('table')
   const fieldId = newId('field')
   const viewId  = newId('view')
-  const slug    = uniqueSlug(tenantId, name)
+  const slug    = uniqueSlug(name)
   const key     = 'name'
 
   const run = db.transaction(() => {
     db.prepare(`
-      INSERT INTO base_tables (id, tenant_id, name, slug, icon, color, description, sort_order, autonumber_seq)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, 0)
-    `).run(tableId, tenantId, name, slug, icon, color, description)
+      INSERT INTO base_tables (id, name, slug, icon, color, description, sort_order, autonumber_seq)
+      VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+    `).run(tableId, name, slug, icon, color, description)
 
     db.prepare(`
-      INSERT INTO base_fields (id, tenant_id, table_id, name, key, type, options, is_primary, required, sort_order, width)
-      VALUES (?, ?, ?, 'Nom', ?, 'text', '{}', 1, 1, 0, 200)
-    `).run(fieldId, tenantId, tableId, key)
+      INSERT INTO base_fields (id, table_id, name, key, type, options, is_primary, required, sort_order, width)
+      VALUES (?, ?, 'Nom', ?, 'text', '{}', 1, 1, 0, 200)
+    `).run(fieldId, tableId, key)
 
     db.prepare(`
-      INSERT INTO base_views (id, tenant_id, table_id, name, type, config, sort_order, is_default)
-      VALUES (?, ?, ?, 'Tous', 'grid', ?, 0, 1)
-    `).run(viewId, tenantId, tableId, JSON.stringify({ visible_fields: [fieldId], field_order: [fieldId], filters: [], sorts: [], frozen_fields_count: 0 }))
+      INSERT INTO base_views (id, table_id, name, type, config, sort_order, is_default)
+      VALUES (?, ?, 'Tous', 'grid', ?, 0, 1)
+    `).run(viewId, tableId, JSON.stringify({ visible_fields: [fieldId], field_order: [fieldId], filters: [], sorts: [], frozen_fields_count: 0 }))
   })
   run()
 
@@ -132,12 +129,12 @@ export function createTable(tenantId, { name, icon = null, color = null, descrip
   return { ...table, record_count: 0, primary_field: field, default_view: view }
 }
 
-export function updateTable(tenantId, tableId, { name, icon, color, description, sort_order }) {
-  const table = db.prepare('SELECT * FROM base_tables WHERE id = ? AND tenant_id = ?').get(tableId, tenantId)
+export function updateTable(tableId, { name, icon, color, description, sort_order }) {
+  const table = db.prepare('SELECT * FROM base_tables WHERE id = ?').get(tableId)
   if (!table) return null
 
   const newName = name !== undefined ? name : table.name
-  const newSlug = name !== undefined ? uniqueSlug(tenantId, name, tableId) : table.slug
+  const newSlug = name !== undefined ? uniqueSlug(name, tableId) : table.slug
 
   db.prepare(`
     UPDATE base_tables SET
@@ -147,26 +144,26 @@ export function updateTable(tenantId, tableId, { name, icon, color, description,
       description = COALESCE(?, description),
       sort_order = COALESCE(?, sort_order),
       updated_at = datetime('now')
-    WHERE id = ? AND tenant_id = ?
+    WHERE id = ?
   `).run(newName, newSlug,
     icon !== undefined ? icon : null,
     color !== undefined ? color : null,
     description !== undefined ? description : null,
     sort_order !== undefined ? sort_order : null,
-    tableId, tenantId)
+    tableId)
 
   return { ...db.prepare('SELECT * FROM base_tables WHERE id = ?').get(tableId), record_count: recordCount(tableId) }
 }
 
-export function deleteTable(tenantId, tableId) {
-  const table = db.prepare('SELECT id FROM base_tables WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(tableId, tenantId)
+export function deleteTable(tableId) {
+  const table = db.prepare('SELECT id FROM base_tables WHERE id = ? AND deleted_at IS NULL').get(tableId)
   if (!table) return null
   db.prepare("UPDATE base_tables SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(tableId)
   return { success: true, undo: { method: 'POST', url: `/api/base/tables/${tableId}/restore`, body: {} } }
 }
 
-export function restoreTable(tenantId, tableId) {
-  const table = db.prepare('SELECT id FROM base_tables WHERE id = ? AND tenant_id = ? AND deleted_at IS NOT NULL').get(tableId, tenantId)
+export function restoreTable(tableId) {
+  const table = db.prepare('SELECT id FROM base_tables WHERE id = ? AND deleted_at IS NOT NULL').get(tableId)
   if (!table) return null
   db.prepare("UPDATE base_tables SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ?").run(tableId)
   return { ...db.prepare('SELECT * FROM base_tables WHERE id = ?').get(tableId), record_count: recordCount(tableId) }
@@ -174,8 +171,8 @@ export function restoreTable(tenantId, tableId) {
 
 // ── Fields ────────────────────────────────────────────────────────────────────
 
-export function getFields(tenantId, tableId) {
-  if (!ownsTable(tenantId, tableId)) return null
+export function getFields(tableId) {
+  if (!ownsTable(tableId)) return null
   return db.prepare(`
     SELECT * FROM base_fields WHERE table_id = ? ORDER BY is_primary DESC, sort_order ASC
   `).all(tableId).map(f => ({ ...f, options: tryParse(f.options) }))
@@ -185,8 +182,8 @@ function tryParse(s, fallback = {}) {
   try { return JSON.parse(s || '{}') } catch { return fallback }
 }
 
-export function createField(tenantId, tableId, { name, key, type = 'text', options = {}, required = 0, default_value = null, width = 160 }) {
-  if (!ownsTable(tenantId, tableId)) return null
+export function createField(tableId, { name, key, type = 'text', options = {}, required = 0, default_value = null, width = 160 }) {
+  if (!ownsTable(tableId)) return null
 
   const fieldKey = uniqueKey(tableId, key || name)
 
@@ -202,7 +199,7 @@ export function createField(tenantId, tableId, { name, key, type = 'text', optio
 
   if (type === 'link') {
     const linkedTableId = options.linked_table_id
-    const linkedTable = db.prepare('SELECT * FROM base_tables WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(linkedTableId, tenantId)
+    const linkedTable = db.prepare('SELECT * FROM base_tables WHERE id = ? AND deleted_at IS NULL').get(linkedTableId)
     if (!linkedTable) throw Object.assign(new Error('Table liée introuvable'), { status: 400 })
 
     const currentTable = db.prepare('SELECT * FROM base_tables WHERE id = ?').get(tableId)
@@ -212,16 +209,16 @@ export function createField(tenantId, tableId, { name, key, type = 'text', optio
 
     db.transaction(() => {
       db.prepare(`
-        INSERT INTO base_fields (id, tenant_id, table_id, name, key, type, options, required, default_value, sort_order, width, is_primary)
-        VALUES (?, ?, ?, ?, ?, 'link', ?, ?, ?, ?, ?, 0)
-      `).run(fieldId, tenantId, tableId, name, fieldKey,
+        INSERT INTO base_fields (id, table_id, name, key, type, options, required, default_value, sort_order, width, is_primary)
+        VALUES (?, ?, ?, ?, 'link', ?, ?, ?, ?, ?, 0)
+      `).run(fieldId, tableId, name, fieldKey,
         JSON.stringify({ ...options, inverse_field_id: inverseFieldId }),
         required ? 1 : 0, default_value, sortOrder, width)
 
       db.prepare(`
-        INSERT INTO base_fields (id, tenant_id, table_id, name, key, type, options, required, default_value, sort_order, width, is_primary)
-        VALUES (?, ?, ?, ?, ?, 'link', ?, 0, NULL, ?, 160, 0)
-      `).run(inverseFieldId, tenantId, linkedTableId, currentTable.name, inverseKey,
+        INSERT INTO base_fields (id, table_id, name, key, type, options, required, default_value, sort_order, width, is_primary)
+        VALUES (?, ?, ?, ?, 'link', ?, 0, NULL, ?, 160, 0)
+      `).run(inverseFieldId, linkedTableId, currentTable.name, inverseKey,
         JSON.stringify({ linked_table_id: tableId, inverse_field_id: fieldId, is_inverse: true, allow_multiple: true }),
         inverseSort)
     })()
@@ -237,17 +234,17 @@ export function createField(tenantId, tableId, { name, key, type = 'text', optio
   }
 
   db.prepare(`
-    INSERT INTO base_fields (id, tenant_id, table_id, name, key, type, options, required, default_value, sort_order, width, is_primary)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-  `).run(fieldId, tenantId, tableId, name, fieldKey, type,
+    INSERT INTO base_fields (id, table_id, name, key, type, options, required, default_value, sort_order, width, is_primary)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+  `).run(fieldId, tableId, name, fieldKey, type,
     JSON.stringify(options), required ? 1 : 0, default_value, sortOrder, width)
 
   const field = db.prepare('SELECT * FROM base_fields WHERE id = ?').get(fieldId)
   return { field: { ...field, options: tryParse(field.options) }, undo: { method: 'DELETE', url: `/api/base/fields/${fieldId}`, body: {} } }
 }
 
-export function updateField(tenantId, fieldId, updates) {
-  const field = ownsField(tenantId, fieldId)
+export function updateField(fieldId, updates) {
+  const field = ownsField(fieldId)
   if (!field) return null
 
   const opts = tryParse(field.options)
@@ -293,8 +290,8 @@ export function updateField(tenantId, fieldId, updates) {
   return { ...updated, options: tryParse(updated.options) }
 }
 
-export function deleteField(tenantId, fieldId) {
-  const field = ownsField(tenantId, fieldId)
+export function deleteField(fieldId) {
+  const field = ownsField(fieldId)
   if (!field) return null
   if (field.is_primary) throw Object.assign(new Error('Le champ primaire ne peut pas être supprimé'), { status: 400 })
 
@@ -311,8 +308,8 @@ export function deleteField(tenantId, fieldId) {
   return { success: true, undo: { method: 'POST', url: `/api/base/fields/${fieldId}/restore`, body: {} } }
 }
 
-export function restoreField(tenantId, fieldId) {
-  const field = ownsField(tenantId, fieldId)
+export function restoreField(fieldId) {
+  const field = ownsField(fieldId)
   if (!field || !field.deleted_at) return null
 
   db.transaction(() => {
@@ -329,8 +326,8 @@ export function restoreField(tenantId, fieldId) {
   return { ...updated, options: tryParse(updated.options) }
 }
 
-export function reorderFields(tenantId, tableId, orders) {
-  if (!ownsTable(tenantId, tableId)) return null
+export function reorderFields(tableId, orders) {
+  if (!ownsTable(tableId)) return null
   db.transaction(() => {
     const update = db.prepare('UPDATE base_fields SET sort_order = ? WHERE id = ? AND table_id = ?')
     for (const { id, sort_order } of orders) {
@@ -345,8 +342,8 @@ export function reorderFields(tenantId, tableId, orders) {
 
 // ── Records ───────────────────────────────────────────────────────────────────
 
-export function getRecords(tenantId, tableId, { search, filters, sorts, limit = 50, page = 1, view_id, group_by, group_summaries } = {}) {
-  if (!ownsTable(tenantId, tableId)) return null
+export function getRecords(tableId, { search, filters, sorts, limit = 50, page = 1, view_id, group_by, group_summaries } = {}) {
+  if (!ownsTable(tableId)) return null
 
   // Load fields for enrichment
   const fields = db.prepare("SELECT * FROM base_fields WHERE table_id = ? ORDER BY is_primary DESC, sort_order ASC").all(tableId)
@@ -366,8 +363,8 @@ export function getRecords(tenantId, tableId, { search, filters, sorts, limit = 
   }
 
   // Build base WHERE
-  const where = ['r.tenant_id = ?', 'r.table_id = ?', 'r.deleted_at IS NULL']
-  const params = [tenantId, tableId]
+  const where = ['r.table_id = ?', 'r.deleted_at IS NULL']
+  const params = [tableId]
 
   // Search on primary field
   if (search) {
@@ -437,8 +434,8 @@ export function getRecords(tenantId, tableId, { search, filters, sorts, limit = 
   return { data: enriched, total, page: parseInt(page), limit: lim }
 }
 
-export function createRecord(tenantId, tableId, userId, inputData = {}) {
-  if (!ownsTable(tenantId, tableId)) return null
+export function createRecord(tableId, userId, inputData = {}) {
+  if (!ownsTable(tableId)) return null
 
   const recordId = newId('record')
   const maxSort = db.prepare('SELECT MAX(sort_order) as m FROM base_records WHERE table_id = ?').get(tableId).m || 0
@@ -471,26 +468,26 @@ export function createRecord(tenantId, tableId, userId, inputData = {}) {
     }
 
     db.prepare(`
-      INSERT INTO base_records (id, tenant_id, table_id, data, sort_order)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(recordId, tenantId, tableId, JSON.stringify(data), maxSort + 1)
+      INSERT INTO base_records (id, table_id, data, sort_order)
+      VALUES (?, ?, ?, ?)
+    `).run(recordId, tableId, JSON.stringify(data), maxSort + 1)
 
     // Record links
     for (const { field, targets } of linkEntries) {
       const opts = field.options
       for (const targetId of targets) {
-        db.prepare(`INSERT OR IGNORE INTO base_record_links (id, tenant_id, field_id, source_record_id, target_record_id) VALUES (?, ?, ?, ?, ?)`)
-          .run(newId('record'), tenantId, field.id, recordId, targetId)
+        db.prepare(`INSERT OR IGNORE INTO base_record_links (id, field_id, source_record_id, target_record_id) VALUES (?, ?, ?, ?)`)
+          .run(newId('record'), field.id, recordId, targetId)
         if (opts.inverse_field_id) {
-          db.prepare(`INSERT OR IGNORE INTO base_record_links (id, tenant_id, field_id, source_record_id, target_record_id) VALUES (?, ?, ?, ?, ?)`)
-            .run(newId('record'), tenantId, opts.inverse_field_id, targetId, recordId)
+          db.prepare(`INSERT OR IGNORE INTO base_record_links (id, field_id, source_record_id, target_record_id) VALUES (?, ?, ?, ?)`)
+            .run(newId('record'), opts.inverse_field_id, targetId, recordId)
         }
       }
     }
 
     // History
-    db.prepare(`INSERT INTO record_history (id, tenant_id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, ?, 'create', NULL)`)
-      .run(newId('record'), tenantId, tableId, recordId, userId)
+    db.prepare(`INSERT INTO record_history (id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, 'create', NULL)`)
+      .run(newId('record'), tableId, recordId, userId)
   })
   run()
 
@@ -499,7 +496,7 @@ export function createRecord(tenantId, tableId, userId, inputData = {}) {
 
   // Fire automations
   const tableRow = db.prepare('SELECT * FROM base_tables WHERE id = ?').get(tableId)
-  checkAndRunAutomations(tenantId, 'record_created', {
+  checkAndRunAutomations('record_created', {
     record: { id: recordId, data: parsed.data },
     table: tableRow ? { id: tableRow.id, name: tableRow.name } : { id: tableId },
   })
@@ -509,8 +506,8 @@ export function createRecord(tenantId, tableId, userId, inputData = {}) {
 
 const READONLY_KEYS = new Set(['autonumber', 'formula', 'rollup', 'lookup', 'created_at', 'updated_at'])
 
-export function updateRecord(tenantId, recordId, userId, inputData = {}) {
-  const record = ownsRecord(tenantId, recordId)
+export function updateRecord(recordId, userId, inputData = {}) {
+  const record = ownsRecord(recordId)
   if (!record) return null
 
   const fields = db.prepare("SELECT * FROM base_fields WHERE table_id = ? AND deleted_at IS NULL").all(record.table_id)
@@ -560,19 +557,19 @@ export function updateRecord(tenantId, recordId, userId, inputData = {}) {
       }
       // Insert new links
       for (const targetId of targets) {
-        db.prepare(`INSERT OR IGNORE INTO base_record_links (id, tenant_id, field_id, source_record_id, target_record_id) VALUES (?, ?, ?, ?, ?)`)
-          .run(newId('record'), tenantId, field.id, recordId, targetId)
+        db.prepare(`INSERT OR IGNORE INTO base_record_links (id, field_id, source_record_id, target_record_id) VALUES (?, ?, ?, ?)`)
+          .run(newId('record'), field.id, recordId, targetId)
         if (opts.inverse_field_id) {
-          db.prepare(`INSERT OR IGNORE INTO base_record_links (id, tenant_id, field_id, source_record_id, target_record_id) VALUES (?, ?, ?, ?, ?)`)
-            .run(newId('record'), tenantId, opts.inverse_field_id, targetId, recordId)
+          db.prepare(`INSERT OR IGNORE INTO base_record_links (id, field_id, source_record_id, target_record_id) VALUES (?, ?, ?, ?)`)
+            .run(newId('record'), opts.inverse_field_id, targetId, recordId)
         }
       }
     }
 
     // History entries
     for (const c of changed) {
-      db.prepare(`INSERT INTO record_history (id, tenant_id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, ?, 'update', ?)`)
-        .run(newId('record'), tenantId, record.table_id, recordId, userId,
+      db.prepare(`INSERT INTO record_history (id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, 'update', ?)`)
+        .run(newId('record'), record.table_id, recordId, userId,
           JSON.stringify({ field_key: c.key, old_value: c.old, new_value: c.new, source: 'user' }))
     }
   })()
@@ -586,8 +583,8 @@ export function updateRecord(tenantId, recordId, userId, inputData = {}) {
     const tableData = tableRow ? { id: tableRow.id, name: tableRow.name } : { id: record.table_id }
     for (const c of changed) {
       const base = { record: { id: recordId, data: parsedUpdated.data }, table: tableData, field: { key: c.key }, oldValue: c.old, newValue: c.new }
-      checkAndRunAutomations(tenantId, 'record_updated', base)
-      checkAndRunAutomations(tenantId, 'field_changed', base)
+      checkAndRunAutomations('record_updated', base)
+      checkAndRunAutomations('field_changed', base)
     }
   }
 
@@ -597,8 +594,8 @@ export function updateRecord(tenantId, recordId, userId, inputData = {}) {
   }
 }
 
-export function getRecord(tenantId, recordId) {
-  const record = ownsRecord(tenantId, recordId)
+export function getRecord(recordId) {
+  const record = ownsRecord(recordId)
   if (!record) return null
   const fields = db.prepare("SELECT * FROM base_fields WHERE table_id = ? ORDER BY is_primary DESC, sort_order ASC").all(record.table_id)
     .map(f => ({ ...f, options: tryParse(f.options) }))
@@ -606,38 +603,37 @@ export function getRecord(tenantId, recordId) {
   return { record: { ...enriched, data: tryParse(enriched.data) } }
 }
 
-export function deleteRecord(tenantId, recordId, userId) {
-  const record = ownsRecord(tenantId, recordId)
+export function deleteRecord(recordId, userId) {
+  const record = ownsRecord(recordId)
   if (!record) return null
 
   db.transaction(() => {
     db.prepare("UPDATE base_records SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(recordId)
-    db.prepare(`INSERT INTO record_history (id, tenant_id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, ?, 'delete', NULL)`)
-      .run(newId('record'), tenantId, record.table_id, recordId, userId)
+    db.prepare(`INSERT INTO record_history (id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, 'delete', NULL)`)
+      .run(newId('record'), record.table_id, recordId, userId)
   })()
 
   return { success: true, undo: { method: 'POST', url: `/api/base/records/${recordId}/restore`, body: {} } }
 }
 
-export function restoreRecord(tenantId, recordId, userId) {
+export function restoreRecord(recordId, userId) {
   const record = db.prepare(`
     SELECT r.* FROM base_records r
-    JOIN base_tables t ON r.table_id = t.id
-    WHERE r.id = ? AND t.tenant_id = ? AND r.deleted_at IS NOT NULL
-  `).get(recordId, tenantId)
+    WHERE r.id = ? AND r.deleted_at IS NOT NULL
+  `).get(recordId)
   if (!record) return null
 
   db.transaction(() => {
     db.prepare("UPDATE base_records SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ?").run(recordId)
-    db.prepare(`INSERT INTO record_history (id, tenant_id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, ?, 'restore', NULL)`)
-      .run(newId('record'), tenantId, record.table_id, recordId, userId)
+    db.prepare(`INSERT INTO record_history (id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, 'restore', NULL)`)
+      .run(newId('record'), record.table_id, recordId, userId)
   })()
 
   return parseRecord(db.prepare('SELECT * FROM base_records WHERE id = ?').get(recordId))
 }
 
-export function duplicateRecord(tenantId, recordId, userId) {
-  const record = ownsRecord(tenantId, recordId)
+export function duplicateRecord(recordId, userId) {
+  const record = ownsRecord(recordId)
   if (!record) return null
 
   const oldData = tryParse(record.data)
@@ -659,17 +655,17 @@ export function duplicateRecord(tenantId, recordId, userId) {
       const seq = db.prepare('SELECT autonumber_seq FROM base_tables WHERE id = ?').get(record.table_id).autonumber_seq
       newData[autonumField.key] = seq
     }
-    db.prepare(`INSERT INTO base_records (id, tenant_id, table_id, data, sort_order) VALUES (?, ?, ?, ?, ?)`)
-      .run(newRecordId, tenantId, record.table_id, JSON.stringify(newData), maxSort + 1)
-    db.prepare(`INSERT INTO record_history (id, tenant_id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, ?, 'create', ?)`)
-      .run(newId('record'), tenantId, record.table_id, newRecordId, userId, JSON.stringify({ source: 'duplicate', from: recordId }))
+    db.prepare(`INSERT INTO base_records (id, table_id, data, sort_order) VALUES (?, ?, ?, ?)`)
+      .run(newRecordId, record.table_id, JSON.stringify(newData), maxSort + 1)
+    db.prepare(`INSERT INTO record_history (id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, 'create', ?)`)
+      .run(newId('record'), record.table_id, newRecordId, userId, JSON.stringify({ source: 'duplicate', from: recordId }))
   })()
 
   return parseRecord(db.prepare('SELECT * FROM base_records WHERE id = ?').get(newRecordId))
 }
 
-export function reorderRecords(tenantId, tableId, orders) {
-  if (!ownsTable(tenantId, tableId)) return null
+export function reorderRecords(tableId, orders) {
+  if (!ownsTable(tableId)) return null
   db.transaction(() => {
     const upd = db.prepare('UPDATE base_records SET sort_order = ? WHERE id = ? AND table_id = ?')
     for (const { id, row_order } of orders) upd.run(row_order, id, tableId)
@@ -677,8 +673,8 @@ export function reorderRecords(tenantId, tableId, orders) {
   return { success: true }
 }
 
-export function getRecordHistory(tenantId, recordId) {
-  const record = ownsRecord(tenantId, recordId)
+export function getRecordHistory(recordId) {
+  const record = ownsRecord(recordId)
   if (!record) return null
 
   const rows = db.prepare(`
@@ -707,15 +703,15 @@ export function getRecordHistory(tenantId, recordId) {
 
 // ── Views ─────────────────────────────────────────────────────────────────────
 
-export function getViews(tenantId, tableId) {
-  if (!ownsTable(tenantId, tableId)) return null
+export function getViews(tableId) {
+  if (!ownsTable(tableId)) return null
   return db.prepare(`
     SELECT * FROM base_views WHERE table_id = ? AND deleted_at IS NULL ORDER BY is_default DESC, sort_order ASC, created_at ASC
   `).all(tableId).map(parseView)
 }
 
-export function createView(tenantId, tableId, { name, visible_fields, field_order, filters = [], sorts = [], group_by = null, group_summaries = {}, frozen_fields_count = 0, type = 'grid' }) {
-  if (!ownsTable(tenantId, tableId)) return null
+export function createView(tableId, { name, visible_fields, field_order, filters = [], sorts = [], group_by = null, group_summaries = {}, frozen_fields_count = 0, type = 'grid' }) {
+  if (!ownsTable(tableId)) return null
 
   // Default visible_fields from the default view if not provided
   let vf = visible_fields
@@ -728,17 +724,17 @@ export function createView(tenantId, tableId, { name, visible_fields, field_orde
   const maxSort = db.prepare('SELECT MAX(sort_order) as m FROM base_views WHERE table_id = ?').get(tableId).m || 0
 
   db.prepare(`
-    INSERT INTO base_views (id, tenant_id, table_id, name, type, config, sort_order, is_default)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-  `).run(viewId, tenantId, tableId, name, type,
+    INSERT INTO base_views (id, table_id, name, type, config, sort_order, is_default)
+    VALUES (?, ?, ?, ?, ?, ?, 0)
+  `).run(viewId, tableId, name, type,
     JSON.stringify({ visible_fields: vf, field_order: field_order || vf, filters, sorts, group_by, group_summaries, frozen_fields_count }),
     maxSort + 1)
 
   return parseView(db.prepare('SELECT * FROM base_views WHERE id = ?').get(viewId))
 }
 
-export function updateView(tenantId, viewId, updates) {
-  const view = ownsView(tenantId, viewId)
+export function updateView(viewId, updates) {
+  const view = ownsView(viewId)
   if (!view) return null
 
   const currentConfig = tryParse(view.config)
@@ -756,35 +752,34 @@ export function updateView(tenantId, viewId, updates) {
   return parseView(db.prepare('SELECT * FROM base_views WHERE id = ?').get(viewId))
 }
 
-export function deleteView(tenantId, viewId) {
-  const view = ownsView(tenantId, viewId)
+export function deleteView(viewId) {
+  const view = ownsView(viewId)
   if (!view) return null
   if (view.is_default) throw Object.assign(new Error('La vue par défaut ne peut pas être supprimée'), { status: 400 })
   db.prepare("UPDATE base_views SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(viewId)
   return { success: true, undo: { method: 'POST', url: `/api/base/views/${viewId}/restore`, body: {} } }
 }
 
-export function duplicateView(tenantId, viewId) {
-  const view = ownsView(tenantId, viewId)
+export function duplicateView(viewId) {
+  const view = ownsView(viewId)
   if (!view) return null
 
   const newViewId = newId('view')
   const maxSort = db.prepare('SELECT MAX(sort_order) as m FROM base_views WHERE table_id = ?').get(view.table_id).m || 0
 
   db.prepare(`
-    INSERT INTO base_views (id, tenant_id, table_id, name, type, config, sort_order, is_default)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 0)
-  `).run(newViewId, tenantId, view.table_id, `${view.name} (copie)`, view.type, view.config, maxSort + 1)
+    INSERT INTO base_views (id, table_id, name, type, config, sort_order, is_default)
+    VALUES (?, ?, ?, ?, ?, ?, 0)
+  `).run(newViewId, view.table_id, `${view.name} (copie)`, view.type, view.config, maxSort + 1)
 
   return parseView(db.prepare('SELECT * FROM base_views WHERE id = ?').get(newViewId))
 }
 
-export function restoreView(tenantId, viewId) {
+export function restoreView(viewId) {
   const view = db.prepare(`
     SELECT v.* FROM base_views v
-    JOIN base_tables t ON v.table_id = t.id
-    WHERE v.id = ? AND t.tenant_id = ? AND v.deleted_at IS NOT NULL
-  `).get(viewId, tenantId)
+    WHERE v.id = ? AND v.deleted_at IS NOT NULL
+  `).get(viewId)
   if (!view) return null
   db.prepare("UPDATE base_views SET deleted_at = NULL, updated_at = datetime('now') WHERE id = ?").run(viewId)
   return parseView(db.prepare('SELECT * FROM base_views WHERE id = ?').get(viewId))
@@ -792,32 +787,32 @@ export function restoreView(tenantId, viewId) {
 
 // ── Trash ─────────────────────────────────────────────────────────────────────
 
-export function getTrash(tenantId) {
+export function getTrash() {
   const tables = db.prepare(`
-    SELECT * FROM base_tables WHERE tenant_id = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC
-  `).all(tenantId)
+    SELECT * FROM base_tables WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC
+  `).all()
 
   const fields = db.prepare(`
     SELECT f.*, t.name as table_name FROM base_fields f
     JOIN base_tables t ON f.table_id = t.id
-    WHERE t.tenant_id = ? AND f.deleted_at IS NOT NULL ORDER BY f.deleted_at DESC
-  `).all(tenantId).map(f => ({ ...f, options: tryParse(f.options) }))
+    WHERE f.deleted_at IS NOT NULL ORDER BY f.deleted_at DESC
+  `).all().map(f => ({ ...f, options: tryParse(f.options) }))
 
   const views = db.prepare(`
     SELECT v.*, t.name as table_name FROM base_views v
     JOIN base_tables t ON v.table_id = t.id
-    WHERE t.tenant_id = ? AND v.deleted_at IS NOT NULL ORDER BY v.deleted_at DESC
-  `).all(tenantId).map(parseView)
+    WHERE v.deleted_at IS NOT NULL ORDER BY v.deleted_at DESC
+  `).all().map(parseView)
 
   return { tables, fields, views }
 }
 
 // ── Bulk operations ───────────────────────────────────────────────────────────
 
-export function bulkUpdateRecords(tenantId, tableId, recordIds, inputData, userId) {
+export function bulkUpdateRecords(tableId, recordIds, inputData, userId) {
   if (!recordIds?.length) return { updated: 0 }
   if (recordIds.length > 500) throw Object.assign(new Error('Maximum 500 records par appel'), { status: 400 })
-  if (!ownsTable(tenantId, tableId)) return null
+  if (!ownsTable(tableId)) return null
 
   const fields = db.prepare("SELECT * FROM base_fields WHERE table_id = ? AND deleted_at IS NULL").all(tableId)
     .map(f => ({ ...f, options: tryParse(f.options) }))
@@ -830,9 +825,8 @@ export function bulkUpdateRecords(tenantId, tableId, recordIds, inputData, userI
     for (const recordId of recordIds) {
       const record = db.prepare(`
         SELECT r.* FROM base_records r
-        JOIN base_tables t ON r.table_id = t.id
-        WHERE r.id = ? AND t.tenant_id = ? AND r.table_id = ? AND r.deleted_at IS NULL
-      `).get(recordId, tenantId, tableId)
+        WHERE r.id = ? AND r.table_id = ? AND r.deleted_at IS NULL
+      `).get(recordId, tableId)
       if (!record) continue
 
       const oldData = tryParse(record.data)
@@ -843,8 +837,8 @@ export function bulkUpdateRecords(tenantId, tableId, recordIds, inputData, userI
 
       for (const [k, v] of Object.entries(cleanData)) {
         if (JSON.stringify(oldData[k]) !== JSON.stringify(v)) {
-          db.prepare(`INSERT INTO record_history (id, tenant_id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, ?, 'update', ?)`)
-            .run(newId('record'), tenantId, tableId, recordId, userId,
+          db.prepare(`INSERT INTO record_history (id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, 'update', ?)`)
+            .run(newId('record'), tableId, recordId, userId,
               JSON.stringify({ field_key: k, old_value: oldData[k], new_value: v, source: 'user' }))
         }
       }
@@ -855,24 +849,23 @@ export function bulkUpdateRecords(tenantId, tableId, recordIds, inputData, userI
   return { updated }
 }
 
-export function bulkDeleteRecords(tenantId, tableId, recordIds, userId) {
+export function bulkDeleteRecords(tableId, recordIds, userId) {
   if (!recordIds?.length) return { deleted: 0 }
   if (recordIds.length > 500) throw Object.assign(new Error('Maximum 500 records par appel'), { status: 400 })
-  if (!ownsTable(tenantId, tableId)) return null
+  if (!ownsTable(tableId)) return null
 
   let deleted = 0
   db.transaction(() => {
     for (const recordId of recordIds) {
       const record = db.prepare(`
         SELECT r.* FROM base_records r
-        JOIN base_tables t ON r.table_id = t.id
-        WHERE r.id = ? AND t.tenant_id = ? AND r.table_id = ? AND r.deleted_at IS NULL
-      `).get(recordId, tenantId, tableId)
+        WHERE r.id = ? AND r.table_id = ? AND r.deleted_at IS NULL
+      `).get(recordId, tableId)
       if (!record) continue
 
       db.prepare("UPDATE base_records SET deleted_at = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(recordId)
-      db.prepare(`INSERT INTO record_history (id, tenant_id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, ?, 'delete', NULL)`)
-        .run(newId('record'), tenantId, tableId, recordId, userId)
+      db.prepare(`INSERT INTO record_history (id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, 'delete', NULL)`)
+        .run(newId('record'), tableId, recordId, userId)
       deleted++
     }
   })()
@@ -880,10 +873,10 @@ export function bulkDeleteRecords(tenantId, tableId, recordIds, userId) {
   return { deleted }
 }
 
-export function bulkCreateRecords(tenantId, tableId, recordsData, userId) {
+export function bulkCreateRecords(tableId, recordsData, userId) {
   if (!recordsData?.length) return { created: 0, records: [] }
   if (recordsData.length > 500) throw Object.assign(new Error('Maximum 500 records par appel'), { status: 400 })
-  if (!ownsTable(tenantId, tableId)) return null
+  if (!ownsTable(tableId)) return null
 
   const maxSort = db.prepare('SELECT MAX(sort_order) as m FROM base_records WHERE table_id = ?').get(tableId).m || 0
   const autonumField = db.prepare("SELECT * FROM base_fields WHERE table_id = ? AND type = 'autonumber' AND deleted_at IS NULL").get(tableId)
@@ -917,23 +910,23 @@ export function bulkCreateRecords(tenantId, tableId, recordsData, userId) {
       }
 
       const recordId = newId('record')
-      db.prepare(`INSERT INTO base_records (id, tenant_id, table_id, data, sort_order) VALUES (?, ?, ?, ?, ?)`)
-        .run(recordId, tenantId, tableId, JSON.stringify(data), maxSort + i + 1)
+      db.prepare(`INSERT INTO base_records (id, table_id, data, sort_order) VALUES (?, ?, ?, ?)`)
+        .run(recordId, tableId, JSON.stringify(data), maxSort + i + 1)
 
       for (const { field, targets } of linkEntries) {
         const opts = field.options
         for (const targetId of targets) {
-          db.prepare(`INSERT OR IGNORE INTO base_record_links (id, tenant_id, field_id, source_record_id, target_record_id) VALUES (?, ?, ?, ?, ?)`)
-            .run(newId('record'), tenantId, field.id, recordId, targetId)
+          db.prepare(`INSERT OR IGNORE INTO base_record_links (id, field_id, source_record_id, target_record_id) VALUES (?, ?, ?, ?)`)
+            .run(newId('record'), field.id, recordId, targetId)
           if (opts.inverse_field_id) {
-            db.prepare(`INSERT OR IGNORE INTO base_record_links (id, tenant_id, field_id, source_record_id, target_record_id) VALUES (?, ?, ?, ?, ?)`)
-              .run(newId('record'), tenantId, opts.inverse_field_id, targetId, recordId)
+            db.prepare(`INSERT OR IGNORE INTO base_record_links (id, field_id, source_record_id, target_record_id) VALUES (?, ?, ?, ?)`)
+              .run(newId('record'), opts.inverse_field_id, targetId, recordId)
           }
         }
       }
 
-      db.prepare(`INSERT INTO record_history (id, tenant_id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, ?, 'create', NULL)`)
-        .run(newId('record'), tenantId, tableId, recordId, userId)
+      db.prepare(`INSERT INTO record_history (id, table_id, record_id, user_id, action, diff) VALUES (?, ?, ?, ?, 'create', NULL)`)
+        .run(newId('record'), tableId, recordId, userId)
 
       createdRecords.push(parseRecord(db.prepare('SELECT * FROM base_records WHERE id = ?').get(recordId)))
     }
@@ -942,17 +935,17 @@ export function bulkCreateRecords(tenantId, tableId, recordsData, userId) {
   return { created: createdRecords.length, records: createdRecords }
 }
 
-export function purgeTrash(tenantId) {
-  const tables = db.prepare("DELETE FROM base_tables WHERE tenant_id = ? AND deleted_at IS NOT NULL").run(tenantId).changes
+export function purgeTrash() {
+  const tables = db.prepare("DELETE FROM base_tables WHERE deleted_at IS NOT NULL").run().changes
   const fields = db.prepare(`
-    DELETE FROM base_fields WHERE deleted_at IS NOT NULL AND table_id IN (SELECT id FROM base_tables WHERE tenant_id = ?)
-  `).run(tenantId).changes
+    DELETE FROM base_fields WHERE deleted_at IS NOT NULL
+  `).run().changes
   const views = db.prepare(`
-    DELETE FROM base_views WHERE deleted_at IS NOT NULL AND table_id IN (SELECT id FROM base_tables WHERE tenant_id = ?)
-  `).run(tenantId).changes
+    DELETE FROM base_views WHERE deleted_at IS NOT NULL
+  `).run().changes
   const records = db.prepare(`
-    DELETE FROM base_records WHERE deleted_at IS NOT NULL AND table_id IN (SELECT id FROM base_tables WHERE tenant_id = ?)
-  `).run(tenantId).changes
+    DELETE FROM base_records WHERE deleted_at IS NOT NULL
+  `).run().changes
 
   return { purged: { tables, fields, views, records } }
 }

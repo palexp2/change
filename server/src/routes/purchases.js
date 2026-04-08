@@ -10,10 +10,8 @@ router.get('/', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE p.tenant_id = ?'
-  const params = [tid]
+  let where = 'WHERE 1=1'
+  const params = []
 
   if (status) { where += ' AND p.status = ?'; params.push(status) }
   if (product_id) { where += ' AND p.product_id = ?'; params.push(product_id) }
@@ -36,8 +34,8 @@ router.get('/:id', (req, res) => {
     SELECT p.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image
     FROM purchases p
     LEFT JOIN products pr ON p.product_id = pr.id
-    WHERE p.id = ? AND p.tenant_id = ?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE p.id = ?
+  `).get(req.params.id)
   if (!purchase) return res.status(404).json({ error: 'Not found' })
   res.json(purchase)
 })

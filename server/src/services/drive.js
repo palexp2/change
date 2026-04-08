@@ -24,26 +24,26 @@ function parseAcrFilename(filename) {
   return { contactName: null, phone: null, direction: 'in', timestamp: new Date().toISOString() }
 }
 
-function findOrCreateContact(tenantId, phone, contactName) {
+function findOrCreateContact(phone, contactName) {
   if (phone) {
     const digits = phone.replace(/\D/g, '').slice(-10)
     const byPhone = db.prepare(`
-      SELECT id FROM contacts WHERE tenant_id=? AND
+      SELECT id FROM contacts WHERE
       replace(replace(replace(replace(replace(phone,' ',''),'-',''),'(',''),')',''),'+','') LIKE ?
       LIMIT 1
-    `).get(tenantId, `%${digits}`)
+    `).get(`%${digits}`)
     if (byPhone) return byPhone.id
   }
   if (contactName) {
     const parts = contactName.trim().split(' ')
     const lastName = parts.slice(1).join(' ') || parts[0]
-    const byName = db.prepare(`SELECT id FROM contacts WHERE tenant_id=? AND last_name LIKE ? LIMIT 1`).get(tenantId, `%${lastName}%`)
+    const byName = db.prepare(`SELECT id FROM contacts WHERE last_name LIKE ? LIMIT 1`).get(`%${lastName}%`)
     if (byName) return byName.id
   }
   const id = uuid()
   const parts = (contactName || '').trim().split(' ')
-  db.prepare('INSERT INTO contacts (id, tenant_id, first_name, last_name, phone) VALUES (?,?,?,?,?)')
-    .run(id, tenantId, parts[0] || '', parts.slice(1).join(' ') || '', phone || null)
+  db.prepare('INSERT INTO contacts (id, first_name, last_name, phone) VALUES (?,?,?,?)')
+    .run(id, parts[0] || '', parts.slice(1).join(' ') || '', phone || null)
   return id
 }
 
@@ -57,7 +57,7 @@ async function downloadFile(drive, fileId, destPath) {
   })
 }
 
-async function syncFolder(tenantId, drive, folderId, userId) {
+async function syncFolder(drive, folderId, userId) {
   const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls')
   if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true })
 
@@ -102,14 +102,14 @@ async function syncFolder(tenantId, drive, folderId, userId) {
     catch (e) { console.error(`❌ Download ${file.name}:`, e.message); continue }
 
     const contactId = parsed.contactName || phone
-      ? findOrCreateContact(tenantId, phone, parsed.contactName)
+      ? findOrCreateContact(phone, parsed.contactName)
       : null
 
     const interactionId = uuid()
     const callId = uuid()
 
-    db.prepare('INSERT INTO interactions (id, tenant_id, contact_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
-      .run(interactionId, tenantId, contactId, userId || null, 'call', direction, parsed.timestamp)
+    db.prepare('INSERT INTO interactions (id, contact_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?)')
+      .run(interactionId, contactId, userId || null, 'call', direction, parsed.timestamp)
 
     db.prepare('INSERT INTO calls (id, interaction_id, recording_path, caller_number, callee_number, duration_seconds, drive_file_id, drive_filename) VALUES (?,?,?,?,?,?,?,?)')
       .run(callId, interactionId, localFilename, direction === 'out' ? null : phone, direction === 'out' ? phone : null, durationSeconds, file.id, file.name)
@@ -120,11 +120,11 @@ async function syncFolder(tenantId, drive, folderId, userId) {
   return imported
 }
 
-export async function syncDrive(tenantId) {
+export async function syncDrive() {
   // Load folders config — new multi-folder format first, fall back to legacy single-folder
   const foldersRow = db.prepare(`
-    SELECT value FROM connector_config WHERE tenant_id=? AND connector='google' AND key='drive_folders'
-  `).get(tenantId)
+    SELECT value FROM connector_config WHERE connector='google' AND key='drive_folders'
+  `).get()
 
   let folders = []
   if (foldersRow?.value) {
@@ -134,17 +134,17 @@ export async function syncDrive(tenantId) {
   // Legacy fallback
   if (folders.length === 0) {
     const folderRow = db.prepare(`
-      SELECT value FROM connector_config WHERE tenant_id=? AND connector='google' AND key='drive_folder_id'
-    `).get(tenantId)
+      SELECT value FROM connector_config WHERE connector='google' AND key='drive_folder_id'
+    `).get()
     if (folderRow?.value) {
       const emailRow = db.prepare(`
-        SELECT value FROM connector_config WHERE tenant_id=? AND connector='google' AND key='drive_sync_email'
-      `).get(tenantId)
+        SELECT value FROM connector_config WHERE connector='google' AND key='drive_sync_email'
+      `).get()
       folders = [{ folder_id: folderRow.value, email: emailRow?.value || null, user_id: null, label: 'Dossier par défaut' }]
     }
   }
 
-  if (folders.length === 0) { console.log(`⚠️  No Drive folders configured for tenant ${tenantId}`); return }
+  if (folders.length === 0) { console.log(`⚠️  No Drive folders configured`); return }
 
   let totalImported = 0
   for (const folder of folders) {
@@ -154,13 +154,13 @@ export async function syncDrive(tenantId) {
     let oauthRow
     if (folder.email) {
       oauthRow = db.prepare(`
-        SELECT * FROM connector_oauth WHERE tenant_id=? AND connector='google' AND account_email=?
-      `).get(tenantId, folder.email)
+        SELECT * FROM connector_oauth WHERE connector='google' AND account_email=?
+      `).get(folder.email)
     }
     if (!oauthRow) {
       oauthRow = db.prepare(`
-        SELECT * FROM connector_oauth WHERE tenant_id=? AND connector='google' ORDER BY updated_at DESC LIMIT 1
-      `).get(tenantId)
+        SELECT * FROM connector_oauth WHERE connector='google' ORDER BY updated_at DESC LIMIT 1
+      `).get()
     }
     if (!oauthRow?.refresh_token) { console.log(`⚠️  No Google account for folder ${folder.label}`); continue }
 
@@ -169,7 +169,7 @@ export async function syncDrive(tenantId) {
     catch (e) { console.error(`❌ Drive auth for ${folder.label}:`, e.message); continue }
 
     try {
-      const n = await syncFolder(tenantId, drive, folder.folder_id, folder.user_id || null)
+      const n = await syncFolder(drive, folder.folder_id, folder.user_id || null)
       totalImported += n
     } catch (e) {
       console.error(`❌ Drive sync folder ${folder.label}:`, e.message)
@@ -177,10 +177,10 @@ export async function syncDrive(tenantId) {
   }
 
   db.prepare(`
-    INSERT INTO drive_sync_state (tenant_id, last_page_token, last_synced_at)
-    VALUES (?,?,datetime('now'))
-    ON CONFLICT(tenant_id) DO UPDATE SET last_synced_at=excluded.last_synced_at
-  `).run(tenantId, null)
+    INSERT INTO drive_sync_state (id, last_page_token, last_synced_at)
+    VALUES (1,?,datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET last_synced_at=excluded.last_synced_at
+  `).run(null)
 
-  if (totalImported > 0) console.log(`🎙️  Drive sync tenant ${tenantId}: ${totalImported} recordings`)
+  if (totalImported > 0) console.log(`🎙️  Drive sync: ${totalImported} recordings`)
 }

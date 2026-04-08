@@ -4,7 +4,7 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import dotenv from 'dotenv'
 
-import { initSchema, seedCatalogProducts, seedSellableProducts } from './db/schema.js'
+import { initSchema, seedSellableProducts } from './db/schema.js'
 import { runPurge } from './services/purge.js'
 import { seedBaseTables } from './services/baseSeed.js'
 import authRouter from './routes/auth.js'
@@ -22,21 +22,21 @@ import connectorsRouter from './routes/connectors.js'
 import purchasesRouter from './routes/purchases.js'
 import serialsRouter from './routes/serials.js'
 import viewsRouter from './routes/views.js'
-import inventaireRouter from './routes/inventaire.js'
+import projetsRouter from './routes/projets.js'
 import catalogRouter from './routes/catalog.js'
 import documentsRouter from './routes/documents.js'
 import searchRouter from './routes/search.js'
 import shipmentsRouter from './routes/shipments.js'
 // import baseRouter from './routes/base.js' // Dynamic tables — disabled
-import webhooksRouter from './routes/webhooks.js'
 import automationsRouter from './routes/automations.js'
 import tasksRouter from './routes/tasks.js'
 import agentRouter from './routes/agent.js'
 import depensesRouter from './routes/depenses.js'
 import facturesFournisseursRouter from './routes/factures-fournisseurs.js'
-import opportunitiesRouter from './routes/opportunities.js'
 import employeesRouter from './routes/employees.js'
 import saleReceiptsRouter from './routes/sale-receipts.js'
+import stripeWebhooksRouter from './routes/stripe-webhooks.js'
+import stripeQueueRouter from './routes/stripe-queue.js'
 import novoxpressRouter from './routes/novoxpress.js'
 import trackRouter from './routes/track.js'
 import { createRealtimeServer } from './services/realtime.js'
@@ -44,11 +44,12 @@ import { initTaskRunner, shutdownTaskRunner } from './services/taskRunner.js'
 import { initScheduler } from './services/automationScheduler.js'
 import { syncAllMailboxes } from './services/gmail.js'
 import { syncDrive } from './services/drive.js'
-import { syncAirtable, syncInventaire, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncFactures } from './services/airtable.js'
+import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncFactures } from './services/airtable.js'
 import { tracked } from './services/syncState.js'
 import { syncStripeSubscriptions, isStripeConfigured } from './services/stripe.js'
 import { initAirtableWebhooks } from './services/airtableWebhooks.js'
 import { getAccessToken as getAirtableToken } from './connectors/airtable.js'
+import { logSync, purgeSyncLogs } from './services/syncLog.js'
 import db from './db/database.js'
 
 dotenv.config()
@@ -58,6 +59,14 @@ const app = express()
 const PORT = process.env.PORT || 3004
 
 app.use(cors({ origin: true, credentials: true }))
+
+// Stripe webhooks need raw body for signature verification — mount before express.json
+app.use('/api/stripe-webhooks', express.raw({ type: 'application/json' }), (req, res, next) => {
+  req.rawBody = req.body
+  req.body = JSON.parse(req.body)
+  next()
+}, stripeWebhooksRouter)
+
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
 
@@ -77,7 +86,6 @@ app.use('/api/product-images', express.static(path.join(process.cwd(), process.e
 app.use('/api/attachments', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'attachments')))
 
 initSchema()
-seedCatalogProducts()
 seedSellableProducts()
 seedBaseTables()
 runPurge()
@@ -98,23 +106,22 @@ app.use('/api/connectors', connectorsRouter)
 app.use('/api/purchases', purchasesRouter)
 app.use('/api/serials', serialsRouter)
 app.use('/api/views', viewsRouter)
-app.use('/api/inventaire', inventaireRouter)
+app.use('/api/projets', projetsRouter)
 app.use('/api/catalog', catalogRouter)
 app.use('/api/documents', documentsRouter)
 app.use('/api/search', searchRouter)
 app.use('/api/shipments', shipmentsRouter)
 // app.use('/api/base', baseRouter) // Dynamic tables — disabled
-app.use('/api/webhooks', webhooksRouter)
 app.use('/api/automations', automationsRouter)
 app.use('/api/tasks', tasksRouter)
 app.use('/api/agent', agentRouter)
 app.use('/api/depenses', depensesRouter)
 app.use('/api/factures-fournisseurs', facturesFournisseursRouter)
 app.use('/api/sale-receipts', saleReceiptsRouter)
-app.use('/api/opportunities', opportunitiesRouter)
+app.use('/api/stripe-queue', stripeQueueRouter)
 app.use('/api/employees', employeesRouter)
 app.use('/api/receipt-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')))
-app.use('/api/novoxpress/labels', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')))
+app.use('/api/novoxpress/labels', express.static(path.join(__dirname, '../../uploads/labels')))
 app.use('/api/novoxpress', novoxpressRouter)
 app.use('/api/track', trackRouter)
 app.use('/api/interaction-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'interactions')))
@@ -144,37 +151,42 @@ const server = app.listen(PORT, () => {
 
   // Gmail sync — toutes les heures
   function scheduleGmailSync() {
-    const tenants = db.prepare('SELECT id FROM tenants').all().map(t => t.id)
-    for (const tenantId of tenants) {
-      tracked(tenantId, 'gmail', () => syncAllMailboxes(tenantId)).catch(e => console.error('Gmail sync error:', e.message))
-      try { rematchCalls(tenantId) } catch(e) { console.error('Rematch error:', e.message) }
-    }
+    tracked('gmail', () => syncAllMailboxes()).catch(e => console.error('Gmail sync error:', e.message))
+    try { rematchCalls() } catch(e) { console.error('Rematch error:', e.message) }
   }
 
   // Airtable fallback sync — une fois par jour (au cas où des webhooks auraient manqué des événements)
+  function scheduledSync(module, fn) {
+    const t0 = Date.now()
+    tracked(module, () => fn()).then(() => {
+      logSync(module, 'scheduled', { status: 'success', durationMs: Date.now() - t0 })
+    }).catch(e => {
+      logSync(module, 'scheduled', { status: 'error', error: e.message, durationMs: Date.now() - t0 })
+      console.error(`${module} sync error:`, e.message)
+    })
+  }
+
   function scheduleAirtableFallback() {
-    const tenants = db.prepare('SELECT id FROM tenants').all().map(t => t.id)
-    for (const tenantId of tenants) {
-      tracked(tenantId, 'airtable', () => syncAirtable(tenantId)).catch(e => console.error('Airtable sync error:', e.message))
-      tracked(tenantId, 'inventaire', () => syncInventaire(tenantId)).catch(e => console.error('Inventaire sync error:', e.message))
-      tracked(tenantId, 'pieces', () => syncPieces(tenantId)).catch(e => console.error('Pièces sync error:', e.message))
-      tracked(tenantId, 'orders', () => syncOrders(tenantId)).catch(e => console.error('Orders sync error:', e.message))
-      tracked(tenantId, 'achats', () => syncAchats(tenantId)).catch(e => console.error('Achats sync error:', e.message))
-      tracked(tenantId, 'billets', () => syncBillets(tenantId)).catch(e => console.error('Billets sync error:', e.message))
-      tracked(tenantId, 'serials', () => syncSerials(tenantId)).catch(e => console.error('Serials sync error:', e.message))
-      tracked(tenantId, 'envois', () => syncEnvois(tenantId)).catch(e => console.error('Envois sync error:', e.message))
-      tracked(tenantId, 'soumissions', () => syncSoumissions(tenantId)).catch(e => console.error('Soumissions sync error:', e.message))
-      tracked(tenantId, 'retours', () => syncRetours(tenantId)).catch(e => console.error('Retours sync error:', e.message))
-      tracked(tenantId, 'retour_items', () => syncRetourItems(tenantId)).catch(e => console.error('Retour items sync error:', e.message))
-      tracked(tenantId, 'adresses', () => syncAdresses(tenantId)).catch(e => console.error('Adresses sync error:', e.message))
-      tracked(tenantId, 'bom', () => syncBomItems(tenantId)).catch(e => console.error('BOM sync error:', e.message))
-      tracked(tenantId, 'serial_changes', () => syncSerialStateChanges(tenantId)).catch(e => console.error('Serial changes sync error:', e.message))
-      if (isStripeConfigured(tenantId)) {
-        tracked(tenantId, 'stripe', () => syncStripeSubscriptions(tenantId)).catch(e => console.error('Stripe sync error:', e.message))
-      }
-      tracked(tenantId, 'assemblages', () => syncAssemblages(tenantId)).catch(e => console.error('Assemblages sync error:', e.message))
-      tracked(tenantId, 'factures', () => syncFactures(tenantId)).catch(e => console.error('Factures sync error:', e.message))
+    purgeSyncLogs() // purge logs > 7 days
+    scheduledSync('airtable', syncAirtable)
+    scheduledSync('projets', syncProjets)
+    scheduledSync('pieces', syncPieces)
+    scheduledSync('orders', syncOrders)
+    scheduledSync('achats', syncAchats)
+    scheduledSync('billets', syncBillets)
+    scheduledSync('serials', syncSerials)
+    scheduledSync('envois', syncEnvois)
+    scheduledSync('soumissions', syncSoumissions)
+    scheduledSync('retours', syncRetours)
+    scheduledSync('retour_items', syncRetourItems)
+    scheduledSync('adresses', syncAdresses)
+    scheduledSync('bom', syncBomItems)
+    scheduledSync('serial_changes', syncSerialStateChanges)
+    if (isStripeConfigured()) {
+      tracked('stripe', () => syncStripeSubscriptions()).catch(e => console.error('Stripe sync error:', e.message))
     }
+    scheduledSync('assemblages', syncAssemblages)
+    scheduledSync('factures', syncFactures)
   }
 
   // Gmail : démarrage après 30s, puis toutes les heures
@@ -191,16 +203,17 @@ const server = app.listen(PORT, () => {
   // Refresh tout token qui expire dans les 15 prochaines minutes
   async function refreshExpiringAirtableTokens() {
     const soon = Date.now() + 15 * 60 * 1000
-    const rows = db.prepare(`
-      SELECT DISTINCT tenant_id FROM connector_oauth
+    const row = db.prepare(`
+      SELECT id FROM connector_oauth
       WHERE connector='airtable' AND (expiry_date IS NULL OR expiry_date <= ?)
-    `).all(soon)
-    for (const { tenant_id } of rows) {
+      LIMIT 1
+    `).get(soon)
+    if (row) {
       try {
-        await getAirtableToken(tenant_id)
-        console.log(`✅ Airtable token rafraîchi proactivement pour tenant ${tenant_id}`)
+        await getAirtableToken()
+        console.log('✅ Airtable token rafraîchi proactivement')
       } catch (e) {
-        console.error(`⚠️ Airtable proactive refresh échoué pour ${tenant_id}:`, e.message)
+        console.error('⚠️ Airtable proactive refresh échoué:', e.message)
       }
     }
   }

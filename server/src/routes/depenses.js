@@ -7,17 +7,16 @@ const router = Router()
 router.use(requireAuth)
 
 router.get('/', (req, res) => {
-  const { status, category, page = 1, limit = 50 } = req.query
+  const { status, category, vendor_id, page = 1, limit = 50 } = req.query
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
+  let where = ''
+  const params = []
 
-  let where = 'WHERE d.tenant_id = ?'
-  const params = [tid]
-
-  if (status) { where += ' AND d.status = ?'; params.push(status) }
-  if (category) { where += ' AND d.category = ?'; params.push(category) }
+  if (status) { where += (where ? ' AND' : ' WHERE') + ' d.status = ?'; params.push(status) }
+  if (category) { where += (where ? ' AND' : ' WHERE') + ' d.category = ?'; params.push(category) }
+  if (vendor_id) { where += (where ? ' AND' : ' WHERE') + ' d.vendor_id = ?'; params.push(vendor_id) }
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM depenses d ${where}`).get(...params).c
   const rows = db.prepare(`
@@ -37,55 +36,55 @@ router.get('/:id', (req, res) => {
     SELECT d.*, u.name as created_by_name
     FROM depenses d
     LEFT JOIN users u ON d.created_by = u.id
-    WHERE d.id = ? AND d.tenant_id = ?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE d.id = ?
+  `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
 })
 
 router.post('/', (req, res) => {
-  const { date_depense, category, description, vendor, reference, amount_cad, tax_cad, payment_method, status, notes } = req.body
+  const { date_depense, category, description, vendor, vendor_id, reference, amount_cad, tax_cad, payment_method, status, notes } = req.body
   if (!date_depense || !description) return res.status(400).json({ error: 'date_depense et description sont requis' })
 
   const id = randomUUID()
   db.prepare(`
-    INSERT INTO depenses (id, tenant_id, date_depense, category, description, vendor, reference, amount_cad, tax_cad, payment_method, status, created_by, notes)
+    INSERT INTO depenses (id, date_depense, category, description, vendor, vendor_id, reference, amount_cad, tax_cad, payment_method, status, created_by, notes)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, req.user.tenant_id, date_depense, category || null, description, vendor || null, reference || null,
-    amount_cad || 0, tax_cad || 0, payment_method || null, status || 'Brouillon', req.user.id, notes || null)
+  `).run(id, date_depense, category || null, description, vendor || null, vendor_id || null,
+    reference || null, amount_cad || 0, tax_cad || 0, payment_method || null, status || 'Brouillon', req.user.id, notes || null)
 
   res.status(201).json(db.prepare('SELECT * FROM depenses WHERE id = ?').get(id))
 })
 
 router.put('/:id', (req, res) => {
-  const { date_depense, category, description, vendor, reference, amount_cad, tax_cad, payment_method, status, notes } = req.body
-  const existing = db.prepare('SELECT id FROM depenses WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id)
+  const { date_depense, category, description, vendor, vendor_id, reference, amount_cad, tax_cad, payment_method, status, notes } = req.body
+  const existing = db.prepare('SELECT id FROM depenses WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
 
   db.prepare(`
-    UPDATE depenses SET date_depense=?, category=?, description=?, vendor=?, reference=?, amount_cad=?, tax_cad=?, payment_method=?, status=?, notes=?, updated_at=datetime('now')
-    WHERE id = ? AND tenant_id = ?
-  `).run(date_depense, category || null, description, vendor || null, reference || null,
+    UPDATE depenses SET date_depense=?, category=?, description=?, vendor=?, vendor_id=?, reference=?, amount_cad=?, tax_cad=?, payment_method=?, status=?, notes=?, updated_at=datetime('now')
+    WHERE id = ?
+  `).run(date_depense, category || null, description, vendor || null, vendor_id || null, reference || null,
     amount_cad || 0, tax_cad || 0, payment_method || null, status || 'Brouillon', notes || null,
-    req.params.id, req.user.tenant_id)
+    req.params.id)
 
   res.json(db.prepare('SELECT * FROM depenses WHERE id = ?').get(req.params.id))
 })
 
 router.patch('/:id/status', (req, res) => {
   const { status } = req.body
-  const existing = db.prepare('SELECT id FROM depenses WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id)
+  const existing = db.prepare('SELECT id FROM depenses WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
 
-  db.prepare(`UPDATE depenses SET status=?, updated_at=datetime('now') WHERE id = ? AND tenant_id = ?`)
-    .run(status, req.params.id, req.user.tenant_id)
+  db.prepare(`UPDATE depenses SET status=?, updated_at=datetime('now') WHERE id = ?`)
+    .run(status, req.params.id)
   res.json({ ok: true })
 })
 
 router.delete('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM depenses WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id)
+  const existing = db.prepare('SELECT id FROM depenses WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
-  db.prepare('DELETE FROM depenses WHERE id = ? AND tenant_id = ?').run(req.params.id, req.user.tenant_id)
+  db.prepare('DELETE FROM depenses WHERE id = ?').run(req.params.id)
   res.json({ ok: true })
 })
 

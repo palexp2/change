@@ -8,7 +8,6 @@ import db from '../db/database.js'
 import * as svc from '../services/baseService.js'
 import { importRecords } from '../services/importService.js'
 import { broadcast } from '../services/realtime.js'
-import { triggerWebhooks } from '../services/webhookService.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -20,7 +19,7 @@ if (!existsSync(uploadsBase)) mkdirSync(uploadsBase, { recursive: true })
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const dir = join(uploadsBase, req.user.tenant_id, req.params.id)
+    const dir = join(uploadsBase, req.params.id)
     mkdirSync(dir, { recursive: true })
     cb(null, dir)
   },
@@ -44,7 +43,7 @@ function handle(res, fn) {
 
 router.get('/tables', (req, res) => {
   try {
-    const tables = svc.getTables(req.user.tenant_id)
+    const tables = svc.getTables()
     res.json({ tables })
   } catch (err) {
     res.status(500).json({ error: err.message })
@@ -55,7 +54,7 @@ router.post('/tables', (req, res) => {
   const { name, icon, color, description } = req.body
   if (!name?.trim()) return res.status(400).json({ error: 'Le nom est requis' })
   try {
-    const result = svc.createTable(req.user.tenant_id, { name: name.trim(), icon, color, description })
+    const result = svc.createTable({ name: name.trim(), icon, color, description })
     res.status(201).json(result)
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message })
@@ -63,22 +62,22 @@ router.post('/tables', (req, res) => {
 })
 
 router.patch('/tables/:id', (req, res) => {
-  handle(res, () => svc.updateTable(req.user.tenant_id, req.params.id, req.body))
+  handle(res, () => svc.updateTable(req.params.id, req.body))
 })
 
 router.delete('/tables/:id', (req, res) => {
-  handle(res, () => svc.deleteTable(req.user.tenant_id, req.params.id))
+  handle(res, () => svc.deleteTable(req.params.id))
 })
 
 router.post('/tables/:id/restore', (req, res) => {
-  handle(res, () => svc.restoreTable(req.user.tenant_id, req.params.id))
+  handle(res, () => svc.restoreTable(req.params.id))
 })
 
 // ── Fields ────────────────────────────────────────────────────────────────────
 
 router.get('/tables/:id/fields', (req, res) => {
   try {
-    const fields = svc.getFields(req.user.tenant_id, req.params.id)
+    const fields = svc.getFields(req.params.id)
     if (!fields) return res.status(404).json({ error: 'Introuvable' })
     res.json({ fields })
   } catch (err) {
@@ -90,7 +89,7 @@ router.post('/tables/:id/fields', (req, res) => {
   const { name, key, type, options, required, default_value, width } = req.body
   if (!name?.trim()) return res.status(400).json({ error: 'Le nom est requis' })
   try {
-    const result = svc.createField(req.user.tenant_id, req.params.id, { name: name.trim(), key, type, options, required, default_value, width })
+    const result = svc.createField(req.params.id, { name: name.trim(), key, type, options, required, default_value, width })
     if (!result) return res.status(404).json({ error: 'Introuvable' })
     res.status(201).json(result)
   } catch (err) {
@@ -100,7 +99,7 @@ router.post('/tables/:id/fields', (req, res) => {
 
 router.patch('/fields/:id', (req, res) => {
   try {
-    const result = svc.updateField(req.user.tenant_id, req.params.id, req.body)
+    const result = svc.updateField(req.params.id, req.body)
     if (!result) return res.status(404).json({ error: 'Introuvable' })
     res.json(result)
   } catch (err) {
@@ -110,7 +109,7 @@ router.patch('/fields/:id', (req, res) => {
 
 router.delete('/fields/:id', (req, res) => {
   try {
-    const result = svc.deleteField(req.user.tenant_id, req.params.id)
+    const result = svc.deleteField(req.params.id)
     if (!result) return res.status(404).json({ error: 'Introuvable' })
     res.json(result)
   } catch (err) {
@@ -119,30 +118,30 @@ router.delete('/fields/:id', (req, res) => {
 })
 
 router.post('/fields/:id/restore', (req, res) => {
-  handle(res, () => svc.restoreField(req.user.tenant_id, req.params.id))
+  handle(res, () => svc.restoreField(req.params.id))
 })
 
 router.patch('/tables/:id/fields/reorder', (req, res) => {
   if (!Array.isArray(req.body)) return res.status(400).json({ error: 'Tableau attendu' })
-  handle(res, () => svc.reorderFields(req.user.tenant_id, req.params.id, req.body))
+  handle(res, () => svc.reorderFields(req.params.id, req.body))
 })
 
 // ── Records ───────────────────────────────────────────────────────────────────
 
 router.get('/tables/:id/records', (req, res) => {
   const { search, filters, sorts, limit, page, view_id, group_by, group_summaries } = req.query
-  handle(res, () => svc.getRecords(req.user.tenant_id, req.params.id, { search, filters, sorts, limit, page, view_id, group_by, group_summaries }))
+  handle(res, () => svc.getRecords(req.params.id, { search, filters, sorts, limit, page, view_id, group_by, group_summaries }))
 })
 
 router.get('/records/:id', (req, res) => {
-  handle(res, () => svc.getRecord(req.user.tenant_id, req.params.id))
+  handle(res, () => svc.getRecord(req.params.id))
 })
 
 router.post('/tables/:id/records', (req, res) => {
   const { data } = req.body
   if (!data || typeof data !== 'object') return res.status(400).json({ error: 'data (objet) est requis' })
   try {
-    const result = svc.createRecord(req.user.tenant_id, req.params.id, req.user.id, data)
+    const result = svc.createRecord(req.params.id, req.user.id, data)
     if (!result) return res.status(404).json({ error: 'Introuvable' })
     res.status(201).json(result)
   } catch (err) {
@@ -153,20 +152,20 @@ router.post('/tables/:id/records', (req, res) => {
 router.patch('/records/:id', (req, res) => {
   const { data } = req.body
   if (!data || typeof data !== 'object') return res.status(400).json({ error: 'data (objet) est requis' })
-  handle(res, () => svc.updateRecord(req.user.tenant_id, req.params.id, req.user.id, data))
+  handle(res, () => svc.updateRecord(req.params.id, req.user.id, data))
 })
 
 router.delete('/records/:id', (req, res) => {
-  handle(res, () => svc.deleteRecord(req.user.tenant_id, req.params.id, req.user.id))
+  handle(res, () => svc.deleteRecord(req.params.id, req.user.id))
 })
 
 router.post('/records/:id/restore', (req, res) => {
-  handle(res, () => svc.restoreRecord(req.user.tenant_id, req.params.id, req.user.id))
+  handle(res, () => svc.restoreRecord(req.params.id, req.user.id))
 })
 
 router.post('/records/:id/duplicate', (req, res) => {
   try {
-    const result = svc.duplicateRecord(req.user.tenant_id, req.params.id, req.user.id)
+    const result = svc.duplicateRecord(req.params.id, req.user.id)
     if (!result) return res.status(404).json({ error: 'Introuvable' })
     res.status(201).json(result)
   } catch (err) {
@@ -176,11 +175,11 @@ router.post('/records/:id/duplicate', (req, res) => {
 
 router.patch('/tables/:id/records/reorder', (req, res) => {
   if (!Array.isArray(req.body)) return res.status(400).json({ error: 'Tableau attendu' })
-  handle(res, () => svc.reorderRecords(req.user.tenant_id, req.params.id, req.body))
+  handle(res, () => svc.reorderRecords(req.params.id, req.body))
 })
 
 router.get('/records/:id/history', (req, res) => {
-  handle(res, () => svc.getRecordHistory(req.user.tenant_id, req.params.id))
+  handle(res, () => svc.getRecordHistory(req.params.id))
 })
 
 // ── Attachments ───────────────────────────────────────────────────────────────
@@ -192,15 +191,15 @@ router.post('/records/:id/attachments', upload.single('file'), (req, res) => {
   try {
     const record = db.prepare(`
       SELECT r.* FROM base_records r JOIN base_tables t ON r.table_id = t.id
-      WHERE r.id = ? AND t.tenant_id = ?
-    `).get(req.params.id, req.user.tenant_id)
+      WHERE r.id = ?
+    `).get(req.params.id)
     if (!record) return res.status(404).json({ error: 'Introuvable' })
 
     const data = JSON.parse(record.data || '{}')
     const existing = Array.isArray(data[field_key]) ? data[field_key] : []
     if (existing.length >= 10) return res.status(400).json({ error: '10 fichiers maximum par champ' })
 
-    const fileUrl = `/api/attachments/${req.user.tenant_id}/${req.params.id}/${req.file.filename}`
+    const fileUrl = `/api/attachments/${req.params.id}/${req.file.filename}`
     existing.push({ name: req.file.originalname, url: fileUrl, size: req.file.size, mime: req.file.mimetype })
     data[field_key] = existing
 
@@ -220,8 +219,8 @@ router.delete('/records/:id/attachments/:filename', (req, res) => {
   try {
     const record = db.prepare(`
       SELECT r.* FROM base_records r JOIN base_tables t ON r.table_id = t.id
-      WHERE r.id = ? AND t.tenant_id = ?
-    `).get(req.params.id, req.user.tenant_id)
+      WHERE r.id = ?
+    `).get(req.params.id)
     if (!record) return res.status(404).json({ error: 'Introuvable' })
 
     const data = JSON.parse(record.data || '{}')
@@ -230,7 +229,7 @@ router.delete('/records/:id/attachments/:filename', (req, res) => {
     data[field_key] = existing.filter(f => !f.url.endsWith(`/${filename}`))
 
     // Delete from disk
-    const filePath = join(uploadsBase, req.user.tenant_id, req.params.id, filename)
+    const filePath = join(uploadsBase, req.params.id, filename)
     if (existsSync(filePath)) unlinkSync(filePath)
 
     db.prepare("UPDATE base_records SET data = ?, updated_at = datetime('now') WHERE id = ?")
@@ -246,7 +245,7 @@ router.delete('/records/:id/attachments/:filename', (req, res) => {
 
 router.get('/tables/:id/views', (req, res) => {
   try {
-    const views = svc.getViews(req.user.tenant_id, req.params.id)
+    const views = svc.getViews(req.params.id)
     if (!views) return res.status(404).json({ error: 'Introuvable' })
     res.json({ views })
   } catch (err) {
@@ -258,7 +257,7 @@ router.post('/tables/:id/views', (req, res) => {
   const { name, ...rest } = req.body
   if (!name?.trim()) return res.status(400).json({ error: 'Le nom est requis' })
   try {
-    const result = svc.createView(req.user.tenant_id, req.params.id, { name: name.trim(), ...rest })
+    const result = svc.createView(req.params.id, { name: name.trim(), ...rest })
     if (!result) return res.status(404).json({ error: 'Introuvable' })
     res.status(201).json(result)
   } catch (err) {
@@ -267,12 +266,12 @@ router.post('/tables/:id/views', (req, res) => {
 })
 
 router.patch('/views/:id', (req, res) => {
-  handle(res, () => svc.updateView(req.user.tenant_id, req.params.id, req.body))
+  handle(res, () => svc.updateView(req.params.id, req.body))
 })
 
 router.delete('/views/:id', (req, res) => {
   try {
-    const result = svc.deleteView(req.user.tenant_id, req.params.id)
+    const result = svc.deleteView(req.params.id)
     if (!result) return res.status(404).json({ error: 'Introuvable' })
     res.json(result)
   } catch (err) {
@@ -282,7 +281,7 @@ router.delete('/views/:id', (req, res) => {
 
 router.post('/views/:id/duplicate', (req, res) => {
   try {
-    const result = svc.duplicateView(req.user.tenant_id, req.params.id)
+    const result = svc.duplicateView(req.params.id)
     if (!result) return res.status(404).json({ error: 'Introuvable' })
     res.status(201).json(result)
   } catch (err) {
@@ -291,17 +290,17 @@ router.post('/views/:id/duplicate', (req, res) => {
 })
 
 router.post('/views/:id/restore', (req, res) => {
-  handle(res, () => svc.restoreView(req.user.tenant_id, req.params.id))
+  handle(res, () => svc.restoreView(req.params.id))
 })
 
 // ── Trash ─────────────────────────────────────────────────────────────────────
 
 router.get('/trash', (req, res) => {
-  handle(res, () => svc.getTrash(req.user.tenant_id))
+  handle(res, () => svc.getTrash())
 })
 
 router.delete('/trash', (req, res) => {
-  handle(res, () => svc.purgeTrash(req.user.tenant_id))
+  handle(res, () => svc.purgeTrash())
 })
 
 // ── Bulk operations ───────────────────────────────────────────────────────────
@@ -310,11 +309,10 @@ router.patch('/tables/:id/records/bulk', (req, res) => {
   const { record_ids, data } = req.body
   if (!Array.isArray(record_ids) || !data) return res.status(400).json({ error: 'record_ids et data sont requis' })
   try {
-    const result = svc.bulkUpdateRecords(req.user.tenant_id, req.params.id, record_ids, data, req.user.id)
+    const result = svc.bulkUpdateRecords(req.params.id, record_ids, data, req.user.id)
     if (!result) return res.status(404).json({ error: 'Introuvable' })
     res.json(result)
-    broadcast(req.user.tenant_id, { type: 'records:bulk_updated', tableId: req.params.id, record_ids, data })
-    triggerWebhooks(req.user.tenant_id, req.params.id, 'record:updated', { record_ids, data })
+    broadcast({ type: 'records:bulk_updated', tableId: req.params.id, record_ids, data })
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message })
   }
@@ -324,11 +322,10 @@ router.delete('/tables/:id/records/bulk', (req, res) => {
   const { record_ids } = req.body
   if (!Array.isArray(record_ids)) return res.status(400).json({ error: 'record_ids (tableau) est requis' })
   try {
-    const result = svc.bulkDeleteRecords(req.user.tenant_id, req.params.id, record_ids, req.user.id)
+    const result = svc.bulkDeleteRecords(req.params.id, record_ids, req.user.id)
     if (!result) return res.status(404).json({ error: 'Introuvable' })
     res.json(result)
-    broadcast(req.user.tenant_id, { type: 'records:bulk_deleted', tableId: req.params.id, record_ids })
-    triggerWebhooks(req.user.tenant_id, req.params.id, 'record:deleted', { record_ids })
+    broadcast({ type: 'records:bulk_deleted', tableId: req.params.id, record_ids })
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message })
   }
@@ -338,11 +335,10 @@ router.post('/tables/:id/records/bulk', (req, res) => {
   const { records } = req.body
   if (!Array.isArray(records)) return res.status(400).json({ error: 'records (tableau) est requis' })
   try {
-    const result = svc.bulkCreateRecords(req.user.tenant_id, req.params.id, records, req.user.id)
+    const result = svc.bulkCreateRecords(req.params.id, records, req.user.id)
     if (!result) return res.status(404).json({ error: 'Introuvable' })
     res.status(201).json(result)
-    broadcast(req.user.tenant_id, { type: 'records:bulk_created', tableId: req.params.id, count: result.created })
-    triggerWebhooks(req.user.tenant_id, req.params.id, 'record:created', { records: result.records })
+    broadcast({ type: 'records:bulk_created', tableId: req.params.id, count: result.created })
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message })
   }
@@ -365,11 +361,11 @@ router.post('/tables/:id/import', importUpload.single('file'), async (req, res) 
   const { mapping, mode } = req.body
   try {
     const result = await importRecords(
-      req.user.tenant_id, req.params.id, req.file.path,
+      req.params.id, req.file.path,
       mapping, mode || 'append', req.user.id
     )
     res.json(result)
-    broadcast(req.user.tenant_id, { type: 'records:imported', tableId: req.params.id, count: result.imported })
+    broadcast({ type: 'records:imported', tableId: req.params.id, count: result.imported })
   } catch (err) {
     res.status(err.status || 500).json({ error: err.message })
   }
@@ -381,10 +377,9 @@ router.get('/tables/:id/export', async (req, res) => {
   const { format, view_id } = req.query
   if (!['csv', 'xlsx', 'json'].includes(format)) return res.status(400).json({ error: 'format doit être csv, xlsx ou json' })
 
-  const tid = req.user.tenant_id
   const tableId = req.params.id
 
-  const table = db.prepare('SELECT * FROM base_tables WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL').get(tableId, tid)
+  const table = db.prepare('SELECT * FROM base_tables WHERE id = ? AND deleted_at IS NULL').get(tableId)
   if (!table) return res.status(404).json({ error: 'Introuvable' })
 
   // Load fields
@@ -410,8 +405,8 @@ router.get('/tables/:id/export', async (req, res) => {
 
   // Build SQL
   const { buildFilterSQL } = await import('../services/filterEngine.js')
-  const where = ['r.tenant_id = ?', 'r.table_id = ?', 'r.deleted_at IS NULL']
-  const params = [tid, tableId]
+  const where = ['r.table_id = ?', 'r.deleted_at IS NULL']
+  const params = [tableId]
 
   if (filterConfig) {
     const { sql, params: fp } = buildFilterSQL(filterConfig)
@@ -487,7 +482,6 @@ router.get('/search', (req, res) => {
   const { q, limit = 20 } = req.query
   if (!q || q.trim().length < 2) return res.status(400).json({ error: 'q doit contenir au moins 2 caractères' })
   const lim = Math.min(parseInt(limit) || 20, 50)
-  const tid = req.user.tenant_id
   const query = q.trim()
 
   const results = db.prepare(`
@@ -498,13 +492,13 @@ router.get('/search', (req, res) => {
     FROM base_records r
     JOIN base_tables t ON r.table_id = t.id
     JOIN base_fields f ON f.table_id = t.id AND f.is_primary = 1 AND f.deleted_at IS NULL
-    WHERE r.tenant_id = ? AND r.deleted_at IS NULL AND t.deleted_at IS NULL
+    WHERE r.deleted_at IS NULL AND t.deleted_at IS NULL
       AND json_extract(r.data, '$.' || f.key) LIKE ?
     ORDER BY
       CASE WHEN json_extract(r.data, '$.' || f.key) = ? THEN 0 ELSE 1 END,
       json_extract(r.data, '$.' || f.key) ASC
     LIMIT ?
-  `).all(tid, `%${query}%`, query, lim)
+  `).all(`%${query}%`, query, lim)
 
   res.json({ results })
 })

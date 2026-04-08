@@ -25,7 +25,7 @@ function requireAuthOrQuery(req, res, next) {
   if (!tokenStr) return res.status(401).json({ error: 'Authentication required' })
   try {
     const payload = jwt.verify(tokenStr, process.env.JWT_SECRET || 'change-this-secret-in-production')
-    req.user = { id: payload.id, tenant_id: payload.tenant_id, role: payload.role, name: payload.name }
+    req.user = { id: payload.id, role: payload.role, name: payload.name }
     next()
   } catch {
     return res.status(401).json({ error: 'Invalid or expired token' })
@@ -33,12 +33,27 @@ function requireAuthOrQuery(req, res, next) {
 }
 import { getAuthUrl as googleAuthUrl, exchangeCode as googleExchange } from '../connectors/google.js'
 import { getAuthUrl as airtableAuthUrl, exchangeCode as airtableExchange, airtableFetch, getAccessToken } from '../connectors/airtable.js'
+import { getAuthUrl as qbAuthUrl, exchangeCode as qbExchange, qbGet } from '../connectors/quickbooks.js'
+import { syncAllDepensesToQB, syncAllFacturesToQB, importFromQB } from '../services/quickbooks.js'
 import { syncAllMailboxes } from '../services/gmail.js'
 import { syncDrive } from '../services/drive.js'
-import { syncAirtable, syncInventaire, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncFactures } from '../services/airtable.js'
+import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncFactures } from '../services/airtable.js'
 import { tracked, getStatus } from '../services/syncState.js'
 import { syncStripeSubscriptions, isStripeConfigured } from '../services/stripe.js'
+import { isNovoxpressConfigured } from '../services/novoxpress.js'
 import { processWebhookPing, registerWebhookForBase } from '../services/airtableWebhooks.js'
+import { logSync, purgeSyncLogs } from '../services/syncLog.js'
+
+// Wrap a sync call with logging
+function trackedWithLog(module, fn, trigger) {
+  const t0 = Date.now()
+  tracked(module, () => fn()).then(() => {
+    logSync(module, trigger, { status: 'success', durationMs: Date.now() - t0 })
+  }).catch(e => {
+    logSync(module, trigger, { status: 'error', error: e.message, durationMs: Date.now() - t0 })
+    console.error(`Sync ${trigger} error (${module}):`, e.message)
+  })
+}
 
 const router = Router()
 
@@ -51,42 +66,69 @@ router.post('/airtable/webhook-ping', (req, res) => {
   }
 })
 
+// ── Sync log
+router.get('/sync-log', requireAuth, (req, res) => {
+  const { module, limit = 100 } = req.query
+  let sql = "SELECT * FROM sync_log WHERE created_at > datetime('now', '-7 days')"
+  const params = []
+  if (module) { sql += ' AND module = ?'; params.push(module) }
+  sql += ' ORDER BY created_at DESC LIMIT ?'
+  params.push(parseInt(limit))
+  const logs = db.prepare(sql).all(...params)
+  res.json(logs)
+})
+
 // ── List connected accounts
 router.get('/', requireAuth, (req, res) => {
-  const tid = req.user.tenant_id
   const accounts = db.prepare(`
     SELECT id, connector, account_email, account_key, updated_at,
     CASE WHEN refresh_token IS NOT NULL THEN 1 ELSE 0 END AS connected
-    FROM connector_oauth WHERE tenant_id=? ORDER BY connector, account_email
-  `).all(tid)
+    FROM connector_oauth ORDER BY connector, account_email
+  `).all()
 
   const config = {}
-  const configRows = db.prepare('SELECT connector, key, value FROM connector_config WHERE tenant_id=?').all(tid)
+  const configRows = db.prepare('SELECT connector, key, value FROM connector_config').all()
   for (const r of configRows) {
     if (!config[r.connector]) config[r.connector] = {}
     config[r.connector][r.key] = r.value
   }
 
-  const airtableSync = db.prepare('SELECT * FROM airtable_sync_config WHERE tenant_id=?').get(tid) || {}
-  const inventaireSync = db.prepare('SELECT * FROM airtable_inventaire_config WHERE tenant_id=?').get(tid) || {}
-  const ordersSync = db.prepare('SELECT * FROM airtable_orders_config WHERE tenant_id=?').get(tid) || {}
+  const airtableSync = db.prepare('SELECT * FROM airtable_sync_config').get() || {}
+  const projetsSync = db.prepare('SELECT * FROM airtable_projets_config').get() || {}
+  const ordersSync = db.prepare('SELECT * FROM airtable_orders_config').get() || {}
+
+  // Split CRM config into contacts and companies
+  const contactsSync = airtableSync.base_id ? {
+    base_id: airtableSync.base_id,
+    contacts_table_id: airtableSync.contacts_table_id,
+    field_map_contacts: airtableSync.field_map_contacts,
+    last_synced_at: airtableSync.last_synced_at,
+  } : {}
+  const companiesSync = airtableSync.base_id ? {
+    base_id: airtableSync.base_id,
+    companies_table_id: airtableSync.companies_table_id,
+    field_map_companies: airtableSync.field_map_companies,
+    last_synced_at: airtableSync.last_synced_at,
+  } : {}
 
   const moduleConfigs = {}
   for (const mod of SIMPLE_MODULES) {
-    moduleConfigs[mod] = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module=?").get(tid, mod) || {}
+    moduleConfigs[mod] = db.prepare("SELECT * FROM airtable_module_config WHERE module=?").get(mod) || {}
   }
 
   res.json({
     accounts, config,
-    airtable_sync: airtableSync, inventaire_sync: inventaireSync, orders_sync: ordersSync,
-    stripe_configured: isStripeConfigured(tid),
+    airtable_sync: airtableSync, projets_sync: projetsSync, orders_sync: ordersSync,
+    contacts_sync: contactsSync, companies_sync: companiesSync,
+    stripe_configured: isStripeConfigured(),
+    novoxpress_configured: isNovoxpressConfigured(),
     ...moduleConfigs,
   })
 })
 
 // ── Google OAuth start
 router.get('/google/connect', requireAuthOrQuery, (req, res) => {
-  const state = Buffer.from(JSON.stringify({ tenant_id: req.user.tenant_id, user_id: req.user.id })).toString('base64url')
+  const state = Buffer.from(JSON.stringify({ user_id: req.user.id })).toString('base64url')
   try {
     const url = googleAuthUrl(state)
     res.redirect(url)
@@ -100,12 +142,12 @@ router.get('/google/callback', async (req, res) => {
   const { code, state, error } = req.query
   if (error) return res.redirect('/erp/connectors?error=google_denied')
   try {
-    const { tenant_id } = JSON.parse(Buffer.from(state, 'base64url').toString())
+    JSON.parse(Buffer.from(state, 'base64url').toString())
     const { tokens, email } = await googleExchange(code)
 
     const existing = db.prepare(`
-      SELECT id FROM connector_oauth WHERE tenant_id=? AND connector='google' AND account_email=?
-    `).get(tenant_id, email)
+      SELECT id FROM connector_oauth WHERE connector='google' AND account_email=?
+    `).get(email)
 
     if (existing) {
       db.prepare(`
@@ -114,9 +156,9 @@ router.get('/google/callback', async (req, res) => {
       `).run(tokens.access_token, tokens.refresh_token || null, tokens.expiry_date || null, existing.id)
     } else {
       db.prepare(`
-        INSERT INTO connector_oauth (id, tenant_id, connector, account_key, account_email, access_token, refresh_token, expiry_date)
-        VALUES (?,?,?,?,?,?,?,?)
-      `).run(uuid(), tenant_id, 'google', email, email, tokens.access_token, tokens.refresh_token || null, tokens.expiry_date || null)
+        INSERT INTO connector_oauth (id, connector, account_key, account_email, access_token, refresh_token, expiry_date)
+        VALUES (?,?,?,?,?,?,?)
+      `).run(uuid(), 'google', email, email, tokens.access_token, tokens.refresh_token || null, tokens.expiry_date || null)
     }
 
     res.redirect('/erp/connectors?success=google')
@@ -130,7 +172,7 @@ router.get('/google/callback', async (req, res) => {
 router.get('/airtable/connect', requireAuthOrQuery, (req, res) => {
   const verifier = randomBytes(32).toString('base64url')
   const challenge = createHash('sha256').update(verifier).digest('base64url')
-  const state = Buffer.from(JSON.stringify({ tenant_id: req.user.tenant_id, verifier })).toString('base64url')
+  const state = Buffer.from(JSON.stringify({ verifier })).toString('base64url')
   try {
     const url = airtableAuthUrl(state, challenge)
     res.redirect(url)
@@ -144,12 +186,12 @@ router.get('/airtable/callback', async (req, res) => {
   const { code, state, error } = req.query
   if (error) return res.redirect('/erp/connectors?error=airtable_denied')
   try {
-    const { tenant_id, verifier } = JSON.parse(Buffer.from(state, 'base64url').toString())
+    const { verifier } = JSON.parse(Buffer.from(state, 'base64url').toString())
     const tokens = await airtableExchange(code, verifier)
 
     const existing = db.prepare(`
-      SELECT id FROM connector_oauth WHERE tenant_id=? AND connector='airtable'
-    `).get(tenant_id)
+      SELECT id FROM connector_oauth WHERE connector='airtable'
+    `).get()
 
     const expiry = tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null
     if (existing) {
@@ -158,17 +200,17 @@ router.get('/airtable/callback', async (req, res) => {
       `).run(tokens.access_token, tokens.refresh_token, expiry, existing.id)
     } else {
       db.prepare(`
-        INSERT INTO connector_oauth (id, tenant_id, connector, account_key, access_token, refresh_token, expiry_date)
-        VALUES (?,?,?,?,?,?,?)
-      `).run(uuid(), tenant_id, 'airtable', 'default', tokens.access_token, tokens.refresh_token, expiry)
+        INSERT INTO connector_oauth (id, connector, account_key, access_token, refresh_token, expiry_date)
+        VALUES (?,?,?,?,?,?)
+      `).run(uuid(), 'airtable', 'default', tokens.access_token, tokens.refresh_token, expiry)
     }
 
     res.redirect('/erp/connectors?success=airtable')
 
     // Enregistrer les webhooks pour les bases déjà configurées (fire & forget)
     const { getConfiguredBases } = await import('../services/airtableWebhooks.js')
-    for (const baseId of getConfiguredBases(tenant_id)) {
-      registerWebhookForBase(tenant_id, baseId).catch(e => console.error('Webhook reg error:', e.message))
+    for (const baseId of getConfiguredBases()) {
+      registerWebhookForBase(baseId).catch(e => console.error('Webhook reg error:', e.message))
     }
   } catch (e) {
     console.error('Airtable callback error:', e.message)
@@ -178,7 +220,7 @@ router.get('/airtable/callback', async (req, res) => {
 
 // ── Disconnect account
 router.delete('/accounts/:id', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM connector_oauth WHERE id=? AND tenant_id=?').get(req.params.id, req.user.tenant_id)
+  const row = db.prepare('SELECT * FROM connector_oauth WHERE id=?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   db.prepare('DELETE FROM connector_oauth WHERE id=?').run(req.params.id)
   res.json({ ok: true })
@@ -187,12 +229,11 @@ router.delete('/accounts/:id', requireAuth, (req, res) => {
 // ── Save connector config
 router.put('/config/:connector', requireAuth, (req, res) => {
   const { connector } = req.params
-  const tid = req.user.tenant_id
   for (const [key, value] of Object.entries(req.body)) {
     db.prepare(`
-      INSERT INTO connector_config (tenant_id, connector, key, value) VALUES (?,?,?,?)
-      ON CONFLICT(tenant_id, connector, key) DO UPDATE SET value=excluded.value
-    `).run(tid, connector, key, value ?? null)
+      INSERT INTO connector_config (connector, key, value) VALUES (?,?,?)
+      ON CONFLICT(connector, key) DO UPDATE SET value=excluded.value
+    `).run(connector, key, value ?? null)
   }
   res.json({ ok: true })
 })
@@ -200,7 +241,7 @@ router.put('/config/:connector', requireAuth, (req, res) => {
 // ── Airtable: list bases
 router.get('/airtable/bases', requireAuth, async (req, res) => {
   try {
-    const token = await getAccessToken(req.user.tenant_id)
+    const token = await getAccessToken()
     const data = await airtableFetch('/meta/bases', token)
     res.json(data.bases || [])
   } catch (e) {
@@ -211,7 +252,7 @@ router.get('/airtable/bases', requireAuth, async (req, res) => {
 // ── Airtable: list tables in a base
 router.get('/airtable/bases/:baseId/tables', requireAuth, async (req, res) => {
   try {
-    const token = await getAccessToken(req.user.tenant_id)
+    const token = await getAccessToken()
     const data = await airtableFetch(`/meta/bases/${req.params.baseId}/tables`, token)
     res.json(data.tables || [])
   } catch (e) {
@@ -219,68 +260,103 @@ router.get('/airtable/bases/:baseId/tables', requireAuth, async (req, res) => {
   }
 })
 
-// ── Save Airtable CRM config (alias: crm-config → sync-config table)
+router.get('/airtable/field-defs/:erpTable', requireAuth, (req, res) => {
+  const defs = db.prepare('SELECT airtable_field_name, field_type FROM airtable_field_defs WHERE erp_table=?').all(req.params.erpTable)
+  res.json(defs)
+})
+
+// ── Save Airtable CRM config (legacy full save)
 function saveCrmConfig(req, res) {
-  const tid = req.user.tenant_id
   const { base_id, contacts_table_id, companies_table_id, field_map_contacts, field_map_companies } = req.body
   db.prepare(`
-    INSERT INTO airtable_sync_config (tenant_id, base_id, contacts_table_id, companies_table_id, field_map_contacts, field_map_companies)
-    VALUES (?,?,?,?,?,?)
-    ON CONFLICT(tenant_id) DO UPDATE SET
+    INSERT INTO airtable_sync_config (base_id, contacts_table_id, companies_table_id, field_map_contacts, field_map_companies)
+    VALUES (?,?,?,?,?)
+    ON CONFLICT DO UPDATE SET
       base_id=excluded.base_id, contacts_table_id=excluded.contacts_table_id,
       companies_table_id=excluded.companies_table_id, field_map_contacts=excluded.field_map_contacts,
       field_map_companies=excluded.field_map_companies
-  `).run(tid, base_id || null, contacts_table_id || null, companies_table_id || null,
+  `).run(base_id || null, contacts_table_id || null, companies_table_id || null,
     field_map_contacts ? JSON.stringify(field_map_contacts) : null,
     field_map_companies ? JSON.stringify(field_map_companies) : null)
   res.json({ ok: true })
-  if (base_id) registerWebhookForBase(tid, base_id).catch(e => console.error('Webhook reg error:', e.message))
+  if (base_id) registerWebhookForBase(base_id).catch(e => console.error('Webhook reg error:', e.message))
 }
 router.put('/airtable/sync-config', requireAuth, saveCrmConfig)
 router.put('/airtable/crm-config', requireAuth, saveCrmConfig)
 
-// ── Save Inventaire config (alias: inv-config → inventaire-config table)
-function saveInvConfig(req, res) {
-  const tid = req.user.tenant_id
+// ── Save Airtable Contacts config (partial — only contacts fields)
+router.put('/airtable/contacts-config', requireAuth, (req, res) => {
+  const { base_id, contacts_table_id, field_map_contacts } = req.body
+  const existing = db.prepare('SELECT * FROM airtable_sync_config').get()
+  db.prepare(`
+    INSERT INTO airtable_sync_config (base_id, contacts_table_id, companies_table_id, field_map_contacts, field_map_companies)
+    VALUES (?,?,?,?,?)
+    ON CONFLICT DO UPDATE SET
+      base_id=excluded.base_id, contacts_table_id=excluded.contacts_table_id,
+      field_map_contacts=excluded.field_map_contacts
+  `).run(base_id || null, contacts_table_id || null, existing?.companies_table_id || null,
+    field_map_contacts ? JSON.stringify(field_map_contacts) : null, existing?.field_map_companies || null)
+  res.json({ ok: true })
+  if (base_id) registerWebhookForBase(base_id).catch(e => console.error('Webhook reg error:', e.message))
+})
+
+// ── Save Airtable Companies config (partial — only companies fields)
+router.put('/airtable/companies-config', requireAuth, (req, res) => {
+  const { base_id, companies_table_id, field_map_companies } = req.body
+  const existing = db.prepare('SELECT * FROM airtable_sync_config').get()
+  db.prepare(`
+    INSERT INTO airtable_sync_config (base_id, contacts_table_id, companies_table_id, field_map_contacts, field_map_companies)
+    VALUES (?,?,?,?,?)
+    ON CONFLICT DO UPDATE SET
+      base_id=excluded.base_id, companies_table_id=excluded.companies_table_id,
+      field_map_companies=excluded.field_map_companies
+  `).run(base_id || null, existing?.contacts_table_id || null, companies_table_id || null,
+    existing?.field_map_contacts || null, field_map_companies ? JSON.stringify(field_map_companies) : null)
+  res.json({ ok: true })
+  if (base_id) registerWebhookForBase(base_id).catch(e => console.error('Webhook reg error:', e.message))
+})
+
+// ── Save Projets config
+function saveProjetsConfig(req, res) {
   const { base_id, projects_table_id, field_map_projects, extra_tables } = req.body
   db.prepare(`
-    INSERT INTO airtable_inventaire_config (tenant_id, base_id, projects_table_id, field_map_projects, extra_tables)
-    VALUES (?,?,?,?,?)
-    ON CONFLICT(tenant_id) DO UPDATE SET
+    INSERT INTO airtable_projets_config (base_id, projects_table_id, field_map_projects, extra_tables)
+    VALUES (?,?,?,?)
+    ON CONFLICT DO UPDATE SET
       base_id=excluded.base_id, projects_table_id=excluded.projects_table_id,
       field_map_projects=excluded.field_map_projects, extra_tables=excluded.extra_tables
-  `).run(tid, base_id || null, projects_table_id || null,
+  `).run(base_id || null, projects_table_id || null,
     field_map_projects ? JSON.stringify(field_map_projects) : null,
     extra_tables?.length ? JSON.stringify(extra_tables) : null)
   res.json({ ok: true })
-  if (base_id) registerWebhookForBase(tid, base_id).catch(e => console.error('Webhook reg error:', e.message))
+  if (base_id) registerWebhookForBase(base_id).catch(e => console.error('Webhook reg error:', e.message))
 }
-router.put('/airtable/inventaire-config', requireAuth, saveInvConfig)
-router.put('/airtable/inv-config', requireAuth, saveInvConfig)
+router.put('/airtable/projets-config', requireAuth, saveProjetsConfig)
+router.put('/airtable/inv-config', requireAuth, saveProjetsConfig)
 
 // ── Sync status
 router.get('/sync/status', requireAuth, (req, res) => {
-  res.json(getStatus(req.user.tenant_id))
+  res.json(getStatus())
 })
 
 // ── Manual sync triggers
 router.post('/sync/gmail', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'gmail', () => syncAllMailboxes(req.user.tenant_id)).catch(console.error)
+  tracked('gmail', () => syncAllMailboxes()).catch(console.error)
   res.json({ ok: true })
 })
 
 router.post('/sync/drive', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'drive', () => syncDrive(req.user.tenant_id)).catch(console.error)
+  tracked('drive', () => syncDrive()).catch(console.error)
   res.json({ ok: true })
 })
 
 router.post('/sync/airtable', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'airtable', () => syncAirtable(req.user.tenant_id)).catch(console.error)
+  trackedWithLog('airtable', syncAirtable, 'manual')
   res.json({ ok: true })
 })
 
-router.post('/sync/inventaire', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'inventaire', () => syncInventaire(req.user.tenant_id)).catch(console.error)
+router.post('/sync/projets', requireAuth, async (req, res) => {
+  trackedWithLog('projets', syncProjets, 'manual')
   res.json({ ok: true })
 })
 
@@ -289,172 +365,104 @@ const SIMPLE_MODULES = ['pieces', 'achats', 'billets', 'serials', 'envois', 'sou
 router.put('/airtable/module-config/:module', requireAuth, (req, res) => {
   const { module } = req.params
   if (!SIMPLE_MODULES.includes(module)) return res.status(400).json({ error: 'Module invalide' })
-  const tid = req.user.tenant_id
   const { base_id, table_id, field_map } = req.body
   db.prepare(`
-    INSERT INTO airtable_module_config (tenant_id, module, base_id, table_id, field_map)
-    VALUES (?,?,?,?,?)
-    ON CONFLICT(tenant_id, module) DO UPDATE SET
-      base_id=excluded.base_id, table_id=excluded.table_id, field_map=excluded.field_map
-  `).run(tid, module, base_id || null, table_id || null, field_map ? JSON.stringify(field_map) : null)
-  res.json({ ok: true })
-  if (base_id) registerWebhookForBase(tid, base_id).catch(e => console.error('Webhook reg error:', e.message))
-})
-
-// ── Save Pièces config
-router.put('/airtable/pieces-config', requireAuth, (req, res) => {
-  const tid = req.user.tenant_id
-  const { base_id, table_id, field_map } = req.body
-  db.prepare(`
-    INSERT INTO airtable_pieces_config (tenant_id, base_id, table_id, field_map)
+    INSERT INTO airtable_module_config (module, base_id, table_id, field_map)
     VALUES (?,?,?,?)
-    ON CONFLICT(tenant_id) DO UPDATE SET
+    ON CONFLICT(module) DO UPDATE SET
       base_id=excluded.base_id, table_id=excluded.table_id, field_map=excluded.field_map
-  `).run(tid, base_id || null, table_id || null, field_map ? JSON.stringify(field_map) : null)
+  `).run(module, base_id || null, table_id || null, field_map ? JSON.stringify(field_map) : null)
   res.json({ ok: true })
+  if (base_id) registerWebhookForBase(base_id).catch(e => console.error('Webhook reg error:', e.message))
 })
 
 router.post('/sync/pieces', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'pieces', () => syncPieces(req.user.tenant_id)).catch(console.error)
+  trackedWithLog('pieces', syncPieces, 'manual')
   res.json({ ok: true })
 })
 
 // ── Save Orders config
 router.put('/airtable/orders-config', requireAuth, (req, res) => {
-  const tid = req.user.tenant_id
   const { base_id, orders_table_id, items_table_id, field_map_orders, field_map_items } = req.body
   db.prepare(`
-    INSERT INTO airtable_orders_config (tenant_id, base_id, orders_table_id, items_table_id, field_map_orders, field_map_items)
-    VALUES (?,?,?,?,?,?)
-    ON CONFLICT(tenant_id) DO UPDATE SET
+    INSERT INTO airtable_orders_config (base_id, orders_table_id, items_table_id, field_map_orders, field_map_items)
+    VALUES (?,?,?,?,?)
+    ON CONFLICT DO UPDATE SET
       base_id=excluded.base_id, orders_table_id=excluded.orders_table_id,
       items_table_id=excluded.items_table_id, field_map_orders=excluded.field_map_orders,
       field_map_items=excluded.field_map_items
-  `).run(tid, base_id || null, orders_table_id || null, items_table_id || null,
+  `).run(base_id || null, orders_table_id || null, items_table_id || null,
     field_map_orders ? JSON.stringify(field_map_orders) : null,
     field_map_items ? JSON.stringify(field_map_items) : null)
   res.json({ ok: true })
-  if (base_id) registerWebhookForBase(tid, base_id).catch(e => console.error('Webhook reg error:', e.message))
+  if (base_id) registerWebhookForBase(base_id).catch(e => console.error('Webhook reg error:', e.message))
 })
 
 router.post('/sync/orders', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'orders', () => syncOrders(req.user.tenant_id)).catch(console.error)
-  res.json({ ok: true })
-})
-
-// ── Save Achats config
-router.put('/airtable/achats-config', requireAuth, (req, res) => {
-  const tid = req.user.tenant_id
-  const { base_id, table_id, field_map } = req.body
-  db.prepare(`
-    INSERT INTO airtable_achats_config (tenant_id, base_id, table_id, field_map)
-    VALUES (?,?,?,?)
-    ON CONFLICT(tenant_id) DO UPDATE SET
-      base_id=excluded.base_id, table_id=excluded.table_id, field_map=excluded.field_map
-  `).run(tid, base_id || null, table_id || null, field_map ? JSON.stringify(field_map) : null)
+  trackedWithLog('orders', syncOrders, 'manual')
   res.json({ ok: true })
 })
 
 router.post('/sync/achats', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'achats', () => syncAchats(req.user.tenant_id)).catch(console.error)
-  res.json({ ok: true })
-})
-
-// ── Save Billets config
-router.put('/airtable/billets-config', requireAuth, (req, res) => {
-  const tid = req.user.tenant_id
-  const { base_id, table_id, field_map } = req.body
-  db.prepare(`
-    INSERT INTO airtable_billets_config (tenant_id, base_id, table_id, field_map)
-    VALUES (?,?,?,?)
-    ON CONFLICT(tenant_id) DO UPDATE SET
-      base_id=excluded.base_id, table_id=excluded.table_id, field_map=excluded.field_map
-  `).run(tid, base_id || null, table_id || null, field_map ? JSON.stringify(field_map) : null)
+  trackedWithLog('achats', syncAchats, 'manual')
   res.json({ ok: true })
 })
 
 router.post('/sync/billets', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'billets', () => syncBillets(req.user.tenant_id)).catch(console.error)
-  res.json({ ok: true })
-})
-
-// ── Save Serials config
-router.put('/airtable/serials-config', requireAuth, (req, res) => {
-  const tid = req.user.tenant_id
-  const { base_id, table_id, field_map } = req.body
-  db.prepare(`
-    INSERT INTO airtable_serials_config (tenant_id, base_id, table_id, field_map)
-    VALUES (?,?,?,?)
-    ON CONFLICT(tenant_id) DO UPDATE SET
-      base_id=excluded.base_id, table_id=excluded.table_id, field_map=excluded.field_map
-  `).run(tid, base_id || null, table_id || null, field_map ? JSON.stringify(field_map) : null)
+  trackedWithLog('billets', syncBillets, 'manual')
   res.json({ ok: true })
 })
 
 router.post('/sync/serials', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'serials', () => syncSerials(req.user.tenant_id)).catch(console.error)
-  res.json({ ok: true })
-})
-
-// ── Save Envois config
-router.put('/airtable/envois-config', requireAuth, (req, res) => {
-  const tid = req.user.tenant_id
-  const { base_id, table_id, field_map } = req.body
-  db.prepare(`
-    INSERT INTO airtable_envois_config (tenant_id, base_id, table_id, field_map)
-    VALUES (?,?,?,?)
-    ON CONFLICT(tenant_id) DO UPDATE SET
-      base_id=excluded.base_id, table_id=excluded.table_id, field_map=excluded.field_map
-  `).run(tid, base_id || null, table_id || null, field_map ? JSON.stringify(field_map) : null)
+  trackedWithLog('serials', syncSerials, 'manual')
   res.json({ ok: true })
 })
 
 router.post('/sync/envois', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'envois', () => syncEnvois(req.user.tenant_id)).catch(console.error)
+  trackedWithLog('envois', syncEnvois, 'manual')
   res.json({ ok: true })
 })
 router.post('/sync/soumissions', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'soumissions', () => syncSoumissions(req.user.tenant_id)).catch(console.error)
+  trackedWithLog('soumissions', syncSoumissions, 'manual')
   res.json({ ok: true })
 })
 router.post('/sync/retours', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'retours', () => syncRetours(req.user.tenant_id)).catch(console.error)
+  trackedWithLog('retours', syncRetours, 'manual')
   res.json({ ok: true })
 })
 router.post('/sync/retour_items', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'retour_items', () => syncRetourItems(req.user.tenant_id)).catch(console.error)
+  trackedWithLog('retour_items', syncRetourItems, 'manual')
   res.json({ ok: true })
 })
 router.post('/sync/adresses', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'adresses', () => syncAdresses(req.user.tenant_id)).catch(console.error)
+  trackedWithLog('adresses', syncAdresses, 'manual')
   res.json({ ok: true })
 })
 router.post('/sync/bom', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'bom', () => syncBomItems(req.user.tenant_id)).catch(console.error)
+  trackedWithLog('bom', syncBomItems, 'manual')
   res.json({ ok: true })
 })
 router.post('/sync/serial_changes', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'serial_changes', () => syncSerialStateChanges(req.user.tenant_id)).catch(console.error)
+  trackedWithLog('serial_changes', syncSerialStateChanges, 'manual')
   res.json({ ok: true })
 })
 router.post('/sync/abonnements', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'stripe', () => syncStripeSubscriptions(req.user.tenant_id)).catch(console.error)
+  tracked('stripe', () => syncStripeSubscriptions()).catch(console.error)
   res.json({ ok: true })
 })
 router.post('/sync/assemblages', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'assemblages', () => syncAssemblages(req.user.tenant_id)).catch(console.error)
+  trackedWithLog('assemblages', syncAssemblages, 'manual')
   res.json({ ok: true })
 })
 router.post('/sync/factures', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'factures', () => syncFactures(req.user.tenant_id)).catch(console.error)
+  trackedWithLog('factures', syncFactures, 'manual')
   res.json({ ok: true })
 })
 
 router.post('/sync/airtable-all', requireAuth, async (req, res) => {
-  const tid = req.user.tenant_id
   const ALL_AIRTABLE_MODULES = [
     ['airtable',      syncAirtable],
-    ['inventaire',    syncInventaire],
+    ['projets',       syncProjets],
     ['pieces',        syncPieces],
     ['orders',        syncOrders],
     ['achats',        syncAchats],
@@ -471,7 +479,7 @@ router.post('/sync/airtable-all', requireAuth, async (req, res) => {
     ['factures',      syncFactures],
   ]
   ALL_AIRTABLE_MODULES.forEach(([key, fn]) => {
-    tracked(tid, key, () => fn(tid)).catch(console.error)
+    trackedWithLog(key, fn, 'manual')
   })
   res.json({ ok: true })
 })
@@ -497,10 +505,10 @@ router.get('/whisper', requireAuth, (req, res) => {
   const configured = !!process.env.OPENAI_API_KEY
   const stats = db.prepare(`SELECT transcription_status, COUNT(*) as total FROM calls
     JOIN interactions i ON calls.interaction_id = i.id
-    WHERE i.tenant_id=? GROUP BY transcription_status`).all(req.user.tenant_id)
+    GROUP BY transcription_status`).all()
   const retranscribable = db.prepare(`SELECT COUNT(*) as total FROM calls
     JOIN interactions i ON calls.interaction_id = i.id
-    WHERE i.tenant_id=? AND recording_path IS NOT NULL AND transcription_status IN ('pending','error')`).get(req.user.tenant_id)
+    WHERE recording_path IS NOT NULL AND transcription_status IN ('pending','error')`).get()
   res.json({ configured, stats, retranscribable: retranscribable.total })
 })
 
@@ -520,8 +528,8 @@ router.get('/whisper/drive-status', requireAuth, async (req, res) => {
   const calls = db.prepare(`
     SELECT ca.id, ca.recording_path FROM calls ca
     JOIN interactions i ON ca.interaction_id = i.id
-    WHERE i.tenant_id=? AND ca.drive_file_id IS NOT NULL AND ca.recording_path IS NOT NULL
-  `).all(req.user.tenant_id)
+    WHERE ca.drive_file_id IS NOT NULL AND ca.recording_path IS NOT NULL
+  `).all()
 
   let missing = 0
   for (const c of calls) {
@@ -540,7 +548,7 @@ router.get('/whisper/download-drive/status', requireAuth, (req, res) => {
 router.post('/whisper/download-drive', requireAuth, async (req, res) => {
   if (driveDownloadState.running) return res.status(409).json({ error: 'Déjà en cours' })
 
-  const oauthRow = db.prepare(`SELECT id FROM connector_oauth WHERE tenant_id=? AND connector='google' ORDER BY updated_at DESC LIMIT 1`).get(req.user.tenant_id)
+  const oauthRow = db.prepare(`SELECT id FROM connector_oauth WHERE connector='google' ORDER BY updated_at DESC LIMIT 1`).get()
   if (!oauthRow) return res.status(503).json({ error: 'Google Drive non connecté' })
 
   const { join } = await import('path')
@@ -553,8 +561,8 @@ router.post('/whisper/download-drive', requireAuth, async (req, res) => {
   const calls = db.prepare(`
     SELECT ca.id, ca.drive_file_id, ca.recording_path, ca.transcription_status FROM calls ca
     JOIN interactions i ON ca.interaction_id = i.id
-    WHERE i.tenant_id=? AND ca.drive_file_id IS NOT NULL AND ca.recording_path IS NOT NULL
-  `).all(req.user.tenant_id).filter(c => !existsSync(join(uploadsDir, c.recording_path)))
+    WHERE ca.drive_file_id IS NOT NULL AND ca.recording_path IS NOT NULL
+  `).all().filter(c => !existsSync(join(uploadsDir, c.recording_path)))
 
   driveDownloadState.running = true
   driveDownloadState.done = 0
@@ -598,8 +606,8 @@ router.post('/whisper/retry', requireAuth, async (req, res) => {
 
   const calls = db.prepare(`SELECT calls.id, calls.recording_path FROM calls
     JOIN interactions i ON calls.interaction_id = i.id
-    WHERE i.tenant_id=? AND recording_path IS NOT NULL AND transcription_status IN ('pending','error')
-  `).all(req.user.tenant_id)
+    WHERE recording_path IS NOT NULL AND transcription_status IN ('pending','error')
+  `).all()
 
   let queued = 0
   for (const call of calls) {
@@ -617,7 +625,7 @@ router.post('/whisper/retry', requireAuth, async (req, res) => {
 // GET /api/connectors/ftp — infos serveur + liste des téléphones configurés
 router.get('/ftp', requireAuth, (req, res) => {
   const ftpUsers = readFtpUsers()
-  const erpUsers = db.prepare(`SELECT id, name, ftp_username FROM users WHERE tenant_id=? AND active=1 ORDER BY name`).all(req.user.tenant_id)
+  const erpUsers = db.prepare(`SELECT id, name, ftp_username FROM users WHERE active=1 ORDER BY name`).all()
 
   const phones = ftpUsers.map(u => {
     const erpUser = erpUsers.find(e => e.ftp_username === u.erpFtpUsername)
@@ -633,7 +641,7 @@ router.post('/ftp/phones', requireAuth, (req, res) => {
   if (!ftpUser || !ftpPass || !nom || !erpUserId) return res.status(400).json({ error: 'ftpUser, ftpPass, nom et erpUserId requis' })
 
   // Vérifier que l'user ERP appartient au tenant
-  const erpUser = db.prepare(`SELECT id, ftp_username FROM users WHERE id=? AND tenant_id=?`).get(erpUserId, req.user.tenant_id)
+  const erpUser = db.prepare(`SELECT id, ftp_username FROM users WHERE id=?`).get(erpUserId)
   if (!erpUser) return res.status(404).json({ error: 'Utilisateur ERP introuvable' })
 
   const users = readFtpUsers()
@@ -658,7 +666,7 @@ router.delete('/ftp/phones/:ftpUser', requireAuth, (req, res) => {
   users.splice(idx, 1)
   writeFtpUsers(users)
 
-  db.prepare(`UPDATE users SET ftp_username=NULL WHERE ftp_username=? AND tenant_id=?`).run(erpFtpUsername, req.user.tenant_id)
+  db.prepare(`UPDATE users SET ftp_username=NULL WHERE ftp_username=?`).run(erpFtpUsername)
 
   res.json({ ok: true })
 })
@@ -685,7 +693,6 @@ router.put('/ftp/phones/:ftpUser', requireAuth, (req, res) => {
 // Pour chaque doublon : supprime l'enregistrement FTP + son fichier audio,
 // met à jour le timestamp Drive depuis le nom de fichier.
 router.post('/deduplicate-ftp-calls', (req, res) => {
-  const tenantId = req.user.tenant_id
   const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls')
 
   function normalize(p) { return p ? p.replace(/\D/g, '').slice(-10) : null }
@@ -703,8 +710,7 @@ router.post('/deduplicate-ftp-calls', (req, res) => {
     FROM calls c JOIN interactions i ON i.id = c.interaction_id
     WHERE c.drive_filename IS NULL
     AND ABS(strftime('%s', i.timestamp) - strftime('%s', i.created_at)) < 5
-    AND i.tenant_id = ?
-  `).all(tenantId)
+  `).all()
 
   // Appels Drive avec fichier audio
   const driveCalls = db.prepare(`
@@ -713,8 +719,7 @@ router.post('/deduplicate-ftp-calls', (req, res) => {
            i.id as interaction_id, i.timestamp
     FROM calls c JOIN interactions i ON i.id = c.interaction_id
     WHERE c.drive_filename IS NOT NULL AND c.recording_path IS NOT NULL
-    AND i.tenant_id = ?
-  `).all(tenantId)
+  `).all()
 
   // Index Drive par taille de fichier
   const driveBySizeMap = new Map()
@@ -798,14 +803,12 @@ router.post('/deduplicate-ftp-calls', (req, res) => {
 // les appels FTP dont le timestamp est faux (timestamp ≈ created_at) en matchant
 // par numéro de téléphone (10 derniers chiffres) + durée (±30s).
 router.post('/fix-ftp-timestamps', async (req, res) => {
-  const tenantId = req.user.tenant_id
-
   // Récupère les dossiers Drive configurés
   let folders = []
-  const foldersRow = db.prepare(`SELECT value FROM connector_config WHERE tenant_id=? AND connector='google' AND key='drive_folders'`).get(tenantId)
+  const foldersRow = db.prepare(`SELECT value FROM connector_config WHERE connector='google' AND key='drive_folders'`).get()
   if (foldersRow?.value) { try { folders = JSON.parse(foldersRow.value) } catch {} }
   if (folders.length === 0) {
-    const fRow = db.prepare(`SELECT value FROM connector_config WHERE tenant_id=? AND connector='google' AND key='drive_folder_id'`).get(tenantId)
+    const fRow = db.prepare(`SELECT value FROM connector_config WHERE connector='google' AND key='drive_folder_id'`).get()
     if (fRow?.value) folders = [{ folder_id: fRow.value }]
   }
   if (folders.length === 0) return res.status(400).json({ error: 'Aucun dossier Drive configuré' })
@@ -817,8 +820,7 @@ router.post('/fix-ftp-timestamps', async (req, res) => {
     FROM calls c JOIN interactions i ON i.id = c.interaction_id
     WHERE c.drive_filename IS NULL
     AND ABS(strftime('%s', i.timestamp) - strftime('%s', i.created_at)) < 5
-    AND i.tenant_id = ?
-  `).all(tenantId)
+  `).all()
 
   if (ftpCalls.length === 0) return res.json({ fixed: 0, total: 0, message: 'Aucun appel à corriger' })
 
@@ -843,9 +845,9 @@ router.post('/fix-ftp-timestamps', async (req, res) => {
       const oauthRow = db.prepare(`
         SELECT co.id FROM connector_oauth co
         JOIN users u ON u.id = co.user_id
-        WHERE co.tenant_id=? AND co.connector='google'
+        WHERE co.connector='google'
         ORDER BY co.updated_at DESC LIMIT 1
-      `).get(tenantId)
+      `).get()
       if (!oauthRow) continue
 
       let drive
@@ -919,11 +921,103 @@ router.post('/fix-ftp-timestamps', async (req, res) => {
   })().catch(e => console.error('❌ fix-ftp-timestamps:', e.message))
 })
 
+// ── QuickBooks OAuth ─────────────────────────────────────────────────────────
+
+router.get('/quickbooks/connect', requireAuthOrQuery, (req, res) => {
+  const state = Buffer.from(JSON.stringify({})).toString('base64url')
+  try {
+    const url = qbAuthUrl(state)
+    res.redirect(url)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+router.get('/quickbooks/callback', async (req, res) => {
+  const { code, state, realmId, error } = req.query
+  if (error) return res.redirect('/erp/connectors?error=quickbooks_denied')
+  try {
+    JSON.parse(Buffer.from(state, 'base64url').toString())
+    const tokens = await qbExchange(code)
+
+    const expiry = tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null
+    const metadata = JSON.stringify({ realm_id: realmId })
+
+    const existing = db.prepare(
+      "SELECT id FROM connector_oauth WHERE connector='quickbooks' AND account_key='default'"
+    ).get()
+
+    if (existing) {
+      db.prepare(`
+        UPDATE connector_oauth
+        SET access_token=?, refresh_token=?, expiry_date=?, metadata=?, updated_at=datetime('now')
+        WHERE id=?
+      `).run(tokens.access_token, tokens.refresh_token, expiry, metadata, existing.id)
+    } else {
+      db.prepare(`
+        INSERT INTO connector_oauth (id, connector, account_key, access_token, refresh_token, expiry_date, metadata)
+        VALUES (?,?,?,?,?,?,?)
+      `).run(uuid(), 'quickbooks', 'default', tokens.access_token, tokens.refresh_token, expiry, metadata)
+    }
+
+    res.redirect('/erp/connectors?success=quickbooks')
+  } catch (e) {
+    console.error('QB callback error:', e.message)
+    res.redirect('/erp/connectors?error=quickbooks_failed')
+  }
+})
+
+// GET /api/connectors/quickbooks/accounts — liste des comptes QB (Expense + Bank + CreditCard)
+router.get('/quickbooks/accounts', requireAuth, async (req, res) => {
+  try {
+    const q = new URLSearchParams({ query: "SELECT * FROM Account WHERE AccountType IN ('Expense', 'Other Expense', 'Bank', 'Credit Card') MAXRESULTS 200" })
+    const data = await qbGet(`/query?${q}`)
+    res.json(data.QueryResponse?.Account || [])
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// GET /api/connectors/quickbooks/vendors — liste des fournisseurs QB
+router.get('/quickbooks/vendors', requireAuth, async (req, res) => {
+  try {
+    const q = new URLSearchParams({ query: "SELECT * FROM Vendor WHERE Active = true MAXRESULTS 200" })
+    const data = await qbGet(`/query?${q}`)
+    res.json(data.QueryResponse?.Vendor || [])
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// POST /api/connectors/sync/qb-depenses — publier les dépenses non synchronisées
+router.post('/sync/qb-depenses', requireAuth, (req, res) => {
+  tracked('qb-depenses', () => syncAllDepensesToQB())
+    .catch(console.error)
+  res.json({ ok: true })
+})
+
+// POST /api/connectors/sync/qb-factures — publier les factures fournisseurs non synchronisées
+router.post('/sync/qb-factures', requireAuth, (req, res) => {
+  tracked('qb-factures', () => syncAllFacturesToQB())
+    .catch(console.error)
+  res.json({ ok: true })
+})
+
+// POST /api/connectors/sync/qb-import — importer Bills + Purchases depuis QB
+router.post('/sync/qb-import', requireAuth, async (req, res) => {
+  try {
+    const result = await importFromQB()
+    res.json(result)
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 // ── Stripe ───────────────────────────────────────────────────────────────────
 
 // GET /api/connectors/stripe — état de configuration
 router.get('/stripe', requireAuth, (req, res) => {
-  const configured = isStripeConfigured(req.user.tenant_id)
+  const configured = isStripeConfigured()
   res.json({ configured })
 })
 
@@ -935,9 +1029,9 @@ router.put('/stripe', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'Clé Stripe invalide (doit commencer par sk_)' })
   }
   db.prepare(`
-    INSERT INTO connector_config (tenant_id, connector, key, value) VALUES (?,?,?,?)
-    ON CONFLICT(tenant_id, connector, key) DO UPDATE SET value=excluded.value
-  `).run(req.user.tenant_id, 'stripe', 'secret_key', secret_key)
+    INSERT INTO connector_config (connector, key, value) VALUES (?,?,?)
+    ON CONFLICT(connector, key) DO UPDATE SET value=excluded.value
+  `).run('stripe', 'secret_key', secret_key)
   res.json({ ok: true })
 })
 
@@ -945,14 +1039,14 @@ router.put('/stripe', requireAuth, (req, res) => {
 router.delete('/stripe', requireAuth, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
   db.prepare(
-    "DELETE FROM connector_config WHERE tenant_id=? AND connector='stripe' AND key='secret_key'"
-  ).run(req.user.tenant_id)
+    "DELETE FROM connector_config WHERE connector='stripe' AND key='secret_key'"
+  ).run()
   res.json({ ok: true })
 })
 
 // POST /api/connectors/sync/stripe — déclencher un sync manuel
 router.post('/sync/stripe', requireAuth, async (req, res) => {
-  tracked(req.user.tenant_id, 'stripe', () => syncStripeSubscriptions(req.user.tenant_id)).catch(console.error)
+  tracked('stripe', () => syncStripeSubscriptions()).catch(console.error)
   res.json({ ok: true })
 })
 

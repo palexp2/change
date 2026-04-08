@@ -18,10 +18,8 @@ router.get('/', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
-  const tid = req.user.tenant_id;
-
-  let where = 'WHERE o.tenant_id = ? AND o.deleted_at IS NULL';
-  const params = [tid];
+  let where = 'WHERE o.deleted_at IS NULL';
+  const params = [];
 
   if (search) {
     where += ' AND (c.name LIKE ? OR CAST(o.order_number AS TEXT) LIKE ?)';
@@ -67,8 +65,8 @@ router.get('/:id', (req, res) => {
      LEFT JOIN users u ON o.assigned_to = u.id
      LEFT JOIN projects p ON o.project_id = p.id
      LEFT JOIN adresses a ON o.address_id = a.id
-     WHERE o.id = ? AND o.tenant_id = ?`
-  ).get(req.params.id, req.user.tenant_id);
+     WHERE o.id = ?`
+  ).get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
   const items = db.prepare(
@@ -94,25 +92,31 @@ router.get('/:id', (req, res) => {
     }
     itemsWithSerials = items.map(i => ({ ...i, serials: byItem[i.id] || [] }))
   }
-  res.json({ ...order, items: itemsWithSerials, shipments });
+
+  const factures = db.prepare(
+    `SELECT id, document_number, status, total_amount FROM factures
+     WHERE (order_id = ? OR (? IS NOT NULL AND project_id = ?))
+     ORDER BY document_date ASC`
+  ).all(req.params.id, order.project_id, order.project_id);
+
+  res.json({ ...order, items: itemsWithSerials, shipments, factures });
 });
 
 // POST /api/orders
 router.post('/', (req, res) => {
   const { company_id, project_id, assigned_to, status, priority, notes, date_commande, items = [] } = req.body;
 
-  const tid = req.user.tenant_id;
   const id = uuidv4();
 
   // Generate next order number
-  const maxNum = db.prepare('SELECT MAX(order_number) as m FROM orders WHERE tenant_id = ?').get(tid);
+  const maxNum = db.prepare('SELECT MAX(order_number) as m FROM orders').get();
   const orderNumber = (maxNum?.m || 0) + 1;
 
   const run = db.transaction(() => {
     db.prepare(
-      `INSERT INTO orders (id, tenant_id, order_number, company_id, project_id, assigned_to, status, priority, notes, date_commande)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, tid, orderNumber, company_id || null, project_id || null, assigned_to || null,
+      `INSERT INTO orders (id, order_number, company_id, project_id, assigned_to, status, priority, notes, date_commande)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, orderNumber, company_id || null, project_id || null, assigned_to || null,
       status || 'Commande vide', priority || null, notes || null, date_commande || null);
 
     for (const item of items) {
@@ -144,22 +148,23 @@ router.post('/', (req, res) => {
 
 // PUT /api/orders/:id
 router.put('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const existing = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Order not found' });
 
-  const { company_id, project_id, assigned_to, status, priority, notes, address_id, date_commande } = req.body;
+  const { company_id, project_id, assigned_to, status, priority, notes, address_id, date_commande, is_subscription } = req.body;
   db.prepare(
-    `UPDATE orders SET company_id=?, project_id=?, assigned_to=?, status=?, priority=?, notes=?, address_id=?, date_commande=?, updated_at=datetime('now')
-     WHERE id = ? AND tenant_id = ?`
+    `UPDATE orders SET company_id=?, project_id=?, assigned_to=?, status=?, priority=?, notes=?, address_id=?, date_commande=?, is_subscription=?, updated_at=datetime('now')
+     WHERE id = ?`
   ).run(company_id || null, project_id || null, assigned_to || null, status,
-    priority || null, notes || null, address_id || null, date_commande || null, req.params.id, req.user.tenant_id);
+    priority || null, notes || null, address_id || null, date_commande || null,
+    is_subscription ? 1 : 0, req.params.id);
 
-  res.json(db.prepare('SELECT o.*, c.name as company_name FROM orders o LEFT JOIN companies c ON o.company_id = c.id WHERE o.id = ?').get(req.params.id));
+  res.json(db.prepare('SELECT o.*, c.name as company_name, p.name as project_name FROM orders o LEFT JOIN companies c ON o.company_id = c.id LEFT JOIN projects p ON o.project_id = p.id WHERE o.id = ?').get(req.params.id));
 });
 
 // PATCH /api/orders/:id/status
 router.patch('/:id/status', (req, res) => {
-  const order = db.prepare('SELECT * FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
   const { status } = req.body;
@@ -181,16 +186,16 @@ router.patch('/:id/status', (req, res) => {
           db.prepare(`UPDATE products SET stock_qty=MAX(0, stock_qty - ?), updated_at=datetime('now') WHERE id = ?`)
             .run(item.qty, item.product_id);
           db.prepare(
-            `INSERT INTO stock_movements (id, tenant_id, product_id, type, qty, reason, reference_id, user_id)
-             VALUES (?, ?, ?, 'out', ?, 'Commande envoyée', ?, ?)`
-          ).run(uuidv4(), req.user.tenant_id, item.product_id, item.qty, order.id, req.user.id);
+            `INSERT INTO stock_movements (id, product_id, type, qty, reason, reference_id, user_id)
+             VALUES (?, ?, 'out', ?, 'Commande envoyée', ?, ?)`
+          ).run(uuidv4(), item.product_id, item.qty, order.id, req.user.id);
         }
       }
     });
     run();
   } else {
-    db.prepare(`UPDATE orders SET status=?, updated_at=datetime('now') WHERE id = ? AND tenant_id = ?`)
-      .run(status, req.params.id, req.user.tenant_id);
+    db.prepare(`UPDATE orders SET status=?, updated_at=datetime('now') WHERE id = ?`)
+      .run(status, req.params.id);
   }
 
   res.json({ message: 'Status updated', status });
@@ -198,22 +203,29 @@ router.patch('/:id/status', (req, res) => {
 
 // POST /api/orders/:id/shipments
 router.post('/:id/shipments', (req, res) => {
-  const order = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
   const { tracking_number, carrier, status, shipped_at, notes, item_ids = [] } = req.body;
   const id = uuidv4();
   const run = db.transaction(() => {
     db.prepare(
-      `INSERT INTO shipments (id, tenant_id, order_id, tracking_number, carrier, status, shipped_at, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(id, req.user.tenant_id, req.params.id, tracking_number || null, carrier || null,
+      `INSERT INTO shipments (id, order_id, tracking_number, carrier, status, shipped_at, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(id, req.params.id, tracking_number || null, carrier || null,
       status || 'À envoyer', shipped_at || null, notes || null);
 
     if (item_ids.length > 0) {
       const stmt = db.prepare(`UPDATE order_items SET shipment_id = ?, fulfillment_status = 'Dans l''envoi' WHERE id = ? AND order_id = ?`);
       for (const itemId of item_ids) {
         stmt.run(id, itemId, req.params.id);
+      }
+      // Freeze unit cost if shipment is already Envoyé
+      if ((status || 'À envoyer') === 'Envoyé') {
+        const freezeStmt = db.prepare(`UPDATE order_items SET shipped_unit_cost = unit_cost WHERE id = ? AND shipped_unit_cost IS NULL`);
+        for (const itemId of item_ids) {
+          freezeStmt.run(itemId);
+        }
       }
     }
   });
@@ -224,7 +236,7 @@ router.post('/:id/shipments', (req, res) => {
 
 // POST /api/orders/:id/items — add item to existing order
 router.post('/:id/items', (req, res) => {
-  const order = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
   const { product_id, qty, unit_cost, item_type, notes } = req.body;
@@ -244,7 +256,7 @@ router.post('/:id/items', (req, res) => {
 
 // PATCH /api/orders/:id/items/reorder
 router.patch('/:id/items/reorder', (req, res) => {
-  const order = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   if (!Array.isArray(req.body)) return res.status(400).json({ error: 'Array required' });
   const stmt = db.prepare('UPDATE order_items SET sort_order=? WHERE id=? AND order_id=?');
@@ -256,7 +268,7 @@ router.patch('/:id/items/reorder', (req, res) => {
 
 // PATCH /api/orders/:id/items/:itemId — inline edit
 router.patch('/:id/items/:itemId', (req, res) => {
-  const order = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   const allowed = ['product_id', 'qty', 'unit_cost', 'item_type', 'notes', 'replaced_serial', 'fulfillment_status', 'fulfilled_qty', 'shipment_id'];
   const updates = [];
@@ -272,7 +284,7 @@ router.patch('/:id/items/:itemId', (req, res) => {
 
 // POST /api/orders/:id/items/:itemId/duplicate
 router.post('/:id/items/:itemId/duplicate', (req, res) => {
-  const order = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   const item = db.prepare('SELECT * FROM order_items WHERE id=? AND order_id=?').get(req.params.itemId, req.params.id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
@@ -285,7 +297,7 @@ router.post('/:id/items/:itemId/duplicate', (req, res) => {
 
 // DELETE /api/orders/:id/items/:itemId
 router.delete('/:id/items/:itemId', (req, res) => {
-  const order = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   db.prepare('DELETE FROM order_items WHERE id = ? AND order_id = ?').run(req.params.itemId, req.params.id);
   res.json({ message: 'Item deleted' });
@@ -293,13 +305,12 @@ router.delete('/:id/items/:itemId', (req, res) => {
 
 // POST /api/orders/:id/scan — barcode scanner (serial or SKU)
 router.post('/:id/scan', (req, res) => {
-  const order = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id)
+  const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id)
   if (!order) return res.status(404).json({ error: 'Order not found' })
 
   const { value, mode } = req.body
   if (!value || !value.trim()) return res.status(400).json({ error: 'value required' })
 
-  const tid = req.user.tenant_id
   const v = value.trim()
 
   // ── PICKING MODE: each scan increments fulfilled_qty by 1 ───────────────────
@@ -315,8 +326,8 @@ router.post('/:id/scan', (req, res) => {
     const serial = db.prepare(
       `SELECT sn.*, pr.name_fr as product_name FROM serial_numbers sn
        LEFT JOIN products pr ON sn.product_id = pr.id
-       WHERE sn.serial = ? AND sn.tenant_id = ?`
-    ).get(v, tid)
+       WHERE sn.serial = ?`
+    ).get(v)
 
     if (serial) {
       const item = db.prepare(
@@ -327,7 +338,7 @@ router.post('/:id/scan', (req, res) => {
       return res.json({ type: 'serial', action: 'picked', serial, item: updated })
     }
 
-    const product = db.prepare('SELECT * FROM products WHERE sku = ? AND tenant_id = ?').get(v, tid)
+    const product = db.prepare('SELECT * FROM products WHERE sku = ?').get(v)
     if (product) {
       const item = db.prepare(
         `SELECT * FROM order_items WHERE order_id = ? AND product_id = ? AND fulfillment_status NOT IN ('Envoyé', 'Dans l''envoi')`
@@ -347,8 +358,8 @@ router.post('/:id/scan', (req, res) => {
     `SELECT sn.*, pr.name_fr as product_name, pr.sku, pr.unit_cost as product_cost
      FROM serial_numbers sn
      LEFT JOIN products pr ON sn.product_id = pr.id
-     WHERE sn.serial = ? AND sn.tenant_id = ?`
-  ).get(v, tid)
+     WHERE sn.serial = ?`
+  ).get(v)
 
   if (serial) {
     let item = serial.product_id
@@ -370,7 +381,7 @@ router.post('/:id/scan', (req, res) => {
   }
 
   // 2. Try SKU
-  const product = db.prepare('SELECT * FROM products WHERE sku = ? AND tenant_id = ?').get(v, tid)
+  const product = db.prepare('SELECT * FROM products WHERE sku = ?').get(v)
 
   if (product) {
     let item = db.prepare('SELECT * FROM order_items WHERE order_id = ? AND product_id = ?').get(req.params.id, product.id)
@@ -397,15 +408,14 @@ router.post('/:id/scan', (req, res) => {
 
 // DELETE /api/orders/:id
 router.delete('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM orders WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const existing = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Order not found' });
-  db.prepare("UPDATE orders SET deleted_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(req.params.id, req.user.tenant_id);
+  db.prepare("UPDATE orders SET deleted_at = datetime('now') WHERE id = ?").run(req.params.id);
   res.json({ message: 'Deleted' });
 });
 
 // POST /api/orders/:id/bon-livraison — generate delivery note PDF
 router.post('/:id/bon-livraison', async (req, res) => {
-  const tid = req.user.tenant_id;
   const order = db.prepare(
     `SELECT o.*, c.name as company_name, c.address as company_address, c.city as company_city,
       c.province as company_province, c.country as company_country,
@@ -414,8 +424,8 @@ router.post('/:id/bon-livraison', async (req, res) => {
      FROM orders o
      LEFT JOIN companies c ON o.company_id = c.id
      LEFT JOIN adresses a ON o.address_id = a.id
-     WHERE o.id = ? AND o.tenant_id = ?`
-  ).get(req.params.id, tid);
+     WHERE o.id = ?`
+  ).get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
   const items = db.prepare(

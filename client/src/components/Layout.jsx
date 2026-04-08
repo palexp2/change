@@ -7,7 +7,7 @@ import {
   TrendingUp, ShoppingCart, Package, LifeBuoy,
   ShoppingBag, Truck, RotateCcw, FileText, RefreshCw, Wrench,
   Barcode, MessageSquare, Plug, Zap, Bot, CheckSquare,
-  Receipt, CreditCard, ReceiptText, Sparkles, Landmark, Users
+  Receipt, CreditCard, ReceiptText, Landmark, Users
 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
@@ -25,6 +25,7 @@ const defaultNavItems = [
     { to: '/factures-fournisseurs', icon: Receipt,    label: 'Fact. fournisseurs' },
     { to: '/depenses',              icon: CreditCard, label: 'Dépenses' },
     { to: '/sale-receipts',         icon: ReceiptText,label: 'Reçus de vente' },
+    { to: '/stripe-queue',          icon: Zap,        label: 'Stripe → QB' },
   ]},
   { to: '/purchases',    icon: ShoppingBag,     label: 'Achats' },
   { to: '/envois',       icon: Truck,           label: 'Envois' },
@@ -35,7 +36,6 @@ const defaultNavItems = [
   { to: '/tasks',        icon: CheckSquare,     label: 'Tâches' },
   { to: '/tickets',      icon: LifeBuoy,        label: 'Billets' },
   { to: '/interactions', icon: MessageSquare,   label: 'Interactions' },
-  { to: '/opportunities', icon: Sparkles,       label: 'Opportunités IA' },
   { to: '/employees',    icon: Users,           label: 'Employés' },
 ]
 

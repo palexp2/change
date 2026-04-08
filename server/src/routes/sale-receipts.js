@@ -113,21 +113,19 @@ router.get('/', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const tid = req.user.tenant_id
-
-  const total = db.prepare('SELECT COUNT(*) as c FROM sale_receipts WHERE tenant_id=?').get(tid).c
+  const total = db.prepare('SELECT COUNT(*) as c FROM sale_receipts').get().c
   const rows = db.prepare(`
-    SELECT * FROM sale_receipts WHERE tenant_id=?
+    SELECT * FROM sale_receipts
     ORDER BY created_at DESC LIMIT ? OFFSET ?
-  `).all(tid, limitVal, offset)
+  `).all(limitVal, offset)
 
   const parsed = rows.map(r => ({ ...r, items: JSON.parse(r.items || '[]') }))
   res.json({ data: parsed, total, page: parseInt(page), limit: parseInt(limit) })
 })
 
 router.get('/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM sale_receipts WHERE id=? AND tenant_id=?')
-    .get(req.params.id, req.user.tenant_id)
+  const row = db.prepare('SELECT * FROM sale_receipts WHERE id=?')
+    .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json({ ...row, items: JSON.parse(row.items || '[]') })
 })
@@ -137,13 +135,12 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 
   const ext = extname(req.file.originalname).toLowerCase()
   const id = randomUUID()
-  const tid = req.user.tenant_id
 
   // Insert with pending status
   db.prepare(`
-    INSERT INTO sale_receipts (id, tenant_id, filename, original_name, file_type, status, created_by)
-    VALUES (?, ?, ?, ?, ?, 'processing', ?)
-  `).run(id, tid, req.file.filename, req.file.originalname, ext, req.user.id)
+    INSERT INTO sale_receipts (id, filename, original_name, file_type, status, created_by)
+    VALUES (?, ?, ?, ?, 'processing', ?)
+  `).run(id, req.file.filename, req.file.originalname, ext, req.user.id)
 
   // Return immediately, process async
   res.status(201).json({ id, status: 'processing' })
@@ -185,8 +182,8 @@ router.post('/upload', upload.single('file'), async (req, res) => {
 })
 
 router.get('/:id/file', (req, res) => {
-  const row = db.prepare('SELECT filename, file_type FROM sale_receipts WHERE id=? AND tenant_id=?')
-    .get(req.params.id, req.user.tenant_id)
+  const row = db.prepare('SELECT filename, file_type FROM sale_receipts WHERE id=?')
+    .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
   const filePath = join(uploadsDir, row.filename)
@@ -200,7 +197,7 @@ router.get('/:id/file', (req, res) => {
 router.post('/:id/push-to-qb', async (req, res) => {
   try {
     const { expenseAccountId, paymentAccountId, vendorId, newVendorName } = req.body
-    const qbId = await pushSaleReceiptToQB(req.user.tenant_id, req.params.id, { expenseAccountId, paymentAccountId, vendorId, newVendorName })
+    const qbId = await pushSaleReceiptToQB(req.params.id, { expenseAccountId, paymentAccountId, vendorId, newVendorName })
     res.json({ ok: true, quickbooks_id: qbId })
   } catch (e) {
     res.status(400).json({ error: e.message })
@@ -208,16 +205,16 @@ router.post('/:id/push-to-qb', async (req, res) => {
 })
 
 router.delete('/:id', (req, res) => {
-  const row = db.prepare('SELECT filename FROM sale_receipts WHERE id=? AND tenant_id=?')
-    .get(req.params.id, req.user.tenant_id)
+  const row = db.prepare('SELECT filename FROM sale_receipts WHERE id=?')
+    .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
   // Delete file
   const filePath = join(uploadsDir, row.filename)
   try { if (existsSync(filePath)) unlinkSync(filePath) } catch {}
 
-  db.prepare('DELETE FROM sale_receipts WHERE id=? AND tenant_id=?')
-    .run(req.params.id, req.user.tenant_id)
+  db.prepare('DELETE FROM sale_receipts WHERE id=?')
+    .run(req.params.id)
   res.json({ ok: true })
 })
 

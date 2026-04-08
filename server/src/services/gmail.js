@@ -34,20 +34,20 @@ function extractBodies(payload) {
   return { html, text }
 }
 
-function findOrCreateContact(tenantId, emailAddress, displayName) {
+function findOrCreateContact(emailAddress, displayName) {
   if (!emailAddress) return null
-  const existing = db.prepare('SELECT id FROM contacts WHERE tenant_id=? AND email=?').get(tenantId, emailAddress)
+  const existing = db.prepare('SELECT id FROM contacts WHERE email=?').get(emailAddress)
   if (existing) return existing.id
 
   const parts = (displayName || '').replace(/<.*>/, '').trim().split(' ')
   const id = uuid()
-  db.prepare('INSERT INTO contacts (id, tenant_id, first_name, last_name, email) VALUES (?,?,?,?,?)')
-    .run(id, tenantId, parts[0] || '', parts.slice(1).join(' ') || '', emailAddress)
+  db.prepare('INSERT INTO contacts (id, first_name, last_name, email) VALUES (?,?,?,?)')
+    .run(id, parts[0] || '', parts.slice(1).join(' ') || '', emailAddress)
   return id
 }
 
 async function syncAccount(oauthRow) {
-  const { id: oauthId, tenant_id, account_email } = oauthRow
+  const { id: oauthId, account_email } = oauthRow
   let gmail
   try { gmail = await getGmailClient(oauthId) }
   catch (e) { console.error(`❌ Gmail client ${account_email}:`, e.message); return }
@@ -92,14 +92,14 @@ async function syncAccount(oauthRow) {
       const externalEmail = direction === 'out' ? toEmail : fromEmail
       const externalName = direction === 'out' ? getHeader(headers, 'to') : getHeader(headers, 'from')
 
-      const contactId = findOrCreateContact(tenant_id, externalEmail, externalName)
+      const contactId = findOrCreateContact(externalEmail, externalName)
       const interactionId = uuid()
       const emailId = uuid()
 
       db.prepare(`
-        INSERT INTO interactions (id, tenant_id, contact_id, type, direction, timestamp)
-        VALUES (?,?,?,?,?,?)
-      `).run(interactionId, tenant_id, contactId, 'email', direction, timestamp)
+        INSERT INTO interactions (id, contact_id, type, direction, timestamp)
+        VALUES (?,?,?,?,?)
+      `).run(interactionId, contactId, 'email', direction, timestamp)
 
       db.prepare(`
         INSERT INTO emails (id, interaction_id, subject, body_html, body_text, from_address, to_address, cc, gmail_message_id, gmail_thread_id)
@@ -129,15 +129,15 @@ async function syncAccount(oauthRow) {
 }
 
 /**
- * Envoie un courriel au nom du premier compte Google OAuth du tenant.
+ * Envoie un courriel au nom du premier compte Google OAuth.
  * Requiert le scope gmail.send (les comptes connectés avant cette mise à jour
  * doivent être reconnectés pour obtenir ce scope).
  */
-export async function sendEmail(tenantId, to, subject, htmlBody) {
+export async function sendEmail(to, subject, htmlBody) {
   const account = db.prepare(
-    `SELECT * FROM connector_oauth WHERE tenant_id=? AND connector='google' AND refresh_token IS NOT NULL LIMIT 1`
-  ).get(tenantId)
-  if (!account) throw new Error('Aucun compte Google configuré pour ce tenant')
+    `SELECT * FROM connector_oauth WHERE connector='google' AND refresh_token IS NOT NULL LIMIT 1`
+  ).get()
+  if (!account) throw new Error('Aucun compte Google configuré')
 
   const gmail = await getGmailClient(account.id)
 
@@ -155,11 +155,10 @@ export async function sendEmail(tenantId, to, subject, htmlBody) {
   await gmail.users.messages.send({ userId: 'me', requestBody: { raw } })
 }
 
-export async function syncAllMailboxes(tenantId) {
+export async function syncAllMailboxes() {
   const accounts = db.prepare(`
     SELECT * FROM connector_oauth WHERE connector='google' AND refresh_token IS NOT NULL
-    ${tenantId ? 'AND tenant_id=?' : ''}
-  `).all(...(tenantId ? [tenantId] : []))
+  `).all()
 
   for (const account of accounts) {
     await syncAccount(account)

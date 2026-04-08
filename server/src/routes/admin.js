@@ -6,7 +6,6 @@ import { requireAdmin } from '../middleware/auth.js';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import os from 'os';
-import { migrateLegacyTables } from '../services/migrateLegacy.js';
 
 const router = Router();
 router.use(requireAdmin);
@@ -14,8 +13,8 @@ router.use(requireAdmin);
 // GET /api/admin/users
 router.get('/users', (req, res) => {
   const users = db.prepare(
-    'SELECT id, email, name, role, active, created_at FROM users WHERE tenant_id = ? ORDER BY name'
-  ).all(req.user.tenant_id);
+    'SELECT id, email, name, role, active, created_at FROM users ORDER BY name'
+  ).all();
   res.json(users);
 });
 
@@ -30,7 +29,7 @@ router.post('/users', async (req, res) => {
     return res.status(400).json({ error: 'Invalid role' });
   }
 
-  const existing = db.prepare('SELECT id FROM users WHERE email = ? AND tenant_id = ?').get(email.toLowerCase().trim(), req.user.tenant_id);
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email.toLowerCase().trim());
   if (existing) {
     return res.status(409).json({ error: 'Email already in use' });
   }
@@ -38,15 +37,15 @@ router.post('/users', async (req, res) => {
   const id = uuidv4();
   const passwordHash = await bcrypt.hash(password, 10);
   db.prepare(
-    'INSERT INTO users (id, tenant_id, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(id, req.user.tenant_id, email.toLowerCase().trim(), passwordHash, name, role);
+    'INSERT INTO users (id, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?)'
+  ).run(id, email.toLowerCase().trim(), passwordHash, name, role);
 
   res.status(201).json(db.prepare('SELECT id, email, name, role, active, created_at FROM users WHERE id = ?').get(id));
 });
 
 // PUT /api/admin/users/:id
 router.put('/users/:id', async (req, res) => {
-  const user = db.prepare('SELECT id FROM users WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const { name, email, role, active, password } = req.body;
@@ -56,7 +55,7 @@ router.put('/users/:id', async (req, res) => {
   }
 
   if (email) {
-    const conflict = db.prepare('SELECT id FROM users WHERE email = ? AND tenant_id = ? AND id != ?').get(email.toLowerCase().trim(), req.user.tenant_id, req.params.id);
+    const conflict = db.prepare('SELECT id FROM users WHERE email = ? AND id != ?').get(email.toLowerCase().trim(), req.params.id);
     if (conflict) return res.status(409).json({ error: 'Ce courriel est déjà utilisé' });
   }
 
@@ -66,15 +65,15 @@ router.put('/users/:id', async (req, res) => {
   }
 
   const current = db.prepare('SELECT name, email, role FROM users WHERE id = ?').get(req.params.id);
-  db.prepare('UPDATE users SET name=?, email=?, role=?, active=? WHERE id = ? AND tenant_id = ?')
-    .run(name ?? current.name, email ? email.toLowerCase().trim() : current.email, role ?? current.role, active !== undefined ? (active ? 1 : 0) : 1, req.params.id, req.user.tenant_id);
+  db.prepare('UPDATE users SET name=?, email=?, role=?, active=? WHERE id = ?')
+    .run(name ?? current.name, email ? email.toLowerCase().trim() : current.email, role ?? current.role, active !== undefined ? (active ? 1 : 0) : 1, req.params.id);
 
   res.json(db.prepare('SELECT id, email, name, role, active, created_at FROM users WHERE id = ?').get(req.params.id));
 });
 
 // POST /api/admin/users/:id/reset-password
 router.post('/users/:id/reset-password', async (req, res) => {
-  const user = db.prepare('SELECT id FROM users WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   const { password } = req.body;
   if (!password || password.length < 8) return res.status(400).json({ error: 'Minimum 8 caractères' });
@@ -89,97 +88,11 @@ router.delete('/users/:id', (req, res) => {
   if (req.params.id === req.user.id) {
     return res.status(400).json({ error: 'Cannot delete your own account' });
   }
-  const user = db.prepare('SELECT id FROM users WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  db.prepare('UPDATE users SET active=0 WHERE id = ? AND tenant_id = ?').run(req.params.id, req.user.tenant_id);
+  db.prepare('UPDATE users SET active=0 WHERE id = ?').run(req.params.id);
   res.json({ message: 'User deactivated' });
 });
-
-// ─── Field Definitions ────────────────────────────────────────────────────────
-
-function parseField(f) {
-  return {
-    ...f,
-    options: f.options ? JSON.parse(f.options) : [],
-    airtable_value_map: f.airtable_value_map ? JSON.parse(f.airtable_value_map) : {},
-    is_system: !!f.is_system,
-    required: !!f.required,
-  };
-}
-
-// GET /api/admin/field-defs?entity_type=tickets
-router.get('/field-defs', (req, res) => {
-  const { entity_type } = req.query;
-  const tid = req.user.tenant_id;
-  const rows = entity_type
-    ? db.prepare('SELECT * FROM custom_field_defs WHERE tenant_id=? AND entity_type=? ORDER BY sort_order, created_at').all(tid, entity_type)
-    : db.prepare('SELECT * FROM custom_field_defs WHERE tenant_id=? ORDER BY entity_type, sort_order, created_at').all(tid);
-  res.json(rows.map(parseField));
-});
-
-// POST /api/admin/field-defs — create custom field (not system)
-router.post('/field-defs', (req, res) => {
-  const { entity_type, key, label, field_type, options, required } = req.body;
-  if (!entity_type || !key || !label || !field_type) {
-    return res.status(400).json({ error: 'entity_type, key, label, field_type sont requis' });
-  }
-  const cleanKey = key.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-  const id = uuidv4();
-  const maxSort = db.prepare('SELECT MAX(sort_order) as m FROM custom_field_defs WHERE tenant_id=? AND entity_type=?').get(req.user.tenant_id, entity_type);
-  try {
-    db.prepare(`
-      INSERT INTO custom_field_defs (id, tenant_id, entity_type, key, label, field_type, options, is_system, required, sort_order)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
-    `).run(id, req.user.tenant_id, entity_type, cleanKey, label, field_type,
-      options ? JSON.stringify(options) : null,
-      required ? 1 : 0,
-      (maxSort?.m ?? -1) + 1);
-    res.status(201).json(parseField(db.prepare('SELECT * FROM custom_field_defs WHERE id=?').get(id)));
-  } catch (e) {
-    if (e.message.includes('UNIQUE')) return res.status(409).json({ error: 'Cette clé existe déjà pour ce type d\'entité' });
-    throw e;
-  }
-});
-
-// PATCH /api/admin/field-defs/:id — update label, options, airtable mapping, sort_order
-router.patch('/field-defs/:id', (req, res) => {
-  const field = db.prepare('SELECT * FROM custom_field_defs WHERE id=? AND tenant_id=?').get(req.params.id, req.user.tenant_id);
-  if (!field) return res.status(404).json({ error: 'Champ introuvable' });
-
-  const { label, options, airtable_field_id, airtable_value_map, sort_order, required } = req.body;
-  db.prepare(`
-    UPDATE custom_field_defs SET
-      label = COALESCE(?, label),
-      options = ?,
-      airtable_field_id = ?,
-      airtable_value_map = ?,
-      sort_order = COALESCE(?, sort_order),
-      required = COALESCE(?, required),
-      updated_at = datetime('now')
-    WHERE id = ? AND tenant_id = ?
-  `).run(
-    label || null,
-    options !== undefined ? JSON.stringify(options) : field.options,
-    airtable_field_id !== undefined ? airtable_field_id : field.airtable_field_id,
-    airtable_value_map !== undefined ? JSON.stringify(airtable_value_map) : field.airtable_value_map,
-    sort_order ?? null,
-    required !== undefined ? (required ? 1 : 0) : null,
-    req.params.id, req.user.tenant_id
-  );
-  res.json(parseField(db.prepare('SELECT * FROM custom_field_defs WHERE id=?').get(req.params.id)));
-});
-
-// DELETE /api/admin/field-defs/:id — only custom fields
-router.delete('/field-defs/:id', (req, res) => {
-  const field = db.prepare('SELECT * FROM custom_field_defs WHERE id=? AND tenant_id=?').get(req.params.id, req.user.tenant_id);
-  if (!field) return res.status(404).json({ error: 'Champ introuvable' });
-  if (field.is_system) return res.status(400).json({ error: 'Les champs système ne peuvent pas être supprimés' });
-  db.prepare('DELETE FROM custom_field_defs WHERE id=?').run(req.params.id);
-  res.json({ ok: true });
-});
-
-// Legacy alias — keep for backward compat
-router.get('/custom-fields', (req, res) => res.redirect(307, `/api/admin/field-defs${req.query.entity_type ? '?entity_type=' + req.query.entity_type : ''}`));
 
 // GET /api/admin/health
 router.get('/health', (req, res) => {
@@ -264,35 +177,52 @@ router.get('/health', (req, res) => {
   res.json({ disk, ram, cpu, uptime, processes, dbSize, whisper, recentErrors, diskBreakdown })
 })
 
-// POST /api/admin/migrate-legacy
-router.post('/migrate-legacy', (req, res) => {
-  try {
-    const results = migrateLegacyTables(req.user.tenant_id)
-    res.json({ ok: true, results })
-  } catch (err) {
-    res.status(500).json({ error: err.message })
+
+
+// GET /api/admin/trash — enregistrements supprimés de toutes les tables
+router.get('/trash', (req, res) => {
+  const trash = {}
+
+  const tables = [
+    { key: 'companies',     label: 'Entreprises',     sql: `SELECT id, name as label, deleted_at FROM companies WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
+    { key: 'contacts',      label: 'Contacts',        sql: `SELECT id, (first_name || ' ' || last_name) as label, deleted_at FROM contacts WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
+    { key: 'orders',        label: 'Commandes',       sql: `SELECT id, ('Commande #' || order_number) as label, deleted_at FROM orders WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
+    { key: 'products',      label: 'Produits',        sql: `SELECT id, COALESCE(name_fr, name_en, sku) as label, deleted_at FROM products WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
+    { key: 'shipments',     label: 'Envois',          sql: `SELECT s.id, COALESCE('Envoi #' || o.order_number, s.tracking_number, s.id) as label, s.deleted_at FROM shipments s LEFT JOIN orders o ON s.order_id=o.id WHERE s.deleted_at IS NOT NULL ORDER BY s.deleted_at DESC` },
+    { key: 'returns',       label: 'Retours',         sql: `SELECT id, COALESCE(return_number, id) as label, deleted_at FROM returns WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
+    { key: 'projects',      label: 'Projets',         sql: `SELECT id, name as label, deleted_at FROM projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
+    { key: 'assemblages',   label: 'Assemblages',     sql: `SELECT id, COALESCE(name, id) as label, deleted_at FROM assemblages WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
+    { key: 'tasks',         label: 'Tâches',          sql: `SELECT id, title as label, deleted_at FROM tasks WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
+    { key: 'interactions',  label: 'Interactions',    sql: `SELECT i.id, COALESCE(e.subject, i.type) as label, i.deleted_at FROM interactions i LEFT JOIN emails e ON e.interaction_id=i.id WHERE i.deleted_at IS NOT NULL ORDER BY i.deleted_at DESC` },
+    { key: 'serial_numbers',label: 'Numéros de série',sql: `SELECT id, serial as label, deleted_at FROM serial_numbers WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
+  ]
+
+  for (const t of tables) {
+    try { trash[t.key] = { label: t.label, items: db.prepare(t.sql).all() } }
+    catch { trash[t.key] = { label: t.label, items: [] } }
   }
+
+  res.json(trash)
 })
 
-// ── Navigation config ─────────────────────────────────────────────────────────
+// POST /api/admin/trash/:table/:id/restore
+router.post('/trash/:table/:id/restore', (req, res) => {
+  const allowed = ['companies','contacts','orders','products','shipments','returns','projects','assemblages','tasks','interactions','serial_numbers']
+  if (!allowed.includes(req.params.table)) return res.status(400).json({ error: 'Table invalide' })
 
-router.get('/nav-config', (req, res) => {
-  const row = db.prepare('SELECT nav_items FROM nav_config WHERE tenant_id=?').get(req.user.tenant_id)
-  res.json({ nav_items: row ? JSON.parse(row.nav_items) : null })
-})
-
-router.put('/nav-config', (req, res) => {
-  const { nav_items } = req.body
-  if (!Array.isArray(nav_items)) return res.status(400).json({ error: 'nav_items array required' })
-  const existing = db.prepare('SELECT id FROM nav_config WHERE tenant_id=?').get(req.user.tenant_id)
-  if (existing) {
-    db.prepare("UPDATE nav_config SET nav_items=?, updated_at=datetime('now') WHERE id=?")
-      .run(JSON.stringify(nav_items), existing.id)
-  } else {
-    db.prepare('INSERT INTO nav_config (id, tenant_id, nav_items) VALUES (?,?,?)')
-      .run(uuidv4(), req.user.tenant_id, JSON.stringify(nav_items))
-  }
+  const result = db.prepare(`UPDATE ${req.params.table} SET deleted_at = NULL WHERE id = ?`).run(req.params.id)
+  if (result.changes === 0) return res.status(404).json({ error: 'Enregistrement introuvable' })
   res.json({ ok: true })
+})
+
+// DELETE /api/admin/trash — purge définitive de tous les enregistrements supprimés
+router.delete('/trash', (req, res) => {
+  const tables = ['companies','contacts','orders','products','shipments','returns','projects','assemblages','tasks','interactions','serial_numbers']
+  let total = 0
+  for (const t of tables) {
+    try { total += db.prepare(`DELETE FROM ${t} WHERE deleted_at IS NOT NULL`).run().changes } catch {}
+  }
+  res.json({ purged: total })
 })
 
 export default router;

@@ -11,10 +11,8 @@ router.get('/', requireAuth, (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : Number(limit)
   const offsetVal = limitAll ? 0 : Number(offset)
-  const tid = req.user.tenant_id
-
-  const where = ['i.tenant_id=?', 'i.deleted_at IS NULL']
-  const params = [tid]
+  const where = ['i.deleted_at IS NULL']
+  const params = []
 
   if (type) { where.push('i.type=?'); params.push(type) }
   if (contact_id) { where.push('i.contact_id=?'); params.push(contact_id) }
@@ -66,8 +64,8 @@ router.get('/:id/email-body', requireAuth, (req, res) => {
   const row = db.prepare(`
     SELECT e.* FROM emails e
     JOIN interactions i ON e.interaction_id = i.id
-    WHERE i.id=? AND i.tenant_id=?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE i.id=?
+  `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
 })
@@ -75,13 +73,12 @@ router.get('/:id/email-body', requireAuth, (req, res) => {
 // POST /api/interactions
 router.post('/', requireAuth, (req, res) => {
   const { contact_id, company_id, type, direction, timestamp, notes, title, url, duration_minutes, attendees } = req.body
-  const tid = req.user.tenant_id
   if (!type) return res.status(400).json({ error: 'type required' })
 
   const id = uuid()
   const ts = timestamp || new Date().toISOString()
-  db.prepare('INSERT INTO interactions (id, tenant_id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?,?)')
-    .run(id, tid, contact_id || null, company_id || null, req.user.id, type, direction || null, ts)
+  db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
+    .run(id, contact_id || null, company_id || null, req.user.id, type, direction || null, ts)
 
   if (type === 'meeting' || type === 'note') {
     db.prepare('INSERT INTO meetings (id, interaction_id, title, url, duration_minutes, notes, attendees) VALUES (?,?,?,?,?,?,?)')
@@ -93,7 +90,7 @@ router.post('/', requireAuth, (req, res) => {
 
 // DELETE /api/interactions/:id
 router.delete('/:id', requireAuth, (req, res) => {
-  const row = db.prepare('SELECT * FROM interactions WHERE id=? AND tenant_id=?').get(req.params.id, req.user.tenant_id)
+  const row = db.prepare('SELECT * FROM interactions WHERE id=?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   db.prepare("UPDATE interactions SET deleted_at = datetime('now') WHERE id=?").run(req.params.id)
   res.json({ ok: true })

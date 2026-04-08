@@ -5,13 +5,13 @@ import db from '../db/database.js'
  * Vérifie et déclenche les automations pour un événement.
  * Exécution en arrière-plan (fire-and-forget).
  */
-export function checkAndRunAutomations(tenantId, triggerType, triggerData) {
+export function checkAndRunAutomations(triggerType, triggerData) {
   setImmediate(async () => {
     try {
       const automations = db.prepare(`
         SELECT * FROM automations
-        WHERE tenant_id = ? AND active = 1 AND trigger_type = ? AND deleted_at IS NULL
-      `).all(tenantId, triggerType)
+        WHERE active = 1 AND trigger_type = ? AND deleted_at IS NULL
+      `).all(triggerType)
 
       for (const automation of automations) {
         const config = JSON.parse(automation.trigger_config || '{}')

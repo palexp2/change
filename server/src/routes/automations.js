@@ -11,16 +11,16 @@ router.use(requireAuth)
 // GET /api/automations
 router.get('/', (req, res) => {
   const automations = db.prepare(`
-    SELECT * FROM automations WHERE tenant_id = ? AND deleted_at IS NULL ORDER BY created_at DESC
-  `).all(req.user.tenant_id)
+    SELECT * FROM automations WHERE deleted_at IS NULL ORDER BY created_at DESC
+  `).all()
   res.json(automations)
 })
 
 // GET /api/automations/:id
 router.get('/:id', (req, res) => {
   const automation = db.prepare(
-    'SELECT * FROM automations WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
-  ).get(req.params.id, req.user.tenant_id)
+    'SELECT * FROM automations WHERE id = ? AND deleted_at IS NULL'
+  ).get(req.params.id)
   if (!automation) return res.status(404).json({ error: 'Introuvable' })
   res.json(automation)
 })
@@ -33,9 +33,9 @@ router.post('/', (req, res) => {
 
   const id = newId('auto')
   db.prepare(`
-    INSERT INTO automations (id, tenant_id, name, description, trigger_type, trigger_config, action_type, action_config, script, active)
-    VALUES (?, ?, ?, ?, ?, ?, 'script', '{}', ?, ?)
-  `).run(id, req.user.tenant_id, name.trim(), description || null, trigger_type,
+    INSERT INTO automations (id, name, description, trigger_type, trigger_config, action_type, action_config, script, active)
+    VALUES (?, ?, ?, ?, ?, 'script', '{}', ?, ?)
+  `).run(id, name.trim(), description || null, trigger_type,
     trigger_config || '{}', script || '', active !== undefined ? active : 1)
 
   const created = db.prepare('SELECT * FROM automations WHERE id = ?').get(id)
@@ -50,8 +50,8 @@ router.post('/', (req, res) => {
 // PATCH /api/automations/:id
 router.patch('/:id', (req, res) => {
   const automation = db.prepare(
-    'SELECT * FROM automations WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
-  ).get(req.params.id, req.user.tenant_id)
+    'SELECT * FROM automations WHERE id = ? AND deleted_at IS NULL'
+  ).get(req.params.id)
   if (!automation) return res.status(404).json({ error: 'Introuvable' })
 
   const { name, description, trigger_type, trigger_config, script, active } = req.body
@@ -92,8 +92,8 @@ router.patch('/:id', (req, res) => {
 // DELETE /api/automations/:id
 router.delete('/:id', (req, res) => {
   const automation = db.prepare(
-    'SELECT id FROM automations WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
-  ).get(req.params.id, req.user.tenant_id)
+    'SELECT id FROM automations WHERE id = ? AND deleted_at IS NULL'
+  ).get(req.params.id)
   if (!automation) return res.status(404).json({ error: 'Introuvable' })
 
   db.prepare("UPDATE automations SET deleted_at = datetime('now') WHERE id = ?").run(req.params.id)
@@ -104,8 +104,8 @@ router.delete('/:id', (req, res) => {
 // GET /api/automations/:id/logs
 router.get('/:id/logs', (req, res) => {
   const automation = db.prepare(
-    'SELECT id FROM automations WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
-  ).get(req.params.id, req.user.tenant_id)
+    'SELECT id FROM automations WHERE id = ? AND deleted_at IS NULL'
+  ).get(req.params.id)
   if (!automation) return res.status(404).json({ error: 'Introuvable' })
 
   const logs = db.prepare(`
@@ -117,8 +117,8 @@ router.get('/:id/logs', (req, res) => {
 // POST /api/automations/:id/run
 router.post('/:id/run', async (req, res) => {
   const automation = db.prepare(
-    'SELECT * FROM automations WHERE id = ? AND tenant_id = ? AND deleted_at IS NULL'
-  ).get(req.params.id, req.user.tenant_id)
+    'SELECT * FROM automations WHERE id = ? AND deleted_at IS NULL'
+  ).get(req.params.id)
   if (!automation) return res.status(404).json({ error: 'Introuvable' })
 
   const config = JSON.parse(automation.trigger_config || '{}')
@@ -127,9 +127,9 @@ router.post('/:id/run', async (req, res) => {
   if (config.table_id) {
     const table = db.prepare('SELECT * FROM base_tables WHERE id = ? AND deleted_at IS NULL').get(config.table_id)
     const record = db.prepare(`
-      SELECT * FROM base_records WHERE table_id = ? AND tenant_id = ? AND deleted_at IS NULL
+      SELECT * FROM base_records WHERE table_id = ? AND deleted_at IS NULL
       ORDER BY created_at DESC LIMIT 1
-    `).get(config.table_id, req.user.tenant_id)
+    `).get(config.table_id)
 
     triggerData = {
       trigger: 'manual',

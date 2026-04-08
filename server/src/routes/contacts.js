@@ -7,22 +7,14 @@ import { rematchCalls } from './calls.js';
 const router = Router();
 router.use(requireAuth);
 
-function parseExtra(row) {
-  if (!row) return row;
-  try { row.extra_fields = JSON.parse(row.extra_fields || '{}'); } catch { row.extra_fields = {}; }
-  return row;
-}
-
 // GET /api/contacts
 router.get('/', (req, res) => {
   const { search, company_id, page = 1, limit = 50 } = req.query;
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
-  const tid = req.user.tenant_id;
-
-  let where = 'WHERE ct.tenant_id = ?';
-  const params = [tid];
+  let where = 'WHERE ct.deleted_at IS NULL';
+  const params = [];
 
   if (search) {
     where += ' AND (ct.first_name LIKE ? OR ct.last_name LIKE ? OR ct.email LIKE ? OR ct.phone LIKE ?)';
@@ -44,7 +36,7 @@ router.get('/', (req, res) => {
   ).all(...params, limitVal, offset);
 
   const total = limitAll ? contacts.length : db.prepare(`SELECT COUNT(*) as c FROM contacts ct ${where}`).get(...params).c;
-  res.json({ data: contacts.map(parseExtra), total, page: parseInt(page), limit: parseInt(limit) });
+  res.json({ data: contacts, total, page: parseInt(page), limit: parseInt(limit) });
 });
 
 // GET /api/contacts/:id
@@ -53,59 +45,58 @@ router.get('/:id', (req, res) => {
     `SELECT ct.*, c.name as company_name
      FROM contacts ct
      LEFT JOIN companies c ON ct.company_id = c.id
-     WHERE ct.id = ? AND ct.tenant_id = ?`
-  ).get(req.params.id, req.user.tenant_id);
+     WHERE ct.id = ?`
+  ).get(req.params.id);
   if (!contact) return res.status(404).json({ error: 'Contact not found' });
-  res.json(parseExtra(contact));
+  res.json(contact);
 });
 
 // POST /api/contacts
 router.post('/', (req, res) => {
-  const { first_name, last_name, email, phone, mobile, company_id, language, notes, extra_fields } = req.body;
+  const { first_name, last_name, email, phone, mobile, company_id, language, notes } = req.body;
   if (!first_name || !last_name) return res.status(400).json({ error: 'First name and last name required' });
 
   // Validate company belongs to tenant
   if (company_id) {
-    const co = db.prepare('SELECT id FROM companies WHERE id = ? AND tenant_id = ?').get(company_id, req.user.tenant_id);
+    const co = db.prepare('SELECT id FROM companies WHERE id = ?').get(company_id);
     if (!co) return res.status(400).json({ error: 'Invalid company' });
   }
 
   const id = uuidv4();
   db.prepare(
-    `INSERT INTO contacts (id, tenant_id, first_name, last_name, email, phone, mobile, company_id, language, notes, extra_fields)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, req.user.tenant_id, first_name, last_name, email || null, phone || null,
-    mobile || null, company_id || null, language || null, notes || null,
-    JSON.stringify(extra_fields || {}));
+    `INSERT INTO contacts (id, first_name, last_name, email, phone, mobile, company_id, language, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, first_name, last_name, email || null, phone || null,
+    mobile || null, company_id || null, language || null, notes || null);
 
-  const contact = parseExtra(db.prepare('SELECT ct.*, c.name as company_name FROM contacts ct LEFT JOIN companies c ON ct.company_id = c.id WHERE ct.id = ?').get(id));
-  if (phone || mobile) rematchCalls(req.user.tenant_id);
+  const contact = db.prepare('SELECT ct.*, c.name as company_name FROM contacts ct LEFT JOIN companies c ON ct.company_id = c.id WHERE ct.id = ?').get(id);
+  if (phone || mobile) rematchCalls();
   res.status(201).json(contact);
 });
 
 // PUT /api/contacts/:id
 router.put('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM contacts WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const existing = db.prepare('SELECT id FROM contacts WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Contact not found' });
 
-  const { first_name, last_name, email, phone, mobile, company_id, language, notes, extra_fields } = req.body;
+  const { first_name, last_name, email, phone, mobile, company_id, language, notes } = req.body;
   db.prepare(
-    `UPDATE contacts SET first_name=?, last_name=?, email=?, phone=?, mobile=?, company_id=?, language=?, notes=?, extra_fields=?
-     WHERE id = ? AND tenant_id = ?`
+    `UPDATE contacts SET first_name=?, last_name=?, email=?, phone=?, mobile=?, company_id=?, language=?, notes=?
+     WHERE id = ?`
   ).run(first_name, last_name, email || null, phone || null, mobile || null,
     company_id || null, language || null, notes || null,
-    JSON.stringify(extra_fields || {}), req.params.id, req.user.tenant_id);
+    req.params.id);
 
-  const updated = parseExtra(db.prepare('SELECT ct.*, c.name as company_name FROM contacts ct LEFT JOIN companies c ON ct.company_id = c.id WHERE ct.id = ?').get(req.params.id));
-  if (phone || mobile) rematchCalls(req.user.tenant_id);
+  const updated = db.prepare('SELECT ct.*, c.name as company_name FROM contacts ct LEFT JOIN companies c ON ct.company_id = c.id WHERE ct.id = ?').get(req.params.id);
+  if (phone || mobile) rematchCalls();
   res.json(updated);
 });
 
 // DELETE /api/contacts/:id
 router.delete('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM contacts WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const existing = db.prepare('SELECT id FROM contacts WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Contact not found' });
-  db.prepare('DELETE FROM contacts WHERE id = ? AND tenant_id = ?').run(req.params.id, req.user.tenant_id);
+  db.prepare("UPDATE contacts SET deleted_at = datetime('now') WHERE id = ?").run(req.params.id);
   res.json({ message: 'Deleted' });
 });
 

@@ -1,0 +1,13 @@
+[
+  {
+    "id": "e148483b-f2df-4488-bad7-aa4b283d92b1",
+    "description": "Sous-tâche test interne",
+    "status": "blocked",
+    "priority": 0,
+    "user_comment": null,
+    "agent_result": "(tâche migrée — champ title supprimé)",
+    "created_at": "2026-03-27T20:53:00.000Z",
+    "updated_at": "2026-04-08T00:00:00.000Z",
+    "completed_at": null
+  }
+]

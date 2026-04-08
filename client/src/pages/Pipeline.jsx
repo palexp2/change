@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Plus } from 'lucide-react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Plus, X } from 'lucide-react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -111,6 +111,8 @@ function ProjectForm({ initial = {}, companies = [], users = [], onSave, onClose
 
 export default function Pipeline() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const monthFilter = searchParams.get('month') // e.g. "2026-03"
   const [projects, setProjects] = useState([])
   const [companies, setCompanies] = useState([])
   const [users, setUsers] = useState([])
@@ -130,6 +132,15 @@ export default function Pipeline() {
     api.companies.list({ limit: 'all' }).then(r => setCompanies(r.data)).catch(() => {})
     api.admin.listUsers().then(setUsers).catch(() => {})
   }, [])
+
+  // Filtre par mois si présent dans l'URL
+  const displayedProjects = useMemo(() => {
+    if (!monthFilter) return projects
+    return projects.filter(p => {
+      const d = p.close_date || p.updated_at || ''
+      return d.startsWith(monthFilter)
+    })
+  }, [projects, monthFilter])
 
   // Stats toujours calculées sur tous les projets
   const open   = useMemo(() => projects.filter(p => p.status === 'Ouvert'), [projects])
@@ -205,13 +216,23 @@ export default function Pipeline() {
           </div>
         </div>
 
+        {monthFilter && (
+          <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg text-sm text-indigo-700">
+            <span>Filtre : {new Date(monthFilter + '-15').toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })} · groupés par statut</span>
+            <button onClick={() => setSearchParams({})} className="ml-auto flex items-center gap-1 text-xs text-indigo-500 hover:text-indigo-700">
+              <X size={13} /> Effacer
+            </button>
+          </div>
+        )}
         <DataTable
           table="projects"
           columns={COLUMNS}
-          data={projects}
+          data={displayedProjects}
           loading={loading}
           onRowClick={row => navigate(`/projects/${row.id}`)}
           searchFields={['name', 'company_name', 'type', 'assigned_name']}
+          initialGroupBy={monthFilter ? 'status' : null}
+          forceAllView={!!monthFilter}
         />
       </div>
 

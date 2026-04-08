@@ -10,12 +10,10 @@ router.get('/', (req, res) => {
   const { q, page = 1, limit = 50 } = req.query
   const limitVal = parseInt(limit)
   const offset = (parseInt(page) - 1) * limitVal
-  const tid = req.user.tenant_id
-
-  let where = 'WHERE tenant_id = ?'
-  const params = [tid]
+  let where = ''
+  const params = []
   if (q) {
-    where += ' AND (first_name LIKE ? OR last_name LIKE ? OR email_work LIKE ? OR matricule LIKE ?)'
+    where = 'WHERE (first_name LIKE ? OR last_name LIKE ? OR email_work LIKE ? OR matricule LIKE ?)'
     const like = `%${q}%`
     params.push(like, like, like, like)
   }
@@ -31,8 +29,8 @@ router.get('/', (req, res) => {
 })
 
 router.get('/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM employees WHERE id=? AND tenant_id=?')
-    .get(req.params.id, req.user.tenant_id)
+  const row = db.prepare('SELECT * FROM employees WHERE id=?')
+    .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
 })
@@ -42,15 +40,14 @@ router.post('/', (req, res) => {
   if (!first_name || !last_name) return res.status(400).json({ error: 'Prénom et nom requis' })
   const id = randomUUID()
   db.prepare(`
-    INSERT INTO employees (id, tenant_id, first_name, last_name, phone_personal, phone_work, email_personal, email_work, birth_date, hire_date, matricule)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)
-  `).run(id, req.user.tenant_id, first_name, last_name, phone_personal || null, phone_work || null, email_personal || null, email_work || null, birth_date || null, hire_date || null, matricule || null)
+    INSERT INTO employees (id, first_name, last_name, phone_personal, phone_work, email_personal, email_work, birth_date, hire_date, matricule)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
+  `).run(id, first_name, last_name, phone_personal || null, phone_work || null, email_personal || null, email_work || null, birth_date || null, hire_date || null, matricule || null)
   res.status(201).json(db.prepare('SELECT * FROM employees WHERE id=?').get(id))
 })
 
 router.patch('/:id', (req, res) => {
-  const tid = req.user.tenant_id
-  const existing = db.prepare('SELECT id FROM employees WHERE id=? AND tenant_id=?').get(req.params.id, tid)
+  const existing = db.prepare('SELECT id FROM employees WHERE id=?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
 
   const fields = ["updated_at=datetime('now')"]
@@ -65,7 +62,7 @@ router.patch('/:id', (req, res) => {
 })
 
 router.delete('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM employees WHERE id=? AND tenant_id=?').get(req.params.id, req.user.tenant_id)
+  const existing = db.prepare('SELECT id FROM employees WHERE id=?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
   db.prepare('DELETE FROM employees WHERE id=?').run(req.params.id)
   res.json({ ok: true })

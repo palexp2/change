@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Bot, Plus, CheckCircle, XCircle, Clock, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2, Send, Terminal, FileText, Edit3, Search, Zap, ListTodo, Activity, Maximize2, Minimize2 } from 'lucide-react'
+import { Bot, Plus, CheckCircle, XCircle, Clock, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2, Terminal, FileText, Edit3, Search, Zap, ListTodo, Activity, Maximize2, Minimize2 } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -13,8 +13,6 @@ const STATUS_CONFIG = {
   rejected:    { label: 'Rejetée',       color: 'text-slate-400',   bg: 'bg-slate-50',      border: 'border-l-slate-300',    dot: 'bg-slate-300',    icon: XCircle },
 }
 
-const STATUS_ORDER = ['in_progress', 'approved', 'pending', 'blocked', 'done', 'rejected']
-
 // ─── Tool icon helper ────────────────────────────────────────────────────────
 function toolIcon(name) {
   if (!name) return <Terminal size={11} />
@@ -24,208 +22,6 @@ function toolIcon(name) {
   if (n === 'write' || n === 'edit') return <Edit3 size={11} />
   if (n === 'glob' || n === 'grep') return <Search size={11} />
   return <Terminal size={11} />
-}
-
-// ─── Chat message renderer ───────────────────────────────────────────────────
-function ChatMessage({ msg }) {
-  if (msg.role === 'user') {
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%] bg-indigo-600 text-white rounded-2xl rounded-tr-sm px-4 py-2.5 text-sm whitespace-pre-wrap shadow-sm">
-          {msg.text}
-        </div>
-      </div>
-    )
-  }
-
-  // assistant message — array of blocks
-  return (
-    <div className="flex gap-3">
-      <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-indigo-500/20 to-violet-500/10 border border-indigo-200 flex items-center justify-center flex-shrink-0 mt-0.5">
-        <Bot size={14} className="text-indigo-500" />
-      </div>
-      <div className="flex-1 space-y-2">
-        {msg.blocks.map((block, i) => {
-          if (block.type === 'text') {
-            return (
-              <p key={i} className="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed">
-                {block.text}
-              </p>
-            )
-          }
-          if (block.type === 'tool_use') {
-            return (
-              <div key={i} className="flex items-center gap-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 font-mono w-fit max-w-full">
-                <span className="text-indigo-400">{toolIcon(block.name)}</span>
-                <span className="text-indigo-600 font-semibold">{block.name}</span>
-                {block.input && (
-                  <span className="text-slate-400 truncate max-w-[360px]">
-                    {typeof block.input === 'string'
-                      ? block.input
-                      : block.input.command || block.input.file_path || block.input.pattern || JSON.stringify(block.input).slice(0, 80)}
-                  </span>
-                )}
-              </div>
-            )
-          }
-          return null
-        })}
-      </div>
-    </div>
-  )
-}
-
-// ─── Chat tab ────────────────────────────────────────────────────────────────
-function ChatTab() {
-  const [messages, setMessages] = useState([])
-  const [input, setInput] = useState('')
-  const [running, setRunning] = useState(false)
-  const bottomRef = useRef(null)
-  const textareaRef = useRef(null)
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
-
-  async function send() {
-    const text = input.trim()
-    if (!text || running) return
-    setInput('')
-    setRunning(true)
-
-    setMessages(prev => [...prev, { role: 'user', text }])
-
-    const token = localStorage.getItem('erp_token')
-    const res = await fetch('/erp/api/agent/claude/run', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-      body: JSON.stringify({ message: text }),
-    })
-
-    if (!res.ok) {
-      setMessages(prev => [...prev, { role: 'assistant', blocks: [{ type: 'text', text: 'Erreur lors de la connexion au CLI.' }] }])
-      setRunning(false)
-      return
-    }
-
-    setMessages(prev => [...prev, { role: 'assistant', blocks: [] }])
-
-    try {
-      const body = await res.text()
-      const blocks = []
-
-      for (const line of body.split('\n')) {
-        if (!line.startsWith('data: ')) continue
-        const raw = line.slice(6).trim()
-        if (!raw) continue
-        let evt
-        try { evt = JSON.parse(raw) } catch { continue }
-
-        if (evt.type === 'assistant' && evt.message?.content) {
-          for (const block of evt.message.content) {
-            if (block.type === 'text' && block.text) {
-              const last = blocks[blocks.length - 1]
-              if (last?.type === 'text') {
-                last.text += block.text
-              } else {
-                blocks.push({ type: 'text', text: block.text })
-              }
-            } else if (block.type === 'tool_use') {
-              blocks.push({ type: 'tool_use', name: block.name, input: block.input })
-            }
-          }
-        }
-      }
-
-      setMessages(prev => {
-        const next = [...prev]
-        next[next.length - 1] = {
-          role: 'assistant',
-          blocks: blocks.length ? blocks : [{ type: 'text', text: '(pas de réponse)' }],
-        }
-        return next
-      })
-    } finally {
-      setRunning(false)
-    }
-  }
-
-  function handleKey(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      send()
-    }
-  }
-
-  return (
-    <div className="flex flex-col h-[calc(100vh-240px)] min-h-[400px]">
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto space-y-4 py-4 px-1">
-        {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center gap-3">
-            <div className="w-14 h-14 bg-gradient-to-br from-indigo-500/15 to-violet-500/10 border border-indigo-200 rounded-2xl flex items-center justify-center">
-              <Bot size={26} className="text-indigo-500" />
-            </div>
-            <div>
-              <p className="text-slate-700 text-sm font-medium">Claude Code</p>
-              <p className="text-slate-400 text-xs mt-1">Décris ce que tu veux modifier dans l'ERP</p>
-            </div>
-            <div className="flex gap-2 mt-2 flex-wrap justify-center">
-              {['Ajouter un champ à une table', 'Corriger un bug', 'Créer une nouvelle page'].map(s => (
-                <button
-                  key={s}
-                  onClick={() => setInput(s)}
-                  className="text-xs px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-500 hover:text-slate-700 hover:border-indigo-300 transition-all shadow-sm"
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-        {messages.map((msg, i) => (
-          <ChatMessage key={i} msg={msg} />
-        ))}
-        {running && messages[messages.length - 1]?.role !== 'assistant' && (
-          <div className="flex gap-3">
-            <div className="w-7 h-7 rounded-xl bg-gradient-to-br from-indigo-500/20 to-violet-500/10 border border-indigo-200 flex items-center justify-center flex-shrink-0">
-              <Loader2 size={14} className="text-indigo-500 animate-spin" />
-            </div>
-            <div className="flex items-center gap-1.5 pt-1">
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-1.5 h-1.5 rounded-full bg-slate-300 animate-bounce" style={{ animationDelay: '300ms' }} />
-            </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Input */}
-      <div className="border-t border-slate-200 pt-4">
-        <div className="flex gap-2 items-end">
-          <textarea
-            ref={textareaRef}
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={handleKey}
-            disabled={running}
-            rows={2}
-            placeholder="Dis à Claude ce que tu veux faire… (Entrée pour envoyer)"
-            className="flex-1 bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 disabled:opacity-50 transition-all shadow-sm"
-          />
-          <button
-            onClick={send}
-            disabled={running || !input.trim()}
-            className="flex-shrink-0 w-10 h-10 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-30 disabled:cursor-not-allowed text-white rounded-xl flex items-center justify-center transition-all shadow-sm"
-          >
-            {running ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
-          </button>
-        </div>
-        <p className="text-xs text-slate-400 mt-2">Claude a accès en lecture/écriture aux fichiers de l'ERP</p>
-      </div>
-    </div>
-  )
 }
 
 // ─── Live stream display ──────────────────────────────────────────────────────
@@ -346,14 +142,11 @@ function TaskCard({ task, onUpdate, onDelete, streamChunks }) {
         <Icon size={15} className={`mt-0.5 flex-shrink-0 ${cfg.color} ${task.status === 'in_progress' ? 'animate-spin' : ''}`} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-slate-900 text-sm font-medium">{task.title}</span>
+            <span className="text-slate-900 text-sm font-medium truncate">{task.description}</span>
             <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg.color} bg-current/10`}>
               {cfg.label}
             </span>
           </div>
-          {task.description && !expanded && (
-            <p className="text-slate-500 text-xs mt-1 truncate">{task.description}</p>
-          )}
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
           {isActive && task.status === 'pending' && (
@@ -391,7 +184,7 @@ function TaskCard({ task, onUpdate, onDelete, streamChunks }) {
 
       {expanded && (
         <div className="px-4 pb-4 space-y-3 border-t border-slate-200/80 pt-3">
-          {task.description && (
+          {task.description && task.description.length > 80 && (
             <p className="text-slate-600 text-sm whitespace-pre-wrap">{task.description}</p>
           )}
           {/* Stream replay for completed/blocked tasks (while buffer is still in memory) */}
@@ -430,12 +223,12 @@ function TaskCard({ task, onUpdate, onDelete, streamChunks }) {
 }
 
 function NewTaskForm({ onAdd, onCancel }) {
-  const [form, setForm] = useState({ title: '', description: '' })
+  const [form, setForm] = useState({ description: '' })
   const [saving, setSaving] = useState(false)
 
   async function handleSubmit(e) {
     e.preventDefault()
-    if (!form.title.trim()) return
+    if (!form.description.trim()) return
     setSaving(true)
     await onAdd(form)
     setSaving(false)
@@ -443,24 +236,18 @@ function NewTaskForm({ onAdd, onCancel }) {
 
   return (
     <form onSubmit={handleSubmit} className="bg-white border border-slate-200 rounded-xl p-4 space-y-3 shadow-sm">
-      <input
-        autoFocus
-        value={form.title}
-        onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
-        placeholder="Titre de la tâche…"
-        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 transition-all"
-        required
-      />
       <textarea
+        autoFocus
         value={form.description}
         onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-        placeholder="Description détaillée (optionnel)…"
+        placeholder="Description de la tâche…"
         rows={3}
-        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-700 placeholder-slate-400 resize-none focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 transition-all"
+        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 transition-all"
+        required
       />
       <div className="flex gap-2 justify-end">
         <button type="button" onClick={onCancel} className="btn-secondary text-sm">Annuler</button>
-        <button type="submit" disabled={saving || !form.title.trim()} className="btn-primary text-sm">
+        <button type="submit" disabled={saving || !form.description.trim()} className="btn-primary text-sm">
           {saving ? 'Ajout…' : 'Ajouter la tâche'}
         </button>
       </div>
@@ -473,7 +260,7 @@ function TasksTab() {
   const [tasks, setTasks] = useState([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
-  const [filter, setFilter] = useState('active')
+  const [filter, setFilter] = useState(null)
   const [streamData, setStreamData] = useState({}) // taskId -> chunk[]
   const fetchedStreamRef = useRef(new Set())
   const { showToast } = useToast()
@@ -569,18 +356,11 @@ function TasksTab() {
     }
   }
 
-  const activeStatuses = ['pending', 'approved', 'in_progress', 'blocked']
-  const filtered = filter === 'active'
-    ? tasks.filter(t => activeStatuses.includes(t.status))
-    : filter === 'done'
-    ? tasks.filter(t => t.status === 'done' || t.status === 'rejected')
-    : tasks
+  const filtered = (filter
+    ? tasks.filter(t => t.status === filter)
+    : tasks.filter(t => ['pending', 'approved', 'in_progress', 'blocked'].includes(t.status))
+  ).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
 
-  const grouped = STATUS_ORDER.reduce((acc, s) => {
-    const group = filtered.filter(t => t.status === s)
-    if (group.length) acc[s] = group
-    return acc
-  }, {})
 
   const counts = {
     pending:     tasks.filter(t => t.status === 'pending').length,
@@ -602,12 +382,23 @@ function TasksTab() {
     <div>
       {/* Stats */}
       <div className="grid grid-cols-5 gap-2.5 mb-6">
-        {statCards.map(({ key, label, color, border }) => (
-          <div key={key} className={`bg-white border border-slate-200 border-t-2 ${border} rounded-xl p-3 text-center shadow-sm`}>
-            <div className={`text-2xl font-bold tabular-nums ${color}`}>{counts[key]}</div>
-            <div className="text-xs text-slate-400 mt-0.5">{label}</div>
-          </div>
-        ))}
+        {statCards.map(({ key, label, color, border }) => {
+          const isActive = filter === key || (!filter && key !== 'done')
+          return (
+            <button
+              key={key}
+              onClick={() => setFilter(prev => prev === key ? null : key)}
+              className={`bg-white border border-t-2 ${border} rounded-xl p-3 text-center shadow-sm transition-all cursor-pointer ${
+                isActive
+                  ? 'border-slate-300 ring-1 ring-indigo-200'
+                  : 'border-slate-200 opacity-50 hover:opacity-75'
+              }`}
+            >
+              <div className={`text-2xl font-bold tabular-nums ${color}`}>{counts[key]}</div>
+              <div className="text-xs text-slate-400 mt-0.5">{label}</div>
+            </button>
+          )
+        })}
       </div>
 
       {/* New task form */}
@@ -617,28 +408,8 @@ function TasksTab() {
         </div>
       )}
 
-      {/* Filter tabs */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex gap-0.5 bg-slate-100 border border-slate-200 p-1 rounded-lg">
-          {[
-            { key: 'active', label: 'Actives' },
-            { key: 'all',    label: 'Toutes' },
-            { key: 'done',   label: 'Terminées' },
-          ].map(({ key, label }) => (
-            <button
-              key={key}
-              onClick={() => setFilter(key)}
-              className={`px-3 py-1.5 text-sm rounded-md font-medium transition-all ${
-                filter === key
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        {!showForm && (
+      {!showForm && (
+        <div className="flex justify-end mb-4">
           <button
             onClick={() => setShowForm(true)}
             className="flex items-center gap-1.5 text-sm px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors shadow-sm"
@@ -646,8 +417,8 @@ function TasksTab() {
             <Plus size={14} />
             Nouvelle tâche
           </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Task list */}
       {loading ? (
@@ -659,8 +430,8 @@ function TasksTab() {
           <div className="w-12 h-12 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center mx-auto mb-3">
             <ListTodo size={22} className="text-slate-400" />
           </div>
-          <p className="text-slate-500 text-sm">Aucune tâche</p>
-          {filter === 'active' && (
+          <p className="text-slate-500 text-sm">Aucune tâche{filter ? ` ${statCards.find(c => c.key === filter)?.label?.toLowerCase() || ''}` : ''}</p>
+          {!filter && (
             <button
               onClick={() => setShowForm(true)}
               className="mt-3 text-indigo-600 hover:text-indigo-500 text-sm underline underline-offset-2 transition-colors"
@@ -670,28 +441,15 @@ function TasksTab() {
           )}
         </div>
       ) : (
-        <div className="space-y-5">
-          {Object.entries(grouped).map(([status, group]) => (
-            <div key={status}>
-              <div className="flex items-center gap-2 mb-2">
-                <span className={`w-1.5 h-1.5 rounded-full ${STATUS_CONFIG[status]?.dot || 'bg-slate-400'}`} />
-                <h2 className={`text-xs font-semibold uppercase tracking-wider ${STATUS_CONFIG[status]?.color || 'text-slate-500'}`}>
-                  {STATUS_CONFIG[status]?.label}
-                  <span className="ml-1.5 opacity-50 normal-case font-normal">({group.length})</span>
-                </h2>
-              </div>
-              <div className="space-y-2">
-                {group.map(task => (
-                  <TaskCard
-                    key={task.id}
-                    task={task}
-                    onUpdate={handleUpdate}
-                    onDelete={handleDelete}
-                    streamChunks={streamData[task.id]}
-                  />
-                ))}
-              </div>
-            </div>
+        <div className="space-y-2">
+          {filtered.map(task => (
+            <TaskCard
+              key={task.id}
+              task={task}
+              onUpdate={handleUpdate}
+              onDelete={handleDelete}
+              streamChunks={streamData[task.id]}
+            />
           ))}
         </div>
       )}
@@ -700,8 +458,7 @@ function TasksTab() {
 }
 
 // ─── Main page ────────────────────────────────────────────────────────────────
-export default function Agent() {
-  const [tab, setTab] = useState('tasks')
+export function AgentContent() {
   const [runnerBusy, setRunnerBusy] = useState(false)
 
   // Poll runner status every 5s
@@ -735,7 +492,6 @@ export default function Agent() {
   }, [])
 
   return (
-    <Layout>
       <div className="max-w-3xl mx-auto px-6 py-8">
 
         {/* Header */}
@@ -760,29 +516,11 @@ export default function Agent() {
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-0.5 mb-6 bg-slate-100 border border-slate-200 p-1 rounded-xl w-fit">
-          {[
-            { key: 'tasks', label: 'File de tâches' },
-            { key: 'chat',  label: 'Chat direct' },
-          ].map(({ key, label }) => (
-            <button
-              key={key}
-              onClick={() => setTab(key)}
-              className={`px-4 py-2 text-sm rounded-lg font-medium transition-all ${
-                tab === key
-                  ? 'bg-indigo-600 text-white shadow-sm'
-                  : 'text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-
-        {tab === 'tasks' && <TasksTab />}
-        {tab === 'chat'  && <ChatTab />}
+        <TasksTab />
       </div>
-    </Layout>
   )
+}
+
+export default function Agent() {
+  return <Layout><AgentContent /></Layout>
 }

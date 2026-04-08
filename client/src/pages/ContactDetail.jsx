@@ -1,12 +1,10 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Phone, Mail, MessageSquare, Edit2, Building2, PhoneCall, PhoneIncoming, PhoneOutgoing, Plus, Save, X } from 'lucide-react'
+import { ArrowLeft, Mail, MessageSquare, Edit2, Building2, PhoneCall, PhoneIncoming, PhoneOutgoing, Plus, Save, X, Zap, Eye, ChevronDown } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
-import { useDetailLayout } from '../hooks/useDetailLayout.js'
-import { DetailFieldConfig, DetailConfigButton } from '../components/DetailFieldConfig.jsx'
 import { useAuth } from '../lib/auth.jsx'
 
 function fmtDate(d) {
@@ -44,90 +42,118 @@ function fieldTypeInput(type) {
   return 'text'
 }
 
+function fmtPhone(val) {
+  if (!val) return ''
+  const digits = String(val).replace(/\D/g, '')
+  const d = digits.length === 11 && digits[0] === '1' ? digits.slice(1) : digits
+  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`
+  return val
+}
+
 const CONTACT_FIELDS = [
   { key: 'first_name', label: 'Prénom',      type: 'text', required: true },
   { key: 'last_name',  label: 'Nom',         type: 'text', required: true },
   { key: 'email',      label: 'Courriel',    type: 'email' },
-  { key: 'phone',      label: 'Téléphone',   type: 'text' },
-  { key: 'mobile',     label: 'Mobile',      type: 'text' },
+  { key: 'phone',      label: 'Téléphone',   type: 'phone' },
+  { key: 'mobile',     label: 'Mobile',      type: 'phone' },
   { key: 'language',   label: 'Langue',      type: 'select', options: ['French', 'English'] },
   { key: 'company_id', label: 'Entreprise',  type: 'company', span2: true },
   { key: 'notes',      label: 'Notes',       type: 'textarea', span2: true, defaultVisible: false },
 ]
 
-function ContactForm({ initial = {}, companies = [], customFields = [], visibleFields, onSave, onClose }) {
-  const [form, setForm] = useState({
-    first_name: '', last_name: '', email: '', phone: '', mobile: '',
-    company_id: '', language: '', notes: '',
-    ...initial,
-    extra_fields: { ...(initial.extra_fields || {}) }
-  })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+function CompanySelect({ value, companies, saving, onSave }) {
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const ref = useRef(null)
+  const selected = companies.find(c => c.id === value)
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase()
+    return q ? companies.filter(c => c.name.toLowerCase().includes(q)).slice(0, 60) : companies.slice(0, 60)
+  }, [companies, search])
 
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setError('')
-    setSaving(true)
-    try {
-      await onSave(form)
-      onClose()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  const fields = visibleFields || [...CONTACT_FIELDS, ...customFields.map(cf => ({ key: `extra:${cf.key}`, label: cf.label, type: cf.field_type || 'text', span2: true, custom: true, customKey: cf.key }))]
+  useEffect(() => { if (!open) setSearch('') }, [open])
+  useEffect(() => {
+    function handle(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [])
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        {fields.map(field => {
-          const isCustom = field.custom
-          const val = isCustom ? (form.extra_fields?.[field.customKey] || '') : (form[field.key] || '')
-          const onChange = e => {
-            if (isCustom) setForm(f => ({ ...f, extra_fields: { ...f.extra_fields, [field.customKey]: e.target.value } }))
-            else setForm(f => ({ ...f, [field.key]: e.target.value }))
-          }
-          return (
-            <div key={field.key} className={field.span2 ? 'col-span-2' : ''}>
-              <label className="label">{field.label}{field.required ? ' *' : ''}</label>
-              {field.type === 'select' ? (
-                <select value={val} onChange={onChange} className="select">
-                  <option value="">—</option>
-                  {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
-                </select>
-              ) : field.type === 'company' ? (
-                <select value={val} onChange={onChange} className="select">
-                  <option value="">— Aucune entreprise —</option>
-                  {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                </select>
-              ) : field.type === 'textarea' ? (
-                <textarea value={val} onChange={onChange} className="input" rows={3} />
-              ) : (
-                <input type={fieldTypeInput(field.type)} value={val} onChange={onChange} className="input" required={field.required} />
-              )}
-            </div>
-          )
-        })}
-      </div>
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      <div className="flex justify-end gap-3 pt-2">
-        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary">
-          {saving ? 'Enregistrement...' : 'Enregistrer'}
-        </button>
-      </div>
-    </form>
+    <div ref={ref} className="relative">
+      <button type="button" onClick={() => !saving && setOpen(o => !o)} disabled={saving}
+        className="input text-sm text-left w-full flex items-center justify-between gap-2">
+        <span className={selected ? 'text-slate-900 truncate' : 'text-slate-400'}>
+          {selected ? selected.name : '— Aucune entreprise —'}
+        </span>
+        <ChevronDown size={14} className="text-slate-400 flex-shrink-0" />
+      </button>
+      {open && (
+        <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden">
+          <div className="p-2 border-b border-slate-100">
+            <input autoFocus type="text" value={search} onChange={e => setSearch(e.target.value)}
+              placeholder="Rechercher..." className="input text-sm py-1 w-full" />
+          </div>
+          <div className="max-h-52 overflow-y-auto">
+            <button type="button" onClick={() => { onSave(''); setOpen(false) }}
+              className="w-full text-left px-3 py-2 text-sm text-slate-400 hover:bg-slate-50">
+              — Aucune entreprise —
+            </button>
+            {filtered.map(c => (
+              <button key={c.id} type="button" onClick={() => { onSave(c.id); setOpen(false) }}
+                className={`w-full text-left px-3 py-2 text-sm hover:bg-indigo-50 hover:text-indigo-700 ${c.id === value ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-slate-900'}`}>
+                {c.name}
+              </button>
+            ))}
+            {filtered.length === 0 && <div className="px-3 py-2 text-sm text-slate-400">Aucun résultat</div>}
+            {!search && companies.length > 60 && (
+              <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-100">
+                {companies.length - 60} autres — affinez la recherche
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function InlineField({ field, value, saving, onSave, companies = [] }) {
+  const [local, setLocal] = useState(String(value ?? ''))
+  useEffect(() => { setLocal(String(value ?? '')) }, [value])
+  function commit(val) { if (val === String(value ?? '')) return; onSave(val) }
+
+  if (field.type === 'select') {
+    return (
+      <select value={local} onChange={e => { setLocal(e.target.value); commit(e.target.value) }} className="input text-sm" disabled={saving}>
+        <option value="">—</option>
+        {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    )
+  }
+  if (field.type === 'company') {
+    return <CompanySelect value={value} companies={companies} saving={saving} onSave={onSave} />
+  }
+  if (field.type === 'textarea') {
+    return (
+      <textarea value={local} onChange={e => setLocal(e.target.value)} onBlur={e => commit(e.target.value)} className="input text-sm" rows={3} disabled={saving} />
+    )
+  }
+  if (field.type === 'phone') {
+    return (
+      <input type="tel" value={local} onChange={e => setLocal(e.target.value)}
+        onBlur={e => { const f = fmtPhone(e.target.value); setLocal(f); commit(f) }}
+        className="input text-sm" disabled={saving} />
+    )
+  }
+  return (
+    <input type={fieldTypeInput(field.type)} value={local} onChange={e => setLocal(e.target.value)} onBlur={e => commit(e.target.value)} className="input text-sm" disabled={saving} />
   )
 }
 
 function InteractionItem({ item }) {
   const [expanded, setExpanded] = useState(false)
   const Icon = TYPE_ICONS[item.type] || MessageSquare
-  const hasBody = item.transcript_formatted || item.body_text || item.meeting_notes
+  const hasBody = item.transcript_formatted || item.body_text || item.body_html || item.meeting_notes
 
   return (
     <div className="card p-4">
@@ -145,6 +171,11 @@ function InteractionItem({ item }) {
                 ? <PhoneOutgoing size={12} className="text-slate-400" />
                 : null}
               {item.subject && <span className="text-sm text-slate-600 truncate">{item.subject}</span>}
+              {item.type === 'email' && item.from_address && <span className="text-xs text-slate-400 font-mono truncate">De: {item.from_address}</span>}
+              {item.type === 'email' && item.to_address && <span className="text-xs text-slate-400 font-mono truncate">À: {item.to_address}</span>}
+              {item.automated === 1 && <span title="Courriel automatisé" className="inline-flex items-center gap-0.5 text-xs text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded"><Zap size={10} /> Auto</span>}
+              {item.automated === 1 && item.open_count > 0 && <span title={`Ouvert ${item.open_count} fois`} className="inline-flex items-center gap-0.5 text-xs text-green-700 bg-green-50 border border-green-100 px-1.5 py-0.5 rounded"><Eye size={10} /> {item.open_count}</span>}
+              {item.automated === 1 && item.open_count === 0 && <span title="Non ouvert" className="inline-flex items-center gap-0.5 text-xs text-slate-400 bg-slate-50 border border-slate-100 px-1.5 py-0.5 rounded"><Eye size={10} /> 0</span>}
               {item.meeting_title && item.meeting_title !== 'Note' && <span className="text-sm text-slate-600">{item.meeting_title}</span>}
               {item.duration_seconds && <span className="text-xs text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">{fmtDuration(item.duration_seconds)}</span>}
               {item.callee_number && <span className="text-xs text-slate-400 font-mono">{item.callee_number}</span>}
@@ -167,8 +198,11 @@ function InteractionItem({ item }) {
             </button>
           )}
           {expanded && (
-            <div className="mt-2 p-3 bg-slate-50 rounded text-xs text-slate-600 whitespace-pre-wrap max-h-64 overflow-y-auto">
-              {item.transcript_formatted || item.body_text || item.meeting_notes}
+            <div className="mt-2 rounded overflow-hidden border border-slate-200">
+              {item.body_html
+                ? <iframe srcDoc={item.body_html} sandbox="allow-same-origin" scrolling="no" className="w-full border-0" style={{ minHeight: '200px' }} onLoad={e => { e.target.style.height = e.target.contentDocument.body.scrollHeight + 'px' }} />
+                : <div className="p-3 bg-slate-50 text-xs text-slate-600 whitespace-pre-wrap">{item.transcript_formatted || item.body_text || item.meeting_notes}</div>
+              }
             </div>
           )}
         </div>
@@ -184,12 +218,11 @@ export default function ContactDetail() {
   const [contact, setContact] = useState(null)
   const [interactions, setInteractions] = useState([])
   const [companies, setCompanies] = useState([])
-  const [customFields, setCustomFields] = useState([])
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
-  const [editing, setEditing] = useState(false)
+  const [fieldSaving, setFieldSaving] = useState({})
   const [tasks, setTasks] = useState([])
   const [users, setUsers] = useState([])
   const [showTaskModal, setShowTaskModal] = useState(false)
@@ -204,7 +237,7 @@ export default function ContactDetail() {
       const [c, inter, comps] = await Promise.all([
         api.contacts.get(id),
         api.interactions.list({ contact_id: id, limit: LIMIT, offset: 0 }),
-        api.companies.list({ limit: 200 }),
+        api.companies.list({ limit: 'all' }),
       ])
       setContact(c)
       setInteractions(inter.interactions || [])
@@ -216,18 +249,7 @@ export default function ContactDetail() {
     }
   }
 
-  useEffect(() => {
-    api.fieldDefs.list('contacts').then(setCustomFields).catch(() => {})
-  }, [])
-
-  const allDetailFields = useMemo(() => [
-    ...CONTACT_FIELDS,
-    ...customFields.map(cf => ({
-      key: `extra:${cf.key}`, label: cf.label, type: cf.field_type || 'text', span2: true, custom: true, customKey: cf.key,
-    })),
-  ], [customFields])
-
-  const layout = useDetailLayout('contacts', allDetailFields)
+  const visibleFields = useMemo(() => CONTACT_FIELDS.filter(f => f.defaultVisible !== false), [])
 
   async function loadMore() {
     setLoadingMore(true)
@@ -246,10 +268,17 @@ export default function ContactDetail() {
     api.auth.users().then(setUsers).catch(() => {})
   }, [id])
 
-  async function handleUpdate(form) {
-    await api.contacts.update(id, form)
-    setEditing(false)
-    load()
+  async function saveField(key, value) {
+    setFieldSaving(s => ({ ...s, [key]: true }))
+    try {
+      await api.contacts.update(id, { [key]: value || null })
+      setContact(c => ({ ...c, [key]: value || null }))
+      if (key === 'company_id') load()
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setFieldSaving(s => ({ ...s, [key]: false }))
+    }
   }
 
   if (loading) {
@@ -283,46 +312,33 @@ export default function ContactDetail() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            {user?.role === 'admin' && (
-              <DetailConfigButton onClick={() => layout.setConfiguring(true)} />
-            )}
-            <button onClick={() => setEditing(true)} className="btn-secondary btn-sm">
-              <Edit2 size={14} /> Modifier
-            </button>
           </div>
         </div>
 
         {/* Info card */}
         <div className="card p-5 mb-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-3 text-sm">
-            {layout.visibleFields.map(field => {
-              if (field.key === 'first_name' || field.key === 'last_name' || field.key === 'company_id') return null
-              const isCustom = field.custom
-              const value = isCustom ? contact.extra_fields?.[field.customKey] : contact[field.key]
-              if (!value) return null
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
+            {visibleFields.map(field => {
+              const value = contact[field.key] ?? ''
+              const span2 = field.span2 || field.type === 'textarea' || field.type === 'company'
               return (
-                <div key={field.key}>
-                  <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">{field.label}</div>
-                  <div className="text-sm text-slate-900 mt-0.5">
-                    {field.type === 'email' ? <a href={`mailto:${value}`} className="text-indigo-600 hover:underline">{value}</a>
-                      : field.type === 'url' ? <a href={value} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">{value}</a>
-                      : value}
+                <div key={field.key} className={span2 ? 'sm:col-span-2' : ''}>
+                  <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
+                    {field.label}
+                    {fieldSaving[field.key] && <span className="inline-block w-3 h-3 border border-indigo-400 border-t-transparent rounded-full animate-spin" />}
                   </div>
+                  <InlineField
+                    field={field}
+                    value={value}
+                    saving={!!fieldSaving[field.key]}
+                    companies={companies}
+                    onSave={val => saveField(field.key, val)}
+                  />
                 </div>
               )
             })}
           </div>
         </div>
-
-        {layout.isConfiguring && (
-          <DetailFieldConfig
-            configFields={layout.configFields}
-            onToggle={layout.toggleField}
-            onMove={layout.moveField}
-            onSave={layout.saveLayout}
-            onCancel={() => layout.setConfiguring(false)}
-          />
-        )}
 
         {/* Tasks section */}
         <div className="mb-6">
@@ -382,10 +398,6 @@ export default function ContactDetail() {
           )}
         </div>
       </div>
-
-      <Modal isOpen={editing} onClose={() => setEditing(false)} title="Modifier le contact">
-        <ContactForm initial={contact} companies={companies} customFields={customFields} visibleFields={layout.visibleFields} onSave={handleUpdate} onClose={() => setEditing(false)} />
-      </Modal>
 
       {showTaskModal && (
         <Modal title={editingTask ? 'Modifier la tâche' : 'Nouvelle tâche'} onClose={() => setShowTaskModal(false)}>

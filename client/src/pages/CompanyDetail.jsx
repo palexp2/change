@@ -1,12 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ChevronDown, ChevronUp, Phone, Mail, MessageSquare, Building2, PhoneCall, PhoneIncoming, PhoneOutgoing, Eye, CheckCircle2, Circle, Clock, AlertCircle } from 'lucide-react'
+import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ChevronDown, ChevronUp, Phone, Mail, MessageSquare, Building2, PhoneCall, PhoneIncoming, PhoneOutgoing, Eye, CheckCircle2, Circle, Clock, AlertCircle, Zap } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, phaseBadgeColor, orderStatusColor, ticketStatusColor, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
-import { useDetailLayout } from '../hooks/useDetailLayout.js'
-import { DetailFieldConfig, DetailConfigButton } from '../components/DetailFieldConfig.jsx'
 import { useAuth } from '../lib/auth.jsx'
 
 const TYPE_LABELS = { call: 'Appel', email: 'Courriel', sms: 'SMS', meeting: 'Réunion', note: 'Note' }
@@ -22,7 +20,7 @@ function fmtDuration(s) {
 function InteractionItem({ item }) {
   const [expanded, setExpanded] = useState(false)
   const Icon = TYPE_ICONS[item.type] || MessageSquare
-  const hasBody = item.transcript_formatted || item.body_text || item.meeting_notes
+  const hasBody = item.transcript_formatted || item.body_text || item.body_html || item.meeting_notes
 
   return (
     <div className="card p-4">
@@ -41,6 +39,11 @@ function InteractionItem({ item }) {
                 </Link>
               )}
               {item.subject && <span className="text-sm text-slate-600 truncate">{item.subject}</span>}
+              {item.type === 'email' && item.from_address && <span className="text-xs text-slate-400 font-mono truncate">De: {item.from_address}</span>}
+              {item.type === 'email' && item.to_address && <span className="text-xs text-slate-400 font-mono truncate">À: {item.to_address}</span>}
+              {item.automated === 1 && <span title="Courriel automatisé" className="inline-flex items-center gap-0.5 text-xs text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded"><Zap size={10} /> Auto</span>}
+              {item.automated === 1 && item.open_count > 0 && <span title={`Ouvert ${item.open_count} fois`} className="inline-flex items-center gap-0.5 text-xs text-green-700 bg-green-50 border border-green-100 px-1.5 py-0.5 rounded"><Eye size={10} /> {item.open_count}</span>}
+              {item.automated === 1 && item.open_count === 0 && <span title="Non ouvert" className="inline-flex items-center gap-0.5 text-xs text-slate-400 bg-slate-50 border border-slate-100 px-1.5 py-0.5 rounded"><Eye size={10} /> 0</span>}
               {item.meeting_title && item.meeting_title !== 'Note' && <span className="text-sm text-slate-600">{item.meeting_title}</span>}
               {item.duration_seconds && <span className="text-xs text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">{fmtDuration(item.duration_seconds)}</span>}
               {item.callee_number && <span className="text-xs text-slate-400 font-mono">{item.callee_number}</span>}
@@ -60,8 +63,11 @@ function InteractionItem({ item }) {
             </button>
           )}
           {expanded && (
-            <div className="mt-2 p-3 bg-slate-50 rounded text-xs text-slate-600 whitespace-pre-wrap max-h-64 overflow-y-auto">
-              {item.transcript_formatted || item.body_text || item.meeting_notes}
+            <div className="mt-2 rounded overflow-hidden border border-slate-200">
+              {item.body_html
+                ? <iframe srcDoc={item.body_html} sandbox="allow-same-origin" scrolling="no" className="w-full border-0" style={{ minHeight: '200px' }} onLoad={e => { e.target.style.height = e.target.contentDocument.body.scrollHeight + 'px' }} />
+                : <div className="p-3 bg-slate-50 text-xs text-slate-600 whitespace-pre-wrap">{item.transcript_formatted || item.body_text || item.meeting_notes}</div>
+              }
             </div>
           )}
         </div>
@@ -90,17 +96,59 @@ function fieldTypeInput(type) {
   return 'text'
 }
 
+function fmtPhone(val) {
+  if (!val) return ''
+  const digits = String(val).replace(/\D/g, '')
+  const d = digits.length === 11 && digits[0] === '1' ? digits.slice(1) : digits
+  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`
+  return val
+}
+
+function InlineField({ field, value, saving, onSave }) {
+  const [local, setLocal] = useState(String(value ?? ''))
+  useEffect(() => { setLocal(String(value ?? '')) }, [value])
+
+  const base = `w-full text-sm rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400 ${saving ? 'opacity-50' : ''}`
+  const inputCls = `${base} border-slate-200 bg-white px-3 py-1.5 hover:border-slate-300`
+  const selectCls = `${base} border-slate-200 bg-white px-3 py-1.5 hover:border-slate-300`
+
+  function commit(val) {
+    if (val === String(value ?? '')) return
+    onSave(val)
+  }
+
+  return (
+    <div className={field.span2 ? 'col-span-2' : ''}>
+      <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">{field.label}</div>
+      {field.type === 'select' ? (
+        <select value={local} onChange={e => { setLocal(e.target.value); commit(e.target.value) }} className={selectCls} disabled={saving}>
+          <option value="">—</option>
+          {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+      ) : field.type === 'textarea' ? (
+        <textarea value={local} onChange={e => setLocal(e.target.value)} onBlur={e => commit(e.target.value)} className={`${inputCls} resize-none`} rows={3} />
+      ) : field.type === 'phone' ? (
+        <input type="tel" value={local} onChange={e => setLocal(e.target.value)}
+          onBlur={e => { const f = fmtPhone(e.target.value); setLocal(f); commit(f) }}
+          className={inputCls} />
+      ) : (
+        <input
+          type={fieldTypeInput(field.type)}
+          value={local}
+          onChange={e => setLocal(e.target.value)}
+          onBlur={e => commit(e.target.value)}
+          className={inputCls}
+        />
+      )}
+    </div>
+  )
+}
+
 const COMPANY_FIELDS = [
-  { key: 'name',            label: 'Nom',       type: 'text',   span2: true, required: true },
   { key: 'type',            label: 'Type',      type: 'select', options: TYPES },
   { key: 'lifecycle_phase', label: 'Phase',     type: 'select', options: PHASES },
-  { key: 'phone',           label: 'Téléphone', type: 'text' },
-  { key: 'email',           label: 'Courriel',  type: 'email' },
+  { key: 'phone',           label: 'Téléphone', type: 'phone' },
   { key: 'website',         label: 'Site web',  type: 'url', span2: true },
-  { key: 'address',         label: 'Adresse',   type: 'text', span2: true },
-  { key: 'city',            label: 'Ville',     type: 'text' },
-  { key: 'province',        label: 'Province',  type: 'text' },
-  { key: 'country',         label: 'Pays',      type: 'text' },
   { key: 'notes',           label: 'Notes',     type: 'textarea', span2: true, defaultVisible: false },
 ]
 
@@ -109,12 +157,9 @@ export default function CompanyDetail() {
   const navigate = useNavigate()
   const { user } = useAuth()
   const [company, setCompany] = useState(null)
-  const [customFields, setCustomFields] = useState([])
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('info')
-  const [editing, setEditing] = useState(false)
-  const [form, setForm] = useState({})
-  const [saving, setSaving] = useState(false)
+  const [fieldSaving, setFieldSaving] = useState(null)
   const [showContactModal, setShowContactModal] = useState(false)
   const [contactForm, setContactForm] = useState({ first_name: '', last_name: '', email: '', phone: '', mobile: '', language: '' })
   const [interactions, setInteractions] = useState([])
@@ -124,6 +169,8 @@ export default function CompanyDetail() {
   const [loadingMoreInteractions, setLoadingMoreInteractions] = useState(false)
   const INTER_LIMIT = 30
   const [factures, setFactures] = useState([])
+  const [facturesTotal, setFacturesTotal] = useState(0)
+  const [envoisTotal, setEnvoisTotal] = useState(0)
   const [abonnements, setAbonnements] = useState([])
   const [tasks, setTasks] = useState([])
   const [users, setUsers] = useState([])
@@ -131,6 +178,16 @@ export default function CompanyDetail() {
   const [editingTask, setEditingTask] = useState(null)
   const [taskForm, setTaskForm] = useState({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' })
   const [savingTask, setSavingTask] = useState(false)
+  const [envois, setEnvois] = useState([])
+  const [facturesFourn, setFacturesFourn] = useState([])
+  const [facturesFournTotal, setFacturesFournTotal] = useState(0)
+  const [depenses, setDepenses] = useState([])
+  const [depensesTotal, setDepensesTotal] = useState(0)
+  const [retours, setRetours] = useState([])
+  const [adresses, setAdresses] = useState([])
+  const [showAdresseModal, setShowAdresseModal] = useState(false)
+  const [editingAdresse, setEditingAdresse] = useState(null)
+  const [adresseForm, setAdresseForm] = useState({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' })
   const [serialCols, setSerialCols] = useState(['serial', 'product_name', 'status', 'manufacture_date', 'last_programmed_date'])
   const [showSerialColPicker, setShowSerialColPicker] = useState(false)
   const serialColPickerRef = useRef(null)
@@ -158,13 +215,6 @@ export default function CompanyDetail() {
     try {
       const data = await api.companies.get(id)
       setCompany(data)
-      setForm({
-        name: data.name, type: data.type || '', lifecycle_phase: data.lifecycle_phase || '',
-        phone: data.phone || '', email: data.email || '', website: data.website || '',
-        address: data.address || '', city: data.city || '', province: data.province || '',
-        country: data.country || 'Canada', notes: data.notes || '',
-        extra_fields: { ...(data.extra_fields || {}) },
-      })
     } finally {
       setLoading(false)
     }
@@ -173,18 +223,16 @@ export default function CompanyDetail() {
   useEffect(() => { load() }, [id])
 
   useEffect(() => {
-    api.fieldDefs.list('companies').then(setCustomFields).catch(() => {})
-  }, [])
+    api.adresses.list({ company_id: id, limit: 'all' }).then(r => setAdresses(r.data || [])).catch(() => {})
+  }, [id])
 
-  // Merge hardcoded + custom fields for the layout system
-  const allDetailFields = useMemo(() => [
-    ...COMPANY_FIELDS,
-    ...customFields.map(cf => ({
-      key: `extra:${cf.key}`, label: cf.label, type: cf.field_type || 'text', span2: true, custom: true, customKey: cf.key,
-    })),
-  ], [customFields])
+  useEffect(() => {
+    api.interactions.list({ company_id: id, limit: 1, offset: 0 }).then(d => setInteractionsTotal(d.total || 0)).catch(() => {})
+    api.shipments.list({ company_id: id, limit: 1 }).then(r => setEnvoisTotal(r.total || 0)).catch(() => {})
+    api.factures.list({ company_id: id, limit: 1 }).then(r => setFacturesTotal(r.total || 0)).catch(() => {})
+  }, [id])
 
-  const layout = useDetailLayout('companies', allDetailFields)
+  const visibleFields = useMemo(() => COMPANY_FIELDS.filter(f => f.defaultVisible !== false), [])
 
   useEffect(() => {
     if (tab === 'interactions') {
@@ -203,7 +251,7 @@ export default function CompanyDetail() {
 
   useEffect(() => {
     if (tab === 'factures') {
-      api.factures.list({ company_id: id, limit: 'all' }).then(r => setFactures(r.data)).catch(() => {})
+      api.factures.list({ company_id: id, limit: 'all' }).then(r => { setFactures(r.data); setFacturesTotal(r.total || r.data?.length || 0) }).catch(() => {})
     }
     if (tab === 'abonnements') {
       api.abonnements.list({ company_id: id, limit: 'all' }).then(r => setAbonnements(r.data)).catch(() => {})
@@ -211,6 +259,18 @@ export default function CompanyDetail() {
     if (tab === 'tâches') {
       api.tasks.list({ company_id: id, limit: 'all' }).then(r => setTasks(r.data || [])).catch(() => {})
       api.auth.users().then(setUsers).catch(() => {})
+    }
+    if (tab === 'envois') {
+      api.shipments.list({ company_id: id, limit: 'all' }).then(r => { setEnvois(r.data || []); setEnvoisTotal(r.total || r.data?.length || 0) }).catch(() => {})
+    }
+    if (tab === 'fact-fourn') {
+      api.facturesFournisseurs.list({ vendor_id: id, limit: 'all' }).then(r => { setFacturesFourn(r.data || []); setFacturesFournTotal(r.total || r.data?.length || 0) }).catch(() => {})
+    }
+    if (tab === 'depenses') {
+      api.depenses.list({ vendor_id: id, limit: 'all' }).then(r => { setDepenses(r.data || []); setDepensesTotal(r.total || r.data?.length || 0) }).catch(() => {})
+    }
+    if (tab === 'retours') {
+      api.returns.listByCompany(id).then(r => setRetours(r.data || [])).catch(() => {})
     }
   }, [tab, id])
 
@@ -225,14 +285,13 @@ export default function CompanyDetail() {
     }
   }
 
-  async function handleSave() {
-    setSaving(true)
+  async function saveField(key, value) {
+    setFieldSaving(key)
     try {
-      await api.companies.update(id, form)
-      await load()
-      setEditing(false)
+      await api.companies.update(id, { [key]: value })
+      setCompany(c => ({ ...c, [key]: value }))
     } finally {
-      setSaving(false)
+      setFieldSaving(null)
     }
   }
 
@@ -251,7 +310,7 @@ export default function CompanyDetail() {
     return <Layout><div className="p-6 text-slate-500">Entreprise introuvable.</div></Layout>
   }
 
-  const tabs = ['info', 'contacts', 'interactions', 'projets', 'commandes', 'support', 'numéros de série', 'factures', 'abonnements', 'tâches']
+  const tabs = ['info', 'contacts', 'interactions', 'projets', 'commandes', 'envois', 'retours', 'support', 'numéros de série', 'factures', 'abonnements', 'tâches', ...(company.quickbooks_vendor_id ? ['fact-fourn', 'depenses'] : [])]
 
   return (
     <Layout>
@@ -270,122 +329,114 @@ export default function CompanyDetail() {
             </div>
             <div className="flex items-center gap-3 mt-1 text-sm text-slate-500 flex-wrap">
               {company.type && <span>{company.type}</span>}
-              {company.phone && <span>· {company.phone}</span>}
+              {company.phone && <span>· {fmtPhone(company.phone)}</span>}
             </div>
           </div>
           <div className="flex items-center gap-2">
-            {user?.role === 'admin' && !editing && (
-              <DetailConfigButton onClick={() => layout.setConfiguring(true)} />
-            )}
-            {!editing && (
-              <button onClick={() => setEditing(true)} className="btn-secondary">
-                <Edit2 size={14} /> Modifier
-              </button>
-            )}
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-1 mb-6 border-b border-slate-200 overflow-x-auto">
-          {tabs.map(t => {
-            const tabLabel = t === 'info' ? 'Informations' : t === 'interactions' ? 'Interactions' : t === 'numéros de série' ? 'N° de série' : t.charAt(0).toUpperCase() + t.slice(1)
-            const counts = {
-              contacts: company.contacts?.length,
-              projets: company.projects?.length,
-              interactions: interactionsTotal || undefined,
-              commandes: company.orders?.length,
-              support: company.tickets?.length,
-              'numéros de série': company.serials?.length,
-              factures: factures.length || undefined,
-              abonnements: abonnements.length || undefined,
-              tâches: tasks.length || undefined,
-            }
-            const count = counts[t]
-            return (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={`flex-shrink-0 flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
-                  tab === t
-                    ? 'border-indigo-600 text-indigo-600'
-                    : 'border-transparent text-slate-500 hover:text-slate-700'
-                }`}
-              >
-                {tabLabel}
-                {count > 0 && (
-                  <span className="bg-slate-200 text-slate-600 text-xs px-1.5 py-0.5 rounded-full leading-none">{count}</span>
-                )}
-              </button>
-            )
-          })}
-        </div>
+        {/* Tabs + Content */}
+        <div className="flex gap-6 items-start">
+          {/* Sidebar tabs */}
+          <div className="w-44 flex-shrink-0">
+            <nav className="flex flex-col gap-0.5">
+              {tabs.map(t => {
+                const tabLabel = t === 'info' ? 'Informations' : t === 'interactions' ? 'Interactions' : t === 'numéros de série' ? 'N° de série' : t === 'fact-fourn' ? 'Fact. fournisseurs' : t === 'depenses' ? 'Dépenses' : t === 'retours' ? 'Retours (RMA)' : t.charAt(0).toUpperCase() + t.slice(1)
+                const counts = {
+                  contacts: company.contacts?.length,
+                  projets: company.projects?.length,
+                  interactions: interactionsTotal || undefined,
+                  commandes: company.orders?.length,
+                  envois: envoisTotal || undefined,
+                  support: company.tickets?.length,
+                  'numéros de série': company.serials?.length,
+                  factures: facturesTotal || undefined,
+                  abonnements: abonnements.length || undefined,
+                  tâches: tasks.length || undefined,
+                  'fact-fourn': facturesFournTotal || undefined,
+                  depenses: depensesTotal || undefined,
+                  retours: (tab === 'retours' ? retours.length : company.returns_count) || undefined,
+                }
+                const count = counts[t]
+                return (
+                  <button
+                    key={t}
+                    onClick={() => setTab(t)}
+                    className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left w-full ${
+                      tab === t
+                        ? 'bg-indigo-50 text-indigo-700'
+                        : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    <span>{tabLabel}</span>
+                    {count > 0 && (
+                      <span className="bg-slate-200 text-slate-600 text-xs px-1.5 py-0.5 rounded-full leading-none flex-shrink-0">{count}</span>
+                    )}
+                  </button>
+                )
+              })}
+            </nav>
+          </div>
+
+          {/* Tab content */}
+          <div className="flex-1 min-w-0">
 
         {/* Info Tab */}
         {tab === 'info' && (
           <div className="card p-6">
-            {editing ? (
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  {layout.visibleFields.map(field => {
-                    const isCustom = field.custom
-                    const val = isCustom ? (form.extra_fields?.[field.customKey] || '') : (form[field.key] || '')
-                    const onChange = e => {
-                      if (isCustom) setForm(f => ({ ...f, extra_fields: { ...f.extra_fields, [field.customKey]: e.target.value } }))
-                      else setForm(f => ({ ...f, [field.key]: e.target.value }))
-                    }
-                    return (
-                      <div key={field.key} className={field.span2 ? 'col-span-2' : ''}>
-                        <label className="label">{field.label}{field.required ? ' *' : ''}</label>
-                        {field.type === 'select' ? (
-                          <select value={val} onChange={onChange} className="select">
-                            <option value="">—</option>
-                            {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
-                          </select>
-                        ) : field.type === 'textarea' ? (
-                          <textarea value={val} onChange={onChange} className="input" rows={3} />
-                        ) : (
-                          <input type={fieldTypeInput(field.type)} value={val} onChange={onChange} className="input" />
-                        )}
-                      </div>
-                    )
-                  })}
-                </div>
-                <div className="flex justify-end gap-3">
-                  <button onClick={() => setEditing(false)} className="btn-secondary"><X size={14} /> Annuler</button>
-                  <button onClick={handleSave} disabled={saving} className="btn-primary"><Save size={14} /> {saving ? 'Enregistrement...' : 'Enregistrer'}</button>
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 gap-x-8 gap-y-4">
-                {layout.visibleFields.map(field => {
-                  if (field.key === 'name') return null // Already shown in header
-                  const isCustom = field.custom
-                  const value = isCustom ? company.extra_fields?.[field.customKey] : company[field.key]
-                  if (!value) return null
-                  return (
-                    <div key={field.key} className={field.span2 ? 'col-span-2' : ''}>
-                      <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">{field.label}</div>
-                      <div className="text-sm text-slate-900 mt-0.5">
-                        {field.type === 'url' ? (
-                          <a href={value} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline">{value}</a>
-                        ) : value}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            )}
+            <div className="grid grid-cols-2 gap-4">
+              {visibleFields.map(field => {
+                if (field.key === 'name') return null
+                const value = company[field.key] ?? ''
+                const isSaving = fieldSaving === field.key
+                return (
+                  <InlineField
+                    key={field.key}
+                    field={field}
+                    value={value}
+                    saving={isSaving}
+                    onSave={val => saveField(field.key, val)}
+                  />
+                )
+              })}
+            </div>
           </div>
         )}
 
-        {layout.isConfiguring && (
-          <DetailFieldConfig
-            configFields={layout.configFields}
-            onToggle={layout.toggleField}
-            onMove={layout.moveField}
-            onSave={layout.saveLayout}
-            onCancel={() => layout.setConfiguring(false)}
-          />
+        {/* Adresses section (always shown below info) */}
+        {tab === 'info' && (
+          <div className="card p-6 mt-4">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-semibold text-slate-700">Adresses</h3>
+              <button onClick={() => { setEditingAdresse(null); setAdresseForm({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' }); setShowAdresseModal(true) }} className="btn-secondary btn-sm"><Plus size={13} /> Ajouter</button>
+            </div>
+            {adresses.length === 0 ? (
+              <p className="text-sm text-slate-400">Aucune adresse</p>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {adresses.map(a => (
+                  <div key={a.id} className="flex items-start justify-between py-3 gap-4">
+                    <div>
+                      <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 mb-1">{a.address_type || '—'}</span>
+                      <div className="text-sm text-slate-800">{a.line1}</div>
+                      <div className="text-xs text-slate-500 mt-0.5">
+                        {[a.city, a.province, a.postal_code, a.country].filter(Boolean).join(', ')}
+                      </div>
+                      {a.contact_name?.trim() && (
+                        <Link to={`/contacts/${a.contact_id}`} className="text-xs text-indigo-500 hover:underline mt-0.5 block">{a.contact_name.trim()}</Link>
+                      )}
+                      {a.language && <div className="text-xs text-slate-400 mt-0.5">{a.language}</div>}
+                    </div>
+                    <div className="flex gap-1 flex-shrink-0">
+                      <button onClick={() => { setEditingAdresse(a); setAdresseForm({ line1: a.line1||'', city: a.city||'', province: a.province||'', postal_code: a.postal_code||'', country: a.country||'Canada', address_type: a.address_type||'Ferme', contact_id: a.contact_id||'' }); setShowAdresseModal(true) }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit2 size={13} /></button>
+                      <button onClick={async () => { if (!confirm('Supprimer cette adresse ?')) return; await api.adresses.delete(a.id); setAdresses(prev => prev.filter(x => x.id !== a.id)) }} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={13} /></button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
 
         {/* Contacts Tab */}
@@ -407,10 +458,10 @@ export default function CompanyDetail() {
                   </tr></thead>
                   <tbody>
                     {company.contacts.map(c => (
-                      <tr key={c.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                        <td className="px-4 py-3 font-medium">{c.first_name} {c.last_name}</td>
+                      <tr key={c.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer" onClick={() => navigate(`/contacts/${c.id}`)}>
+                        <td className="px-4 py-3 font-medium text-indigo-600">{c.first_name} {c.last_name}</td>
                         <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{c.email || '—'}</td>
-                        <td className="px-4 py-3 hidden md:table-cell text-slate-500">{c.phone || c.mobile || '—'}</td>
+                        <td className="px-4 py-3 hidden md:table-cell text-slate-500 font-mono text-sm">{fmtPhone(c.phone || c.mobile) || '—'}</td>
                         <td className="px-4 py-3">
                           {c.language && <Badge color={c.language === 'French' ? 'blue' : 'green'}>{c.language}</Badge>}
                         </td>
@@ -671,6 +722,36 @@ export default function CompanyDetail() {
           </div>
         )}
 
+        {/* Envois Tab */}
+        {tab === 'envois' && (
+          <div className="card overflow-hidden">
+            {!envois.length ? (
+              <p className="text-center py-10 text-slate-400">Aucun envoi</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead><tr className="border-b border-slate-200 bg-slate-50">
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">N° de suivi</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Transporteur</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Commande</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Envoyé le</th>
+                </tr></thead>
+                <tbody>
+                  {envois.map(e => (
+                    <tr key={e.id} onClick={() => navigate(`/envois/${e.id}`)} className="table-row-hover border-b border-slate-100 last:border-0 cursor-pointer">
+                      <td className="px-4 py-3 font-mono text-slate-900">{e.tracking_number || <span className="text-slate-400">—</span>}</td>
+                      <td className="px-4 py-3"><Badge color={e.status === 'Envoyé' ? 'green' : 'yellow'}>{e.status}</Badge></td>
+                      <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{e.carrier || '—'}</td>
+                      <td className="px-4 py-3 hidden md:table-cell text-slate-500">{e.order_number ? `#${e.order_number}` : '—'}</td>
+                      <td className="px-4 py-3 text-slate-500">{fmtDate(e.shipped_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
         {/* Tâches Tab */}
         {tab === 'tâches' && (
           <div>
@@ -710,6 +791,139 @@ export default function CompanyDetail() {
             </div>
           </div>
         )}
+        {/* Factures fournisseurs Tab */}
+        {tab === 'fact-fourn' && (
+          <div className="card overflow-hidden">
+            {!facturesFourn.length ? (
+              <p className="text-center py-10 text-slate-400">Aucune facture fournisseur</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">N° facture</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Date</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Échéance</th>
+                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Total</th>
+                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Solde dû</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {facturesFourn.map(f => {
+                    const balance = f.balance_due_cad ?? (f.total_cad - f.amount_paid_cad)
+                    const overdue = f.status !== 'Payée' && f.status !== 'Annulée' && f.due_date && new Date(f.due_date) < new Date()
+                    return (
+                      <tr key={f.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                        <td className="px-4 py-3 font-mono font-medium text-slate-900">{f.bill_number || f.vendor_invoice_number || '—'}</td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${
+                            f.status === 'Payée' ? 'bg-green-100 text-green-700' :
+                            f.status === 'En retard' ? 'bg-red-100 text-red-700' :
+                            f.status === 'Payée partiellement' ? 'bg-yellow-100 text-yellow-700' :
+                            f.status === 'Approuvée' ? 'bg-indigo-100 text-indigo-700' :
+                            f.status === 'Annulée' ? 'bg-slate-100 text-slate-400' :
+                            'bg-blue-100 text-blue-700'
+                          }`}>{f.status}</span>
+                        </td>
+                        <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{fmtDate(f.date_facture)}</td>
+                        <td className="px-4 py-3 hidden md:table-cell">
+                          {f.due_date
+                            ? <span className={overdue ? 'text-red-600 font-medium' : 'text-slate-500'}>{fmtDate(f.due_date)}</span>
+                            : <span className="text-slate-400">—</span>}
+                        </td>
+                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(f.total_cad)}</td>
+                        <td className="px-4 py-3 text-right font-medium">
+                          <span className={balance > 0 ? 'text-red-600' : 'text-green-600'}>{fmtCad(balance)}</span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {/* Retours (RMA) Tab */}
+        {tab === 'retours' && (
+          <div className="card overflow-hidden">
+            {!retours.length ? (
+              <p className="text-center py-10 text-slate-400">Aucun retour</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">N° RMA</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Traitement</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Contact</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Commande</th>
+                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Articles</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Date</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {retours.map(r => (
+                    <tr key={r.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                      <td className="px-4 py-3 font-mono font-medium text-slate-900">{r.return_number || '—'}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${
+                          r.status === 'Fermé' ? 'bg-slate-100 text-slate-500' :
+                          r.status === 'Ouvert' ? 'bg-blue-100 text-blue-700' :
+                          'bg-amber-100 text-amber-700'
+                        }`}>{r.status || '—'}</span>
+                      </td>
+                      <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{r.processing_status || '—'}</td>
+                      <td className="px-4 py-3 hidden md:table-cell text-slate-500">
+                        {r.contact_first_name ? `${r.contact_first_name} ${r.contact_last_name || ''}`.trim() : '—'}
+                      </td>
+                      <td className="px-4 py-3 hidden md:table-cell text-slate-500">
+                        {r.order_number ? `#${r.order_number}` : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-right text-slate-700">{r.items_count ?? 0}</td>
+                      <td className="px-4 py-3 text-slate-500">{fmtDate(r.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+        {/* Dépenses Tab */}
+        {tab === 'depenses' && (
+          <div className="card overflow-hidden">
+            {!depenses.length ? (
+              <p className="text-center py-10 text-slate-400">Aucune dépense</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Description</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Catégorie</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Paiement</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Date</th>
+                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {depenses.map(d => (
+                    <tr key={d.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                      <td className="px-4 py-3 text-slate-900">{d.description || '—'}</td>
+                      <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{d.category || '—'}</td>
+                      <td className="px-4 py-3 hidden md:table-cell text-slate-500">{d.payment_method || '—'}</td>
+                      <td className="px-4 py-3 text-slate-500">{fmtDate(d.date_depense)}</td>
+                      <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(d.amount_cad)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+
+          </div>{/* end tab content */}
+        </div>{/* end flex tabs+content */}
       </div>
 
       {/* Task Modal */}
@@ -793,6 +1007,75 @@ export default function CompanyDetail() {
           </form>
         </Modal>
       )}
+
+      {/* Adresse Modal */}
+      <Modal isOpen={showAdresseModal} onClose={() => setShowAdresseModal(false)} title={editingAdresse ? 'Modifier l\'adresse' : 'Ajouter une adresse'}>
+        <form onSubmit={async e => {
+          e.preventDefault()
+          try {
+            if (editingAdresse) {
+              const updated = await api.adresses.update(editingAdresse.id, adresseForm)
+              setAdresses(prev => prev.map(a => a.id === editingAdresse.id ? updated : a))
+            } else {
+              const created = await api.adresses.create({ ...adresseForm, company_id: id })
+              setAdresses(prev => [...prev, created])
+            }
+            setShowAdresseModal(false)
+          } catch (err) { alert(err.message) }
+        }} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="col-span-2">
+              <label className="label">Rue / Ligne 1</label>
+              <input value={adresseForm.line1} onChange={e => setAdresseForm(f => ({ ...f, line1: e.target.value }))} className="input" />
+            </div>
+            <div>
+              <label className="label">Ville</label>
+              <input value={adresseForm.city} onChange={e => setAdresseForm(f => ({ ...f, city: e.target.value }))} className="input" />
+            </div>
+            <div>
+              <label className="label">Province / État</label>
+              <select value={adresseForm.province} onChange={e => setAdresseForm(f => ({ ...f, province: e.target.value }))} className="select">
+                <option value="">—</option>
+                {adresseForm.country === 'US' ? (
+                  ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'].map(c => <option key={c} value={c}>{c}</option>)
+                ) : (
+                  ['AB','BC','MB','NB','NL','NS','NT','NU','ON','PE','QC','SK','YT'].map(c => <option key={c} value={c}>{c}</option>)
+                )}
+              </select>
+            </div>
+            <div>
+              <label className="label">Code postal</label>
+              <input value={adresseForm.postal_code} onChange={e => setAdresseForm(f => ({ ...f, postal_code: e.target.value }))} className="input" />
+            </div>
+            <div>
+              <label className="label">Pays</label>
+              <select value={adresseForm.country} onChange={e => setAdresseForm(f => ({ ...f, country: e.target.value, province: '' }))} className="select">
+                <option value="CA">Canada (CA)</option>
+                <option value="US">États-Unis (US)</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Type</label>
+              <select value={adresseForm.address_type} onChange={e => setAdresseForm(f => ({ ...f, address_type: e.target.value }))} className="select">
+                {['Ferme', 'Livraison', 'Facturation'].map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="col-span-2">
+              <label className="label">Contact associé</label>
+              <select value={adresseForm.contact_id} onChange={e => setAdresseForm(f => ({ ...f, contact_id: e.target.value }))} className="select">
+                <option value="">— Aucun —</option>
+                {(company?.contacts || []).map(c => (
+                  <option key={c.id} value={c.id}>{c.first_name} {c.last_name}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={() => setShowAdresseModal(false)} className="btn-secondary">Annuler</button>
+            <button type="submit" className="btn-primary">Enregistrer</button>
+          </div>
+        </form>
+      </Modal>
 
       {/* Add Contact Modal */}
       <Modal isOpen={showContactModal} onClose={() => setShowContactModal(false)} title="Ajouter un contact">

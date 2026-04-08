@@ -12,10 +12,8 @@ router.get('/', (req, res) => {
   const limitAll = limit === 'all';
   const limitVal = limitAll ? -1 : parseInt(limit);
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
-  const tid = req.user.tenant_id;
-
-  let where = 'WHERE t.tenant_id = ? AND t.deleted_at IS NULL';
-  const params = [tid];
+  let where = 'WHERE t.deleted_at IS NULL';
+  const params = [];
 
   if (search) {
     where += ' AND (t.title LIKE ? OR t.description LIKE ?)';
@@ -63,8 +61,8 @@ router.get('/:id', (req, res) => {
      LEFT JOIN companies c ON t.company_id = c.id
      LEFT JOIN contacts ct ON t.contact_id = ct.id
      LEFT JOIN users u ON t.assigned_to = u.id
-     WHERE t.id = ? AND t.tenant_id = ?`
-  ).get(req.params.id, req.user.tenant_id);
+     WHERE t.id = ?`
+  ).get(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found' });
   res.json(task);
 });
@@ -76,10 +74,10 @@ router.post('/', (req, res) => {
 
   const id = uuidv4();
   db.prepare(
-    `INSERT INTO tasks (id, tenant_id, title, description, status, priority, due_date, company_id, contact_id, assigned_to, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO tasks (id, title, description, status, priority, due_date, company_id, contact_id, assigned_to, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
-    id, req.user.tenant_id, title,
+    id, title,
     description || null,
     status || 'À faire',
     priority || 'Normal',
@@ -102,7 +100,7 @@ router.post('/', (req, res) => {
 
 // PUT /api/tasks/:id
 router.put('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM tasks WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const existing = db.prepare('SELECT id FROM tasks WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Task not found' });
 
   const { title, description, status, priority, due_date, company_id, contact_id, assigned_to, notes } = req.body;
@@ -110,11 +108,11 @@ router.put('/:id', (req, res) => {
 
   db.prepare(
     `UPDATE tasks SET title=?, description=?, status=?, priority=?, due_date=?, company_id=?, contact_id=?, assigned_to=?, notes=?, updated_at=datetime('now')
-     WHERE id = ? AND tenant_id = ?`
+     WHERE id = ?`
   ).run(
     title, description || null, status || 'À faire', priority || 'Normal',
     due_date || null, company_id || null, contact_id || null, assigned_to || null,
-    notes || null, req.params.id, req.user.tenant_id
+    notes || null, req.params.id
   );
 
   res.json(db.prepare(
@@ -128,24 +126,24 @@ router.put('/:id', (req, res) => {
 
 // PATCH /api/tasks/:id/status
 router.patch('/:id/status', (req, res) => {
-  const existing = db.prepare('SELECT id FROM tasks WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const existing = db.prepare('SELECT id FROM tasks WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Task not found' });
 
   const { status } = req.body;
   const valid = ['À faire', 'En cours', 'Terminé', 'Annulé'];
   if (!valid.includes(status)) return res.status(400).json({ error: 'Statut invalide' });
 
-  db.prepare(`UPDATE tasks SET status=?, updated_at=datetime('now') WHERE id = ? AND tenant_id = ?`)
-    .run(status, req.params.id, req.user.tenant_id);
+  db.prepare(`UPDATE tasks SET status=?, updated_at=datetime('now') WHERE id = ?`)
+    .run(status, req.params.id);
 
   res.json(db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id));
 });
 
 // DELETE /api/tasks/:id
 router.delete('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM tasks WHERE id = ? AND tenant_id = ?').get(req.params.id, req.user.tenant_id);
+  const existing = db.prepare('SELECT id FROM tasks WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Task not found' });
-  db.prepare("UPDATE tasks SET deleted_at = datetime('now') WHERE id = ? AND tenant_id = ?").run(req.params.id, req.user.tenant_id);
+  db.prepare("UPDATE tasks SET deleted_at = datetime('now') WHERE id = ?").run(req.params.id);
   res.json({ ok: true });
 });
 

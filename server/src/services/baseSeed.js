@@ -17,21 +17,18 @@ const LEGACY_TABLES = [
 ]
 
 export function seedBaseTables() {
-  const tenants = db.prepare('SELECT id FROM tenants').all()
   const insert = db.prepare(`
-    INSERT OR IGNORE INTO base_tables (id, tenant_id, name, icon, description, sort_order)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO base_tables (id, name, icon, description, sort_order)
+    VALUES (?, ?, ?, ?, ?)
   `)
 
   let seeded = 0
-  const run = db.transaction((tenantId) => {
+  db.transaction(() => {
     LEGACY_TABLES.forEach((t, i) => {
-      const deterministicId = `tbl_legacy_${tenantId}_${t.name}`
-      const result = insert.run(deterministicId, tenantId, t.name, t.icon, t.description, i)
+      const deterministicId = `tbl_legacy_${t.name}`
+      const result = insert.run(deterministicId, t.name, t.icon, t.description, i)
       seeded += result.changes
     })
-  })
-
-  for (const tenant of tenants) run(tenant.id)
+  })()
   if (seeded > 0) console.log(`[baseSeed] Seeded ${seeded} base_table stub(s)`)
 }

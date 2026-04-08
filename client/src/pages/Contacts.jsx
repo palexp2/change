@@ -24,20 +24,11 @@ const RENDERS = {
 
 const COLUMNS = TABLE_COLUMN_META.contacts.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
-function fieldTypeInput(type) {
-  if (type === 'number') return 'number'
-  if (type === 'date') return 'date'
-  if (type === 'url') return 'url'
-  if (type === 'email') return 'email'
-  return 'text'
-}
-
-function ContactForm({ initial = {}, companies = [], customFields = [], onSave, onClose }) {
+function ContactForm({ initial = {}, companies = [], onSave, onClose }) {
   const [form, setForm] = useState({
     first_name: '', last_name: '', email: '', phone: '', mobile: '',
     company_id: '', language: '',
     ...initial,
-    extra_fields: { ...(initial.extra_fields || {}) }
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -89,15 +80,6 @@ function ContactForm({ initial = {}, companies = [], customFields = [], onSave, 
             {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
         </div>
-        {customFields.map(cf => (
-          <div key={cf.key} className="col-span-2">
-            <label className="label">{cf.label}</label>
-            <input type={fieldTypeInput(cf.field_type)}
-              value={form.extra_fields?.[cf.key] || ''}
-              onChange={e => setForm(f => ({ ...f, extra_fields: { ...f.extra_fields, [cf.key]: e.target.value } }))}
-              className="input" />
-          </div>
-        ))}
       </div>
       {error && <p className="text-red-600 text-sm">{error}</p>}
       <div className="flex justify-end gap-3 pt-2">
@@ -112,7 +94,6 @@ export default function Contacts() {
   const navigate = useNavigate()
   const [contacts, setContacts] = useState([])
   const [companies, setCompanies] = useState([])
-  const [customFields, setCustomFields] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
 
@@ -126,7 +107,6 @@ export default function Contacts() {
   useEffect(() => { load() }, [load])
   useEffect(() => {
     api.companies.list({ limit: 'all' }).then(r => setCompanies(r.data)).catch(() => {})
-    api.fieldDefs.list('contacts').then(setCustomFields).catch(() => {})
   }, [])
 
   async function handleCreate(form) {
@@ -160,7 +140,7 @@ export default function Contacts() {
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau contact">
-        <ContactForm companies={companies} customFields={customFields} onSave={handleCreate} onClose={() => setShowModal(false)} />
+        <ContactForm companies={companies} onSave={handleCreate} onClose={() => setShowModal(false)} />
       </Modal>
     </Layout>
   )

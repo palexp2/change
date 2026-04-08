@@ -207,6 +207,7 @@ export const api = {
   airtable: {
     bases: () => get('/connectors/airtable/bases'),
     tables: (baseId) => get(`/connectors/airtable/bases/${baseId}/tables`),
+    fieldDefs: (erpTable) => get(`/connectors/airtable/field-defs/${erpTable}`),
     saveConfig: (type, data) => put(`/connectors/airtable/${type}-config`, data),
     saveModuleConfig: (module, data) => put(`/connectors/airtable/module-config/${module}`, data),
     sync: (module) => post(`/connectors/sync/${module}`),
@@ -239,53 +240,54 @@ export const api = {
 
   // Soumissions
   soumissions: {
-    list: (params = {}) => get('/inventaire/soumissions?' + new URLSearchParams(params)),
-    get: (id) => get(`/inventaire/soumissions/${id}`),
+    list: (params = {}) => get('/projets/soumissions?' + new URLSearchParams(params)),
+    get: (id) => get(`/projets/soumissions/${id}`),
   },
 
   // Adresses
   adresses: {
-    list: (params = {}) => get('/inventaire/adresses?' + new URLSearchParams(params)),
-    get: (id) => get(`/inventaire/adresses/${id}`),
-    create: (data) => post('/inventaire/adresses', data),
-    update: (id, data) => put(`/inventaire/adresses/${id}`, data),
-    delete: (id) => del(`/inventaire/adresses/${id}`),
+    list: (params = {}) => get('/projets/adresses?' + new URLSearchParams(params)),
+    get: (id) => get(`/projets/adresses/${id}`),
+    create: (data) => post('/projets/adresses', data),
+    update: (id, data) => put(`/projets/adresses/${id}`, data),
+    delete: (id) => del(`/projets/adresses/${id}`),
   },
 
   // BOM
   bom: {
-    list: (params = {}) => get('/inventaire/bom?' + new URLSearchParams(params)),
-    get: (id) => get(`/inventaire/bom/${id}`),
+    list: (params = {}) => get('/projets/bom?' + new URLSearchParams(params)),
+    get: (id) => get(`/projets/bom/${id}`),
   },
 
   // Serial state changes
   serialChanges: {
-    list: (params = {}) => get('/inventaire/serial-changes?' + new URLSearchParams(params)),
+    list: (params = {}) => get('/projets/serial-changes?' + new URLSearchParams(params)),
   },
 
   // Assemblages
   assemblages: {
-    list: (params = {}) => get('/inventaire/assemblages?' + new URLSearchParams(params)),
-    get: (id) => get(`/inventaire/assemblages/${id}`),
+    list: (params = {}) => get('/projets/assemblages?' + new URLSearchParams(params)),
+    get: (id) => get(`/projets/assemblages/${id}`),
   },
 
   // Factures
   factures: {
-    list: (params = {}) => get('/inventaire/factures?' + new URLSearchParams(params)),
-    get: (id) => get(`/inventaire/factures/${id}`),
+    list: (params = {}) => get('/projets/factures?' + new URLSearchParams(params)),
+    get: (id) => get(`/projets/factures/${id}`),
+    update: (id, data) => patch(`/projets/factures/${id}`, data),
   },
 
   // Retours
   retours: {
-    list: (params = {}) => get('/inventaire/retours?' + new URLSearchParams(params)),
-    get: (id) => get(`/inventaire/retours/${id}`),
+    list: (params = {}) => get('/projets/retours?' + new URLSearchParams(params)),
+    get: (id) => get(`/projets/retours/${id}`),
   },
 
   // Abonnements
   abonnements: {
-    list: (params = {}) => get('/inventaire/abonnements?' + new URLSearchParams(params)),
-    get: (id) => get(`/inventaire/abonnements/${id}`),
-    patch: (id, body) => patch(`/inventaire/abonnements/${id}`, body),
+    list: (params = {}) => get('/projets/abonnements?' + new URLSearchParams(params)),
+    get: (id) => get(`/projets/abonnements/${id}`),
+    patch: (id, body) => patch(`/projets/abonnements/${id}`, body),
   },
 
   // Catalog products
@@ -346,13 +348,6 @@ export const api = {
     query: (q) => get(`/search?q=${encodeURIComponent(q)}`),
   },
 
-  // Webhooks
-  webhooks: {
-    list: () => get('/webhooks'),
-    create: (data) => post('/webhooks', data),
-    update: (id, data) => patch(`/webhooks/${id}`, data),
-    delete: (id) => del(`/webhooks/${id}`),
-  },
 
   // Automations
   automations: {
@@ -428,12 +423,22 @@ export const api = {
     },
   },
 
-  opportunities: {
-    list: () => get('/opportunities'),
-    scan: () => post('/opportunities/scan'),
-    update: (id, data) => patch(`/opportunities/${id}`, data),
-    send: (id) => post(`/opportunities/${id}/send`),
+  syncLog: {
+    list: (params = {}) => get('/connectors/sync-log?' + new URLSearchParams(params)),
   },
+
+  stripeQueue: {
+    list: (params = {}) => get('/stripe-queue?' + new URLSearchParams(params)),
+    get: (id) => get(`/stripe-queue/${id}`),
+    update: (id, data) => patch(`/stripe-queue/${id}`, data),
+    approve: (id, data = {}) => post(`/stripe-queue/${id}/approve`, data),
+    reject: (id) => post(`/stripe-queue/${id}/reject`),
+    reset: (id) => post(`/stripe-queue/${id}/reset`),
+    taxMappings: () => get('/stripe-queue/tax-mappings/list'),
+    saveTaxMapping: (data) => post('/stripe-queue/tax-mappings', data),
+    deleteTaxMapping: (id) => del(`/stripe-queue/tax-mappings/${id}`),
+  },
+
 }
 
 export function uploadRecording(formData) {

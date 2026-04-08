@@ -24,7 +24,7 @@ function formatRelative(dateStr) {
   return `il y a ${Math.floor(hrs / 24)}j`
 }
 
-export default function Automations() {
+export function AutomationsContent() {
   const [automations, setAutomations] = useState([])
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
@@ -55,7 +55,6 @@ export default function Automations() {
   }
 
   return (
-    <Layout>
       <div className="p-6 max-w-5xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-xl font-semibold flex items-center gap-2">
@@ -118,6 +117,9 @@ export default function Automations() {
           </table>
         </div>
       </div>
-    </Layout>
   )
+}
+
+export default function Automations() {
+  return <Layout><AutomationsContent /></Layout>
 }

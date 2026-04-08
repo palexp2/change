@@ -1,21 +1,11 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, ExternalLink, Plus, FileDown, Trash2, ChevronUp, ChevronDown } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Plus, FileDown, Trash2, ChevronUp, ChevronDown, X, FileText } from 'lucide-react'
 import { api } from '../lib/api.js'
 
-async function downloadSoumissionPdf(id, filename) {
+function pdfUrl(id) {
   const token = localStorage.getItem('erp_token')
-  const res = await fetch(`/erp/api/documents/soumissions/${id}/pdf`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  })
-  if (!res.ok) throw new Error('Erreur téléchargement PDF')
-  const blob = await res.blob()
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename || `soumission-${id}.pdf`
-  a.click()
-  URL.revokeObjectURL(url)
+  return `/erp/api/documents/soumissions/${id}/pdf${token ? `?token=${token}` : ''}`
 }
 import { Layout } from '../components/Layout.jsx'
 import { Badge, projectStatusColor } from '../components/Badge.jsx'
@@ -38,7 +28,9 @@ function fmtMoney(n) {
 
 const STATUS_COLORS = {
   'Brouillon': 'gray', 'Envoyée': 'blue', 'Acceptée': 'green', 'Refusée': 'red', 'Expirée': 'orange',
+  'legacy': 'purple',
 }
+const STATUS_LABELS = { 'legacy': 'Archivé' }
 
 // ── Create soumission modal ───────────────────────────────────────────────────
 
@@ -288,7 +280,9 @@ export default function ProjectDetail() {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState(location.state?.tab || 'info')
   const [soumissions, setSoumissions] = useState([])
+  const [factures, setFactures] = useState([])
   const [showCreate, setShowCreate] = useState(false)
+  const [showPdf, setShowPdf] = useState(null) // { id, title }
 
   useEffect(() => {
     setLoading(true)
@@ -304,8 +298,15 @@ export default function ProjectDetail() {
       .catch(() => {})
   }
 
+  const loadFactures = () => {
+    api.factures.list({ project_id: id, limit: 'all' })
+      .then(r => setFactures(r.data || []))
+      .catch(() => {})
+  }
+
   useEffect(() => {
     if (tab === 'soumissions') loadSoumissions()
+    if (tab === 'factures') loadFactures()
   }, [tab, id])
 
   if (loading) {
@@ -322,6 +323,7 @@ export default function ProjectDetail() {
   const TABS = [
     { key: 'info', label: 'Informations' },
     { key: 'soumissions', label: `Soumissions${soumissions.length ? ` (${soumissions.length})` : ''}` },
+    { key: 'factures', label: `Factures${factures.length ? ` (${factures.length})` : ''}` },
   ]
 
   return (
@@ -429,14 +431,15 @@ export default function ProjectDetail() {
                   </thead>
                   <tbody>
                     {soumissions.map((s, i) => (
-                      <tr key={s.id || i} onClick={() => navigate(`/soumissions/${s.id}`)}
-                        className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer">
+                      <tr key={s.id || i}
+                        onClick={() => s.status !== 'legacy' && navigate(`/soumissions/${s.id}`)}
+                        className={`border-b border-slate-100 last:border-0 hover:bg-slate-50 ${s.status !== 'legacy' ? 'cursor-pointer' : ''}`}>
                         <td className="px-4 py-3 text-slate-800 font-medium">
                           {s.title || <span className="text-slate-400 italic font-normal">Sans titre</span>}
                         </td>
                         <td className="px-4 py-3">
                           {s.status
-                            ? <Badge color={STATUS_COLORS[s.status] || 'gray'}>{s.status}</Badge>
+                            ? <Badge color={STATUS_COLORS[s.status] || 'gray'}>{STATUS_LABELS[s.status] || s.status}</Badge>
                             : <span className="text-slate-400">—</span>}
                         </td>
                         <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(s.created_at?.slice(0, 10))}</td>
@@ -447,9 +450,9 @@ export default function ProjectDetail() {
                           <div className="flex items-center gap-2">
                             {s.generated_pdf_path && (
                               <button
-                                onClick={() => downloadSoumissionPdf(s.id, `Soumission-${s.id.slice(0,8).toUpperCase()}.pdf`).catch(e => alert(e.message))}
+                                onClick={() => setShowPdf({ id: s.id, title: s.title })}
                                 className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:underline px-2 py-1 bg-indigo-50 rounded">
-                                <FileDown size={11} /> PDF
+                                <FileText size={11} /> PDF
                               </button>
                             )}
                             {s.quote_url && (
@@ -475,6 +478,53 @@ export default function ProjectDetail() {
             </div>
           </div>
         )}
+
+        {/* Factures Tab */}
+        {tab === 'factures' && (
+          <div className="card overflow-hidden">
+            {!factures.length ? (
+              <p className="text-center py-10 text-slate-400">Aucune facture liée à ce projet</p>
+            ) : (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50">
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Numéro</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Date</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Échéance</th>
+                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Total</th>
+                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Solde dû</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {factures.map(f => {
+                    const STATUS_COLORS = { 'Payée': 'green', 'Partielle': 'yellow', 'En retard': 'red', 'Envoyée': 'blue', 'Brouillon': 'gray', 'Annulée': 'red' }
+                    return (
+                      <tr key={f.id}
+                        onClick={() => navigate(`/factures/${f.id}`)}
+                        className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer">
+                        <td className="px-4 py-3 font-mono font-medium text-slate-900">{f.document_number || '—'}</td>
+                        <td className="px-4 py-3">
+                          {f.status
+                            ? <Badge color={STATUS_COLORS[f.status] || 'gray'}>{f.status}</Badge>
+                            : <span className="text-slate-400">—</span>}
+                        </td>
+                        <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(f.document_date)}</td>
+                        <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(f.due_date)}</td>
+                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(f.total_amount)}</td>
+                        <td className="px-4 py-3 text-right">
+                          <span className={f.balance_due > 0 ? 'font-semibold text-red-600' : 'text-green-600'}>
+                            {fmtCad(f.balance_due)}
+                          </span>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
       </div>
 
       {showCreate && (
@@ -483,6 +533,26 @@ export default function ProjectDetail() {
           onClose={() => setShowCreate(false)}
           onCreated={() => { setShowCreate(false); loadSoumissions() }}
         />
+      )}
+
+      {showPdf && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-black/60" onClick={() => setShowPdf(null)} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-[95vw] max-w-5xl h-[92vh] flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 flex-shrink-0">
+              <span className="text-sm font-semibold text-slate-900 truncate">{showPdf.title || 'Soumission'}</span>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <a href={pdfUrl(showPdf.id)} download className="inline-flex items-center gap-1.5 btn-secondary btn-sm">
+                  <FileDown size={13} /> Télécharger
+                </a>
+                <button onClick={() => setShowPdf(null)} className="p-1.5 text-slate-400 hover:text-slate-600 rounded">
+                  <X size={16} />
+                </button>
+              </div>
+            </div>
+            <iframe src={pdfUrl(showPdf.id)} className="flex-1 w-full" title="Soumission PDF" />
+          </div>
+        </div>
       )}
     </Layout>
   )

@@ -31,21 +31,20 @@ function parsePill(p) {
 // GET /api/views/:table
 router.get('/:table', requireAuth, (req, res) => {
   if (!validateTable(req, res)) return
-  const { tenant_id } = req.user
   const { table } = req.params
 
   const config = db.prepare(
-    'SELECT visible_columns, default_sort, all_view_sort_order FROM table_view_configs WHERE tenant_id=? AND table_name=?'
-  ).get(tenant_id, table)
+    'SELECT visible_columns, default_sort, all_view_sort_order FROM table_view_configs WHERE table_name=?'
+  ).get(table)
 
   const pills = db.prepare(
-    'SELECT id, label, color, filters, visible_columns, sort, group_by, sort_order FROM table_view_pills WHERE tenant_id=? AND table_name=? ORDER BY sort_order, created_at'
-  ).all(tenant_id, table)
+    'SELECT id, label, color, filters, visible_columns, sort, group_by, sort_order FROM table_view_pills WHERE table_name=? ORDER BY sort_order, created_at'
+  ).all(table)
 
   // Dynamic fields from Airtable auto-sync
   const dynamicFields = db.prepare(
-    'SELECT column_name, airtable_field_name, field_type, options, sort_order FROM airtable_field_defs WHERE tenant_id=? AND erp_table=? ORDER BY sort_order'
-  ).all(tenant_id, table).map(f => ({
+    'SELECT column_name, airtable_field_name, field_type, options, sort_order FROM airtable_field_defs WHERE erp_table=? ORDER BY sort_order'
+  ).all(table).map(f => ({
     id: f.column_name,
     label: f.airtable_field_name,
     field: f.column_name,
@@ -66,7 +65,6 @@ router.get('/:table', requireAuth, (req, res) => {
 // PUT /api/views/:table
 router.put('/:table', requireAdmin, (req, res) => {
   if (!validateTable(req, res)) return
-  const { tenant_id } = req.user
   const { table } = req.params
   const { visible_columns, default_sort } = req.body
 
@@ -75,17 +73,17 @@ router.put('/:table', requireAdmin, (req, res) => {
   }
 
   const existing = db.prepare(
-    'SELECT id FROM table_view_configs WHERE tenant_id=? AND table_name=?'
-  ).get(tenant_id, table)
+    'SELECT id FROM table_view_configs WHERE table_name=?'
+  ).get(table)
 
   if (existing) {
     db.prepare(
-      "UPDATE table_view_configs SET visible_columns=?, default_sort=?, updated_at=datetime('now') WHERE tenant_id=? AND table_name=?"
-    ).run(JSON.stringify(visible_columns), JSON.stringify(default_sort), tenant_id, table)
+      "UPDATE table_view_configs SET visible_columns=?, default_sort=?, updated_at=datetime('now') WHERE table_name=?"
+    ).run(JSON.stringify(visible_columns), JSON.stringify(default_sort), table)
   } else {
     db.prepare(
-      'INSERT INTO table_view_configs (id, tenant_id, table_name, visible_columns, default_sort) VALUES (?,?,?,?,?)'
-    ).run(uuidv4(), tenant_id, table, JSON.stringify(visible_columns), JSON.stringify(default_sort))
+      'INSERT INTO table_view_configs (id, table_name, visible_columns, default_sort) VALUES (?,?,?,?)'
+    ).run(uuidv4(), table, JSON.stringify(visible_columns), JSON.stringify(default_sort))
   }
 
   res.json({ ok: true })
@@ -94,7 +92,6 @@ router.put('/:table', requireAdmin, (req, res) => {
 // POST /api/views/:table/pills
 router.post('/:table/pills', requireAdmin, (req, res) => {
   if (!validateTable(req, res)) return
-  const { tenant_id } = req.user
   const { table } = req.params
   const { label, color = 'gray', filters = [], sort_order = 0, visible_columns = [], sort = [], group_by = null } = req.body
 
@@ -103,8 +100,8 @@ router.post('/:table/pills', requireAdmin, (req, res) => {
 
   const id = uuidv4()
   db.prepare(
-    'INSERT INTO table_view_pills (id, tenant_id, table_name, label, color, filters, visible_columns, sort, group_by, sort_order) VALUES (?,?,?,?,?,?,?,?,?,?)'
-  ).run(id, tenant_id, table, label, color, JSON.stringify(filters), JSON.stringify(visible_columns), JSON.stringify(sort), group_by, sort_order)
+    'INSERT INTO table_view_pills (id, table_name, label, color, filters, visible_columns, sort, group_by, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
+  ).run(id, table, label, color, JSON.stringify(filters), JSON.stringify(visible_columns), JSON.stringify(sort), group_by, sort_order)
 
   const pill = db.prepare('SELECT * FROM table_view_pills WHERE id=?').get(id)
   res.status(201).json(parsePill(pill))
@@ -113,24 +110,23 @@ router.post('/:table/pills', requireAdmin, (req, res) => {
 // PATCH /api/views/:table/pills/reorder
 router.patch('/:table/pills/reorder', requireAdmin, (req, res) => {
   if (!validateTable(req, res)) return
-  const { tenant_id } = req.user
   const { table } = req.params
   const { order, all_view_sort_order } = req.body
   if (!Array.isArray(order)) return res.status(400).json({ error: 'Un tableau est requis' })
 
   const update = db.prepare(
-    'UPDATE table_view_pills SET sort_order=? WHERE id=? AND tenant_id=? AND table_name=?'
+    'UPDATE table_view_pills SET sort_order=? WHERE id=? AND table_name=?'
   )
   const updateAll = db.transaction(() => {
-    for (const { id, sort_order } of order) update.run(sort_order, id, tenant_id, table)
+    for (const { id, sort_order } of order) update.run(sort_order, id, table)
     if (all_view_sort_order !== undefined) {
-      const existing = db.prepare('SELECT id FROM table_view_configs WHERE tenant_id=? AND table_name=?').get(tenant_id, table)
+      const existing = db.prepare('SELECT id FROM table_view_configs WHERE table_name=?').get(table)
       if (existing) {
-        db.prepare("UPDATE table_view_configs SET all_view_sort_order=?, updated_at=datetime('now') WHERE tenant_id=? AND table_name=?")
-          .run(all_view_sort_order, tenant_id, table)
+        db.prepare("UPDATE table_view_configs SET all_view_sort_order=?, updated_at=datetime('now') WHERE table_name=?")
+          .run(all_view_sort_order, table)
       } else {
-        db.prepare('INSERT INTO table_view_configs (id, tenant_id, table_name, visible_columns, default_sort, all_view_sort_order) VALUES (?,?,?,?,?,?)')
-          .run(uuidv4(), tenant_id, table, '[]', '[]', all_view_sort_order)
+        db.prepare('INSERT INTO table_view_configs (id, table_name, visible_columns, default_sort, all_view_sort_order) VALUES (?,?,?,?,?)')
+          .run(uuidv4(), table, '[]', '[]', all_view_sort_order)
       }
     }
   })
@@ -142,12 +138,11 @@ router.patch('/:table/pills/reorder', requireAdmin, (req, res) => {
 // PUT /api/views/:table/pills/:id
 router.put('/:table/pills/:id', requireAdmin, (req, res) => {
   if (!validateTable(req, res)) return
-  const { tenant_id } = req.user
   const { table, id } = req.params
 
   const pill = db.prepare(
-    'SELECT id FROM table_view_pills WHERE id=? AND tenant_id=? AND table_name=?'
-  ).get(id, tenant_id, table)
+    'SELECT id FROM table_view_pills WHERE id=? AND table_name=?'
+  ).get(id, table)
   if (!pill) return res.status(404).json({ error: 'Vue introuvable' })
 
   const body = req.body
@@ -173,12 +168,11 @@ router.put('/:table/pills/:id', requireAdmin, (req, res) => {
 // DELETE /api/views/:table/pills/:id
 router.delete('/:table/pills/:id', requireAdmin, (req, res) => {
   if (!validateTable(req, res)) return
-  const { tenant_id } = req.user
   const { table, id } = req.params
 
   const pill = db.prepare(
-    'SELECT id FROM table_view_pills WHERE id=? AND tenant_id=? AND table_name=?'
-  ).get(id, tenant_id, table)
+    'SELECT id FROM table_view_pills WHERE id=? AND table_name=?'
+  ).get(id, table)
   if (!pill) return res.status(404).json({ error: 'Vue introuvable' })
 
   db.prepare('DELETE FROM table_view_pills WHERE id=?').run(id)
@@ -189,29 +183,27 @@ router.delete('/:table/pills/:id', requireAdmin, (req, res) => {
 
 // GET /api/views/detail/:entityType
 router.get('/detail/:entityType', requireAuth, (req, res) => {
-  const { tenant_id } = req.user
   const config = db.prepare(
-    'SELECT field_order FROM detail_field_configs WHERE tenant_id=? AND entity_type=?'
-  ).get(tenant_id, req.params.entityType)
+    'SELECT field_order FROM detail_field_configs WHERE entity_type=?'
+  ).get(req.params.entityType)
   res.json({ field_order: config ? JSON.parse(config.field_order) : null })
 })
 
 // PUT /api/views/detail/:entityType
 router.put('/detail/:entityType', requireAdmin, (req, res) => {
-  const { tenant_id } = req.user
   const { field_order } = req.body
   if (!Array.isArray(field_order)) return res.status(400).json({ error: 'field_order array required' })
 
   const existing = db.prepare(
-    'SELECT id FROM detail_field_configs WHERE tenant_id=? AND entity_type=?'
-  ).get(tenant_id, req.params.entityType)
+    'SELECT id FROM detail_field_configs WHERE entity_type=?'
+  ).get(req.params.entityType)
 
   if (existing) {
     db.prepare('UPDATE detail_field_configs SET field_order=?, updated_at=datetime(\'now\') WHERE id=?')
       .run(JSON.stringify(field_order), existing.id)
   } else {
-    db.prepare('INSERT INTO detail_field_configs (id, tenant_id, entity_type, field_order) VALUES (?,?,?,?)')
-      .run(uuidv4(), tenant_id, req.params.entityType, JSON.stringify(field_order))
+    db.prepare('INSERT INTO detail_field_configs (id, entity_type, field_order) VALUES (?,?,?)')
+      .run(uuidv4(), req.params.entityType, JSON.stringify(field_order))
   }
   res.json({ ok: true })
 })

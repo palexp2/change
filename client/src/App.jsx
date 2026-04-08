@@ -21,6 +21,7 @@ import SerialDetail from './pages/SerialDetail.jsx'
 import Retours from './pages/Retours.jsx'
 import RetourDetail from './pages/RetourDetail.jsx'
 import Factures from './pages/Factures.jsx'
+import FactureDetail from './pages/FactureDetail.jsx'
 import Abonnements from './pages/Abonnements.jsx'
 import Assemblages from './pages/Assemblages.jsx'
 import ProjectDetail from './pages/ProjectDetail.jsx'
@@ -29,13 +30,12 @@ import Envois from './pages/Envois.jsx'
 import EnvoisDetail from './pages/EnvoisDetail.jsx'
 import Automations from './pages/Automations.jsx'
 import AutomationDetail from './pages/AutomationDetail.jsx'
-import Webhooks from './pages/Webhooks.jsx'
 import Tasks from './pages/Tasks.jsx'
 import Agent from './pages/Agent.jsx'
 import Depenses from './pages/Depenses.jsx'
 import FacturesFournisseurs from './pages/FacturesFournisseurs.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
-import Opportunities from './pages/Opportunities.jsx'
+import StripeQueue from './pages/StripeQueue.jsx'
 import Employees from './pages/Employees.jsx'
 import Contacts from './pages/Contacts.jsx'
 import ContactDetail from './pages/ContactDetail.jsx'
@@ -75,6 +75,7 @@ function AppRoutes() {
       <Route path="/retours" element={<ProtectedRoute><Retours /></ProtectedRoute>} />
       <Route path="/retours/:id" element={<ProtectedRoute><RetourDetail /></ProtectedRoute>} />
       <Route path="/factures" element={<ProtectedRoute><Factures /></ProtectedRoute>} />
+      <Route path="/factures/:id" element={<ProtectedRoute><FactureDetail /></ProtectedRoute>} />
       <Route path="/abonnements" element={<ProtectedRoute><Abonnements /></ProtectedRoute>} />
       <Route path="/assemblages" element={<ProtectedRoute><Assemblages /></ProtectedRoute>} />
       <Route path="/soumissions/:id" element={<ProtectedRoute><SoumissionDetail /></ProtectedRoute>} />
@@ -83,17 +84,17 @@ function AppRoutes() {
       <Route path="/depenses" element={<ProtectedRoute><Depenses /></ProtectedRoute>} />
       <Route path="/factures-fournisseurs" element={<ProtectedRoute><FacturesFournisseurs /></ProtectedRoute>} />
       <Route path="/sale-receipts" element={<ProtectedRoute><SaleReceipts /></ProtectedRoute>} />
-      <Route path="/opportunities" element={<ProtectedRoute><Opportunities /></ProtectedRoute>} />
+      <Route path="/stripe-queue" element={<ProtectedRoute><StripeQueue /></ProtectedRoute>} />
       <Route path="/employees" element={<ProtectedRoute><Employees /></ProtectedRoute>} />
       <Route path="/contacts" element={<ProtectedRoute><Contacts /></ProtectedRoute>} />
       <Route path="/contacts/:id" element={<ProtectedRoute><ContactDetail /></ProtectedRoute>} />
       <Route path="/companies" element={<ProtectedRoute><Companies /></ProtectedRoute>} />
       <Route path="/companies/:id" element={<ProtectedRoute><CompanyDetail /></ProtectedRoute>} />
       <Route path="/admin" element={<ProtectedRoute adminOnly><Admin /></ProtectedRoute>} />
+      <Route path="/admin/:tab" element={<ProtectedRoute adminOnly><Admin /></ProtectedRoute>} />
 
       <Route path="/automations" element={<ProtectedRoute><Automations /></ProtectedRoute>} />
       <Route path="/automations/:id" element={<ProtectedRoute><AutomationDetail /></ProtectedRoute>} />
-      <Route path="/webhooks" element={<ProtectedRoute><Webhooks /></ProtectedRoute>} />
       <Route path="/agent" element={<ProtectedRoute adminOnly><Agent /></ProtectedRoute>} />
 
       <Route path="*" element={<Navigate to="/" replace />} />

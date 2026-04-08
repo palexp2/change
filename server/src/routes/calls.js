@@ -30,14 +30,14 @@ function normalizePhone(phone) {
   return digits.length >= 10 ? digits.slice(-10) : null
 }
 
-function findContactByPhone(tenantId, ...numbers) {
+function findContactByPhone(...numbers) {
   for (const num of numbers) {
     const norm = normalizePhone(num)
     if (!norm) continue
     // Search all contacts where phone or mobile normalized to 10 digits matches
     const contacts = db.prepare(
-      `SELECT id, company_id, phone, mobile FROM contacts WHERE tenant_id=? AND (phone IS NOT NULL OR mobile IS NOT NULL)`
-    ).all(tenantId)
+      `SELECT id, company_id, phone, mobile FROM contacts WHERE phone IS NOT NULL OR mobile IS NOT NULL`
+    ).all()
     for (const c of contacts) {
       if (normalizePhone(c.phone) === norm || normalizePhone(c.mobile) === norm) return c
     }
@@ -45,17 +45,17 @@ function findContactByPhone(tenantId, ...numbers) {
   return null
 }
 
-export function rematchCalls(tenantId) {
+export function rematchCalls() {
   const unlinked = db.prepare(`
     SELECT i.id as interaction_id, ca.caller_number, ca.callee_number
     FROM interactions i
     JOIN calls ca ON ca.interaction_id = i.id
-    WHERE i.tenant_id=? AND i.contact_id IS NULL
-  `).all(tenantId)
+    WHERE i.contact_id IS NULL
+  `).all()
 
   let matched = 0
   for (const row of unlinked) {
-    const contact = findContactByPhone(tenantId, row.callee_number, row.caller_number)
+    const contact = findContactByPhone(row.callee_number, row.caller_number)
     if (contact) {
       db.prepare(`UPDATE interactions SET contact_id=?, company_id=COALESCE(company_id,?) WHERE id=?`)
         .run(contact.id, contact.company_id, row.interaction_id)
@@ -93,15 +93,13 @@ router.post('/ftp-ingest', requireFtpSecret, upload.single('recording'), async (
   if (!ftp_username) return res.status(400).json({ error: 'ftp_username required' })
 
   // Résoudre l'utilisateur ERP à partir du nom FTP
-  const user = db.prepare(`SELECT id, tenant_id FROM users WHERE ftp_username=? AND active=1`).get(ftp_username)
+  const user = db.prepare(`SELECT id FROM users WHERE ftp_username=? AND active=1`).get(ftp_username)
   if (!user) return res.status(404).json({ error: `Aucun utilisateur ERP avec ftp_username="${ftp_username}"` })
-
-  const tid = user.tenant_id
 
   // Auto-match contact par numéro
   let resolvedContactId = null
   let resolvedCompanyId = null
-  const match = findContactByPhone(tid, callee_number, caller_number)
+  const match = findContactByPhone(callee_number, caller_number)
   if (match) {
     resolvedContactId = match.id
     resolvedCompanyId = match.company_id
@@ -119,8 +117,8 @@ router.post('/ftp-ingest', requireFtpSecret, upload.single('recording'), async (
   const callId = uuid()
   const ts = timestamp || new Date().toISOString()
 
-  db.prepare('INSERT INTO interactions (id, tenant_id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?,?)')
-    .run(interactionId, tid, resolvedContactId, resolvedCompanyId, user.id, 'call', direction || 'in', ts)
+  db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
+    .run(interactionId, resolvedContactId, resolvedCompanyId, user.id, 'call', direction || 'in', ts)
 
   db.prepare('INSERT INTO calls (id, interaction_id, recording_path, caller_number, callee_number, duration_seconds, original_filename) VALUES (?,?,?,?,?,?,?)')
     .run(callId, interactionId, req.file.filename, caller_number || null, callee_number || null, duration_seconds ? Number(duration_seconds) : null, origName)
@@ -137,13 +135,11 @@ router.post('/upload', requireAuth, upload.single('recording'), async (req, res)
   if (!req.file) return res.status(400).json({ error: 'No file' })
 
   const { contact_id, company_id, direction, caller_number, callee_number, duration_seconds, timestamp } = req.body
-  const tid = req.user.tenant_id
-
   // Auto-match contact by phone if not provided
   let resolvedContactId = contact_id || null
   let resolvedCompanyId = company_id || null
   if (!resolvedContactId) {
-    const match = findContactByPhone(tid, callee_number, caller_number)
+    const match = findContactByPhone(callee_number, caller_number)
     if (match) {
       resolvedContactId = match.id
       resolvedCompanyId = resolvedCompanyId || match.company_id
@@ -154,8 +150,8 @@ router.post('/upload', requireAuth, upload.single('recording'), async (req, res)
   const callId = uuid()
   const ts = timestamp || new Date().toISOString()
 
-  db.prepare('INSERT INTO interactions (id, tenant_id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?,?)')
-    .run(interactionId, tid, resolvedContactId, resolvedCompanyId, req.user.id, 'call', direction || 'in', ts)
+  db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
+    .run(interactionId, resolvedContactId, resolvedCompanyId, req.user.id, 'call', direction || 'in', ts)
 
   db.prepare('INSERT INTO calls (id, interaction_id, recording_path, caller_number, callee_number, duration_seconds) VALUES (?,?,?,?,?,?)')
     .run(callId, interactionId, req.file.filename, caller_number || null, callee_number || null, duration_seconds ? Number(duration_seconds) : null)
@@ -168,17 +164,17 @@ router.post('/upload', requireAuth, upload.single('recording'), async (req, res)
 
 // POST /api/calls/rematch — retroactively link unmatched calls to contacts by phone
 router.post('/rematch', requireAuth, (req, res) => {
-  const matched = rematchCalls(req.user.tenant_id)
+  const matched = rematchCalls()
   res.json({ matched })
 })
 
 // GET /api/calls/:id/transcript
 router.get('/:id/transcript', requireAuth, (req, res) => {
   const row = db.prepare(`
-    SELECT ca.*, i.tenant_id FROM calls ca
+    SELECT ca.* FROM calls ca
     JOIN interactions i ON ca.interaction_id = i.id
-    WHERE ca.id=? AND i.tenant_id=?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE ca.id=?
+  `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json({ transcript: row.transcript_formatted || row.transcript, status: row.transcription_status })
 })
@@ -186,10 +182,10 @@ router.get('/:id/transcript', requireAuth, (req, res) => {
 // GET /api/calls/:id/recording — stream audio from local disk or Google Drive
 router.get('/:id/recording', requireAuthOrQuery, async (req, res) => {
   const row = db.prepare(`
-    SELECT ca.*, i.tenant_id FROM calls ca
+    SELECT ca.* FROM calls ca
     JOIN interactions i ON ca.interaction_id = i.id
-    WHERE ca.id=? AND i.tenant_id=?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE ca.id=?
+  `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
   // Try local file first
@@ -214,8 +210,8 @@ router.get('/:id/recording', requireAuthOrQuery, async (req, res) => {
 
   try {
     const oauthRow = db.prepare(`
-      SELECT id FROM connector_oauth WHERE tenant_id=? AND connector='google' ORDER BY updated_at DESC LIMIT 1
-    `).get(row.tenant_id)
+      SELECT id FROM connector_oauth WHERE connector='google' ORDER BY updated_at DESC LIMIT 1
+    `).get()
     if (!oauthRow) return res.status(503).json({ error: 'Google not connected' })
 
     const drive = await getDriveClient(oauthRow.id)
@@ -239,10 +235,10 @@ router.get('/:id/recording', requireAuthOrQuery, async (req, res) => {
 // POST /api/calls/:id/retranscribe
 router.post('/:id/retranscribe', requireAuth, async (req, res) => {
   const row = db.prepare(`
-    SELECT ca.*, i.tenant_id FROM calls ca
+    SELECT ca.* FROM calls ca
     JOIN interactions i ON ca.interaction_id = i.id
-    WHERE ca.id=? AND i.tenant_id=?
-  `).get(req.params.id, req.user.tenant_id)
+    WHERE ca.id=?
+  `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   if (!row.recording_path) return res.status(400).json({ error: 'No recording' })
 

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Plus, Building2 } from 'lucide-react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
+import { Plus, Building2, X } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -33,20 +33,11 @@ const COLUMNS = TABLE_COLUMN_META.companies.map(meta => ({
   render: RENDERS[meta.id],
 }))
 
-function fieldTypeInput(type) {
-  if (type === 'number') return 'number'
-  if (type === 'date') return 'date'
-  if (type === 'url') return 'url'
-  if (type === 'email') return 'email'
-  return 'text'
-}
-
-function CompanyForm({ initial = {}, customFields = [], onSave, onClose }) {
+function CompanyForm({ initial = {}, onSave, onClose }) {
   const [form, setForm] = useState({
     name: '', type: '', lifecycle_phase: '', phone: '', email: '',
     website: '', address: '', city: '', province: '', country: 'Canada', notes: '',
     ...initial,
-    extra_fields: { ...(initial.extra_fields || {}) }
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -114,17 +105,6 @@ function CompanyForm({ initial = {}, customFields = [], onSave, onClose }) {
           <label className="label">Notes</label>
           <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input" rows={3} />
         </div>
-        {customFields.map(cf => (
-          <div key={cf.key} className="col-span-2">
-            <label className="label">{cf.label}</label>
-            <input
-              type={fieldTypeInput(cf.field_type)}
-              value={form.extra_fields?.[cf.key] || ''}
-              onChange={e => setForm(f => ({ ...f, extra_fields: { ...f.extra_fields, [cf.key]: e.target.value } }))}
-              className="input"
-            />
-          </div>
-        ))}
       </div>
       {error && <p className="text-red-600 text-sm">{error}</p>}
       <div className="flex justify-end gap-3 pt-2">
@@ -139,23 +119,21 @@ function CompanyForm({ initial = {}, customFields = [], onSave, onClose }) {
 
 export default function Companies() {
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const farmProvince = searchParams.get('farm_province') || ''
   const [companies, setCompanies] = useState([])
-  const [customFields, setCustomFields] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
 
   const load = useCallback(async () => {
+    const extraParams = farmProvince ? { farm_province: farmProvince } : {}
     await loadProgressive(
-      (page, limit) => api.companies.list({ limit, page }),
+      (page, limit) => api.companies.list({ limit, page, ...extraParams }),
       setCompanies, setLoading
     )
-  }, [])
+  }, [farmProvince])
 
   useEffect(() => { load() }, [load])
-
-  useEffect(() => {
-    api.fieldDefs.list('companies').then(setCustomFields).catch(() => {})
-  }, [])
 
   async function handleCreate(form) {
     await api.companies.create(form)
@@ -168,6 +146,16 @@ export default function Companies() {
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Entreprises</h1>
+            {farmProvince && (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-3 py-1">
+                  Ferme en {farmProvince}
+                  <button onClick={() => setSearchParams({})} className="hover:text-blue-900">
+                    <X size={12} />
+                  </button>
+                </span>
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <TableConfigModal table="companies" />
@@ -188,7 +176,7 @@ export default function Companies() {
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouvelle entreprise" size="lg">
-        <CompanyForm customFields={customFields} onSave={handleCreate} onClose={() => setShowModal(false)} />
+        <CompanyForm onSave={handleCreate} onClose={() => setShowModal(false)} />
       </Modal>
     </Layout>
   )

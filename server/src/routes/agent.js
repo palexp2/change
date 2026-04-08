@@ -30,10 +30,7 @@ const STATUS_ORDER = { in_progress: 0, approved: 1, pending: 2, blocked: 3, done
 
 function sortTasks(tasks) {
   return [...tasks].sort((a, b) => {
-    const so = (STATUS_ORDER[a.status] ?? 9) - (STATUS_ORDER[b.status] ?? 9)
-    if (so !== 0) return so
-    if (b.priority !== a.priority) return b.priority - a.priority
-    return a.created_at.localeCompare(b.created_at)
+    return b.created_at.localeCompare(a.created_at)
   })
 }
 
@@ -43,12 +40,11 @@ router.post('/tasks/internal', (req, res) => {
   if (req.headers['x-agent-secret'] !== secret) {
     return res.status(401).json({ error: 'unauthorized' })
   }
-  const { title, description, priority = 0 } = req.body
-  if (!title) return res.status(400).json({ error: 'title required' })
+  const { description, priority = 0 } = req.body
+  if (!description) return res.status(400).json({ error: 'description required' })
   const task = {
     id: randomUUID(),
-    title,
-    description: description || null,
+    description,
     status: 'pending',
     priority,
     user_comment: null,
@@ -73,12 +69,11 @@ router.get('/tasks', (req, res) => {
 
 // POST /api/agent/tasks
 router.post('/tasks', (req, res) => {
-  const { title, description, priority = 0 } = req.body
-  if (!title) return res.status(400).json({ error: 'title required' })
+  const { description, priority = 0 } = req.body
+  if (!description) return res.status(400).json({ error: 'description required' })
   const task = {
     id: randomUUID(),
-    title,
-    description: description || null,
+    description,
     status: 'approved',
     priority,
     user_comment: null,
@@ -101,7 +96,7 @@ router.patch('/tasks/:id', (req, res) => {
   const idx = tasks.findIndex(t => t.id === req.params.id)
   if (idx === -1) return res.status(404).json({ error: 'not found' })
 
-  const allowed = ['status', 'user_comment', 'agent_result', 'priority', 'title', 'description', 'feedback']
+  const allowed = ['status', 'user_comment', 'agent_result', 'priority', 'description', 'feedback']
   const task = { ...tasks[idx] }
   for (const key of allowed) {
     if (key in req.body) task[key] = req.body[key]

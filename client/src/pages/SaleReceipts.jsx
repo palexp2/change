@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Upload, FileText, Trash2, RefreshCw, AlertCircle, CheckCircle, Clock, X, ReceiptText } from 'lucide-react'
+import { Upload, FileText, Trash2, RefreshCw, AlertCircle, CheckCircle, Clock, X, ReceiptText, BookOpen } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -110,7 +110,150 @@ function ReceiptItem({ receipt, selected, onClick, onDelete }) {
   )
 }
 
-function ReceiptDetail({ receipt }) {
+function QBPublishForm({ receipt, onSuccess }) {
+  const [accounts, setAccounts] = useState([])
+  const [vendors, setVendors] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState(null)
+
+  const [expenseAccountId, setExpenseAccountId] = useState('')
+  const [paymentAccountId, setPaymentAccountId] = useState('')
+  const [vendorMode, setVendorMode] = useState('existing')
+  const [vendorId, setVendorId] = useState('')
+  const [newVendorName, setNewVendorName] = useState(receipt.company || '')
+  const [vendorSearch, setVendorSearch] = useState('')
+  const [expenseSearch, setExpenseSearch] = useState('')
+  const [paymentSearch, setPaymentSearch] = useState('')
+
+  useEffect(() => {
+    Promise.all([api.quickbooks.accounts(), api.quickbooks.vendors()])
+      .then(([accs, vends]) => {
+        setAccounts(accs)
+        setVendors(vends)
+        if (receipt.company) {
+          const match = vends.find(v => v.DisplayName.toLowerCase() === receipt.company.toLowerCase())
+          if (match) { setVendorId(match.Id); setVendorMode('existing') }
+          else setVendorMode('new')
+        }
+      })
+      .catch(() => setError('Impossible de charger les données QuickBooks'))
+      .finally(() => setLoading(false))
+  }, [])
+
+  const expenseAccounts = accounts.filter(a => ['Expense', 'Other Expense'].includes(a.AccountType))
+  const paymentAccounts = accounts.filter(a => ['Bank', 'Credit Card'].includes(a.AccountType))
+  const filteredVendors  = vendorSearch  ? vendors.filter(v => v.DisplayName.toLowerCase().includes(vendorSearch.toLowerCase()))  : vendors
+  const filteredExpense  = expenseSearch ? expenseAccounts.filter(a => a.Name.toLowerCase().includes(expenseSearch.toLowerCase())) : expenseAccounts
+  const filteredPayment  = paymentSearch ? paymentAccounts.filter(a => a.Name.toLowerCase().includes(paymentSearch.toLowerCase())) : paymentAccounts
+
+  async function handleSubmit() {
+    if (!expenseAccountId) { setError('Sélectionnez un compte de dépense'); return }
+    if (!paymentAccountId) { setError('Sélectionnez un compte de paiement'); return }
+    if (vendorMode === 'existing' && !vendorId) { setError('Sélectionnez un fournisseur'); return }
+    if (vendorMode === 'new' && !newVendorName.trim()) { setError('Entrez le nom du fournisseur'); return }
+    setSubmitting(true)
+    setError(null)
+    try {
+      await api.saleReceipts.pushToQb(receipt.id, {
+        expenseAccountId,
+        paymentAccountId,
+        vendorId: vendorMode === 'existing' ? vendorId : undefined,
+        newVendorName: vendorMode === 'new' ? newVendorName.trim() : undefined,
+      })
+      const updated = await api.saleReceipts.get(receipt.id)
+      onSuccess(updated)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-slate-400 text-sm mt-3 py-2">
+        <RefreshCw size={14} className="animate-spin" /> Chargement des comptes QuickBooks…
+      </div>
+    )
+  }
+
+  return (
+    <div className="mt-3 border border-green-200 bg-green-50 rounded-xl p-4 space-y-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+        {/* Fournisseur */}
+        <div>
+          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Fournisseur</label>
+          <div className="flex gap-3 mb-1.5">
+            <label className="flex items-center gap-1 text-xs cursor-pointer">
+              <input type="radio" checked={vendorMode === 'existing'} onChange={() => setVendorMode('existing')} /> Existant
+            </label>
+            <label className="flex items-center gap-1 text-xs cursor-pointer">
+              <input type="radio" checked={vendorMode === 'new'} onChange={() => setVendorMode('new')} /> Nouveau
+            </label>
+          </div>
+          {vendorMode === 'existing' ? (
+            <>
+              <input type="text" placeholder="Rechercher…" value={vendorSearch} onChange={e => setVendorSearch(e.target.value)} className="input-field text-xs w-full mb-1" />
+              <select value={vendorId} onChange={e => setVendorId(e.target.value)} className="input-field text-xs w-full" size={4}>
+                <option value="">— Aucun —</option>
+                {filteredVendors.map(v => <option key={v.Id} value={v.Id}>{v.DisplayName}</option>)}
+              </select>
+            </>
+          ) : (
+            <input type="text" placeholder="Nom du fournisseur" value={newVendorName} onChange={e => setNewVendorName(e.target.value)} className="input-field text-xs w-full" />
+          )}
+        </div>
+
+        {/* Compte de dépense */}
+        <div>
+          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Compte de dépense</label>
+          <input type="text" placeholder="Rechercher…" value={expenseSearch} onChange={e => setExpenseSearch(e.target.value)} className="input-field text-xs w-full mb-1" />
+          <select value={expenseAccountId} onChange={e => setExpenseAccountId(e.target.value)} className="input-field text-xs w-full" size={4}>
+            <option value="">— Sélectionner —</option>
+            {filteredExpense.map(a => <option key={a.Id} value={a.Id}>{a.Name}</option>)}
+          </select>
+        </div>
+
+        {/* Compte de paiement */}
+        <div>
+          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Compte de paiement</label>
+          <input type="text" placeholder="Rechercher…" value={paymentSearch} onChange={e => setPaymentSearch(e.target.value)} className="input-field text-xs w-full mb-1" />
+          <select value={paymentAccountId} onChange={e => setPaymentAccountId(e.target.value)} className="input-field text-xs w-full" size={4}>
+            <option value="">— Sélectionner —</option>
+            {filteredPayment.map(a => <option key={a.Id} value={a.Id}>{a.Name} ({a.AccountType})</option>)}
+          </select>
+        </div>
+      </div>
+
+      {error && <p className="text-xs text-red-600 bg-red-100 rounded-lg px-3 py-2">{error}</p>}
+
+      <div className="flex gap-2">
+        <button className="btn-primary text-xs py-1.5 px-3" onClick={handleSubmit} disabled={submitting}>
+          {submitting ? <><RefreshCw size={12} className="animate-spin" /> Publication…</> : <><BookOpen size={12} /> Publier sur QuickBooks</>}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function ReceiptDetail({ receipt, onUpdate }) {
+  const [fileUrl, setFileUrl] = useState(null)
+
+  useEffect(() => {
+    setFileUrl(null)
+    if (!receipt?.id) return
+    let url = null
+    const token = localStorage.getItem('erp_token')
+    fetch(`/erp/api/sale-receipts/${receipt.id}/file`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then(r => r.ok ? r.blob() : Promise.reject())
+      .then(blob => { url = URL.createObjectURL(blob); setFileUrl(url) })
+      .catch(() => setFileUrl(null))
+    return () => { if (url) URL.revokeObjectURL(url) }
+  }, [receipt?.id])
+
   if (!receipt) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-3">
@@ -140,70 +283,96 @@ function ReceiptDetail({ receipt }) {
     )
   }
 
+  const isPdf = receipt.file_type === '.pdf'
   const items = receipt.items || []
 
   return (
-    <div className="p-6 overflow-y-auto h-full space-y-6">
-      {/* Header */}
-      <div>
-        <h2 className="text-xl font-bold text-slate-900">{receipt.company || receipt.original_name}</h2>
-        {receipt.address && <p className="text-slate-500 text-sm mt-0.5">{receipt.address}</p>}
-        <div className="flex items-center gap-4 mt-2 flex-wrap">
-          <StatusBadge status={receipt.status} />
-          {receipt.receipt_date && <span className="text-sm text-slate-500">{fmtDate(receipt.receipt_date)}</span>}
-          {receipt.receipt_number && <span className="text-sm text-slate-500">#{receipt.receipt_number}</span>}
-        </div>
-      </div>
-
-      {/* General info */}
-      <div className="grid grid-cols-2 gap-4">
-        <InfoField label="Entreprise" value={receipt.company} />
-        <InfoField label="Date" value={receipt.receipt_date ? fmtDate(receipt.receipt_date) : null} />
-        <InfoField label="N° de reçu" value={receipt.receipt_number} />
-        <InfoField label="Mode de paiement" value={receipt.payment_method} />
-        <InfoField label="Devise" value={receipt.currency} />
-        <InfoField label="Fichier" value={receipt.original_name} />
-      </div>
-
-      {/* Items */}
-      {items.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold text-slate-700 mb-2">Articles</h3>
-          <div className="border border-slate-200 rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50">
-                <tr>
-                  <th className="text-left px-3 py-2 text-slate-600 font-medium">Description</th>
-                  <th className="text-right px-3 py-2 text-slate-600 font-medium w-16">Qté</th>
-                  <th className="text-right px-3 py-2 text-slate-600 font-medium w-24">Prix unit.</th>
-                  <th className="text-right px-3 py-2 text-slate-600 font-medium w-24">Total</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {items.map((item, i) => (
-                  <tr key={i} className="hover:bg-slate-50">
-                    <td className="px-3 py-2 text-slate-700">{item.description || '—'}</td>
-                    <td className="px-3 py-2 text-right text-slate-600 tabular-nums">{item.quantity ?? '—'}</td>
-                    <td className="px-3 py-2 text-right text-slate-600 tabular-nums">{item.unit_price ? fmtCad(item.unit_price) : '—'}</td>
-                    <td className="px-3 py-2 text-right text-slate-700 font-medium tabular-nums">{item.total ? fmtCad(item.total) : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+    <div className="flex h-full overflow-hidden">
+      {/* Original file preview */}
+      {fileUrl && (
+        <div className="w-1/2 border-r border-slate-200 bg-slate-100 overflow-auto flex items-start justify-center p-4">
+          {isPdf ? (
+            <iframe src={fileUrl} title="Reçu original" className="w-full h-full min-h-[600px] rounded shadow" />
+          ) : (
+            <img src={fileUrl} alt="Reçu original" className="max-w-full object-contain rounded shadow" />
+          )}
         </div>
       )}
 
-      {/* Totals */}
-      <div>
-        <h3 className="text-sm font-semibold text-slate-700 mb-2">Montants</h3>
-        <div className="bg-slate-50 rounded-lg p-4 space-y-2">
-          <TotalRow label="Sous-total (avant taxes)" value={receipt.subtotal} />
-          {(receipt.tps > 0) && <TotalRow label="TPS / GST" value={receipt.tps} />}
-          {(receipt.tvq > 0) && <TotalRow label="TVQ / QST / PST" value={receipt.tvq} />}
-          {(receipt.other_taxes > 0) && <TotalRow label="Autres taxes" value={receipt.other_taxes} />}
-          <div className="border-t border-slate-200 pt-2 mt-2">
-            <TotalRow label="Total" value={receipt.total} bold />
+      {/* Extracted data */}
+      <div className={`${fileUrl ? 'w-1/2' : 'w-full'} p-6 overflow-y-auto space-y-6`}>
+        {/* Header */}
+        <div>
+          <h2 className="text-xl font-bold text-slate-900">{receipt.company || receipt.original_name}</h2>
+          {receipt.address && <p className="text-slate-500 text-sm mt-0.5">{receipt.address}</p>}
+          <div className="flex items-center gap-4 mt-2 flex-wrap">
+            <StatusBadge status={receipt.status} />
+            {receipt.receipt_date && <span className="text-sm text-slate-500">{fmtDate(receipt.receipt_date)}</span>}
+            {receipt.receipt_number && <span className="text-sm text-slate-500">#{receipt.receipt_number}</span>}
+            {receipt.quickbooks_id && (
+              <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full">
+                <BookOpen size={10} /> QB #{receipt.quickbooks_id}
+              </span>
+            )}
+          </div>
+          {receipt.status === 'done' && !receipt.quickbooks_id && (
+            <QBPublishForm
+              receipt={receipt}
+              onSuccess={updated => onUpdate?.(updated)}
+            />
+          )}
+        </div>
+
+        {/* General info */}
+        <div className="grid grid-cols-2 gap-4">
+          <InfoField label="Entreprise" value={receipt.company} />
+          <InfoField label="Date" value={receipt.receipt_date ? fmtDate(receipt.receipt_date) : null} />
+          <InfoField label="N° de reçu" value={receipt.receipt_number} />
+          <InfoField label="Mode de paiement" value={receipt.payment_method} />
+          <InfoField label="Devise" value={receipt.currency} />
+          <InfoField label="Fichier" value={receipt.original_name} />
+        </div>
+
+        {/* Items */}
+        {items.length > 0 && (
+          <div>
+            <h3 className="text-sm font-semibold text-slate-700 mb-2">Articles</h3>
+            <div className="border border-slate-200 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50">
+                  <tr>
+                    <th className="text-left px-3 py-2 text-slate-600 font-medium">Description</th>
+                    <th className="text-right px-3 py-2 text-slate-600 font-medium w-16">Qté</th>
+                    <th className="text-right px-3 py-2 text-slate-600 font-medium w-24">Prix unit.</th>
+                    <th className="text-right px-3 py-2 text-slate-600 font-medium w-24">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {items.map((item, i) => (
+                    <tr key={i} className="hover:bg-slate-50">
+                      <td className="px-3 py-2 text-slate-700">{item.description || '—'}</td>
+                      <td className="px-3 py-2 text-right text-slate-600 tabular-nums">{item.quantity ?? '—'}</td>
+                      <td className="px-3 py-2 text-right text-slate-600 tabular-nums">{item.unit_price ? fmtCad(item.unit_price) : '—'}</td>
+                      <td className="px-3 py-2 text-right text-slate-700 font-medium tabular-nums">{item.total ? fmtCad(item.total) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Totals */}
+        <div>
+          <h3 className="text-sm font-semibold text-slate-700 mb-2">Montants</h3>
+          <div className="bg-slate-50 rounded-lg p-4 space-y-2">
+            <TotalRow label="Sous-total (avant taxes)" value={receipt.subtotal} />
+            {(receipt.tps > 0) && <TotalRow label="TPS / GST" value={receipt.tps} />}
+            {(receipt.tvq > 0) && <TotalRow label="TVQ / QST / PST" value={receipt.tvq} />}
+            {(receipt.other_taxes > 0) && <TotalRow label="Autres taxes" value={receipt.other_taxes} />}
+            <div className="border-t border-slate-200 pt-2 mt-2">
+              <TotalRow label="Total" value={receipt.total} bold />
+            </div>
           </div>
         </div>
       </div>
@@ -343,7 +512,7 @@ export default function SaleReceipts() {
 
         {/* Main detail area */}
         <div className="flex-1 bg-slate-50 overflow-hidden">
-          <ReceiptDetail receipt={selected} />
+          <ReceiptDetail receipt={selected} onUpdate={updated => { setSelected(updated); setReceipts(rs => rs.map(r => r.id === updated.id ? updated : r)) }} />
         </div>
       </div>
 

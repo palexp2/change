@@ -4,7 +4,7 @@ import { mkdir } from 'fs/promises'
 import path from 'path'
 import db from '../db/database.js'
 import { getAccessToken, airtableFetch } from '../connectors/airtable.js'
-import { syncDynamicFields } from './airtableAutoSync.js'
+import { syncDynamicFields, updateDynamicFields } from './airtableAutoSync.js'
 import { broadcastAll } from './realtime.js'
 
 // Auto-create missing columns in SQLite table (all added as TEXT — safe default)
@@ -27,26 +27,25 @@ function ensureColumns(table, columns) {
  * Dynamic upsert: INSERT or UPDATE a record based on airtable_id.
  * Automatically creates missing columns in the target table.
  * @param {string} table - SQLite table name
- * @param {string} tenantId
  * @param {string} airtableId - Airtable record ID
  * @param {Object} payload - column→value map (null values are preserved)
  * @returns {'imported'|'updated'}
  */
-function upsertRecord(table, tenantId, airtableId, payload) {
+function upsertRecord(table, airtableId, payload) {
   const keys = Object.keys(payload)
   ensureColumns(table, keys)
 
-  const existing = db.prepare(`SELECT id FROM ${table} WHERE tenant_id=? AND airtable_id=?`).get(tenantId, airtableId)
+  const existing = db.prepare(`SELECT id FROM ${table} WHERE airtable_id=?`).get(airtableId)
   if (existing) {
     const set = keys.map(k => `${k}=?`).join(', ')
     db.prepare(`UPDATE ${table} SET ${set}, updated_at=datetime('now') WHERE id=?`)
       .run(...keys.map(k => payload[k] ?? null), existing.id)
     return 'updated'
   } else {
-    const allKeys = ['id', 'tenant_id', 'airtable_id', ...keys]
+    const allKeys = ['id', 'airtable_id', ...keys]
     const placeholders = allKeys.map(() => '?').join(',')
     db.prepare(`INSERT INTO ${table} (${allKeys.join(',')}) VALUES (${placeholders})`)
-      .run(uuid(), tenantId, airtableId, ...keys.map(k => payload[k] ?? null))
+      .run(uuid(), airtableId, ...keys.map(k => payload[k] ?? null))
     return 'imported'
   }
 }
@@ -76,21 +75,41 @@ function getVal(fields, fieldName) {
 // Resolve a linked-record (or plain text) company field to a local company id.
 // Linked record fields return an array of Airtable record IDs → look up by airtable_id first,
 // then fall back to a name-based LIKE search.
-function lookupCompany(tenantId, fields, fieldName) {
+function lookupCompany(fields, fieldName) {
   if (!fieldName || !(fieldName in fields)) return null
   const raw = fields[fieldName]
   const linkedId = Array.isArray(raw) ? raw[0] : null
   if (linkedId) {
-    const co = db.prepare('SELECT id FROM companies WHERE tenant_id=? AND airtable_id=? LIMIT 1').get(tenantId, linkedId)
+    const co = db.prepare('SELECT id FROM companies WHERE airtable_id=? LIMIT 1').get(linkedId)
     if (co) return co.id
   }
   // Fallback: text match
   const name = Array.isArray(raw) ? null : getVal(fields, fieldName)
   if (name) {
-    const co = db.prepare('SELECT id FROM companies WHERE tenant_id=? AND name LIKE ? LIMIT 1').get(tenantId, `%${name}%`)
+    const co = db.prepare('SELECT id FROM companies WHERE name LIKE ? LIMIT 1').get(`%${name}%`)
     if (co) return co.id
   }
   return null
+}
+
+/**
+ * Purge orphan records: delete ERP rows whose airtable_id is not in the fetched set.
+ * Only runs during full sync (!changes) to clean up records deleted from Airtable
+ * whose webhook deletion event was missed.
+ * @param {string} table - SQLite table name
+ * @param {Array} records - all Airtable records fetched during full sync
+ */
+function purgeOrphans(table, records) {
+  const airtableIds = new Set(records.map(r => r.id))
+  const rows = db.prepare(`SELECT id, airtable_id FROM ${table} WHERE airtable_id IS NOT NULL`).all()
+  const toDelete = rows.filter(r => !airtableIds.has(r.airtable_id))
+  if (!toDelete.length) return 0
+  const del = db.prepare(`DELETE FROM ${table} WHERE id=?`)
+  for (const row of toDelete) {
+    del.run(row.id)
+  }
+  console.log(`🧹 ${table}: ${toDelete.length} orphan(s) purged`)
+  return toDelete.length
 }
 
 async function fetchAllRecords(baseId, tableId, accessToken, syncKey, recordIds = null) {
@@ -128,19 +147,19 @@ async function fetchAllRecords(baseId, tableId, accessToken, syncKey, recordIds 
   return records
 }
 
-export async function syncAirtable(tenantId, changes = null) {
-  const config = db.prepare('SELECT * FROM airtable_sync_config WHERE tenant_id=?').get(tenantId)
+export async function syncAirtable(changes = null) {
+  const config = db.prepare('SELECT * FROM airtable_sync_config').get()
   if (!config?.base_id) { console.log('⚠️  Airtable sync config missing'); return }
 
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
 
   // Sync companies first
   if (config.companies_table_id) {
     if (changes?.[config.companies_table_id]?.destroyedIds?.length) {
       for (const id of changes[config.companies_table_id].destroyedIds)
-        db.prepare('DELETE FROM companies WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+        db.prepare('DELETE FROM companies WHERE airtable_id=?').run(id)
     }
     const _companyIds = changes?.[config.companies_table_id]?.recordIds
     if (!changes || _companyIds?.length) {
@@ -175,19 +194,24 @@ export async function syncAirtable(tenantId, changes = null) {
           const phaseRaw = getVal(rec.fields, fieldMap?.lifecycle_phase)
           const lifecycle_phase = phaseRaw ? (fieldMap?.phase_choices?.[phaseRaw] || phaseRaw) : null
 
-          const existing = db.prepare('SELECT id FROM companies WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+          const existing = db.prepare('SELECT id FROM companies WHERE airtable_id=?').get(rec.id)
           if (existing) {
             db.prepare(`UPDATE companies SET name=?, phone=COALESCE(?,phone), email=COALESCE(?,email), website=COALESCE(?,website), address=COALESCE(?,address), city=COALESCE(?,city), province=COALESCE(?,province), country=COALESCE(?,country), type=COALESCE(?,type), lifecycle_phase=COALESCE(?,lifecycle_phase), notes=COALESCE(?,notes), updated_at=datetime('now') WHERE id=?`)
               .run(name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), existing.id)
           } else {
-            db.prepare('INSERT INTO companies (id, tenant_id, name, phone, email, website, address, city, province, country, type, lifecycle_phase, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-              .run(uuid(), tenantId, name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), rec.id)
+            db.prepare('INSERT INTO companies (id, name, phone, email, website, address, city, province, country, type, lifecycle_phase, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+              .run(uuid(), name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), rec.id)
             companiesImported++
           }
         }
       })(records)
       if (companiesImported > 0) console.log(`🏢 Airtable: ${companiesImported} companies imported`)
-    if (!changes) await syncDynamicFields(tenantId, 'airtable_companies', 'companies', config.base_id, config.companies_table_id, fieldMap, records)
+    if (!changes) {
+      purgeOrphans('companies', records)
+      await syncDynamicFields('airtable_companies', 'companies', config.base_id, config.companies_table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('companies', fieldMap, records)
+    }
     } catch (e) { console.error('❌ Airtable companies:', e.message) }
     } // end if (!changes || _companyIds?.length)
   }
@@ -196,7 +220,7 @@ export async function syncAirtable(tenantId, changes = null) {
   if (config.contacts_table_id) {
     if (changes?.[config.contacts_table_id]?.destroyedIds?.length) {
       for (const id of changes[config.contacts_table_id].destroyedIds)
-        db.prepare('DELETE FROM contacts WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+        db.prepare('DELETE FROM contacts WHERE airtable_id=?').run(id)
     }
     const _contactIds = changes?.[config.contacts_table_id]?.recordIds
     if (!changes || _contactIds?.length) {
@@ -221,45 +245,54 @@ export async function syncAirtable(tenantId, changes = null) {
           }
           const lastName = getVal(rec.fields, fieldMap?.last_name) || getVal(rec.fields, fieldMap?.first_name) || 'Inconnu'
 
-          const companyId = lookupCompany(tenantId, rec.fields, fieldMap?.company)
+          const companyId = lookupCompany(rec.fields, fieldMap?.company)
 
           const rawLang = (getVal(rec.fields, fieldMap?.language) || '').trim()
           const language = rawLang === 'French' || rawLang === 'Français' || rawLang === 'francais' ? 'French'
             : rawLang === 'English' || rawLang === 'Anglais' || rawLang === 'anglais' ? 'English'
             : null
 
-          const existing = db.prepare('SELECT id FROM contacts WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+          const existing = db.prepare('SELECT id FROM contacts WHERE airtable_id=?').get(rec.id)
           if (existing) {
             db.prepare('UPDATE contacts SET first_name=?, last_name=?, email=?, phone=?, mobile=COALESCE(?,mobile), company_id=?, language=?, notes=COALESCE(?,notes) WHERE id=?')
               .run(getVal(rec.fields, fieldMap?.first_name) || '', lastName, getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.mobile), companyId, language, getVal(rec.fields, fieldMap?.notes), existing.id)
           } else {
-            db.prepare('INSERT INTO contacts (id, tenant_id, first_name, last_name, email, phone, mobile, company_id, language, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-              .run(uuid(), tenantId, getVal(rec.fields, fieldMap?.first_name) || '', lastName, getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.mobile), companyId, language, getVal(rec.fields, fieldMap?.notes), rec.id)
+            db.prepare('INSERT INTO contacts (id, first_name, last_name, email, phone, mobile, company_id, language, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
+              .run(uuid(), getVal(rec.fields, fieldMap?.first_name) || '', lastName, getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.mobile), companyId, language, getVal(rec.fields, fieldMap?.notes), rec.id)
             contactsImported++
           }
         }
-        db.prepare(`UPDATE airtable_sync_config SET last_synced_at=datetime('now') WHERE tenant_id=?`).run(tenantId)
+        db.prepare(`UPDATE airtable_sync_config SET last_synced_at=datetime('now')`).run()
       })(records)
       if (contactsImported > 0) console.log(`👤 Airtable: ${contactsImported} contacts imported`)
-    if (!changes) await syncDynamicFields(tenantId, 'airtable_contacts', 'contacts', config.base_id, config.contacts_table_id, fieldMap, records)
+    if (!changes) {
+      purgeOrphans('contacts', records)
+      await syncDynamicFields('airtable_contacts', 'contacts', config.base_id, config.contacts_table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('contacts', fieldMap, records)
+    }
     } catch (e) { console.error('❌ Airtable contacts:', e.message) }
     } // end if (!changes || _contactIds?.length)
   }
 }
 
-export async function syncOrders(tenantId, changes = null) {
-  const config = db.prepare('SELECT * FROM airtable_orders_config WHERE tenant_id=?').get(tenantId)
+export async function syncOrders(changes = null) {
+  const config = db.prepare('SELECT * FROM airtable_orders_config').get()
   if (!config?.base_id || !config?.orders_table_id) { console.log('⚠️  Orders config missing'); return }
 
-  let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
-  catch (e) { console.error('❌ Airtable token:', e.message); return }
-
-  // ── 1. Sync orders ────────────────────────────────────────────────────────
+  // ── 1. Deletions (no token needed) ───────────────────────────────────────
   if (changes?.[config.orders_table_id]?.destroyedIds?.length) {
     for (const id of changes[config.orders_table_id].destroyedIds)
-      db.prepare('DELETE FROM orders WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+      db.prepare('DELETE FROM orders WHERE airtable_id=?').run(id)
   }
+  if (changes?.[config.items_table_id]?.destroyedIds?.length) {
+    for (const id of changes[config.items_table_id].destroyedIds)
+      db.prepare('DELETE FROM order_items WHERE airtable_id=?').run(id)
+  }
+
+  let accessToken
+  try { accessToken = await getAccessToken() }
+  catch (e) { console.error('❌ Airtable token:', e.message); return }
   const _orderIds = changes?.[config.orders_table_id]?.recordIds
   if (!changes || _orderIds?.length) {
   try {
@@ -268,20 +301,23 @@ export async function syncOrders(tenantId, changes = null) {
     let imported = 0, updated = 0
 
     // Max order_number for auto-increment
-    const maxNum = () => (db.prepare('SELECT MAX(order_number) as m FROM orders WHERE tenant_id=?').get(tenantId)?.m || 0)
+    const maxNum = () => (db.prepare('SELECT MAX(order_number) as m FROM orders').get()?.m || 0)
 
     db.transaction((recs) => {
       for (const rec of recs) {
         if (!fm && rec.fields) {
           fm = {
-            order_number: autoMapField(rec.fields, 'numéro', 'numero', 'order number', 'commande', '#'),
-            company:      autoMapField(rec.fields, 'company', 'entreprise', 'client', 'compte'),
-            project:      autoMapField(rec.fields, 'project', 'projet'),
-            status:       autoMapField(rec.fields, 'status', 'statut', 'état'),
-            priority:     autoMapField(rec.fields, 'priority', 'priorité', 'urgence'),
-            notes:        autoMapField(rec.fields, 'notes', 'commentaires', 'description'),
-            address:      autoMapField(rec.fields, 'adresse', 'adresse de livraison', 'shipping address', 'address', 'delivery address'),
+            order_number:    autoMapField(rec.fields, 'numéro', 'numero', 'order number', 'commande', '#'),
+            company:         autoMapField(rec.fields, 'company', 'entreprise', 'client', 'compte'),
+            project:         autoMapField(rec.fields, 'project', 'projet'),
+            status:          autoMapField(rec.fields, 'status', 'statut', 'état'),
+            priority:        autoMapField(rec.fields, 'priority', 'priorité', 'urgence'),
+            notes:           autoMapField(rec.fields, 'notes', 'commentaires', 'description'),
+            address:         autoMapField(rec.fields, 'adresse', 'adresse de livraison', 'shipping address', 'address', 'delivery address'),
+            is_subscription: autoMapField(rec.fields, 'abonnement', 'subscription', 'abonnement?'),
           }
+        } else if (fm && !fm.is_subscription && rec.fields) {
+          fm.is_subscription = autoMapField(rec.fields, 'abonnement', 'subscription', 'abonnement?')
         }
 
         // Status mapping
@@ -302,18 +338,32 @@ export async function syncOrders(tenantId, changes = null) {
         const status = STATUS_MAP[rawStatus.toLowerCase()] || 'Commande vide'
 
         // Company lookup
-        const companyId = lookupCompany(tenantId, rec.fields, fm?.company)
+        const companyId = lookupCompany(rec.fields, fm?.company)
 
-        // Project lookup
-        const projectName = fm?.project ? getVal(rec.fields, fm.project) : null
+        // Project lookup — linked record (airtable_id) first, then name LIKE fallback
         let projectId = null
-        if (projectName) {
-          const proj = db.prepare('SELECT id FROM projects WHERE tenant_id=? AND name LIKE ? LIMIT 1').get(tenantId, `%${projectName}%`)
-          projectId = proj?.id || null
+        if (fm?.project && rec.fields[fm.project] != null) {
+          const raw = rec.fields[fm.project]
+          const airtableId = Array.isArray(raw) ? raw[0] : null
+          if (airtableId) {
+            const proj = db.prepare('SELECT id FROM projects WHERE airtable_id=? LIMIT 1').get(airtableId)
+            projectId = proj?.id || null
+          }
+          if (!projectId) {
+            const projectName = getVal(rec.fields, fm.project)
+            if (projectName) {
+              const proj = db.prepare('SELECT id FROM projects WHERE name LIKE ? LIMIT 1').get(`%${projectName}%`)
+              projectId = proj?.id || null
+            }
+          }
         }
 
         const notes    = getVal(rec.fields, fm?.notes)
         const priority = getVal(rec.fields, fm?.priority)
+
+        // is_subscription: Airtable checkbox field → 1/0
+        const rawSubscription = fm?.is_subscription ? rec.fields[fm.is_subscription] : null
+        const isSubscription = rawSubscription === true || rawSubscription === 'Oui' || rawSubscription === 'oui' || rawSubscription === 1 ? 1 : 0
 
         // Address lookup via linked record
         let addressId = null
@@ -326,22 +376,27 @@ export async function syncOrders(tenantId, changes = null) {
           }
         }
 
-        const existing = db.prepare('SELECT id FROM orders WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+        const existing = db.prepare('SELECT id FROM orders WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE orders SET company_id=?, project_id=?, status=?, priority=?, notes=?, address_id=COALESCE(?,address_id), updated_at=datetime('now') WHERE id=?`)
-            .run(companyId, projectId, status, priority, notes, addressId, existing.id)
+          db.prepare(`UPDATE orders SET company_id=?, project_id=?, status=?, priority=?, notes=?, address_id=COALESCE(?,address_id), is_subscription=?, updated_at=datetime('now') WHERE id=?`)
+            .run(companyId, projectId, status, priority, notes, addressId, isSubscription, existing.id)
           updated++
         } else {
           const rawNum = fm?.order_number ? parseInt(String(rec.fields[fm.order_number] ?? '').replace(/[^0-9]/g, '')) : NaN
           const orderNumber = isNaN(rawNum) || rawNum === 0 ? maxNum() + 1 : rawNum
-          db.prepare('INSERT INTO orders (id, tenant_id, order_number, company_id, project_id, status, priority, notes, address_id, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), tenantId, orderNumber, companyId, projectId, status, priority, notes, addressId, rec.id)
+          db.prepare('INSERT INTO orders (id, order_number, company_id, project_id, status, priority, notes, address_id, airtable_id, is_subscription) VALUES (?,?,?,?,?,?,?,?,?,?)')
+            .run(uuid(), orderNumber, companyId, projectId, status, priority, notes, addressId, rec.id, isSubscription)
           imported++
         }
       }
     })(records)
     console.log(`📦 Orders: ${imported} importées, ${updated} mises à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'orders', 'orders', config.base_id, config.orders_table_id, fm, records)
+    if (!changes) {
+      purgeOrphans('orders', records)
+      await syncDynamicFields('orders', 'orders', config.base_id, config.orders_table_id, fm, records)
+    } else {
+      updateDynamicFields('orders', fm, records)
+    }
   } catch (e) { console.error('❌ Orders sync:', e.message) }
   } // end if (!changes || _orderIds?.length)
 
@@ -376,7 +431,7 @@ export async function syncOrders(tenantId, changes = null) {
         const orderAirtableId = Array.isArray(orderLinkRaw) ? orderLinkRaw[0] : (typeof orderLinkRaw === 'string' ? orderLinkRaw : null)
         if (!orderAirtableId) continue
 
-        const order = db.prepare('SELECT id FROM orders WHERE tenant_id=? AND airtable_id=?').get(tenantId, orderAirtableId)
+        const order = db.prepare('SELECT id FROM orders WHERE airtable_id=?').get(orderAirtableId)
         if (!order) continue
 
         // Product lookup: linked record → array of record IDs, resolve via airtable_id
@@ -384,15 +439,15 @@ export async function syncOrders(tenantId, changes = null) {
         const productAirtableId = Array.isArray(productLinkRaw) ? productLinkRaw[0] : (typeof productLinkRaw === 'string' ? productLinkRaw : null)
         let productId = null
         if (productAirtableId) {
-          const prod = db.prepare('SELECT id FROM products WHERE tenant_id=? AND airtable_id=?').get(tenantId, productAirtableId)
+          const prod = db.prepare('SELECT id FROM products WHERE airtable_id=?').get(productAirtableId)
           productId = prod?.id || null
         }
         // Fallback: match by name
         if (!productId) {
           const productName = fm?.product ? getVal(rec.fields, fm.product) : null
           if (productName) {
-            const prod = db.prepare('SELECT id FROM products WHERE tenant_id=? AND (name_fr LIKE ? OR name_en LIKE ? OR sku=?) LIMIT 1')
-              .get(tenantId, `%${productName}%`, `%${productName}%`, productName)
+            const prod = db.prepare('SELECT id FROM products WHERE (name_fr LIKE ? OR name_en LIKE ? OR sku=?) LIMIT 1')
+              .get(`%${productName}%`, `%${productName}%`, productName)
             productId = prod?.id || null
           }
         }
@@ -415,10 +470,25 @@ export async function syncOrders(tenantId, changes = null) {
           imported++
         }
       }
-      db.prepare(`UPDATE airtable_orders_config SET last_synced_at=datetime('now') WHERE tenant_id=?`).run(tenantId)
+      db.prepare(`UPDATE airtable_orders_config SET last_synced_at=datetime('now')`).run()
     })(records)
     console.log(`🧾 Order items: ${imported} importées, ${updated} mises à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'order_items', 'order_items', config.base_id, config.items_table_id, fm, records)
+    if (!changes) {
+      purgeOrphans('order_items', records)
+      await syncDynamicFields('order_items', 'order_items', config.base_id, config.items_table_id, fm, records)
+    } else {
+      updateDynamicFields('order_items', fm, records)
+    }
+
+    // Backfill shipped_unit_cost from Airtable's frozen total cost
+    try {
+      db.prepare(`
+        UPDATE order_items SET shipped_unit_cost = CAST(cout_total_au_moment_de_l_envoi AS REAL) / MAX(qty, 1)
+        WHERE shipped_unit_cost IS NULL
+          AND cout_total_au_moment_de_l_envoi IS NOT NULL
+          AND CAST(cout_total_au_moment_de_l_envoi AS REAL) > 0
+      `).run()
+    } catch {}
   } catch (e) { console.error('❌ Order items sync:', e.message) }
 }
 
@@ -431,19 +501,19 @@ async function downloadImage(url, destPath) {
   await writeFile(destPath, buffer)
 }
 
-export async function syncPieces(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='pieces'").get(tenantId)
+export async function syncPieces(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='pieces'").get()
   if (!config?.base_id || !config?.table_id) { console.log('⚠️  Pièces config missing'); return }
 
   if (changes?.[config.table_id]?.destroyedIds?.length) {
     for (const id of changes[config.table_id].destroyedIds)
-      db.prepare('DELETE FROM products WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+      db.prepare('DELETE FROM products WHERE airtable_id=?').run(id)
   }
   const _recordIds = changes?.[config.table_id]?.recordIds
   if (changes && !_recordIds?.length) return
 
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
 
   const imagesDir = path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'products')
@@ -524,38 +594,43 @@ export async function syncPieces(tenantId, changes = null) {
           image_url:        imageUrl,
         }
 
-        const existing = db.prepare('SELECT id FROM products WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+        const existing = db.prepare('SELECT id FROM products WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE products SET name_fr=?, name_en=?, sku=?, type=?, unit_cost=?, price_cad=?, stock_qty=?, min_stock=?, supplier=?, procurement_type=?, weight_lbs=?, image_url=COALESCE(?,image_url), updated_at=datetime('now') WHERE id=?`)
             .run(payload.name_fr, payload.name_en, payload.sku, payload.type, payload.unit_cost, payload.price_cad, payload.stock_qty, payload.min_stock, payload.supplier, payload.procurement_type, payload.weight_lbs, payload.image_url, existing.id)
           updated++
         } else {
-          db.prepare(`INSERT INTO products (id, tenant_id, name_fr, name_en, sku, type, unit_cost, price_cad, stock_qty, min_stock, supplier, procurement_type, weight_lbs, image_url, airtable_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(uuid(), tenantId, payload.name_fr, payload.name_en, payload.sku, payload.type, payload.unit_cost, payload.price_cad, payload.stock_qty, payload.min_stock, payload.supplier, payload.procurement_type, payload.weight_lbs, payload.image_url, rec.id)
+          db.prepare(`INSERT INTO products (id, name_fr, name_en, sku, type, unit_cost, price_cad, stock_qty, min_stock, supplier, procurement_type, weight_lbs, image_url, airtable_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(uuid(), payload.name_fr, payload.name_en, payload.sku, payload.type, payload.unit_cost, payload.price_cad, payload.stock_qty, payload.min_stock, payload.supplier, payload.procurement_type, payload.weight_lbs, payload.image_url, rec.id)
           imported++
         }
       }
-      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='pieces'`).run(tenantId)
+      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='pieces'`).run()
     })(records)
     console.log(`🔩 Pièces: ${imported} importées, ${updated} mises à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'pieces', 'products', config.base_id, config.table_id, fieldMap, records)
+    if (!changes) {
+      purgeOrphans('products', records)
+      await syncDynamicFields('pieces', 'products', config.base_id, config.table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('products', fieldMap, records)
+    }
   } catch (e) { console.error('❌ Pièces sync:', e.message) }
 }
 
-export async function syncAchats(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='achats'").get(tenantId)
+export async function syncAchats(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='achats'").get()
   if (!config?.base_id || !config?.table_id) { console.log('⚠️  Achats config missing'); return }
 
   if (changes?.[config.table_id]?.destroyedIds?.length) {
     for (const id of changes[config.table_id].destroyedIds)
-      db.prepare('DELETE FROM purchases WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+      db.prepare('DELETE FROM purchases WHERE airtable_id=?').run(id)
   }
   const _recordIds = changes?.[config.table_id]?.recordIds
   if (changes && !_recordIds?.length) return
 
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
 
   try {
@@ -597,12 +672,12 @@ export async function syncAchats(tenantId, changes = null) {
           const raw = rec.fields[fieldMap.product]
           const linkedId = Array.isArray(raw) ? raw[0] : (typeof raw === 'string' ? raw : null)
           if (linkedId) {
-            const prod = db.prepare('SELECT id FROM products WHERE tenant_id=? AND airtable_id=?').get(tenantId, linkedId)
+            const prod = db.prepare('SELECT id FROM products WHERE airtable_id=?').get(linkedId)
             productId = prod?.id || null
             if (!productId) {
               const nameStr = typeof linkedId === 'string' ? linkedId : null
               if (nameStr) {
-                const prod2 = db.prepare('SELECT id FROM products WHERE tenant_id=? AND (name_fr LIKE ? OR sku LIKE ?) LIMIT 1').get(tenantId, `%${nameStr}%`, `%${nameStr}%`)
+                const prod2 = db.prepare('SELECT id FROM products WHERE (name_fr LIKE ? OR sku LIKE ?) LIMIT 1').get(`%${nameStr}%`, `%${nameStr}%`)
                 productId = prod2?.id || null
               }
             }
@@ -632,37 +707,42 @@ export async function syncAchats(tenantId, changes = null) {
           notes:          getVal(rec.fields, fieldMap?.notes),
         }
 
-        const existing = db.prepare('SELECT id FROM purchases WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+        const existing = db.prepare('SELECT id FROM purchases WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE purchases SET product_id=?, supplier=?, reference=?, order_date=?, expected_date=?, received_date=?, qty_ordered=?, qty_received=?, unit_cost=?, status=?, notes=?, updated_at=datetime('now') WHERE id=?`)
             .run(payload.product_id, payload.supplier, payload.reference, payload.order_date, payload.expected_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes, existing.id)
           updated++
         } else {
-          db.prepare(`INSERT INTO purchases (id, tenant_id, airtable_id, product_id, supplier, reference, order_date, expected_date, received_date, qty_ordered, qty_received, unit_cost, status, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(uuid(), tenantId, rec.id, payload.product_id, payload.supplier, payload.reference, payload.order_date, payload.expected_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes)
+          db.prepare(`INSERT INTO purchases (id, airtable_id, product_id, supplier, reference, order_date, expected_date, received_date, qty_ordered, qty_received, unit_cost, status, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(uuid(), rec.id, payload.product_id, payload.supplier, payload.reference, payload.order_date, payload.expected_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes)
           imported++
         }
       }
-      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='achats'`).run(tenantId)
+      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='achats'`).run()
     })(records)
     console.log(`🛒 Achats: ${imported} importés, ${updated} mis à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'achats', 'purchases', config.base_id, config.table_id, fieldMap, records)
+    if (!changes) {
+      purgeOrphans('purchases', records)
+      await syncDynamicFields('achats', 'purchases', config.base_id, config.table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('purchases', fieldMap, records)
+    }
   } catch (e) { console.error('❌ Achats sync:', e.message) }
 }
 
-export async function syncSerials(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='serials'").get(tenantId)
+export async function syncSerials(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='serials'").get()
   if (!config?.base_id || !config?.table_id) { console.log('⚠️  Serials config missing'); return }
 
   if (changes?.[config.table_id]?.destroyedIds?.length) {
     for (const id of changes[config.table_id].destroyedIds)
-      db.prepare('DELETE FROM serial_numbers WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+      db.prepare('DELETE FROM serial_numbers WHERE airtable_id=?').run(id)
   }
   const _recordIds = changes?.[config.table_id]?.recordIds
   if (changes && !_recordIds?.length) return
 
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
 
   try {
@@ -690,20 +770,20 @@ export async function syncSerials(tenantId, changes = null) {
         const serial = getVal(rec.fields, fieldMap?.serial)
         if (!serial) continue
 
-        const companyId = lookupCompany(tenantId, rec.fields, fieldMap?.company)
+        const companyId = lookupCompany(rec.fields, fieldMap?.company)
 
         let productId = null
         if (fieldMap?.product) {
           const raw = rec.fields[fieldMap.product]
           const linkedId = Array.isArray(raw) ? raw[0] : null
           if (linkedId) {
-            const prod = db.prepare('SELECT id FROM products WHERE tenant_id=? AND airtable_id=? LIMIT 1').get(tenantId, linkedId)
+            const prod = db.prepare('SELECT id FROM products WHERE airtable_id=? LIMIT 1').get(linkedId)
             productId = prod?.id || null
           }
           if (!productId) {
             const name = Array.isArray(rec.fields[fieldMap.product]) ? null : getVal(rec.fields, fieldMap.product)
             if (name) {
-              const prod = db.prepare('SELECT id FROM products WHERE tenant_id=? AND (name_fr LIKE ? OR sku LIKE ?) LIMIT 1').get(tenantId, `%${name}%`, `%${name}%`)
+              const prod = db.prepare('SELECT id FROM products WHERE (name_fr LIKE ? OR sku LIKE ?) LIMIT 1').get(`%${name}%`, `%${name}%`)
               productId = prod?.id || null
             }
           }
@@ -727,26 +807,31 @@ export async function syncSerials(tenantId, changes = null) {
         const status              = getVal(rec.fields, fieldMap?.status)
         const notes               = getVal(rec.fields, fieldMap?.notes)
 
-        const existing = db.prepare('SELECT id FROM serial_numbers WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+        const existing = db.prepare('SELECT id FROM serial_numbers WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE serial_numbers SET serial=?, product_id=?, company_id=?, order_item_id=?, address=?, manufacture_date=?, last_programmed_date=?, manufacture_value=?, status=?, notes=?, updated_at=datetime('now') WHERE id=?`)
             .run(serial, productId, companyId, orderItemId, address, manufacture_date, last_programmed_date, manufacture_value, status, notes, existing.id)
           updated++
         } else {
-          db.prepare(`INSERT INTO serial_numbers (id, tenant_id, airtable_id, serial, product_id, company_id, order_item_id, address, manufacture_date, last_programmed_date, manufacture_value, status, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(uuid(), tenantId, rec.id, serial, productId, companyId, orderItemId, address, manufacture_date, last_programmed_date, manufacture_value, status, notes)
+          db.prepare(`INSERT INTO serial_numbers (id, airtable_id, serial, product_id, company_id, order_item_id, address, manufacture_date, last_programmed_date, manufacture_value, status, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(uuid(), rec.id, serial, productId, companyId, orderItemId, address, manufacture_date, last_programmed_date, manufacture_value, status, notes)
           imported++
         }
       }
-      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='serials'`).run(tenantId)
+      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='serials'`).run()
     })(records)
     console.log(`🔢 Sériaux: ${imported} importés, ${updated} mis à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'serials', 'serial_numbers', config.base_id, config.table_id, fieldMap, records)
+    if (!changes) {
+      purgeOrphans('serial_numbers', records)
+      await syncDynamicFields('serials', 'serial_numbers', config.base_id, config.table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('serial_numbers', fieldMap, records)
+    }
   } catch (e) { console.error('❌ Serials sync:', e.message) }
 }
 
-export async function syncEnvois(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='envois'").get(tenantId)
+export async function syncEnvois(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='envois'").get()
   if (!config?.base_id || !config?.table_id) { console.log('⚠️  Envois config missing'); return }
 
   if (changes?.[config.table_id]?.destroyedIds?.length) {
@@ -757,7 +842,7 @@ export async function syncEnvois(tenantId, changes = null) {
   if (changes && !_recordIds?.length) return
 
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
 
   try {
@@ -785,13 +870,13 @@ export async function syncEnvois(tenantId, changes = null) {
           const raw = rec.fields[fieldMap.order]
           const linkedId = Array.isArray(raw) ? raw[0] : null
           if (linkedId) {
-            const o = db.prepare('SELECT id FROM orders WHERE tenant_id=? AND airtable_id=? LIMIT 1').get(tenantId, linkedId)
+            const o = db.prepare('SELECT id FROM orders WHERE airtable_id=? LIMIT 1').get(linkedId)
             orderId = o?.id || null
           }
           if (!orderId) {
             const orderNum = Array.isArray(raw) ? null : getVal(rec.fields, fieldMap.order)
             if (orderNum) {
-              const o = db.prepare('SELECT id FROM orders WHERE tenant_id=? AND order_number=? LIMIT 1').get(tenantId, parseInt(orderNum))
+              const o = db.prepare('SELECT id FROM orders WHERE order_number=? LIMIT 1').get(parseInt(orderNum))
               orderId = o?.id || null
             }
           }
@@ -821,31 +906,36 @@ export async function syncEnvois(tenantId, changes = null) {
           updated++
         } else {
           if (!orderId) continue
-          db.prepare(`INSERT INTO shipments (id, tenant_id, order_id, airtable_id, tracking_number, carrier, status, shipped_at, notes, address_id, pays) VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(uuid(), tenantId, orderId, rec.id, tracking_number, carrier, status || 'À envoyer', shipped_at, notes, addressId, pays)
+          db.prepare(`INSERT INTO shipments (id, order_id, airtable_id, tracking_number, carrier, status, shipped_at, notes, address_id, pays) VALUES (?,?,?,?,?,?,?,?,?,?)`)
+            .run(uuid(), orderId, rec.id, tracking_number, carrier, status || 'À envoyer', shipped_at, notes, addressId, pays)
           imported++
         }
       }
-      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='envois'`).run(tenantId)
+      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='envois'`).run()
     })(records)
     console.log(`🚚 Envois: ${imported} importés, ${updated} mis à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'envois', 'shipments', config.base_id, config.table_id, fieldMap, records)
+    if (!changes) {
+      purgeOrphans('shipments', records)
+      await syncDynamicFields('envois', 'shipments', config.base_id, config.table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('shipments', fieldMap, records)
+    }
   } catch (e) { console.error('❌ Envois sync:', e.message) }
 }
 
-export async function syncBillets(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='billets'").get(tenantId)
+export async function syncBillets(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='billets'").get()
   if (!config?.base_id || !config?.table_id) { console.log('⚠️  Billets config missing'); return }
 
   if (changes?.[config.table_id]?.destroyedIds?.length) {
     for (const id of changes[config.table_id].destroyedIds)
-      db.prepare('DELETE FROM tickets WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+      db.prepare('DELETE FROM tickets WHERE airtable_id=?').run(id)
   }
   const _recordIds = changes?.[config.table_id]?.recordIds
   if (changes && !_recordIds?.length) return
 
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
 
   try {
@@ -901,7 +991,7 @@ export async function syncBillets(tenantId, changes = null) {
           return isNaN(n) ? null : n
         }
 
-        const companyId = lookupCompany(tenantId, rec.fields, fieldMap?.company)
+        const companyId = lookupCompany(rec.fields, fieldMap?.company)
 
         // Contact lookup via linked record or name
         let contactId = null
@@ -909,13 +999,13 @@ export async function syncBillets(tenantId, changes = null) {
           const raw = rec.fields[fieldMap.contact]
           const linkedId = Array.isArray(raw) ? raw[0] : null
           if (linkedId) {
-            const ct = db.prepare('SELECT id FROM contacts WHERE tenant_id=? AND airtable_id=? LIMIT 1').get(tenantId, linkedId)
+            const ct = db.prepare('SELECT id FROM contacts WHERE airtable_id=? LIMIT 1').get(linkedId)
             contactId = ct?.id || null
           }
           if (!contactId) {
             const name = Array.isArray(raw) ? null : getVal(rec.fields, fieldMap.contact)
             if (name) {
-              const ct = db.prepare("SELECT id FROM contacts WHERE tenant_id=? AND (first_name || ' ' || last_name) LIKE ? LIMIT 1").get(tenantId, `%${name}%`)
+              const ct = db.prepare("SELECT id FROM contacts WHERE (first_name || ' ' || last_name) LIKE ? LIMIT 1").get(`%${name}%`)
               contactId = ct?.id || null
             }
           }
@@ -935,22 +1025,27 @@ export async function syncBillets(tenantId, changes = null) {
           created_at:       createdAt,
         }
 
-        const result = upsertRecord('tickets', tenantId, rec.id, payload)
+        const result = upsertRecord('tickets', rec.id, payload)
         if (result === 'updated') updated++
         else imported++
       }
-      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='billets'`).run(tenantId)
+      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='billets'`).run()
     })(records)
     console.log(`🎫 Billets: ${imported} importés, ${updated} mis à jour`)
+    if (!changes) purgeOrphans('tickets', records)
 
     // Auto-sync dynamic fields (all Airtable fields not in hardcoded map)
-    if (!changes) await syncDynamicFields(tenantId, 'billets', 'tickets', config.base_id, config.table_id, fieldMap, records)
+    if (!changes) {
+      await syncDynamicFields('billets', 'tickets', config.base_id, config.table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('tickets', fieldMap, records)
+    }
   } catch (e) { console.error('❌ Billets sync:', e.message) }
 }
 
-export async function syncInventaire(tenantId, changes = null) {
-  const config = db.prepare('SELECT * FROM airtable_inventaire_config WHERE tenant_id=?').get(tenantId)
-  if (!config?.base_id || !config?.projects_table_id) { console.log('⚠️  Inventaire config missing'); return }
+export async function syncProjets(changes = null) {
+  const config = db.prepare('SELECT * FROM airtable_projets_config').get()
+  if (!config?.base_id || !config?.projects_table_id) { console.log('⚠️  Projets config missing'); return }
 
   // Deletes — main table + extra tables all map to `projects`
   if (changes) {
@@ -960,21 +1055,21 @@ export async function syncInventaire(tenantId, changes = null) {
     for (const tid of allTableIds) {
       if (changes[tid]?.destroyedIds?.length) {
         for (const id of changes[tid].destroyedIds)
-          db.prepare('DELETE FROM projects WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+          db.prepare('DELETE FROM projects WHERE airtable_id=?').run(id)
       }
     }
-    // Skip entirely if no records to process in any inventaire table
+    // Skip entirely if no records to process in any projets table
     const hasRecords = allTableIds.some(tid => changes[tid]?.recordIds?.length)
     if (!hasRecords) return
   }
 
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
 
   try {
     const _projIds = changes?.[config.projects_table_id]?.recordIds
-    const records = await fetchAllRecords(config.base_id, config.projects_table_id, accessToken, 'inventaire', _projIds)
+    const records = await fetchAllRecords(config.base_id, config.projects_table_id, accessToken, 'projets', _projIds)
     let fieldMap = config.field_map_projects ? JSON.parse(config.field_map_projects) : null
     let imported = 0, updated = 0
 
@@ -985,7 +1080,7 @@ export async function syncInventaire(tenantId, changes = null) {
       if (!extra.table_id) continue
       const _extraIds = changes?.[extra.table_id]?.recordIds
       if (changes && !_extraIds?.length) continue
-      const extraRecords = await fetchAllRecords(config.base_id, extra.table_id, accessToken, 'inventaire', _extraIds)
+      const extraRecords = await fetchAllRecords(config.base_id, extra.table_id, accessToken, 'projets', _extraIds)
       extraTableData.push({ extra, extraRecords })
     }
 
@@ -1021,7 +1116,7 @@ export async function syncInventaire(tenantId, changes = null) {
         const type = TYPE_CHOICES[rawType] || validTypes.find(t => t.toLowerCase() === rawType.toLowerCase()) || null
 
         // Company lookup
-        const companyId = lookupCompany(tenantId, rec.fields, fieldMap?.company)
+        const companyId = lookupCompany(rec.fields, fieldMap?.company)
 
         function toFloat(fieldKey) {
           const raw = fieldKey ? rec.fields[fieldKey] : null
@@ -1044,14 +1139,14 @@ export async function syncInventaire(tenantId, changes = null) {
         const closeDate     = getVal(rec.fields, fieldMap?.close_date)
         const notes         = getVal(rec.fields, fieldMap?.notes)
 
-        const existing = db.prepare('SELECT id FROM projects WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+        const existing = db.prepare('SELECT id FROM projects WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE projects SET name=?, company_id=?, status=?, type=?, value_cad=?, probability=?, monthly_cad=?, nb_greenhouses=?, close_date=?, notes=?, updated_at=datetime('now') WHERE id=?`)
             .run(name, companyId, status, type, valueCad, probability, monthlyCad, nbGreenhouses, closeDate, notes, existing.id)
           updated++
         } else {
-          db.prepare('INSERT INTO projects (id, tenant_id, name, company_id, status, type, value_cad, probability, monthly_cad, nb_greenhouses, close_date, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), tenantId, name, companyId, status, type, valueCad, probability, monthlyCad, nbGreenhouses, closeDate, notes, rec.id)
+          db.prepare('INSERT INTO projects (id, name, company_id, status, type, value_cad, probability, monthly_cad, nb_greenhouses, close_date, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+            .run(uuid(), name, companyId, status, type, valueCad, probability, monthlyCad, nbGreenhouses, closeDate, notes, rec.id)
           imported++
         }
       }
@@ -1069,51 +1164,56 @@ export async function syncInventaire(tenantId, changes = null) {
           const rawType2 = getVal(rec.fields, extraFieldMap.type) || ''
           const TYPE_CHOICES2 = extraFieldMap.type_choices || {}
           const type2 = TYPE_CHOICES2[rawType2] || validTypes.find(t => t.toLowerCase() === rawType2.toLowerCase()) || null
-          const companyId2 = lookupCompany(tenantId, rec.fields, extraFieldMap.company)
+          const companyId2 = lookupCompany(rec.fields, extraFieldMap.company)
           function toF(k) { const r = k ? rec.fields[k] : null; const n = parseFloat(String(r ?? '').replace(/[^0-9.-]/g, '')); return isNaN(n) ? null : n }
           function toI(k) { const r = k ? rec.fields[k] : null; const n = parseInt(String(r ?? '').replace(/[^0-9]/g, '')); return isNaN(n) ? null : n }
           const rawProb2 = extraFieldMap.probability ? rec.fields[extraFieldMap.probability] : null
           const pf2 = parseFloat(String(rawProb2 ?? ''))
           const prob2 = isNaN(pf2) ? null : Math.round(pf2 > 1 ? pf2 : pf2 * 100)
-          const existing2 = db.prepare('SELECT id FROM projects WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+          const existing2 = db.prepare('SELECT id FROM projects WHERE airtable_id=?').get(rec.id)
           if (existing2) {
             db.prepare(`UPDATE projects SET name=?, company_id=?, status=?, type=?, value_cad=?, probability=?, monthly_cad=?, nb_greenhouses=?, close_date=?, notes=?, updated_at=datetime('now') WHERE id=?`)
               .run(name, companyId2, status2, type2, toF(extraFieldMap.value_cad), prob2, toF(extraFieldMap.monthly_cad), toI(extraFieldMap.nb_greenhouses), getVal(rec.fields, extraFieldMap.close_date), getVal(rec.fields, extraFieldMap.notes), existing2.id)
             updated++
           } else {
-            db.prepare('INSERT INTO projects (id, tenant_id, name, company_id, status, type, value_cad, probability, monthly_cad, nb_greenhouses, close_date, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-              .run(uuid(), tenantId, name, companyId2, status2, type2, toF(extraFieldMap.value_cad), prob2, toF(extraFieldMap.monthly_cad), toI(extraFieldMap.nb_greenhouses), getVal(rec.fields, extraFieldMap.close_date), getVal(rec.fields, extraFieldMap.notes), rec.id)
+            db.prepare('INSERT INTO projects (id, name, company_id, status, type, value_cad, probability, monthly_cad, nb_greenhouses, close_date, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+              .run(uuid(), name, companyId2, status2, type2, toF(extraFieldMap.value_cad), prob2, toF(extraFieldMap.monthly_cad), toI(extraFieldMap.nb_greenhouses), getVal(rec.fields, extraFieldMap.close_date), getVal(rec.fields, extraFieldMap.notes), rec.id)
             imported++
           }
         }
       }
 
-      db.prepare(`UPDATE airtable_inventaire_config SET last_synced_at=datetime('now') WHERE tenant_id=?`).run(tenantId)
+      db.prepare(`UPDATE airtable_projets_config SET last_synced_at=datetime('now')`).run()
     })(records)
     console.log(`📋 Inventaire: ${imported} importés, ${updated} mis à jour`)
+    if (!changes) {
+      const allRecords = [...records]
+      for (const { extraRecords } of extraTableData) allRecords.push(...extraRecords)
+      purgeOrphans('projects', allRecords)
+    }
   } catch (e) { console.error('❌ Inventaire sync:', e.message) }
 }
 
 // ── helper used by multiple sync functions
-function lookupSerial(tenantId, airtableId) {
+function lookupSerial(airtableId) {
   if (!airtableId) return null
-  return db.prepare('SELECT id FROM serial_numbers WHERE tenant_id=? AND airtable_id=? LIMIT 1').get(tenantId, airtableId)?.id || null
+  return db.prepare('SELECT id FROM serial_numbers WHERE airtable_id=? LIMIT 1').get(airtableId)?.id || null
 }
-function lookupProject(tenantId, airtableId) {
+function lookupProject(airtableId) {
   if (!airtableId) return null
-  return db.prepare('SELECT id FROM projects WHERE tenant_id=? AND airtable_id=? LIMIT 1').get(tenantId, airtableId)?.id || null
+  return db.prepare('SELECT id FROM projects WHERE airtable_id=? LIMIT 1').get(airtableId)?.id || null
 }
-function lookupProduct(tenantId, airtableId) {
+function lookupProduct(airtableId) {
   if (!airtableId) return null
-  return db.prepare('SELECT id FROM products WHERE tenant_id=? AND airtable_id=? LIMIT 1').get(tenantId, airtableId)?.id || null
+  return db.prepare('SELECT id FROM products WHERE airtable_id=? LIMIT 1').get(airtableId)?.id || null
 }
-function lookupContact(tenantId, airtableId) {
+function lookupContact(airtableId) {
   if (!airtableId) return null
-  return db.prepare('SELECT id FROM contacts WHERE tenant_id=? AND airtable_id=? LIMIT 1').get(tenantId, airtableId)?.id || null
+  return db.prepare('SELECT id FROM contacts WHERE airtable_id=? LIMIT 1').get(airtableId)?.id || null
 }
-function lookupOrder(tenantId, airtableId) {
+function lookupOrder(airtableId) {
   if (!airtableId) return null
-  return db.prepare('SELECT id FROM orders WHERE tenant_id=? AND airtable_id=? LIMIT 1').get(tenantId, airtableId)?.id || null
+  return db.prepare('SELECT id FROM orders WHERE airtable_id=? LIMIT 1').get(airtableId)?.id || null
 }
 function firstLinked(fields, fieldName) {
   if (!fieldName || !(fieldName in fields)) return null
@@ -1121,17 +1221,17 @@ function firstLinked(fields, fieldName) {
   return Array.isArray(v) ? (v[0] || null) : (typeof v === 'string' ? v : null)
 }
 
-export async function syncSoumissions(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='soumissions'").get(tenantId)
+export async function syncSoumissions(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='soumissions'").get()
   if (!config?.base_id || !config?.table_id) return
   if (changes?.[config.table_id]?.destroyedIds?.length) {
     for (const id of changes[config.table_id].destroyedIds)
-      db.prepare('DELETE FROM soumissions WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+      db.prepare('DELETE FROM soumissions WHERE airtable_id=?').run(id)
   }
   const _recordIds = changes?.[config.table_id]?.recordIds
   if (changes && !_recordIds?.length) return
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'soumissions', _recordIds)
@@ -1140,7 +1240,7 @@ export async function syncSoumissions(tenantId, changes = null) {
     db.transaction((recs) => {
       for (const rec of recs) {
         const projectAirtableId = firstLinked(rec.fields, fm.project)
-        const projectId = lookupProject(tenantId, projectAirtableId)
+        const projectId = lookupProject(projectAirtableId)
         const quoteUrl = getVal(rec.fields, fm.quote_url)
         const purchasePrice = parseFloat(String(rec.fields[fm.purchase_price] ?? 0).replace(/[^0-9.-]/g, '')) || 0
         const subscriptionPrice = parseFloat(String(rec.fields[fm.subscription_price] ?? 0).replace(/[^0-9.-]/g, '')) || 0
@@ -1151,35 +1251,40 @@ export async function syncSoumissions(tenantId, changes = null) {
           const atts = rec.fields[fm.pdf]
           if (Array.isArray(atts) && atts.length > 0) pdfUrl = atts[0].url || null
         }
-        const existing = db.prepare('SELECT id FROM soumissions WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+        const existing = db.prepare('SELECT id FROM soumissions WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE soumissions SET project_id=?, quote_url=?, pdf_url=?, purchase_price_cad=?, subscription_price_cad=?, expiration_date=?, updated_at=datetime('now') WHERE id=?`)
             .run(projectId, quoteUrl, pdfUrl, purchasePrice, subscriptionPrice, expirationDate, existing.id)
           updated++
         } else {
-          db.prepare('INSERT INTO soumissions (id, tenant_id, airtable_id, project_id, quote_url, pdf_url, purchase_price_cad, subscription_price_cad, expiration_date) VALUES (?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), tenantId, rec.id, projectId, quoteUrl, pdfUrl, purchasePrice, subscriptionPrice, expirationDate)
+          db.prepare('INSERT INTO soumissions (id, airtable_id, project_id, quote_url, pdf_url, purchase_price_cad, subscription_price_cad, expiration_date) VALUES (?,?,?,?,?,?,?,?)')
+            .run(uuid(), rec.id, projectId, quoteUrl, pdfUrl, purchasePrice, subscriptionPrice, expirationDate)
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='soumissions'").run(tenantId)
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='soumissions'").run()
     })(records)
     console.log(`📝 Soumissions: ${imported} importées, ${updated} mises à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'soumissions', 'soumissions', config.base_id, config.table_id, fieldMap, records)
+    if (!changes) {
+      purgeOrphans('soumissions', records)
+      await syncDynamicFields('soumissions', 'soumissions', config.base_id, config.table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('soumissions', fieldMap, records)
+    }
   } catch (e) { console.error('❌ Soumissions sync:', e.message) }
 }
 
-export async function syncRetours(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='retours'").get(tenantId)
+export async function syncRetours(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='retours'").get()
   if (!config?.base_id || !config?.table_id) return
   if (changes?.[config.table_id]?.destroyedIds?.length) {
     for (const id of changes[config.table_id].destroyedIds)
-      db.prepare('DELETE FROM returns WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+      db.prepare('DELETE FROM returns WHERE airtable_id=?').run(id)
   }
   const _recordIds = changes?.[config.table_id]?.recordIds
   if (changes && !_recordIds?.length) return
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'retours', _recordIds)
@@ -1187,8 +1292,8 @@ export async function syncRetours(tenantId, changes = null) {
     let imported = 0, updated = 0
     db.transaction((recs) => {
       for (const rec of recs) {
-        const companyId = lookupCompany(tenantId, rec.fields, fm.company)
-        const contactId = lookupContact(tenantId, firstLinked(rec.fields, fm.contact))
+        const companyId = lookupCompany(rec.fields, fm.company)
+        const contactId = lookupContact(firstLinked(rec.fields, fm.contact))
         const returnNumber = getVal(rec.fields, fm.return_number)
         const status = getVal(rec.fields, fm.status) || 'Ouvert'
         const problemStatus = getVal(rec.fields, fm.problem_status)
@@ -1196,26 +1301,31 @@ export async function syncRetours(tenantId, changes = null) {
         const trackingNumber = getVal(rec.fields, fm.tracking_number)
         const notes = getVal(rec.fields, fm.notes)
         const billedAt = getVal(rec.fields, fm.billed_at)
-        const existing = db.prepare('SELECT id FROM returns WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+        const existing = db.prepare('SELECT id FROM returns WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE returns SET company_id=?, contact_id=?, return_number=?, status=?, problem_status=?, processing_status=?, tracking_number=?, notes=?, billed_at=?, updated_at=datetime('now') WHERE id=?`)
             .run(companyId, contactId, returnNumber, status, problemStatus, processingStatus, trackingNumber, notes, billedAt, existing.id)
           updated++
         } else {
-          db.prepare('INSERT INTO returns (id, tenant_id, airtable_id, company_id, contact_id, return_number, status, problem_status, processing_status, tracking_number, notes, billed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), tenantId, rec.id, companyId, contactId, returnNumber, status, problemStatus, processingStatus, trackingNumber, notes, billedAt)
+          db.prepare('INSERT INTO returns (id, airtable_id, company_id, contact_id, return_number, status, problem_status, processing_status, tracking_number, notes, billed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+            .run(uuid(), rec.id, companyId, contactId, returnNumber, status, problemStatus, processingStatus, trackingNumber, notes, billedAt)
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='retours'").run(tenantId)
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='retours'").run()
     })(records)
     console.log(`↩️ Retours: ${imported} importés, ${updated} mis à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'retours', 'retours', config.base_id, config.table_id, fieldMap, records)
+    if (!changes) {
+      purgeOrphans('returns', records)
+      await syncDynamicFields('retours', 'retours', config.base_id, config.table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('retours', fieldMap, records)
+    }
   } catch (e) { console.error('❌ Retours sync:', e.message) }
 }
 
-export async function syncRetourItems(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='retour_items'").get(tenantId)
+export async function syncRetourItems(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='retour_items'").get()
   if (!config?.base_id || !config?.table_id) return
   if (changes?.[config.table_id]?.destroyedIds?.length) {
     for (const id of changes[config.table_id].destroyedIds)
@@ -1224,7 +1334,7 @@ export async function syncRetourItems(tenantId, changes = null) {
   const _recordIds = changes?.[config.table_id]?.recordIds
   if (changes && !_recordIds?.length) return
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'retour_items', _recordIds)
@@ -1233,12 +1343,12 @@ export async function syncRetourItems(tenantId, changes = null) {
     db.transaction((recs) => {
       for (const rec of recs) {
         const retourAirtableId = firstLinked(rec.fields, fm.return)
-        const retour = retourAirtableId ? db.prepare('SELECT id FROM returns WHERE tenant_id=? AND airtable_id=?').get(tenantId, retourAirtableId) : null
+        const retour = retourAirtableId ? db.prepare('SELECT id FROM returns WHERE airtable_id=?').get(retourAirtableId) : null
         if (!retour) continue
-        const productId = lookupProduct(tenantId, firstLinked(rec.fields, fm.product_to_receive))
-        const productSendId = lookupProduct(tenantId, firstLinked(rec.fields, fm.product_to_send))
-        const serialId = lookupSerial(tenantId, firstLinked(rec.fields, fm.serial))
-        const companyId = lookupCompany(tenantId, rec.fields, fm.company)
+        const productId = lookupProduct(firstLinked(rec.fields, fm.product_to_receive))
+        const productSendId = lookupProduct(firstLinked(rec.fields, fm.product_to_send))
+        const serialId = lookupSerial(firstLinked(rec.fields, fm.serial))
+        const companyId = lookupCompany(rec.fields, fm.company)
         const problemCategory = getVal(rec.fields, fm.problem_category)
         const returnReason = getVal(rec.fields, fm.return_reason)
         const returnReasonNotes = getVal(rec.fields, fm.return_reason_notes)
@@ -1258,24 +1368,29 @@ export async function syncRetourItems(tenantId, changes = null) {
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='retour_items'").run(tenantId)
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='retour_items'").run()
     })(records)
     console.log(`📦 Retour items: ${imported} importés, ${updated} mis à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'retour_items', 'retour_items', config.base_id, config.table_id, fieldMap, records)
+    if (!changes) {
+      purgeOrphans('return_items', records)
+      await syncDynamicFields('retour_items', 'retour_items', config.base_id, config.table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('retour_items', fieldMap, records)
+    }
   } catch (e) { console.error('❌ Retour items sync:', e.message) }
 }
 
-export async function syncAdresses(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='adresses'").get(tenantId)
+export async function syncAdresses(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='adresses'").get()
   if (!config?.base_id || !config?.table_id) return
   if (changes?.[config.table_id]?.destroyedIds?.length) {
     for (const id of changes[config.table_id].destroyedIds)
-      db.prepare('DELETE FROM adresses WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+      db.prepare('DELETE FROM adresses WHERE airtable_id=?').run(id)
   }
   const _recordIds = changes?.[config.table_id]?.recordIds
   if (changes && !_recordIds?.length) return
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'adresses', _recordIds)
@@ -1283,8 +1398,8 @@ export async function syncAdresses(tenantId, changes = null) {
     let imported = 0, updated = 0
     db.transaction((recs) => {
       for (const rec of recs) {
-        const companyId = lookupCompany(tenantId, rec.fields, fm.company)
-        const contactId = lookupContact(tenantId, firstLinked(rec.fields, fm.contact))
+        const companyId = lookupCompany(rec.fields, fm.company)
+        const contactId = lookupContact(firstLinked(rec.fields, fm.contact))
         const line1 = getVal(rec.fields, fm.line1)
         const city = getVal(rec.fields, fm.city)
         const province = getVal(rec.fields, fm.province)
@@ -1292,35 +1407,40 @@ export async function syncAdresses(tenantId, changes = null) {
         const country = getVal(rec.fields, fm.country)
         const language = getVal(rec.fields, fm.language)
         const addressType = getVal(rec.fields, fm.address_type)
-        const existing = db.prepare('SELECT id FROM adresses WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+        const existing = db.prepare('SELECT id FROM adresses WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE adresses SET company_id=?, contact_id=?, line1=?, city=?, province=?, postal_code=?, country=?, language=?, address_type=?, updated_at=datetime('now') WHERE id=?`)
             .run(companyId, contactId, line1, city, province, postalCode, country, language, addressType, existing.id)
           updated++
         } else {
-          db.prepare('INSERT INTO adresses (id, tenant_id, airtable_id, company_id, contact_id, line1, city, province, postal_code, country, language, address_type) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), tenantId, rec.id, companyId, contactId, line1, city, province, postalCode, country, language, addressType)
+          db.prepare('INSERT INTO adresses (id, airtable_id, company_id, contact_id, line1, city, province, postal_code, country, language, address_type) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
+            .run(uuid(), rec.id, companyId, contactId, line1, city, province, postalCode, country, language, addressType)
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='adresses'").run(tenantId)
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='adresses'").run()
     })(records)
     console.log(`📍 Adresses: ${imported} importées, ${updated} mises à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'adresses', 'adresses', config.base_id, config.table_id, fieldMap, records)
+    if (!changes) {
+      purgeOrphans('adresses', records)
+      await syncDynamicFields('adresses', 'adresses', config.base_id, config.table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('adresses', fieldMap, records)
+    }
   } catch (e) { console.error('❌ Adresses sync:', e.message) }
 }
 
-export async function syncBomItems(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='bom'").get(tenantId)
+export async function syncBomItems(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='bom'").get()
   if (!config?.base_id || !config?.table_id) return
   if (changes?.[config.table_id]?.destroyedIds?.length) {
     for (const id of changes[config.table_id].destroyedIds)
-      db.prepare('DELETE FROM bom_items WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+      db.prepare('DELETE FROM bom_items WHERE airtable_id=?').run(id)
   }
   const _recordIds = changes?.[config.table_id]?.recordIds
   if (changes && !_recordIds?.length) return
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'bom', _recordIds)
@@ -1328,39 +1448,40 @@ export async function syncBomItems(tenantId, changes = null) {
     let imported = 0, updated = 0
     db.transaction((recs) => {
       for (const rec of recs) {
-        const productId = lookupProduct(tenantId, firstLinked(rec.fields, fm.product))
-        const componentId = lookupProduct(tenantId, firstLinked(rec.fields, fm.component))
+        const productId = lookupProduct(firstLinked(rec.fields, fm.product))
+        const componentId = lookupProduct(firstLinked(rec.fields, fm.component))
         if (!productId && !componentId) continue
         const qtyRequired = parseFloat(String(rec.fields[fm.qty_required] ?? 1).replace(/[^0-9.-]/g, '')) || 1
         const refDes = getVal(rec.fields, fm.ref_des)
-        const existing = db.prepare('SELECT id FROM bom_items WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+        const existing = db.prepare('SELECT id FROM bom_items WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE bom_items SET product_id=?, component_id=?, qty_required=?, ref_des=?, updated_at=datetime('now') WHERE id=?`)
             .run(productId, componentId, qtyRequired, refDes, existing.id)
           updated++
         } else {
-          db.prepare('INSERT INTO bom_items (id, tenant_id, airtable_id, product_id, component_id, qty_required, ref_des) VALUES (?,?,?,?,?,?,?)')
-            .run(uuid(), tenantId, rec.id, productId, componentId, qtyRequired, refDes)
+          db.prepare('INSERT INTO bom_items (id, airtable_id, product_id, component_id, qty_required, ref_des) VALUES (?,?,?,?,?,?)')
+            .run(uuid(), rec.id, productId, componentId, qtyRequired, refDes)
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='bom'").run(tenantId)
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='bom'").run()
     })(records)
     console.log(`🔩 BOM items: ${imported} importés, ${updated} mis à jour`)
+    if (!changes) purgeOrphans('bom_items', records)
   } catch (e) { console.error('❌ BOM sync:', e.message) }
 }
 
-export async function syncSerialStateChanges(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='serial_changes'").get(tenantId)
+export async function syncSerialStateChanges(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='serial_changes'").get()
   if (!config?.base_id || !config?.table_id) return
   if (changes?.[config.table_id]?.destroyedIds?.length) {
     for (const id of changes[config.table_id].destroyedIds)
-      db.prepare('DELETE FROM serial_state_changes WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+      db.prepare('DELETE FROM serial_state_changes WHERE airtable_id=?').run(id)
   }
   const _recordIds = changes?.[config.table_id]?.recordIds
   if (changes && !_recordIds?.length) return
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'serial_changes', _recordIds)
@@ -1368,35 +1489,36 @@ export async function syncSerialStateChanges(tenantId, changes = null) {
     let imported = 0
     db.transaction((recs) => {
       for (const rec of recs) {
-        const serialId = lookupSerial(tenantId, firstLinked(rec.fields, fm.serial))
+        const serialId = lookupSerial(firstLinked(rec.fields, fm.serial))
         const previousStatus = getVal(rec.fields, fm.previous_status)
         const newStatus = getVal(rec.fields, fm.new_status)
         const changedAt = getVal(rec.fields, fm.changed_at)
-        const existing = db.prepare('SELECT id FROM serial_state_changes WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+        const existing = db.prepare('SELECT id FROM serial_state_changes WHERE airtable_id=?').get(rec.id)
         if (!existing) {
-          db.prepare('INSERT INTO serial_state_changes (id, tenant_id, airtable_id, serial_id, previous_status, new_status, changed_at) VALUES (?,?,?,?,?,?,?)')
-            .run(uuid(), tenantId, rec.id, serialId, previousStatus, newStatus, changedAt)
+          db.prepare('INSERT INTO serial_state_changes (id, airtable_id, serial_id, previous_status, new_status, changed_at) VALUES (?,?,?,?,?,?)')
+            .run(uuid(), rec.id, serialId, previousStatus, newStatus, changedAt)
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='serial_changes'").run(tenantId)
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='serial_changes'").run()
     })(records)
     console.log(`🔄 Serial state changes: ${imported} importés`)
+    if (!changes) purgeOrphans('serial_state_changes', records)
   } catch (e) { console.error('❌ Serial changes sync:', e.message) }
 }
 
 
-export async function syncAssemblages(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='assemblages'").get(tenantId)
+export async function syncAssemblages(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='assemblages'").get()
   if (!config?.base_id || !config?.table_id) return
   if (changes?.[config.table_id]?.destroyedIds?.length) {
     for (const id of changes[config.table_id].destroyedIds)
-      db.prepare('DELETE FROM assemblages WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+      db.prepare('DELETE FROM assemblages WHERE airtable_id=?').run(id)
   }
   const _recordIds = changes?.[config.table_id]?.recordIds
   if (changes && !_recordIds?.length) return
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'assemblages', _recordIds)
@@ -1404,39 +1526,44 @@ export async function syncAssemblages(tenantId, changes = null) {
     let imported = 0, updated = 0
     db.transaction((recs) => {
       for (const rec of recs) {
-        const productId = lookupProduct(tenantId, firstLinked(rec.fields, fm.product))
+        const productId = lookupProduct(firstLinked(rec.fields, fm.product))
         const qtyProduced = parseInt(String(rec.fields[fm.qty_produced] ?? 0)) || 0
         const assembledAt = getVal(rec.fields, fm.assembled_at)
         const assemblyPoints = parseInt(String(rec.fields[fm.assembly_points] ?? 0)) || 0
-        const existing = db.prepare('SELECT id FROM assemblages WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+        const existing = db.prepare('SELECT id FROM assemblages WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE assemblages SET product_id=?, qty_produced=?, assembled_at=?, assembly_points=?, updated_at=datetime('now') WHERE id=?`)
             .run(productId, qtyProduced, assembledAt, assemblyPoints, existing.id)
           updated++
         } else {
-          db.prepare('INSERT INTO assemblages (id, tenant_id, airtable_id, product_id, qty_produced, assembled_at, assembly_points) VALUES (?,?,?,?,?,?,?)')
-            .run(uuid(), tenantId, rec.id, productId, qtyProduced, assembledAt, assemblyPoints)
+          db.prepare('INSERT INTO assemblages (id, airtable_id, product_id, qty_produced, assembled_at, assembly_points) VALUES (?,?,?,?,?,?)')
+            .run(uuid(), rec.id, productId, qtyProduced, assembledAt, assemblyPoints)
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='assemblages'").run(tenantId)
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='assemblages'").run()
     })(records)
     console.log(`🔨 Assemblages: ${imported} importés, ${updated} mis à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'assemblages', 'assemblages', config.base_id, config.table_id, fieldMap, records)
+    if (!changes) {
+      purgeOrphans('assemblages', records)
+      await syncDynamicFields('assemblages', 'assemblages', config.base_id, config.table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('assemblages', fieldMap, records)
+    }
   } catch (e) { console.error('❌ Assemblages sync:', e.message) }
 }
 
-export async function syncFactures(tenantId, changes = null) {
-  const config = db.prepare("SELECT * FROM airtable_module_config WHERE tenant_id=? AND module='factures'").get(tenantId)
+export async function syncFactures(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='factures'").get()
   if (!config?.base_id || !config?.table_id) return
   if (changes?.[config.table_id]?.destroyedIds?.length) {
     for (const id of changes[config.table_id].destroyedIds)
-      db.prepare('DELETE FROM factures WHERE tenant_id=? AND airtable_id=?').run(tenantId, id)
+      db.prepare('DELETE FROM factures WHERE airtable_id=?').run(id)
   }
   const _recordIds = changes?.[config.table_id]?.recordIds
   if (changes && !_recordIds?.length) return
   let accessToken
-  try { accessToken = await getAccessToken(tenantId) }
+  try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'factures', _recordIds)
@@ -1444,9 +1571,9 @@ export async function syncFactures(tenantId, changes = null) {
     let imported = 0, updated = 0
     db.transaction((recs) => {
       for (const rec of recs) {
-        const companyId = lookupCompany(tenantId, rec.fields, fm.company)
-        const projectId = lookupProject(tenantId, firstLinked(rec.fields, fm.project))
-        const orderId = lookupOrder(tenantId, firstLinked(rec.fields, fm.order))
+        const companyId = lookupCompany(rec.fields, fm.company)
+        const projectId = lookupProject(firstLinked(rec.fields, fm.project))
+        const orderId = lookupOrder(firstLinked(rec.fields, fm.order))
         const invoiceId = getVal(rec.fields, fm.invoice_id)
         const documentNumber = getVal(rec.fields, fm.document_number)
         const documentDate = getVal(rec.fields, fm.document_date)
@@ -1458,20 +1585,98 @@ export async function syncFactures(tenantId, changes = null) {
         const balanceDue = parseFloat(String(rec.fields[fm.balance_due] ?? 0).replace(/[^0-9.-]/g, '')) || 0
         const notes = getVal(rec.fields, fm.notes)
         const shippingCountry = getVal(rec.fields, fm.shipping_country)
-        const existing = db.prepare('SELECT id FROM factures WHERE tenant_id=? AND airtable_id=?').get(tenantId, rec.id)
+        const existing = db.prepare('SELECT id FROM factures WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE factures SET company_id=?, project_id=?, order_id=?, invoice_id=?, document_number=?, document_date=?, due_date=?, status=?, currency=?, amount_before_tax_cad=?, total_amount=?, balance_due=?, notes=?, shipping_country=?, updated_at=datetime('now') WHERE id=?`)
             .run(companyId, projectId, orderId, invoiceId, documentNumber, documentDate, dueDate, status, currency, amountBeforeTaxCad, totalAmount, balanceDue, notes, shippingCountry, existing.id)
           updated++
         } else {
-          db.prepare('INSERT INTO factures (id, tenant_id, airtable_id, company_id, project_id, order_id, invoice_id, document_number, document_date, due_date, status, currency, amount_before_tax_cad, total_amount, balance_due, notes, shipping_country) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), tenantId, rec.id, companyId, projectId, orderId, invoiceId, documentNumber, documentDate, dueDate, status, currency, amountBeforeTaxCad, totalAmount, balanceDue, notes, shippingCountry)
+          db.prepare('INSERT INTO factures (id, airtable_id, company_id, project_id, order_id, invoice_id, document_number, document_date, due_date, status, currency, amount_before_tax_cad, total_amount, balance_due, notes, shipping_country) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+            .run(uuid(), rec.id, companyId, projectId, orderId, invoiceId, documentNumber, documentDate, dueDate, status, currency, amountBeforeTaxCad, totalAmount, balanceDue, notes, shippingCountry)
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE tenant_id=? AND module='factures'").run(tenantId)
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='factures'").run()
     })(records)
     console.log(`🧾 Factures: ${imported} importées, ${updated} mises à jour`)
-    if (!changes) await syncDynamicFields(tenantId, 'factures', 'factures', config.base_id, config.table_id, fieldMap, records)
+    if (!changes) {
+      purgeOrphans('factures', records)
+      await syncDynamicFields('factures', 'factures', config.base_id, config.table_id, fm, records)
+    } else {
+      updateDynamicFields('factures', fm, records)
+    }
+    // Download invoice PDFs from Airtable (URLs are temporary — must dl during sync)
+    await downloadFacturePdfs(records)
+    // Link factures to subscriptions via Airtable linked record IDs
+    await resolveFactureSubscriptions(accessToken)
   } catch (e) { console.error('❌ Factures sync:', e.message) }
+}
+
+async function downloadFacturePdfs(records) {
+  const { mkdir, writeFile } = await import('fs/promises')
+  const path = await import('path')
+  const dir = path.resolve(process.cwd(), 'data/pdfs/factures')
+  await mkdir(dir, { recursive: true })
+  let downloaded = 0
+  for (const rec of records) {
+    const attachments = rec.fields['Invoice pdf']
+    if (!Array.isArray(attachments) || !attachments[0]?.url) continue
+    const row = db.prepare('SELECT id, airtable_pdf_path FROM factures WHERE airtable_id=?').get(rec.id)
+    if (!row || row.airtable_pdf_path) continue // already downloaded
+    try {
+      const res = await fetch(attachments[0].url)
+      if (!res.ok) continue
+      const buf = Buffer.from(await res.arrayBuffer())
+      const filePath = `${dir}/${row.id}.pdf`
+      await writeFile(filePath, buf)
+      db.prepare('UPDATE factures SET airtable_pdf_path=? WHERE id=?').run(filePath, row.id)
+      downloaded++
+    } catch(e) { console.error(`❌ PDF dl ${row.id}:`, e.message) }
+  }
+  if (downloaded > 0) console.log(`📄 Factures PDFs: ${downloaded} téléchargés`)
+}
+
+/**
+ * Fetch Airtable abonnements, populate subscriptions.airtable_id (matching on stripe_id),
+ * then update factures.subscription_id by resolving the linked Airtable record IDs.
+ */
+async function resolveFactureSubscriptions(accessToken) {
+  const abCfg = db.prepare("SELECT base_id, table_id FROM airtable_module_config WHERE module='abonnements'").get()
+  if (!abCfg) return
+
+  let abRecords
+  try {
+    abRecords = await fetchAllRecords(abCfg.base_id, abCfg.table_id, accessToken, 'abonnements_link')
+  } catch (e) { console.error('❌ resolveFactureSubscriptions fetch:', e.message); return }
+
+  // Step 1: populate subscriptions.airtable_id where NULL, matching on stripe_id = rec.fields['id']
+  let linked = 0
+  for (const rec of abRecords) {
+    const stripeId = rec.fields['id'] || rec.fields['Stripe ID'] || rec.fields['stripe_id']
+    if (!stripeId) continue
+    const sub = db.prepare('SELECT id FROM subscriptions WHERE stripe_id=? AND airtable_id IS NULL').get(stripeId)
+    if (sub) {
+      db.prepare('UPDATE subscriptions SET airtable_id=? WHERE id=?').run(rec.id, sub.id)
+      linked++
+    }
+  }
+  if (linked > 0) console.log(`🔗 Abonnements: ${linked} airtable_id peuplés`)
+
+  // Step 2: update factures.subscription_id where NULL, resolving abonnement JSON → subscriptions.airtable_id
+  const factures = db.prepare(
+    "SELECT id, abonnement FROM factures WHERE abonnement IS NOT NULL AND subscription_id IS NULL"
+  ).all()
+  let resolved = 0
+  for (const f of factures) {
+    let ids
+    try { ids = JSON.parse(f.abonnement) } catch { continue }
+    const atId = Array.isArray(ids) ? ids[0] : null
+    if (!atId) continue
+    const sub = db.prepare('SELECT id FROM subscriptions WHERE airtable_id=?').get(atId)
+    if (sub) {
+      db.prepare('UPDATE factures SET subscription_id=? WHERE id=?').run(sub.id, f.id)
+      resolved++
+    }
+  }
+  if (resolved > 0) console.log(`🧾 Factures: ${resolved} liées à un abonnement`)
 }

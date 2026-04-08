@@ -3,9 +3,8 @@ import db from '../db/database.js'
 const APP_URL = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
 const CALLBACK_URL = `${APP_URL}/erp/api/connectors/airtable/callback`
 
-// Mutex par tenant : évite les refreshs concurrents qui invalident le refresh token (rotation Airtable)
-// Clé = tenantId, valeur = Promise du refresh en cours
-const refreshLocks = new Map()
+// Mutex : évite les refreshs concurrents qui invalident le refresh token (rotation Airtable)
+let refreshLock = null
 
 function getCredentials() {
   const clientId = process.env.AIRTABLE_CLIENT_ID
@@ -49,11 +48,11 @@ export async function exchangeCode(code, codeVerifier) {
   return resp.json()
 }
 
-export async function getAccessToken(tenantId) {
+export async function getAccessToken() {
   const row = db.prepare(`
-    SELECT * FROM connector_oauth WHERE tenant_id=? AND connector='airtable'
+    SELECT * FROM connector_oauth WHERE connector='airtable'
     ORDER BY updated_at DESC LIMIT 1
-  `).get(tenantId)
+  `).get()
   if (!row) throw new Error('Airtable non connecté')
 
   // Token valide → retour immédiat
@@ -61,9 +60,9 @@ export async function getAccessToken(tenantId) {
     return row.access_token
   }
 
-  // Un refresh est déjà en cours pour ce tenant → attendre sa résolution
-  if (refreshLocks.has(tenantId)) {
-    return refreshLocks.get(tenantId)
+  // Un refresh est déjà en cours → attendre sa résolution
+  if (refreshLock) {
+    return refreshLock
   }
 
   // Acquérir le verrou : tous les appelants concurrents attendront cette Promise
@@ -71,9 +70,9 @@ export async function getAccessToken(tenantId) {
     try {
       // Double-checked : un waiter précédent a peut-être déjà rafraîchi
       const fresh = db.prepare(`
-        SELECT * FROM connector_oauth WHERE tenant_id=? AND connector='airtable'
+        SELECT * FROM connector_oauth WHERE connector='airtable'
         ORDER BY updated_at DESC LIMIT 1
-      `).get(tenantId)
+      `).get()
       if (fresh && (!fresh.expiry_date || Date.now() <= fresh.expiry_date - 60_000)) {
         return fresh.access_token
       }
@@ -101,11 +100,11 @@ export async function getAccessToken(tenantId) {
       `).run(tokens.access_token, tokens.refresh_token || null, tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null, fresh.id)
       return tokens.access_token
     } finally {
-      refreshLocks.delete(tenantId)
+      refreshLock = null
     }
   })()
 
-  refreshLocks.set(tenantId, refreshPromise)
+  refreshLock = refreshPromise
   return refreshPromise
 }
 

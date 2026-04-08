@@ -7,3 +7,8 @@ client/dist/
 *.db-wal
 .env
 uploads/
+server/data/
+server/storage/
+.agents/
+.claude/
+deploy.log

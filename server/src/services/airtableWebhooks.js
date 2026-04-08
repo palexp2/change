@@ -2,8 +2,9 @@ import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { getAccessToken, airtableFetch, airtablePost } from '../connectors/airtable.js'
 import { tracked } from './syncState.js'
+import { logSync } from './syncLog.js'
 import {
-  syncAirtable, syncInventaire, syncPieces, syncOrders, syncAchats,
+  syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats,
   syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours,
   syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges,
   syncAssemblages, syncFactures,
@@ -14,7 +15,7 @@ const NOTIFICATION_URL = `${APP_URL}/erp/api/connectors/airtable/webhook-ping`
 
 const SYNC_FNS = {
   airtable: syncAirtable,
-  inventaire: syncInventaire,
+  projets: syncProjets,
   pieces: syncPieces,
   orders: syncOrders,
   achats: syncAchats,
@@ -31,8 +32,8 @@ const SYNC_FNS = {
   factures: syncFactures,
 }
 
-// Build map: airtable tableId → Set of module names (for a given tenant)
-function buildTableMap(tenantId) {
+// Build map: airtable tableId → Set of module names
+function buildTableMap() {
   const map = new Map()
   const add = (tableId, module) => {
     if (!tableId) return
@@ -40,57 +41,57 @@ function buildTableMap(tenantId) {
     map.get(tableId).add(module)
   }
 
-  const crm = db.prepare('SELECT * FROM airtable_sync_config WHERE tenant_id=?').get(tenantId)
+  const crm = db.prepare('SELECT * FROM airtable_sync_config LIMIT 1').get()
   if (crm) {
     add(crm.contacts_table_id, 'airtable')
     add(crm.companies_table_id, 'airtable')
   }
 
-  const inv = db.prepare('SELECT * FROM airtable_inventaire_config WHERE tenant_id=?').get(tenantId)
+  const inv = db.prepare('SELECT * FROM airtable_projets_config LIMIT 1').get()
   if (inv) {
-    add(inv.projects_table_id, 'inventaire')
+    add(inv.projects_table_id, 'projets')
     if (inv.extra_tables) {
       try {
         for (const t of Object.values(JSON.parse(inv.extra_tables))) {
-          if (t.table_id) add(t.table_id, 'inventaire')
+          if (t.table_id) add(t.table_id, 'projets')
         }
       } catch {}
     }
   }
 
-  const ord = db.prepare('SELECT * FROM airtable_orders_config WHERE tenant_id=?').get(tenantId)
+  const ord = db.prepare('SELECT * FROM airtable_orders_config LIMIT 1').get()
   if (ord) {
     add(ord.orders_table_id, 'orders')
     add(ord.items_table_id, 'orders')
   }
 
-  const mods = db.prepare('SELECT module, table_id FROM airtable_module_config WHERE tenant_id=?').all(tenantId)
+  const mods = db.prepare('SELECT module, table_id FROM airtable_module_config').all()
   for (const m of mods) add(m.table_id, m.module)
 
   return map
 }
 
-// Returns all unique base IDs configured for a tenant across all modules
-export function getConfiguredBases(tenantId) {
+// Returns all unique base IDs configured across all modules
+export function getConfiguredBases() {
   const bases = new Set()
-  const crm = db.prepare('SELECT base_id FROM airtable_sync_config WHERE tenant_id=? AND base_id IS NOT NULL').get(tenantId)
+  const crm = db.prepare('SELECT base_id FROM airtable_sync_config WHERE base_id IS NOT NULL LIMIT 1').get()
   if (crm) bases.add(crm.base_id)
-  const inv = db.prepare('SELECT base_id FROM airtable_inventaire_config WHERE tenant_id=? AND base_id IS NOT NULL').get(tenantId)
+  const inv = db.prepare('SELECT base_id FROM airtable_projets_config WHERE base_id IS NOT NULL LIMIT 1').get()
   if (inv) bases.add(inv.base_id)
-  const ord = db.prepare('SELECT base_id FROM airtable_orders_config WHERE tenant_id=? AND base_id IS NOT NULL').get(tenantId)
+  const ord = db.prepare('SELECT base_id FROM airtable_orders_config WHERE base_id IS NOT NULL LIMIT 1').get()
   if (ord) bases.add(ord.base_id)
-  const mods = db.prepare('SELECT DISTINCT base_id FROM airtable_module_config WHERE tenant_id=? AND base_id IS NOT NULL').all(tenantId)
+  const mods = db.prepare('SELECT DISTINCT base_id FROM airtable_module_config WHERE base_id IS NOT NULL').all()
   for (const m of mods) bases.add(m.base_id)
   return [...bases]
 }
 
 // Register a webhook for a base if one doesn't exist yet.
 // Safe to call multiple times — returns existing row if already registered.
-export async function registerWebhookForBase(tenantId, baseId) {
-  const existing = db.prepare('SELECT * FROM airtable_webhooks WHERE tenant_id=? AND base_id=?').get(tenantId, baseId)
+export async function registerWebhookForBase(baseId) {
+  const existing = db.prepare('SELECT * FROM airtable_webhooks WHERE base_id=?').get(baseId)
   if (existing) return existing
 
-  const token = await getAccessToken(tenantId)
+  const token = await getAccessToken()
   const data = await airtablePost(`/bases/${baseId}/webhooks`, token, {
     notificationUrl: NOTIFICATION_URL,
     specification: {
@@ -104,7 +105,6 @@ export async function registerWebhookForBase(tenantId, baseId) {
 
   const row = {
     id: uuid(),
-    tenant_id: tenantId,
     base_id: baseId,
     webhook_id: data.id,
     cursor: 1,
@@ -112,16 +112,64 @@ export async function registerWebhookForBase(tenantId, baseId) {
     expires_at: data.expirationTime || null,
   }
   db.prepare(`
-    INSERT OR REPLACE INTO airtable_webhooks (id, tenant_id, base_id, webhook_id, cursor, mac_secret, expires_at)
-    VALUES (@id, @tenant_id, @base_id, @webhook_id, @cursor, @mac_secret, @expires_at)
+    INSERT OR REPLACE INTO airtable_webhooks (id, base_id, webhook_id, cursor, mac_secret, expires_at)
+    VALUES (@id, @base_id, @webhook_id, @cursor, @mac_secret, @expires_at)
   `).run(row)
 
-  console.log(`✅ Webhook Airtable enregistré: tenant=${tenantId} base=${baseId} webhook=${data.id}`)
+  console.log(`✅ Webhook Airtable enregistré: base=${baseId} webhook=${data.id}`)
   return row
+}
+
+// Queue failed changes for retry
+function queueRetry(module, changes, error) {
+  const id = uuid()
+  db.prepare(`
+    INSERT INTO webhook_sync_retry (id, module, changes, attempts, last_error, next_retry_at)
+    VALUES (?, ?, ?, 1, ?, datetime('now', '+5 minutes'))
+  `).run(id, module, JSON.stringify(changes), error)
+  console.log(`🔄 ${module}: queued for retry (${error})`)
+}
+
+// Process retry queue — called periodically
+export async function processRetryQueue() {
+  const rows = db.prepare(
+    "SELECT * FROM webhook_sync_retry WHERE next_retry_at <= datetime('now') ORDER BY created_at LIMIT 20"
+  ).all()
+  if (rows.length === 0) return
+
+  console.log(`🔄 Retry queue: ${rows.length} pending`)
+  for (const row of rows) {
+    const fn = SYNC_FNS[row.module]
+    if (!fn) {
+      db.prepare('DELETE FROM webhook_sync_retry WHERE id=?').run(row.id)
+      continue
+    }
+
+    try {
+      const changes = JSON.parse(row.changes)
+      await tracked(row.module, () => fn(changes))
+      db.prepare('DELETE FROM webhook_sync_retry WHERE id=?').run(row.id)
+      console.log(`✅ Retry ${row.module}: success`)
+    } catch (e) {
+      const attempts = row.attempts + 1
+      if (attempts >= 5) {
+        db.prepare('DELETE FROM webhook_sync_retry WHERE id=?').run(row.id)
+        console.error(`❌ Retry ${row.module}: abandoned after ${attempts} attempts (${e.message})`)
+      } else {
+        // Exponential backoff: 5min, 15min, 45min, 2h
+        const delayMinutes = 5 * Math.pow(3, attempts - 1)
+        db.prepare(
+          "UPDATE webhook_sync_retry SET attempts=?, last_error=?, next_retry_at=datetime('now', ? || ' minutes') WHERE id=?"
+        ).run(attempts, e.message, `+${delayMinutes}`, row.id)
+        console.warn(`⚠️  Retry ${row.module}: attempt ${attempts} failed, next in ${delayMinutes}min (${e.message})`)
+      }
+    }
+  }
 }
 
 // Called when Airtable sends a ping. Fetches payloads, determines which
 // modules changed, and triggers the appropriate sync functions.
+// On failure, changes are queued for retry instead of being lost.
 export async function processWebhookPing(webhookId) {
   const webhook = db.prepare('SELECT * FROM airtable_webhooks WHERE webhook_id=?').get(webhookId)
   if (!webhook) {
@@ -129,14 +177,13 @@ export async function processWebhookPing(webhookId) {
     return
   }
 
-  const { tenant_id: tenantId, base_id: baseId } = webhook
+  const { base_id: baseId } = webhook
   let cursor = webhook.cursor
 
   try {
-    const token = await getAccessToken(tenantId)
+    const token = await getAccessToken()
 
     // Accumulate changes per tableId across all payloads
-    // { tableId: { recordIds: Set, destroyedIds: Set } }
     const tableChanges = new Map()
     const addChange = (tableId, type, id) => {
       if (!tableChanges.has(tableId)) tableChanges.set(tableId, { recordIds: new Set(), destroyedIds: new Set() })
@@ -162,13 +209,14 @@ export async function processWebhookPing(webhookId) {
       mightHaveMore = data.mightHaveMore === true
     }
 
+    // Advance cursor immediately — failed syncs go to retry queue
     db.prepare('UPDATE airtable_webhooks SET cursor=? WHERE webhook_id=?').run(cursor, webhookId)
 
     if (tableChanges.size === 0) return
 
     // Convert Sets to arrays and group by module
-    const moduleChanges = new Map() // module → { tableId: { recordIds, destroyedIds } }
-    const tableMap = buildTableMap(tenantId)
+    const moduleChanges = new Map()
+    const tableMap = buildTableMap()
     for (const [tableId, { recordIds, destroyedIds }] of tableChanges) {
       const modules = tableMap.get(tableId)
       if (!modules) continue
@@ -183,14 +231,23 @@ export async function processWebhookPing(webhookId) {
 
     const totalRecords = [...tableChanges.values()].reduce((s, t) => s + t.recordIds.size, 0)
     const totalDestroyed = [...tableChanges.values()].reduce((s, t) => s + t.destroyedIds.size, 0)
-    console.log(`🔔 Webhook Airtable → [${[...moduleChanges.keys()].join(', ')}] +${totalRecords} modifiés, -${totalDestroyed} supprimés (tenant=${tenantId})`)
+    console.log(`🔔 Webhook Airtable → [${[...moduleChanges.keys()].join(', ')}] +${totalRecords} modifiés, -${totalDestroyed} supprimés`)
 
+    // Await each sync — queue failures for retry, log results
     for (const [module, changes] of moduleChanges) {
       const fn = SYNC_FNS[module]
       if (!fn) continue
-      tracked(tenantId, module, () => fn(tenantId, changes)).catch(e =>
+      const modifiedCount = Object.values(changes).reduce((s, c) => s + (c.recordIds?.length || 0), 0)
+      const destroyedCount = Object.values(changes).reduce((s, c) => s + (c.destroyedIds?.length || 0), 0)
+      const t0 = Date.now()
+      try {
+        await tracked(module, () => fn(changes))
+        logSync(module, 'webhook', { status: 'success', modified: modifiedCount, destroyed: destroyedCount, durationMs: Date.now() - t0 })
+      } catch (e) {
         console.error(`Sync webhook error (${module}):`, e.message)
-      )
+        logSync(module, 'webhook', { status: 'error', modified: modifiedCount, destroyed: destroyedCount, error: e.message, durationMs: Date.now() - t0 })
+        queueRetry(module, changes, e.message)
+      }
     }
   } catch (e) {
     console.error(`❌ Erreur traitement webhook ${webhookId}:`, e.message)
@@ -206,7 +263,7 @@ export async function renewExpiringWebhooks() {
 
   for (const wh of expiring) {
     try {
-      const token = await getAccessToken(wh.tenant_id)
+      const token = await getAccessToken()
       await fetch(`https://api.airtable.com/v0/bases/${wh.base_id}/webhooks/${wh.webhook_id}/refresh`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
@@ -220,23 +277,22 @@ export async function renewExpiringWebhooks() {
   }
 }
 
-// Called at server startup. Registers missing webhooks for all tenants,
+// Called at server startup. Registers missing webhooks,
 // then schedules daily renewal checks.
 export async function initAirtableWebhooks() {
-  const tenants = db.prepare('SELECT id FROM tenants').all().map(t => t.id)
+  const connected = db.prepare(
+    "SELECT id FROM connector_oauth WHERE connector='airtable' LIMIT 1"
+  ).get()
+  if (!connected) {
+    console.log('✅ Airtable webhooks initialisés (pas de connexion Airtable)')
+    return
+  }
 
-  for (const tenantId of tenants) {
-    const connected = db.prepare(
-      "SELECT id FROM connector_oauth WHERE tenant_id=? AND connector='airtable' LIMIT 1"
-    ).get(tenantId)
-    if (!connected) continue
-
-    for (const baseId of getConfiguredBases(tenantId)) {
-      try {
-        await registerWebhookForBase(tenantId, baseId)
-      } catch (e) {
-        console.error(`❌ Webhook init échoué tenant=${tenantId} base=${baseId}:`, e.message)
-      }
+  for (const baseId of getConfiguredBases()) {
+    try {
+      await registerWebhookForBase(baseId)
+    } catch (e) {
+      console.error(`❌ Webhook init échoué base=${baseId}:`, e.message)
     }
   }
 
@@ -244,6 +300,11 @@ export async function initAirtableWebhooks() {
   setInterval(async () => {
     try { await renewExpiringWebhooks() } catch (e) { console.error('Webhook renewal error:', e.message) }
   }, 24 * 60 * 60 * 1000)
+
+  // Retry queue — check every 2 minutes
+  setInterval(async () => {
+    try { await processRetryQueue() } catch (e) { console.error('Retry queue error:', e.message) }
+  }, 2 * 60 * 1000)
 
   console.log('✅ Airtable webhooks initialisés')
 }

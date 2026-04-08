@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -50,6 +50,7 @@ const RENDERS = {
 const COLUMNS = TABLE_COLUMN_META.factures.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
 export default function Factures() {
+  const navigate = useNavigate()
   const [factures, setFactures] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -78,6 +79,7 @@ export default function Factures() {
           data={factures}
           loading={loading}
           searchFields={['document_number']}
+          onRowClick={row => navigate(`/factures/${row.id}`)}
         />
       </div>
     </Layout>

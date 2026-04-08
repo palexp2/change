@@ -1,96 +1,67 @@
-import { useState, useEffect, useRef } from 'react'
-import { X, ChevronDown } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { RefreshCw } from 'lucide-react'
 import api from '../lib/api.js'
 
-function FieldSelect({ value, onChange, options }) {
-  const [open, setOpen] = useState(false)
-  const [search, setSearch] = useState('')
-  const ref = useRef(null)
+const AT_TYPE_LABELS = {
+  singleLineText: 'Texte', multilineText: 'Texte long', richText: 'Texte riche',
+  number: 'Nombre', currency: 'Devise', percent: '%', count: 'Compteur', autoNumber: 'Auto #',
+  rating: 'Évaluation',
+  singleSelect: 'Sélection', multipleSelects: 'Multi-sélection',
+  checkbox: 'Case à cocher',
+  date: 'Date', dateTime: 'Date/heure', createdTime: 'Créé le', lastModifiedTime: 'Modifié le',
+  email: 'Courriel', url: 'URL', phoneNumber: 'Téléphone',
+  multipleRecordLinks: 'Lien', lookup: 'Lookup', rollup: 'Rollup', formula: 'Formule',
+  multipleAttachments: 'Pièces jointes', barcode: 'Code-barres',
+}
+
+function FieldList({ fields, erpTable }) {
+  const [deletedFields, setDeletedFields] = useState([])
 
   useEffect(() => {
-    function handler(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [])
+    if (!erpTable || !fields?.length) { setDeletedFields([]); return }
+    api.airtable.fieldDefs(erpTable).then(defs => {
+      const liveNames = new Set(fields.map(f => f.name))
+      setDeletedFields(defs.filter(d => !liveNames.has(d.airtable_field_name)))
+    }).catch(() => setDeletedFields([]))
+  }, [erpTable, fields])
 
-  const filtered = options.filter(o => o.toLowerCase().includes(search.toLowerCase()))
-  const display = value || ''
+  if (!fields?.length && !deletedFields.length) return null
 
-  function select(opt) {
-    onChange(opt)
-    setSearch('')
-    setOpen(false)
+  // Group live fields by type label
+  const groups = {}
+  for (const f of (fields || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'fr'))) {
+    const label = AT_TYPE_LABELS[f.type] || f.type
+    if (!groups[label]) groups[label] = []
+    groups[label].push(f)
   }
+  const sortedGroups = Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0], 'fr'))
 
   return (
-    <div ref={ref} className="relative flex-1">
-      <div
-        onClick={() => { setOpen(o => !o); setSearch('') }}
-        className="input flex items-center justify-between cursor-pointer pr-2 py-1 text-xs min-h-[32px]"
-      >
-        <span className={display ? 'text-slate-800' : 'text-slate-400'}>{display || '— ignorer —'}</span>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          {display && (
-            <button onClick={e => { e.stopPropagation(); select('') }} className="text-slate-400 hover:text-slate-600">
-              <X size={12} />
-            </button>
-          )}
-          <ChevronDown size={12} className="text-slate-400" />
-        </div>
-      </div>
-      {open && (
-        <div className="absolute z-50 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg">
-          <div className="p-1.5 border-b border-slate-100">
-            <input
-              autoFocus
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              placeholder="Rechercher…"
-              className="w-full text-xs px-2 py-1 border border-slate-200 rounded outline-none focus:border-indigo-400"
-              onClick={e => e.stopPropagation()}
-            />
+    <div className="border border-slate-200 rounded-lg p-3 space-y-2">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{(fields?.length || 0)} champs</p>
+      {sortedGroups.map(([label, items]) => (
+        <div key={label}>
+          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-0.5">{label}</p>
+          <div className="space-y-0">
+            {items.map(f => (
+              <div key={f.name} className="text-xs text-slate-600 py-0.5 px-1 hover:bg-slate-50 rounded">{f.name}</div>
+            ))}
           </div>
-          <div className="max-h-48 overflow-y-auto">
-            <div onClick={() => select('')} className="px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-50 cursor-pointer">— ignorer —</div>
-            {filtered.length === 0
-              ? <div className="px-3 py-1.5 text-xs text-slate-400">Aucun résultat</div>
-              : filtered.map(o => (
-                <div key={o} onClick={() => select(o)}
-                  className={`px-3 py-1.5 text-xs cursor-pointer hover:bg-indigo-50 hover:text-indigo-700 ${o === value ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-slate-700'}`}
-                >{o}</div>
-              ))
-            }
+        </div>
+      ))}
+      {deletedFields.length > 0 && (
+        <div>
+          <p className="text-[10px] font-semibold text-red-400 uppercase tracking-wide mb-0.5">Supprimés dans Airtable</p>
+          <div className="space-y-0">
+            {deletedFields.sort((a, b) => a.airtable_field_name.localeCompare(b.airtable_field_name, 'fr')).map(d => (
+              <div key={d.airtable_field_name} className="text-xs text-red-400 py-0.5 px-1 flex items-center gap-1.5">
+                <span className="line-through">{d.airtable_field_name}</span>
+                <span className="text-[9px] bg-red-50 border border-red-200 text-red-500 px-1 rounded">supprimé</span>
+              </div>
+            ))}
           </div>
         </div>
       )}
-    </div>
-  )
-}
-
-import { RefreshCw } from 'lucide-react'
-
-function ChoiceMapping({ fields, selectedFieldName, erpOptions, currentMap, onChange }) {
-  if (!selectedFieldName) return null
-  const atField = fields.find(f => f.name === selectedFieldName)
-  const choices = atField?.options?.choices || []
-  if (!choices.length) return null
-  return (
-    <div className="ml-44 mt-1 border border-slate-100 rounded p-2 space-y-1 bg-slate-50">
-      <p className="text-xs text-slate-400 mb-1">Correspondance des options :</p>
-      {choices.map(c => (
-        <div key={c.id} className="flex items-center gap-2">
-          <span className="text-xs text-slate-600 w-36 flex-shrink-0 truncate" title={c.name}>{c.name}</span>
-          <span className="text-slate-300 text-xs">→</span>
-          <select
-            value={currentMap?.[c.name] || ''}
-            onChange={e => onChange(c.name, e.target.value)}
-            className="select text-xs py-0.5 flex-1"
-          >
-            <option value="">— ignorer —</option>
-            {erpOptions.map(o => <option key={o} value={o}>{o}</option>)}
-          </select>
-        </div>
-      ))}
     </div>
   )
 }
@@ -126,7 +97,7 @@ const TABS = [
   ['contacts',      'Contacts'],
   ['companies',     'Entreprises'],
   ['adresses',      'Adresses'],
-  ['inv',           'Projets'],
+  ['projets',       'Projets'],
   ['soumissions',   'Soumissions'],
   ['pieces',        'Pièces'],
   ['serials',       'N° de série'],
@@ -145,8 +116,9 @@ const TABS = [
 
 export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh, stripeConfigured = false }) {
   const {
-    crm: airtableSync,
-    inv: inventaireSync,
+    contacts: contactsSync,
+    companies: companiesSync,
+    projets: projetsSync,
     pieces: piecesSync,
     orders: ordersSync,
     achats: achatsSync,
@@ -167,7 +139,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   const [tab, setTab] = useState('contacts')
   const [syncingAll, setSyncingAll] = useState(false)
 
-  const AIRTABLE_KEYS = ['airtable','inventaire','pieces','orders','achats','billets','serials','envois','soumissions','retours','retour_items','adresses','bom','serial_changes','abonnements','assemblages','factures']
+  const AIRTABLE_KEYS = ['airtable','projets','pieces','orders','achats','billets','serials','envois','soumissions','retours','retour_items','adresses','bom','serial_changes','abonnements','assemblages','factures']
 
   // Réinitialise syncingAll quand le poll confirme que tous les modules sont arrêtés
   useEffect(() => {
@@ -178,9 +150,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   const [bases, setBases] = useState([])
   const [basesError, setBasesError] = useState('')
   const [tables, setTables] = useState([])
-  const [customContactFields, setCustomContactFields] = useState([])
-  const [customCompanyFields, setCustomCompanyFields] = useState([])
-  const [invTables, setInvTables] = useState([])
+  const [projetsTables, setProjetsTables] = useState([])
   const [piecesTables, setPiecesTables] = useState([])
   const [ordersTables, setOrdersTables] = useState([])
   const [itemsTables, setItemsTables] = useState([])
@@ -199,25 +169,32 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   const [abonnementsTables, setAbonnementsTables] = useState([])
   const [loadingBases, setLoadingBases] = useState(false)
 
-  // CRM sync form
-  const [crmForm, setCrmForm] = useState({
-    base_id: airtableSync?.base_id || '',
-    contacts_table_id: airtableSync?.contacts_table_id || '',
-    companies_table_id: airtableSync?.companies_table_id || '',
-    field_map_contacts: airtableSync?.field_map_contacts
-      ? (typeof airtableSync.field_map_contacts === 'string' ? JSON.parse(airtableSync.field_map_contacts) : airtableSync.field_map_contacts)
-      : {},
-    field_map_companies: airtableSync?.field_map_companies
-      ? (typeof airtableSync.field_map_companies === 'string' ? JSON.parse(airtableSync.field_map_companies) : airtableSync.field_map_companies)
+  // Contacts sync form
+  const [contactsForm, setContactsForm] = useState({
+    base_id: contactsSync?.base_id || '',
+    contacts_table_id: contactsSync?.contacts_table_id || '',
+    field_map_contacts: contactsSync?.field_map_contacts
+      ? (typeof contactsSync.field_map_contacts === 'string' ? JSON.parse(contactsSync.field_map_contacts) : contactsSync.field_map_contacts)
       : {},
   })
 
+  // Companies sync form
+  const [companiesForm, setCompaniesForm] = useState({
+    base_id: companiesSync?.base_id || '',
+    companies_table_id: companiesSync?.companies_table_id || '',
+    field_map_companies: companiesSync?.field_map_companies
+      ? (typeof companiesSync.field_map_companies === 'string' ? JSON.parse(companiesSync.field_map_companies) : companiesSync.field_map_companies)
+      : {},
+  })
+
+  const [companiesTables, setCompaniesTables] = useState([])
+
   // Inventaire form
-  const [invForm, setInvForm] = useState({
-    base_id: inventaireSync?.base_id || '',
-    projects_table_id: inventaireSync?.projects_table_id || '',
-    field_map_projects: inventaireSync?.field_map_projects
-      ? (typeof inventaireSync.field_map_projects === 'string' ? JSON.parse(inventaireSync.field_map_projects) : inventaireSync.field_map_projects)
+  const [projetsForm, setProjetsForm] = useState({
+    base_id: projetsSync?.base_id || '',
+    projects_table_id: projetsSync?.projects_table_id || '',
+    field_map_projects: projetsSync?.field_map_projects
+      ? (typeof projetsSync.field_map_projects === 'string' ? JSON.parse(projetsSync.field_map_projects) : projetsSync.field_map_projects)
       : {},
   })
 
@@ -308,13 +285,18 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
     setter(Array.isArray(data) ? data : [])
   }
 
-  async function saveCrm() {
-    await api.airtable.saveConfig('crm', crmForm)
+  async function saveContacts() {
+    await api.airtable.saveConfig('contacts', contactsForm)
     onRefresh()
   }
 
-  async function saveInv() {
-    await api.airtable.saveConfig('inv', invForm)
+  async function saveCompanies() {
+    await api.airtable.saveConfig('companies', companiesForm)
+    onRefresh()
+  }
+
+  async function saveProjets() {
+    await api.airtable.saveConfig('projets', projetsForm)
     onRefresh()
   }
 
@@ -359,12 +341,9 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   async function saveAbonnements() { await api.airtable.saveModuleConfig('abonnements', abonnementsForm); onRefresh() }
 
   useEffect(() => { loadBases() }, [])
-  useEffect(() => {
-    api.fieldDefs.list('contacts').then(setCustomContactFields).catch(() => {})
-    api.fieldDefs.list('companies').then(setCustomCompanyFields).catch(() => {})
-  }, [])
-  useEffect(() => { if (crmForm.base_id) loadTables(crmForm.base_id, setTables) }, [crmForm.base_id])
-  useEffect(() => { if (invForm.base_id) loadTables(invForm.base_id, setInvTables) }, [invForm.base_id])
+  useEffect(() => { if (contactsForm.base_id) loadTables(contactsForm.base_id, setTables) }, [contactsForm.base_id])
+  useEffect(() => { if (companiesForm.base_id) loadTables(companiesForm.base_id, setCompaniesTables) }, [companiesForm.base_id])
+  useEffect(() => { if (projetsForm.base_id) loadTables(projetsForm.base_id, setProjetsTables) }, [projetsForm.base_id])
   useEffect(() => { if (piecesForm.base_id) loadTables(piecesForm.base_id, setPiecesTables) }, [piecesForm.base_id])
   useEffect(() => { if (ordersForm.base_id) loadTables(ordersForm.base_id, setOrdersTables) }, [ordersForm.base_id])
   useEffect(() => { if (ordersForm.base_id) loadTables(ordersForm.base_id, setItemsTables) }, [ordersForm.base_id])
@@ -420,8 +399,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
 
       <div className="flex gap-0.5 border-b border-slate-200 flex-wrap">
         {TABS.filter(([k]) => !(k === 'abonnements' && stripeConfigured)).map(([k, l]) => {
-          const configKey = (k === 'contacts' || k === 'companies') ? 'crm' : k
-          const configured = syncConfigs[configKey]?.base_id
+          const configured = syncConfigs[k]?.base_id
           return (
             <button key={k} onClick={() => setTab(k)}
               className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors flex items-center gap-1.5 ${tab === k ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'}`}
@@ -437,7 +415,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <select value={crmForm.base_id} onChange={e => setCrmForm(f => ({ ...f, base_id: e.target.value, contacts_table_id: '', companies_table_id: '' }))} className="select">
+            <select value={contactsForm.base_id} onChange={e => setContactsForm(f => ({ ...f, base_id: e.target.value, contacts_table_id: '', field_map_contacts: {} }))} className="select">
               <option value="">—</option>
               {loadingBases ? <option disabled>Chargement…</option> : bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
@@ -445,56 +423,20 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           {tables.length > 0 && (
             <div>
               <label className="label">Table contacts</label>
-              <select value={crmForm.contacts_table_id} onChange={e => setCrmForm(f => ({ ...f, contacts_table_id: e.target.value, field_map_contacts: {} }))} className="select">
+              <select value={contactsForm.contacts_table_id} onChange={e => setContactsForm(f => ({ ...f, contacts_table_id: e.target.value, field_map_contacts: {} }))} className="select">
                 <option value="">—</option>
                 {tables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
               </select>
             </div>
           )}
-          {crmForm.contacts_table_id && (() => {
-            const fieldNames = (tables.find(t => t.id === crmForm.contacts_table_id)?.fields || []).map(f => f.name)
-            if (!fieldNames.length) return null
-            return (
-              <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping des champs</p>
-                {[
-                  { key: 'first_name', label: 'Prénom *' },
-                  { key: 'last_name',  label: 'Nom *' },
-                  { key: 'email',      label: 'Courriel' },
-                  { key: 'phone',      label: 'Téléphone' },
-                  { key: 'mobile',     label: 'Mobile' },
-                  { key: 'company',    label: 'Entreprise (lien)' },
-                  { key: 'language',   label: 'Langue' },
-                ].map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600 w-40 flex-shrink-0">{label}</span>
-                    <FieldSelect
-                      value={crmForm.field_map_contacts?.[key] || ''}
-                      onChange={v => setCrmForm(f => ({ ...f, field_map_contacts: { ...f.field_map_contacts, [key]: v || undefined } }))}
-                      options={fieldNames}
-                    />
-                  </div>
-                ))}
-                {customContactFields.map(cf => (
-                  <div key={cf.key} className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600 w-40 flex-shrink-0 italic">{cf.label}</span>
-                    <FieldSelect
-                      value={crmForm.field_map_contacts?.[`cf_${cf.key}`] || ''}
-                      onChange={v => setCrmForm(f => ({ ...f, field_map_contacts: { ...f.field_map_contacts, [`cf_${cf.key}`]: v || undefined } }))}
-                      options={fieldNames}
-                    />
-                  </div>
-                ))}
-              </div>
-            )
-          })()}
+          {contactsForm.contacts_table_id && <FieldList fields={tables.find(t => t.id === contactsForm.contacts_table_id)?.fields} erpTable="contacts" />}
           <div className="flex gap-2">
-            <button onClick={saveCrm} className="btn-primary btn-sm">Enregistrer</button>
-            {airtableSync?.base_id && (
+            <button onClick={saveContacts} className="btn-primary btn-sm">Enregistrer</button>
+            {contactsSync?.base_id && (
               <SyncBtn label="Synchroniser" syncKey="airtable" syncStatus={syncStatus} onSync={() => api.airtable.sync('airtable')} />
             )}
           </div>
-          {airtableSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(airtableSync.last_synced_at).toLocaleString('fr-CA')}</p>}
+          {contactsSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(contactsSync.last_synced_at).toLocaleString('fr-CA')}</p>}
         </div>
       )}
 
@@ -502,181 +444,57 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <select value={crmForm.base_id} onChange={e => setCrmForm(f => ({ ...f, base_id: e.target.value, contacts_table_id: '', companies_table_id: '' }))} className="select">
+            <select value={companiesForm.base_id} onChange={e => setCompaniesForm(f => ({ ...f, base_id: e.target.value, companies_table_id: '', field_map_companies: {} }))} className="select">
               <option value="">—</option>
               {loadingBases ? <option disabled>Chargement…</option> : bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
           </div>
-          {tables.length > 0 && (
+          {companiesTables.length > 0 && (
             <div>
               <label className="label">Table entreprises</label>
-              <select value={crmForm.companies_table_id} onChange={e => setCrmForm(f => ({ ...f, companies_table_id: e.target.value, field_map_companies: {} }))} className="select">
+              <select value={companiesForm.companies_table_id} onChange={e => setCompaniesForm(f => ({ ...f, companies_table_id: e.target.value, field_map_companies: {} }))} className="select">
                 <option value="">—</option>
-                {tables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                {companiesTables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
               </select>
             </div>
           )}
-          {crmForm.companies_table_id && (() => {
-            const compTable = tables.find(t => t.id === crmForm.companies_table_id)
-            const fields = compTable?.fields || []
-            const fieldNames = fields.map(f => f.name)
-            if (!fieldNames.length) return null
-            const ERP_TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin', 'Agriculture urbaine', 'Cannabis', 'Particulier', 'Distributeur', 'Partenaire', 'Compétiteur', 'Consultant', 'Autre']
-            const ERP_PHASES = ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore']
-            function CompChoiceMapping({ fieldKey, erpOptions, choicesKey }) {
-              const selectedFieldName = crmForm.field_map_companies?.[fieldKey]
-              if (!selectedFieldName) return null
-              const atField = fields.find(f => f.name === selectedFieldName)
-              const choices = atField?.options?.choices || []
-              if (!choices.length) return null
-              const map = crmForm.field_map_companies?.[choicesKey] || {}
-              return (
-                <div className="ml-40 mt-1 border border-slate-100 rounded p-2 space-y-1 bg-slate-50">
-                  <p className="text-xs text-slate-400 mb-1">Correspondance des options :</p>
-                  {choices.map(c => (
-                    <div key={c.id} className="flex items-center gap-2">
-                      <span className="text-xs text-slate-600 w-36 flex-shrink-0 truncate" title={c.name}>{c.name}</span>
-                      <span className="text-slate-300 text-xs">→</span>
-                      <select
-                        value={map[c.name] || ''}
-                        onChange={e => setCrmForm(f => ({ ...f, field_map_companies: { ...f.field_map_companies, [choicesKey]: { ...(f.field_map_companies?.[choicesKey] || {}), [c.name]: e.target.value || undefined } } }))}
-                        className="select text-xs py-0.5 flex-1"
-                      >
-                        <option value="">— ignorer —</option>
-                        {erpOptions.map(o => <option key={o} value={o}>{o}</option>)}
-                      </select>
-                    </div>
-                  ))}
-                </div>
-              )
-            }
-            return (
-              <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping des champs</p>
-                {[
-                  { key: 'name',            label: 'Nom *' },
-                  { key: 'phone',           label: 'Téléphone' },
-                  { key: 'website',         label: 'Site web' },
-                  { key: 'type',            label: 'Type' },
-                  { key: 'lifecycle_phase', label: 'Phase du cycle de vie' },
-                ].map(({ key, label }) => (
-                  <div key={key}>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-slate-600 w-40 flex-shrink-0">{label}</span>
-                      <FieldSelect
-                        value={crmForm.field_map_companies?.[key] || ''}
-                        onChange={v => setCrmForm(f => ({ ...f, field_map_companies: { ...f.field_map_companies, [key]: v || undefined } }))}
-                        options={fieldNames}
-                      />
-                    </div>
-                    {key === 'type' && <CompChoiceMapping fieldKey="type" erpOptions={ERP_TYPES} choicesKey="type_choices" />}
-                    {key === 'lifecycle_phase' && <CompChoiceMapping fieldKey="lifecycle_phase" erpOptions={ERP_PHASES} choicesKey="phase_choices" />}
-                  </div>
-                ))}
-                {customCompanyFields.map(cf => (
-                  <div key={cf.key} className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600 w-40 flex-shrink-0 italic">{cf.label}</span>
-                    <FieldSelect
-                      value={crmForm.field_map_companies?.[`cf_${cf.key}`] || ''}
-                      onChange={v => setCrmForm(f => ({ ...f, field_map_companies: { ...f.field_map_companies, [`cf_${cf.key}`]: v || undefined } }))}
-                      options={fieldNames}
-                    />
-                  </div>
-                ))}
-              </div>
-            )
-          })()}
+          {companiesForm.companies_table_id && <FieldList fields={companiesTables.find(t => t.id === companiesForm.companies_table_id)?.fields} erpTable="companies" />}
           <div className="flex gap-2">
-            <button onClick={saveCrm} className="btn-primary btn-sm">Enregistrer</button>
-            {airtableSync?.base_id && (
+            <button onClick={saveCompanies} className="btn-primary btn-sm">Enregistrer</button>
+            {companiesSync?.base_id && (
               <SyncBtn label="Synchroniser" syncKey="airtable" syncStatus={syncStatus} onSync={() => api.airtable.sync('airtable')} />
             )}
           </div>
-          {airtableSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(airtableSync.last_synced_at).toLocaleString('fr-CA')}</p>}
+          {companiesSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(companiesSync.last_synced_at).toLocaleString('fr-CA')}</p>}
         </div>
       )}
 
-      {tab === 'inv' && (
+      {tab === 'projets' && (
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <select value={invForm.base_id} onChange={e => setInvForm(f => ({ ...f, base_id: e.target.value, projects_table_id: '', field_map_projects: {}, extra_tables: [] }))} className="select">
+            <select value={projetsForm.base_id} onChange={e => setProjetsForm(f => ({ ...f, base_id: e.target.value, projects_table_id: '', field_map_projects: {}, extra_tables: [] }))} className="select">
               <option value="">—</option>
               {loadingBases ? <option disabled>Chargement…</option> : bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
           </div>
-          {invTables.length > 0 && (
+          {projetsTables.length > 0 && (
             <div>
               <label className="label">Table projets (principale)</label>
-              <select value={invForm.projects_table_id} onChange={e => setInvForm(f => ({ ...f, projects_table_id: e.target.value, field_map_projects: {} }))} className="select">
+              <select value={projetsForm.projects_table_id} onChange={e => setProjetsForm(f => ({ ...f, projects_table_id: e.target.value, field_map_projects: {} }))} className="select">
                 <option value="">—</option>
-                {invTables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                {projetsTables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
               </select>
             </div>
           )}
-          {invForm.projects_table_id && (() => {
-            const selectedTable = invTables.find(t => t.id === invForm.projects_table_id)
-            const fields = selectedTable?.fields || []
-            if (!fields.length) return null
-            const fieldNames = fields.map(f => f.name)
-            const ERP_STATUS = ['Ouvert', 'Gagné', 'Perdu']
-            const ERP_TYPES = ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange']
-            const ERP_FIELDS = [
-              { key: 'name',           label: 'Nom du projet *' },
-              { key: 'company',        label: 'Entreprise' },
-              { key: 'status',         label: 'Statut (Ouvert/Gagné/Perdu)' },
-              { key: 'type',           label: 'Type de projet' },
-              { key: 'value_cad',      label: 'Valeur (CAD)' },
-              { key: 'probability',    label: 'Probabilité (%)' },
-              { key: 'monthly_cad',    label: 'Mensuel récurrent (CAD)' },
-              { key: 'nb_greenhouses', label: 'Nb serres' },
-              { key: 'close_date',     label: 'Date de clôture' },
-              { key: 'notes',          label: 'Notes' },
-            ]
-            return (
-              <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping des champs — Table principale</p>
-                {ERP_FIELDS.map(({ key, label }) => (
-                  <div key={key}>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-slate-600 w-44 flex-shrink-0">{label}</span>
-                      <FieldSelect
-                        value={invForm.field_map_projects?.[key] || ''}
-                        onChange={v => setInvForm(f => ({ ...f, field_map_projects: { ...f.field_map_projects, [key]: v || undefined } }))}
-                        options={fieldNames}
-                      />
-                    </div>
-                    {key === 'status' && (
-                      <ChoiceMapping
-                        fields={fields}
-                        selectedFieldName={invForm.field_map_projects?.status}
-                        erpOptions={ERP_STATUS}
-                        currentMap={invForm.field_map_projects?.status_choices}
-                        onChange={(optName, erpVal) => setInvForm(f => ({ ...f, field_map_projects: { ...f.field_map_projects, status_choices: { ...(f.field_map_projects?.status_choices || {}), [optName]: erpVal || undefined } } }))}
-                      />
-                    )}
-                    {key === 'type' && (
-                      <ChoiceMapping
-                        fields={fields}
-                        selectedFieldName={invForm.field_map_projects?.type}
-                        erpOptions={ERP_TYPES}
-                        currentMap={invForm.field_map_projects?.type_choices}
-                        onChange={(optName, erpVal) => setInvForm(f => ({ ...f, field_map_projects: { ...f.field_map_projects, type_choices: { ...(f.field_map_projects?.type_choices || {}), [optName]: erpVal || undefined } } }))}
-                      />
-                    )}
-                  </div>
-                ))}
-              </div>
-            )
-          })()}
-
+          {projetsForm.projects_table_id && <FieldList fields={projetsTables.find(t => t.id === projetsForm.projects_table_id)?.fields} erpTable="projects" />}
           <div className="flex gap-2">
-            <button onClick={saveInv} className="btn-primary btn-sm">Enregistrer</button>
-            {inventaireSync?.base_id && (
-              <SyncBtn label="Synchroniser" syncKey="inventaire" syncStatus={syncStatus} onSync={() => api.airtable.sync('inventaire')} />
+            <button onClick={saveProjets} className="btn-primary btn-sm">Enregistrer</button>
+            {projetsSync?.base_id && (
+              <SyncBtn label="Synchroniser" syncKey="inventaire" syncStatus={syncStatus} onSync={() => api.airtable.sync('projets')} />
             )}
           </div>
-          {inventaireSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(inventaireSync.last_synced_at).toLocaleString('fr-CA')}</p>}
+          {projetsSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(projetsSync.last_synced_at).toLocaleString('fr-CA')}</p>}
         </div>
       )}
 
@@ -698,41 +516,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           )}
-          {piecesForm.table_id && (() => {
-            const selectedTable = piecesTables.find(t => t.id === piecesForm.table_id)
-            const fields = selectedTable?.fields || []
-            if (!fields.length) return null
-            const fieldNames = fields.map(f => f.name)
-            const ERP_FIELDS = [
-              { key: 'name_fr',          label: 'Nom (FR) *' },
-              { key: 'name_en',          label: 'Nom (EN)' },
-              { key: 'sku',              label: 'SKU / Code' },
-              { key: 'type',             label: 'Type (Pièce / Produit / Kanban)' },
-              { key: 'unit_cost',        label: 'Coût unitaire' },
-              { key: 'price_cad',        label: 'Prix (CAD)' },
-              { key: 'stock_qty',        label: 'Stock actuel' },
-              { key: 'min_stock',        label: 'Stock minimum' },
-              { key: 'supplier',         label: 'Fournisseur' },
-              { key: 'procurement_type', label: 'Approvisionnement (Acheté/Fabriqué/Drop ship)' },
-              { key: 'weight_lbs',       label: 'Poids (lbs)' },
-              { key: 'image',            label: 'Image (champ pièce jointe)' },
-            ]
-            return (
-              <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping des champs</p>
-                {ERP_FIELDS.map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600 w-52 flex-shrink-0">{label}</span>
-                    <FieldSelect
-                      value={piecesForm.field_map?.[key] || ''}
-                      onChange={v => setPiecesForm(f => ({ ...f, field_map: { ...f.field_map, [key]: v || undefined } }))}
-                      options={fieldNames}
-                    />
-                  </div>
-                ))}
-              </div>
-            )
-          })()}
+          {piecesForm.table_id && <FieldList fields={piecesTables.find(t => t.id === piecesForm.table_id)?.fields} erpTable="products" />}
           <div className="flex gap-2">
             <button onClick={savePieces} className="btn-primary btn-sm">Enregistrer</button>
             {piecesSync?.base_id && (
@@ -768,63 +552,8 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           </>)}
-
-          {ordersForm.orders_table_id && (() => {
-            const fields = (ordersTables.find(t => t.id === ordersForm.orders_table_id)?.fields || []).map(f => f.name)
-            if (!fields.length) return null
-            const ERP_FIELDS = [
-              { key: 'order_number', label: 'Numéro de commande' },
-              { key: 'company',      label: 'Entreprise' },
-              { key: 'project',      label: 'Projet' },
-              { key: 'status',       label: 'Statut' },
-              { key: 'priority',     label: 'Priorité' },
-              { key: 'notes',        label: 'Notes' },
-            ]
-            return (
-              <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping — Commandes</p>
-                {ERP_FIELDS.map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600 w-44 flex-shrink-0">{label}</span>
-                    <FieldSelect
-                      value={ordersForm.field_map_orders?.[key] || ''}
-                      onChange={v => setOrdersForm(f => ({ ...f, field_map_orders: { ...f.field_map_orders, [key]: v || undefined } }))}
-                      options={fields}
-                    />
-                  </div>
-                ))}
-              </div>
-            )
-          })()}
-
-          {ordersForm.items_table_id && (() => {
-            const fields = (itemsTables.find(t => t.id === ordersForm.items_table_id)?.fields || []).map(f => f.name)
-            if (!fields.length) return null
-            const ERP_FIELDS = [
-              { key: 'order',     label: 'Lien vers commande *' },
-              { key: 'product',   label: 'Produit / Pièce' },
-              { key: 'qty',       label: 'Quantité' },
-              { key: 'unit_cost', label: 'Coût unitaire' },
-              { key: 'item_type', label: 'Type (Facturable/Remplacement/Non facturable)' },
-              { key: 'notes',     label: 'Notes' },
-            ]
-            return (
-              <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping — Lignes d'items</p>
-                {ERP_FIELDS.map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600 w-52 flex-shrink-0">{label}</span>
-                    <FieldSelect
-                      value={ordersForm.field_map_items?.[key] || ''}
-                      onChange={v => setOrdersForm(f => ({ ...f, field_map_items: { ...f.field_map_items, [key]: v || undefined } }))}
-                      options={fields}
-                    />
-                  </div>
-                ))}
-              </div>
-            )
-          })()}
-
+          {ordersForm.orders_table_id && <FieldList fields={ordersTables.find(t => t.id === ordersForm.orders_table_id)?.fields} erpTable="orders" />}
+          {ordersForm.items_table_id && <FieldList fields={itemsTables.find(t => t.id === ordersForm.items_table_id)?.fields} erpTable="order_items" />}
           <div className="flex gap-2">
             <button onClick={saveOrders} className="btn-primary btn-sm">Enregistrer</button>
             {ordersSync?.base_id && (
@@ -853,40 +582,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           )}
-          {achatsForm.table_id && (() => {
-            const selectedTable = achatsTables.find(t => t.id === achatsForm.table_id)
-            const fields = selectedTable?.fields || []
-            if (!fields.length) return null
-            const fieldNames = fields.map(f => f.name)
-            const ERP_FIELDS = [
-              { key: 'product',       label: 'Produit (champ lien vers pièces)' },
-              { key: 'supplier',      label: 'Fournisseur' },
-              { key: 'reference',     label: 'Référence / PO' },
-              { key: 'order_date',    label: 'Date de commande' },
-              { key: 'expected_date', label: 'Date prévue' },
-              { key: 'received_date', label: 'Date de réception' },
-              { key: 'qty_ordered',   label: 'Qté commandée' },
-              { key: 'qty_received',  label: 'Qté reçue' },
-              { key: 'unit_cost',     label: 'Coût unitaire' },
-              { key: 'status',        label: 'Statut' },
-              { key: 'notes',         label: 'Notes' },
-            ]
-            return (
-              <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping des champs</p>
-                {ERP_FIELDS.map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600 w-52 flex-shrink-0">{label}</span>
-                    <FieldSelect
-                      value={achatsForm.field_map?.[key] || ''}
-                      onChange={v => setAchatsForm(f => ({ ...f, field_map: { ...f.field_map, [key]: v || undefined } }))}
-                      options={fieldNames}
-                    />
-                  </div>
-                ))}
-              </div>
-            )
-          })()}
+          {achatsForm.table_id && <FieldList fields={achatsTables.find(t => t.id === achatsForm.table_id)?.fields} erpTable="purchases" />}
           <div className="flex gap-2">
             <button onClick={saveAchats} className="btn-primary btn-sm">Enregistrer</button>
             {achatsSync?.base_id && (
@@ -915,58 +611,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           )}
-          {billetsForm.table_id && (() => {
-            const selectedTable = billetsTables.find(t => t.id === billetsForm.table_id)
-            const fields = selectedTable?.fields || []
-            if (!fields.length) return null
-            const fieldNames = fields.map(f => f.name)
-            const ERP_FIELDS = [
-              { key: 'title',            label: 'Titre / Sujet *' },
-              { key: 'description',      label: 'Description' },
-              { key: 'type',             label: 'Type' },
-              { key: 'status',           label: 'Statut' },
-              { key: 'company',          label: 'Entreprise (lien vers entreprises)' },
-              { key: 'contact',          label: 'Contact (lien vers contacts)' },
-              { key: 'duration_minutes', label: 'Durée (minutes)' },
-              { key: 'notes',            label: 'Notes' },
-              { key: 'created_at',       label: 'Date de création' },
-            ]
-            return (
-              <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping des champs</p>
-                {ERP_FIELDS.map(({ key, label }) => (
-                  <div key={key}>
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-slate-600 w-52 flex-shrink-0">{label}</span>
-                      <FieldSelect
-                        value={billetsForm.field_map?.[key] || ''}
-                        onChange={v => setBilletsForm(f => ({ ...f, field_map: { ...f.field_map, [key]: v || undefined } }))}
-                        options={fieldNames}
-                      />
-                    </div>
-                    {key === 'status' && billetsForm.field_map?.status && (
-                      <div>
-                        <ChoiceMapping
-                          fields={fields}
-                          selectedFieldName={billetsForm.field_map.status}
-                          erpOptions={['Waiting on us', 'Waiting on them', 'Closed']}
-                          currentMap={billetsForm.field_map?.status_map || {}}
-                          onChange={(choiceName, erpValue) => setBilletsForm(f => ({
-                            ...f,
-                            field_map: {
-                              ...f.field_map,
-                              status_map: { ...(f.field_map?.status_map || {}), [choiceName]: erpValue || undefined }
-                            }
-                          }))}
-                        />
-                        <p className="ml-44 mt-1 text-xs text-slate-400">Un statut vide dans Airtable est automatiquement mappé sur <span className="font-medium text-slate-600">Closed</span>.</p>
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )
-          })()}
+          {billetsForm.table_id && <FieldList fields={billetsTables.find(t => t.id === billetsForm.table_id)?.fields} erpTable="tickets" />}
           <div className="flex gap-2">
             <button onClick={saveBillets} className="btn-primary btn-sm">Enregistrer</button>
             {billetsSync?.base_id && (
@@ -995,39 +640,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           )}
-          {serialsForm.table_id && (() => {
-            const selectedTable = serialsTables.find(t => t.id === serialsForm.table_id)
-            const fields = selectedTable?.fields || []
-            if (!fields.length) return null
-            const fieldNames = fields.map(f => f.name)
-            const ERP_FIELDS = [
-              { key: 'serial',   label: 'Numéro de série *' },
-              { key: 'product',  label: 'Produit (lien vers pièces)' },
-              { key: 'company',  label: 'Entreprise (lien vers entreprises)' },
-              { key: 'order_item',           label: 'Item de commande (lien vers items)' },
-              { key: 'address',              label: 'Adresse' },
-              { key: 'manufacture_date',     label: 'Date de fabrication' },
-              { key: 'last_programmed_date', label: 'Date de la dernière programmation' },
-              { key: 'manufacture_value',    label: 'Valeur au moment de la fabrication' },
-              { key: 'status',               label: 'Statut' },
-              { key: 'notes',                label: 'Notes' },
-            ]
-            return (
-              <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping des champs</p>
-                {ERP_FIELDS.map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600 w-52 flex-shrink-0">{label}</span>
-                    <FieldSelect
-                      value={serialsForm.field_map?.[key] || ''}
-                      onChange={v => setSerialsForm(f => ({ ...f, field_map: { ...f.field_map, [key]: v || undefined } }))}
-                      options={fieldNames}
-                    />
-                  </div>
-                ))}
-              </div>
-            )
-          })()}
+          {serialsForm.table_id && <FieldList fields={serialsTables.find(t => t.id === serialsForm.table_id)?.fields} erpTable="serial_numbers" />}
           <div className="flex gap-2">
             <button onClick={saveSerials} className="btn-primary btn-sm">Enregistrer</button>
             {serialsSync?.base_id && (
@@ -1056,36 +669,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           )}
-          {envoisForm.table_id && (() => {
-            const selectedTable = envoisTables.find(t => t.id === envoisForm.table_id)
-            const fields = selectedTable?.fields || []
-            if (!fields.length) return null
-            const fieldNames = fields.map(f => f.name)
-            const ERP_FIELDS = [
-              { key: 'order',           label: 'Commande (lien vers commandes)' },
-              { key: 'tracking_number', label: 'Numéro de suivi' },
-              { key: 'carrier',         label: 'Transporteur' },
-              { key: 'status',          label: 'Statut' },
-              { key: 'shipped_at',      label: "Date d'envoi" },
-              { key: 'pays',            label: "Pays de l'envoi" },
-              { key: 'notes',           label: 'Notes' },
-            ]
-            return (
-              <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping des champs</p>
-                {ERP_FIELDS.map(({ key, label }) => (
-                  <div key={key} className="flex items-center gap-2">
-                    <span className="text-xs text-slate-600 w-52 flex-shrink-0">{label}</span>
-                    <FieldSelect
-                      value={envoisForm.field_map?.[key] || ''}
-                      onChange={v => setEnvoisForm(f => ({ ...f, field_map: { ...f.field_map, [key]: v || undefined } }))}
-                      options={fieldNames}
-                    />
-                  </div>
-                ))}
-              </div>
-            )
-          })()}
+          {envoisForm.table_id && <FieldList fields={envoisTables.find(t => t.id === envoisForm.table_id)?.fields} erpTable="shipments" />}
           <div className="flex gap-2">
             <button onClick={saveEnvois} className="btn-primary btn-sm">Enregistrer</button>
             {envoisSync?.base_id && (
@@ -1101,15 +685,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={soumissionsForm} setForm={setSoumissionsForm}
           tables={soumissionsTables} bases={bases} loadingBases={loadingBases}
           onSave={saveSoumissions} syncKey="soumissions" syncStatus={syncStatus} syncConfig={soumissionsSync}
-          tableLabel="Table soumissions"
-          fields={[
-            { key: 'project',                label: 'Projet (lien)' },
-            { key: 'quote_url',              label: 'URL de soumission' },
-            { key: 'pdf_url',                label: 'URL du PDF' },
-            { key: 'purchase_price_cad',     label: 'Prix d\'achat (CAD)' },
-            { key: 'subscription_price_cad', label: 'Prix d\'abonnement (CAD)' },
-            { key: 'expiration_date',        label: 'Date d\'expiration' },
-          ]}
+          tableLabel="Table soumissions" erpTable="soumissions"
         />
       )}
 
@@ -1118,18 +694,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={adressesForm} setForm={setAdressesForm}
           tables={adressesTables} bases={bases} loadingBases={loadingBases}
           onSave={saveAdresses} syncKey="adresses" syncStatus={syncStatus} syncConfig={adressesSync}
-          tableLabel="Table adresses"
-          fields={[
-            { key: 'line1',        label: 'Adresse ligne 1' },
-            { key: 'city',         label: 'Ville' },
-            { key: 'province',     label: 'Province' },
-            { key: 'postal_code',  label: 'Code postal' },
-            { key: 'country',      label: 'Pays' },
-            { key: 'language',     label: 'Langue' },
-            { key: 'address_type', label: 'Type d\'adresse' },
-            { key: 'company',      label: 'Entreprise (lien)' },
-            { key: 'contact',      label: 'Contact (lien)' },
-          ]}
+          tableLabel="Table adresses" erpTable="adresses"
         />
       )}
 
@@ -1138,13 +703,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={bomForm} setForm={setBomForm}
           tables={bomTables} bases={bases} loadingBases={loadingBases}
           onSave={saveBom} syncKey="bom" syncStatus={syncStatus} syncConfig={bomSync}
-          tableLabel="Table BOM"
-          fields={[
-            { key: 'product',      label: 'Produit parent (lien) *' },
-            { key: 'component',    label: 'Composant (lien) *' },
-            { key: 'qty_required', label: 'Quantité requise' },
-            { key: 'ref_des',      label: 'Ref. des.' },
-          ]}
+          tableLabel="Table BOM" erpTable="bom_items"
         />
       )}
 
@@ -1153,13 +712,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={assemblagesForm} setForm={setAssemblagesForm}
           tables={assemblagesTables} bases={bases} loadingBases={loadingBases}
           onSave={saveAssemblages} syncKey="assemblages" syncStatus={syncStatus} syncConfig={assemblagesSync}
-          tableLabel="Table assemblages"
-          fields={[
-            { key: 'product',         label: 'Produit fabriqué (lien) *' },
-            { key: 'qty_produced',    label: 'Quantité produite' },
-            { key: 'assembled_at',    label: 'Date d\'assemblage' },
-            { key: 'assembly_points', label: 'Points d\'assemblage' },
-          ]}
+          tableLabel="Table assemblages" erpTable="assemblages"
         />
       )}
 
@@ -1168,13 +721,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={serialChangesForm} setForm={setSerialChangesForm}
           tables={serialChangesTables} bases={bases} loadingBases={loadingBases}
           onSave={saveSerialChanges} syncKey="serial_changes" syncStatus={syncStatus} syncConfig={serialChangesSync}
-          tableLabel="Table changements d'état"
-          fields={[
-            { key: 'serial',          label: 'N° de série (lien) *' },
-            { key: 'previous_status', label: 'Ancien statut' },
-            { key: 'new_status',      label: 'Nouveau statut' },
-            { key: 'changed_at',      label: 'Date du changement' },
-          ]}
+          tableLabel="Table changements d'état" erpTable="serial_state_changes"
         />
       )}
 
@@ -1183,23 +730,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={abonnementsForm} setForm={setAbonnementsForm}
           tables={abonnementsTables} bases={bases} loadingBases={loadingBases}
           onSave={saveAbonnements} syncKey="abonnements" syncStatus={syncStatus} syncConfig={abonnementsSync}
-          tableLabel="Table abonnements"
-          fields={[
-            { key: 'company',              label: 'Entreprise (lien)' },
-            { key: 'product',              label: 'Produit (lien)' },
-            { key: 'status',               label: 'Statut' },
-            { key: 'type',                 label: 'Type' },
-            { key: 'start_date',           label: 'Date de début' },
-            { key: 'end_date',             label: 'Date de fin' },
-            { key: 'interval_count',       label: 'Intervalle' },
-            { key: 'interval_type',        label: 'Type d\'intervalle' },
-            { key: 'customer_id',          label: 'ID client (Stripe)' },
-            { key: 'customer_email',       label: 'Courriel client' },
-            { key: 'trial_end_date',       label: 'Fin de période d\'essai' },
-            { key: 'stripe_url',           label: 'URL Stripe' },
-            { key: 'amount_cad',           label: 'Montant (CAD)' },
-            { key: 'amount_after_discount', label: 'Montant après rabais' },
-          ]}
+          tableLabel="Table abonnements" erpTable="subscriptions"
         />
       )}
 
@@ -1208,22 +739,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={facturesForm} setForm={setFacturesForm}
           tables={facturesTables} bases={bases} loadingBases={loadingBases}
           onSave={saveFactures} syncKey="factures" syncStatus={syncStatus} syncConfig={facturesSync}
-          tableLabel="Table factures"
-          fields={[
-            { key: 'invoice_id',          label: 'ID de facture externe' },
-            { key: 'company',             label: 'Entreprise (lien)' },
-            { key: 'project',             label: 'Projet (lien)' },
-            { key: 'order',               label: 'Commande (lien)' },
-            { key: 'document_number',     label: 'Numéro de document' },
-            { key: 'document_date',       label: 'Date du document' },
-            { key: 'due_date',            label: 'Date d\'échéance' },
-            { key: 'status',              label: 'Statut' },
-            { key: 'currency',            label: 'Devise' },
-            { key: 'amount_before_tax',   label: 'Montant avant taxes (CAD)' },
-            { key: 'total_amount',        label: 'Montant total' },
-            { key: 'balance_due',         label: 'Solde dû' },
-            { key: 'notes',               label: 'Notes' },
-          ]}
+          tableLabel="Table factures" erpTable="factures"
         />
       )}
 
@@ -1232,14 +748,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={retoursForm} setForm={setRetoursForm}
           tables={retoursTables} bases={bases} loadingBases={loadingBases}
           onSave={saveRetours} syncKey="retours" syncStatus={syncStatus} syncConfig={retoursSync}
-          tableLabel="Table retours"
-          fields={[
-            { key: 'company',           label: 'Entreprise (lien)' },
-            { key: 'contact',           label: 'Contact (lien)' },
-            { key: 'return_number',     label: 'Numéro de retour' },
-            { key: 'tracking_number',   label: 'Numéro de suivi' },
-            { key: 'processing_status', label: 'Statut de traitement' },
-          ]}
+          tableLabel="Table retours" erpTable="retours"
         />
       )}
 
@@ -1248,25 +757,14 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={retourItemsForm} setForm={setRetourItemsForm}
           tables={retourItemsTables} bases={bases} loadingBases={loadingBases}
           onSave={saveRetourItems} syncKey="retour_items" syncStatus={syncStatus} syncConfig={retourItemsSync}
-          tableLabel="Table items de retour"
-          fields={[
-            { key: 'return',               label: 'Retour (lien) *' },
-            { key: 'serial',               label: 'N° de série (lien)' },
-            { key: 'company',              label: 'Entreprise (lien)' },
-            { key: 'return_reason',        label: 'Raison du retour' },
-            { key: 'return_reason_notes',  label: 'Notes sur la raison' },
-            { key: 'action',               label: 'Action (Réparer / Remplacer…)' },
-            { key: 'received_at',          label: 'Date de réception' },
-            { key: 'product_to_receive',   label: 'Produit à recevoir (lien)' },
-            { key: 'product_to_send',      label: 'Produit à envoyer (lien)' },
-          ]}
+          tableLabel="Table items de retour" erpTable="retour_items"
         />
       )}
     </div>
   )
 }
 
-function SimpleModuleTab({ form, setForm, tables, bases, loadingBases, onSave, syncKey, syncStatus, syncConfig, tableLabel, fields }) {
+function SimpleModuleTab({ form, setForm, tables, bases, loadingBases, onSave, syncKey, syncStatus, syncConfig, tableLabel, erpTable }) {
   return (
     <div className="space-y-3">
       <div>
@@ -1285,25 +783,7 @@ function SimpleModuleTab({ form, setForm, tables, bases, loadingBases, onSave, s
           </select>
         </div>
       )}
-      {form.table_id && (() => {
-        const fieldNames = (tables.find(t => t.id === form.table_id)?.fields || []).map(f => f.name)
-        if (!fieldNames.length) return null
-        return (
-          <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping des champs</p>
-            {fields.map(({ key, label }) => (
-              <div key={key} className="flex items-center gap-2">
-                <span className="text-xs text-slate-600 w-52 flex-shrink-0">{label}</span>
-                <FieldSelect
-                  value={form.field_map?.[key] || ''}
-                  onChange={v => setForm(f => ({ ...f, field_map: { ...f.field_map, [key]: v || undefined } }))}
-                  options={fieldNames}
-                />
-              </div>
-            ))}
-          </div>
-        )
-      })()}
+      {form.table_id && <FieldList fields={tables.find(t => t.id === form.table_id)?.fields} erpTable={erpTable} />}
       <div className="flex gap-2">
         <button onClick={onSave} className="btn-primary btn-sm">Enregistrer</button>
         {syncConfig?.base_id && (

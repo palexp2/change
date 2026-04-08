@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react'
-import { CheckCircle, XCircle, Link2, RefreshCw, Settings, Trash2, Mail, Database, HardDrive, Calendar, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy } from 'lucide-react'
+import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck } from 'lucide-react'
 import api from '../lib/api.js'
 import AirtableConfig from './AirtableConfig.jsx'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
-import { Modal } from '../components/Modal.jsx'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
 
 function WhisperConfig() {
@@ -303,74 +302,12 @@ function CubeAcrConfig({ onRefresh }) {
 }
 
 const CONNECTORS = [
-  {
-    id: 'google',
-    name: 'Gmail',
-    description: 'Synchronisation des courriels Gmail avec l\'ERP',
-    icon: Mail,
-    color: 'bg-red-50 text-red-600',
-    features: ['Sync des courriels'],
-    available: true,
-  },
-  {
-    id: 'airtable',
-    name: 'Airtable',
-    description: 'Synchronisation contacts, entreprises et projets depuis vos bases Airtable',
-    icon: Database,
-    color: 'bg-amber-50 text-amber-600',
-    features: ['Synchronisation des données Airtable'],
-    available: true,
-  },
-  {
-    id: 'whisper',
-    name: 'OpenAI',
-    description: 'Transcription automatique des enregistrements d\'appels avec le modèle Whisper d\'OpenAI',
-    icon: HardDrive,
-    color: 'bg-violet-50 text-violet-600',
-    features: ['Transcription automatique', 'Détection de langue', 'Formatage GPT-4o'],
-    available: true,
-    ftpManaged: true,
-  },
-  {
-    id: 'cube-acr',
-    name: 'Cube ACR',
-    description: 'Réception des enregistrements d\'appels via FTP depuis l\'application Cube ACR',
-    icon: Phone,
-    color: 'bg-green-50 text-green-600',
-    features: ['Enregistrements d\'appels', 'Attribution par vendeur', 'Transcription Whisper'],
-    available: true,
-    ftpManaged: true,
-  },
-  {
-    id: 'google-calendar',
-    name: 'Google Calendar',
-    description: 'Synchronisez vos réunions et créez des événements directement depuis l\'ERP',
-    icon: Calendar,
-    color: 'bg-blue-50 text-blue-600',
-    features: ['Sync réunions', 'Création d\'événements'],
-    available: false,
-    soon: true,
-  },
-  {
-    id: 'hubspot',
-    name: 'HubSpot',
-    description: 'Bidirectionnel : contacts, entreprises, deals avec HubSpot CRM',
-    icon: BarChart3,
-    color: 'bg-orange-50 text-orange-600',
-    features: ['Contacts', 'Deals', 'Companies'],
-    available: false,
-    soon: true,
-  },
-  {
-    id: 'stripe',
-    name: 'Stripe',
-    description: 'Synchronisation des abonnements Stripe vers l\'ERP',
-    icon: CreditCard,
-    color: 'bg-purple-50 text-purple-600',
-    features: ['Abonnements', 'Statuts en temps réel', 'Lien client'],
-    available: true,
-    apiKeyManaged: true,
-  },
+  { id: 'google',     name: 'Gmail',       icon: Mail,       color: 'bg-red-50 text-red-600' },
+  { id: 'airtable',   name: 'Airtable',    icon: Database,   color: 'bg-amber-50 text-amber-600' },
+  { id: 'calls',      name: 'Appels',      icon: Phone,      color: 'bg-green-50 text-green-600', alwaysConnected: true },
+  { id: 'quickbooks', name: 'QuickBooks',  icon: BookOpen,   color: 'bg-green-50 text-green-700' },
+  { id: 'stripe',     name: 'Stripe',      icon: CreditCard, color: 'bg-purple-50 text-purple-600', apiKeyManaged: true },
+  { id: 'novoxpress', name: 'Novoxpress',  icon: Truck,      color: 'bg-orange-50 text-orange-600', apiKeyManaged: true },
 ]
 
 function SyncBtn({ label, syncKey, syncStatus, onSync }) {
@@ -474,6 +411,104 @@ function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
 }
 
 
+function QuickBooksConfig({ accounts, onRefresh }) {
+  const connectedAccounts = accounts.filter(a => a.connector === 'quickbooks')
+
+  return (
+    <div className="mt-4 space-y-3">
+      {connectedAccounts.map(a => (
+        <div key={a.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg">
+          <div className="flex items-center gap-2">
+            <CheckCircle size={14} className="text-green-500" />
+            <span className="text-sm text-slate-700">QuickBooks connecté</span>
+          </div>
+          <button onClick={() => api.connectors.disconnect(a.id).then(onRefresh)} className="text-red-400 hover:text-red-600 p-1" title="Déconnecter">
+            <Trash2 size={14} />
+          </button>
+        </div>
+      ))}
+      {connectedAccounts.length > 0 && (
+        <p className="text-xs text-slate-400">
+          Les comptes de dépense, de paiement et le fournisseur sont sélectionnés par l'opérateur au moment de publier chaque reçu depuis la page <strong>Reçus de vente</strong>.
+        </p>
+      )}
+    </div>
+  )
+}
+
+function NovoxpressConfig({ configured: initialConfigured, onRefresh }) {
+  const [configured, setConfigured] = useState(initialConfigured)
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [showPass, setShowPass] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await api.novoxpress.saveConfig({ username, password })
+      setUsername(''); setPassword('')
+      setConfigured(true)
+      onRefresh()
+    } catch (e) { alert(e.message) }
+    finally { setSaving(false) }
+  }
+
+  const remove = async () => {
+    if (!confirm('Supprimer les identifiants Novoxpress ?')) return
+    try {
+      await api.novoxpress.deleteConfig()
+      setConfigured(false)
+      onRefresh()
+    } catch (e) { alert(e.message) }
+  }
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Identifiants Novoxpress</p>
+        {configured
+          ? <p className="text-sm text-green-600 font-medium flex items-center gap-1.5"><CheckCircle size={14} /> Compte configuré</p>
+          : <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5"><XCircle size={14} /> Aucun compte configuré</p>
+        }
+        <div className="space-y-2">
+          <input
+            type="text"
+            className="input"
+            placeholder="Nom d'utilisateur"
+            value={username}
+            onChange={e => setUsername(e.target.value)}
+            autoComplete="off"
+          />
+          <div className="relative">
+            <input
+              type={showPass ? 'text' : 'password'}
+              className="input pr-8"
+              placeholder="Mot de passe"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              autoComplete="new-password"
+            />
+            <button onClick={() => setShowPass(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+              {showPass ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={save} disabled={saving || !username || !password} className="btn-primary btn-sm">
+            {saving ? 'Sauvegarde…' : configured ? 'Mettre à jour' : 'Enregistrer'}
+          </button>
+          {configured && (
+            <button onClick={remove} className="btn-secondary btn-sm text-red-500 hover:text-red-600">
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function StripeConfig({ configured: initialConfigured, syncStatus, onRefresh }) {
   const [configured, setConfigured] = useState(initialConfigured)
   const [secretKey, setSecretKey] = useState('')
@@ -544,90 +579,224 @@ function StripeConfig({ configured: initialConfigured, syncStatus, onRefresh }) 
   )
 }
 
-function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured }) {
+function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured, novoxpressConfigured }) {
   const [expanded, setExpanded] = useState(false)
   const { icon: Icon, color } = connector
   const connectorAccounts = accounts.filter(a => a.connector === connector.id)
-  // Cube ACR est toujours "connecté" (géré via FTP)
-  const isConnected = connector.ftpManaged ? true
-    : connector.apiKeyManaged ? (connector.id === 'stripe' ? stripeConfigured : false)
+  const isConnected = connector.alwaysConnected ? true
+    : connector.apiKeyManaged ? (
+        connector.id === 'stripe' ? stripeConfigured :
+        connector.id === 'novoxpress' ? novoxpressConfigured :
+        false
+      )
     : connectorAccounts.length > 0
 
+  const needsOAuth = !connector.apiKeyManaged && !connector.alwaysConnected && !isConnected
+
   return (
-    <div className="card p-5">
-      <div className="flex items-start gap-4">
-        <div className={`w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0 ${color}`}>
-          <Icon size={22} />
+    <div className="card overflow-hidden">
+      <button
+        onClick={() => needsOAuth ? null : setExpanded(!expanded)}
+        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors text-left"
+      >
+        <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${color}`}>
+          <Icon size={16} />
         </div>
-        <div className="flex-1">
-          <div className="flex items-center gap-2 flex-wrap">
-            <h3 className="font-semibold text-slate-900">{connector.name}</h3>
-            {connector.soon && <Badge color="amber" size="sm">Bientôt</Badge>}
-            {!connector.soon && isConnected && <Badge color="green" size="sm">Connecté</Badge>}
-            {!connector.soon && !isConnected && <Badge color="slate" size="sm">Non connecté</Badge>}
-          </div>
-          <p className="text-sm text-slate-500 mt-0.5">{connector.description}</p>
-          <div className="flex flex-wrap gap-1 mt-2">
-            {connector.features.map(f => (
-              <span key={f} className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">{f}</span>
-            ))}
-          </div>
+        <span className="font-medium text-slate-900 flex-1">{connector.name}</span>
+        {isConnected
+          ? <Badge color="green" size="sm">Connecté</Badge>
+          : <Badge color="slate" size="sm">Non connecté</Badge>
+        }
+        {needsOAuth ? (
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              const token = localStorage.getItem('erp_token')
+              window.location.href = `/erp/api/connectors/${connector.id}/connect?token=${token}`
+            }}
+            className="btn-primary btn-sm text-xs"
+          >
+            <Link2 size={12} /> Connecter
+          </button>
+        ) : null}
+      </button>
 
-          {connector.available && !connector.ftpManaged && (
-            <div className="flex gap-2 mt-3">
-              <button
-                onClick={() => {
-                  const token = localStorage.getItem('erp_token')
-                  window.location.href = `/erp/api/connectors/${connector.id}/connect?token=${token}`
-                }}
-                className="btn-primary btn-sm text-xs"
-              >
-                <Link2 size={12} /> {isConnected ? 'Ajouter un compte' : 'Connecter'}
-              </button>
-              {isConnected && (
-                <button onClick={() => setExpanded(!expanded)} className="btn-secondary btn-sm text-xs">
-                  <Settings size={12} /> Configurer
-                </button>
-              )}
-            </div>
-          )}
-
-          {(connector.ftpManaged || connector.apiKeyManaged) && (
-            <button onClick={() => setExpanded(!expanded)} className="btn-secondary btn-sm text-xs mt-3">
-              <Settings size={12} /> {expanded ? 'Masquer' : 'Configurer'}
-            </button>
-          )}
-
-          {expanded && connector.id === 'google' && (
+      {expanded && (
+        <div className="px-4 pb-4 border-t border-slate-100">
+          {connector.id === 'google' && (
             <GoogleConfig accounts={connectorAccounts} config={config?.google || {}} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
-          {expanded && connector.id === 'airtable' && (
+          {connector.id === 'airtable' && (
             <AirtableConfig syncConfigs={syncConfigs} syncStatus={syncStatus} onRefresh={onRefresh} stripeConfigured={stripeConfigured} />
           )}
-          {expanded && connector.id === 'cube-acr' && (
-            <CubeAcrConfig onRefresh={onRefresh} />
+          {connector.id === 'calls' && (
+            <div className="space-y-4 mt-4">
+              <WhisperConfig />
+              <CubeAcrConfig onRefresh={onRefresh} />
+            </div>
           )}
-          {expanded && connector.id === 'whisper' && (
-            <WhisperConfig />
+          {connector.id === 'quickbooks' && (
+            <QuickBooksConfig accounts={connectorAccounts} config={config} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
-          {expanded && connector.id === 'stripe' && (
+          {connector.id === 'stripe' && (
             <StripeConfig configured={stripeConfigured} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
+          {connector.id === 'novoxpress' && (
+            <NovoxpressConfig configured={novoxpressConfigured} onRefresh={onRefresh} />
+          )}
         </div>
-      </div>
+      )}
+    </div>
+  )
+}
+
+// ── Sync Log Panel ───────────────────────────────────────────────────────────
+
+const TRIGGER_LABELS = { webhook: 'Webhook', manual: 'Manuel', scheduled: 'Planifié' }
+const TRIGGER_COLORS = { webhook: 'bg-blue-100 text-blue-700', manual: 'bg-purple-100 text-purple-700', scheduled: 'bg-slate-100 text-slate-600' }
+
+const MODULE_LABELS = {
+  airtable: 'CRM', projets: 'Projets', pieces: 'Produits', orders: 'Commandes',
+  achats: 'Achats', billets: 'Billets', serials: 'N° de série', envois: 'Envois',
+  soumissions: 'Soumissions', retours: 'Retours', retour_items: 'Items retour',
+  adresses: 'Adresses', bom: 'BOM', serial_changes: 'Changements série',
+  assemblages: 'Assemblages', factures: 'Factures',
+}
+
+function SyncLogPanel() {
+  const [open, setOpen] = useState(false)
+  const [logs, setLogs] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filter, setFilter] = useState('')
+
+  const load = async () => {
+    try {
+      const params = { limit: 200 }
+      if (filter) params.module = filter
+      const data = await api.syncLog.list(params)
+      setLogs(data)
+    } catch {} finally { setLoading(false) }
+  }
+
+  useEffect(() => { load() }, [filter])
+  useEffect(() => { const id = setInterval(load, 15000); return () => clearInterval(id) }, [filter])
+
+  const modules = [...new Set(logs.map(l => l.module))].sort()
+
+  const fmtTime = (iso) => {
+    if (!iso) return '—'
+    const d = new Date(iso + 'Z')
+    const now = new Date()
+    const diff = now - d
+    if (diff < 60000) return 'à l\'instant'
+    if (diff < 3600000) return `il y a ${Math.floor(diff / 60000)}min`
+    if (diff < 86400000) return d.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' })
+    return d.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+  }
+
+  // Stats summary
+  const last24h = logs.filter(l => new Date(l.created_at + 'Z') > new Date(Date.now() - 86400000))
+  const successCount = last24h.filter(l => l.status === 'success').length
+  const errorCount = last24h.filter(l => l.status === 'error').length
+  const lastScheduled = logs.find(l => l.trigger === 'scheduled')
+  const lastWebhook = logs.find(l => l.trigger === 'webhook')
+
+  return (
+    <div className="card overflow-hidden">
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors text-left"
+      >
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 bg-slate-100 text-slate-500">
+          <BarChart3 size={16} />
+        </div>
+        <span className="font-medium text-slate-900 flex-1">Journal de synchronisation</span>
+        <span className="text-xs text-slate-400">
+          24h : <span className="text-green-600 font-medium">{successCount}</span> ok
+          {errorCount > 0 && <>, <span className="text-red-500 font-medium">{errorCount}</span> err</>}
+        </span>
+      </button>
+
+      {open && (
+        <div className="border-t border-slate-100">
+          <div className="px-4 py-2 flex items-center justify-between bg-slate-50/50">
+            <div className="flex gap-4 text-xs text-slate-500">
+              {lastScheduled && <span>Dernière planifiée : {fmtTime(lastScheduled.created_at)}</span>}
+              {lastWebhook && <span>Dernier webhook : {fmtTime(lastWebhook.created_at)}</span>}
+            </div>
+            <select
+              value={filter}
+              onChange={e => { setFilter(e.target.value); setLoading(true) }}
+              className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-600"
+            >
+              <option value="">Tous les modules</option>
+              {modules.map(m => <option key={m} value={m}>{MODULE_LABELS[m] || m}</option>)}
+            </select>
+          </div>
+
+          {loading && logs.length === 0 ? (
+            <div className="flex items-center justify-center h-20">
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-600" />
+            </div>
+          ) : logs.length === 0 ? (
+            <div className="px-5 py-6 text-center text-sm text-slate-400">Aucun log</div>
+          ) : (
+            <div className="max-h-72 overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 sticky top-0">
+                  <tr>
+                    <th className="text-left px-4 py-2 font-medium text-slate-500">Heure</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-500">Module</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-500">Source</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-500">Statut</th>
+                    <th className="text-right px-4 py-2 font-medium text-slate-500">Modifiés</th>
+                    <th className="text-right px-4 py-2 font-medium text-slate-500">Durée</th>
+                    <th className="text-left px-4 py-2 font-medium text-slate-500">Erreur</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-50">
+                  {logs.map(l => (
+                    <tr key={l.id} className={l.status === 'error' ? 'bg-red-50/50' : ''}>
+                      <td className="px-4 py-1.5 text-slate-500 whitespace-nowrap">{fmtTime(l.created_at)}</td>
+                      <td className="px-4 py-1.5 font-medium text-slate-700">{MODULE_LABELS[l.module] || l.module}</td>
+                      <td className="px-4 py-1.5">
+                        <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${TRIGGER_COLORS[l.trigger] || 'bg-slate-100 text-slate-600'}`}>
+                          {TRIGGER_LABELS[l.trigger] || l.trigger}
+                        </span>
+                      </td>
+                      <td className="px-4 py-1.5">
+                        {l.status === 'success'
+                          ? <span className="text-green-600 font-medium">OK</span>
+                          : <span className="text-red-500 font-medium">Erreur</span>}
+                      </td>
+                      <td className="px-4 py-1.5 text-right text-slate-600">
+                        {l.records_modified > 0 && <span>+{l.records_modified}</span>}
+                        {l.records_destroyed > 0 && <span className="text-red-400 ml-1">-{l.records_destroyed}</span>}
+                        {l.records_modified === 0 && l.records_destroyed === 0 && <span className="text-slate-300">—</span>}
+                      </td>
+                      <td className="px-4 py-1.5 text-right text-slate-400">{l.duration_ms != null ? `${(l.duration_ms / 1000).toFixed(1)}s` : '—'}</td>
+                      <td className="px-4 py-1.5 text-red-400 max-w-48 truncate" title={l.error_message || ''}>{l.error_message || ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
 const SYNC_LABELS = {
   gmail: 'Gmail', drive: 'Drive', airtable: 'CRM Airtable',
-  inventaire: 'Inventaire', pieces: 'Pièces', orders: 'Commandes',
+  projets: 'Projets', pieces: 'Pièces', orders: 'Commandes',
   achats: 'Achats', billets: 'Billets', serials: 'N° de série', envois: 'Envois',
-  stripe: 'Stripe',
+  stripe: 'Stripe', 'qb-depenses': 'QB Dépenses', 'qb-factures': 'QB Factures',
 }
 
 export function ConnectorsContent() {
-  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, inventaire_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false })
+  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, projets_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false, novoxpress_configured: false })
   const [loading, setLoading] = useState(true)
   const { status: syncStatus, anyRunning } = useSyncStatus(3000)
 
@@ -675,38 +844,46 @@ export function ConnectorsContent() {
             <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" />
           </div>
         ) : (
-          <div className="space-y-4">
-            {CONNECTORS.map(connector => (
-              <ConnectorCard
-                key={connector.id}
-                connector={connector}
-                accounts={data.accounts || []}
-                config={data.config || {}}
-                stripeConfigured={!!data.stripe_configured}
-                syncConfigs={{
-                  crm:           data.airtable_sync   || {},
-                  inv:           data.inventaire_sync || {},
-                  orders:        data.orders_sync     || {},
-                  pieces:        data.pieces          || {},
-                  achats:        data.achats          || {},
-                  billets:       data.billets         || {},
-                  serials:       data.serials         || {},
-                  envois:        data.envois          || {},
-                  soumissions:   data.soumissions     || {},
-                  adresses:      data.adresses        || {},
-                  bom:           data.bom             || {},
-                  serial_changes:data.serial_changes  || {},
-                  abonnements:   data.abonnements     || {},
-                  assemblages:   data.assemblages     || {},
-                  factures:      data.factures        || {},
-                  retours:       data.retours         || {},
-                  retour_items:  data.retour_items    || {},
-                }}
-                syncStatus={syncStatus}
-                onRefresh={() => load(false)}
-              />
-            ))}
-          </div>
+          <>
+            <div className="space-y-4">
+              {CONNECTORS.map(connector => (
+                <ConnectorCard
+                  key={connector.id}
+                  connector={connector}
+                  accounts={data.accounts || []}
+                  config={data.config || {}}
+                  stripeConfigured={!!data.stripe_configured}
+                  novoxpressConfigured={!!data.novoxpress_configured}
+                  syncConfigs={{
+                    contacts:      data.contacts_sync    || {},
+                    companies:     data.companies_sync   || {},
+                    projets:       data.projets_sync    || {},
+                    orders:        data.orders_sync     || {},
+                    pieces:        data.pieces          || {},
+                    achats:        data.achats          || {},
+                    billets:       data.billets         || {},
+                    serials:       data.serials         || {},
+                    envois:        data.envois          || {},
+                    soumissions:   data.soumissions     || {},
+                    adresses:      data.adresses        || {},
+                    bom:           data.bom             || {},
+                    serial_changes:data.serial_changes  || {},
+                    abonnements:   data.abonnements     || {},
+                    assemblages:   data.assemblages     || {},
+                    factures:      data.factures        || {},
+                    retours:       data.retours         || {},
+                    retour_items:  data.retour_items    || {},
+                  }}
+                  syncStatus={syncStatus}
+                  onRefresh={() => load(false)}
+                />
+              ))}
+            </div>
+
+            <div className="mt-6">
+              <SyncLogPanel />
+            </div>
+          </>
         )}
     </div>
   )

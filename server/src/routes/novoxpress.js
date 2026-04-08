@@ -17,7 +17,7 @@ const router = Router()
 router.use(requireAuth)
 
 // Load shipment with full address + company info
-function getShipmentWithAddress(shipmentId, tenantId) {
+function getShipmentWithAddress(shipmentId) {
   return db.prepare(`
     SELECT
       s.id, s.order_id, s.tracking_number, s.carrier,
@@ -30,45 +30,42 @@ function getShipmentWithAddress(shipmentId, tenantId) {
     LEFT JOIN orders o ON s.order_id = o.id
     LEFT JOIN companies co ON o.company_id = co.id
     LEFT JOIN adresses a ON s.address_id = a.id
-    WHERE s.id = ? AND s.tenant_id = ?
-  `).get(shipmentId, tenantId)
+    WHERE s.id = ?
+  `).get(shipmentId)
 }
 
 // GET /api/novoxpress/status
 router.get('/status', (req, res) => {
-  res.json({ configured: isNovoxpressConfigured(req.user.tenant_id) })
+  res.json({ configured: isNovoxpressConfigured() })
 })
 
 // PUT /api/novoxpress/config — save credentials
 router.put('/config', (req, res) => {
   const { username, password } = req.body
   if (!username || !password) return res.status(400).json({ error: 'username et password requis' })
-  const tid = req.user.tenant_id
   const upsert = db.prepare(`
-    INSERT INTO connector_config (tenant_id, connector, key, value)
-    VALUES (?, 'novoxpress', ?, ?)
-    ON CONFLICT (tenant_id, connector, key) DO UPDATE SET value = excluded.value
+    INSERT INTO connector_config (connector, key, value)
+    VALUES ('novoxpress', ?, ?)
+    ON CONFLICT (connector, key) DO UPDATE SET value = excluded.value
   `)
-  upsert.run(tid, 'username', username)
-  upsert.run(tid, 'password', password)
-  clearTokenCache(tid)
+  upsert.run('username', username)
+  upsert.run('password', password)
+  clearTokenCache()
   res.json({ ok: true })
 })
 
 // DELETE /api/novoxpress/config — remove credentials
 router.delete('/config', (req, res) => {
-  const tid = req.user.tenant_id
-  db.prepare("DELETE FROM connector_config WHERE tenant_id=? AND connector='novoxpress'").run(tid)
-  clearTokenCache(tid)
+  db.prepare("DELETE FROM connector_config WHERE connector='novoxpress'").run()
+  clearTokenCache()
   res.json({ ok: true })
 })
 
 // POST /api/novoxpress/rates/:shipmentId — get rate estimates
 router.post('/rates/:shipmentId', async (req, res) => {
-  const tid = req.user.tenant_id
-  if (!isNovoxpressConfigured(tid)) return res.status(400).json({ error: 'Novoxpress non configuré' })
+  if (!isNovoxpressConfigured()) return res.status(400).json({ error: 'Novoxpress non configuré' })
 
-  const shipment = getShipmentWithAddress(req.params.shipmentId, tid)
+  const shipment = getShipmentWithAddress(req.params.shipmentId)
   if (!shipment) return res.status(404).json({ error: 'Envoi introuvable' })
   if (!shipment.address_id) return res.status(400).json({ error: "L'envoi n'a pas d'adresse de livraison" })
 
@@ -76,7 +73,7 @@ router.post('/rates/:shipmentId', async (req, res) => {
   if (!packages?.length) return res.status(400).json({ error: 'packages requis' })
 
   try {
-    const result = await getRates(tid, shipment, { packaging_type, packages, declared_value })
+    const result = await getRates(shipment, { packaging_type, packages, declared_value })
     res.json(result)
   } catch (e) {
     console.error('Novoxpress getRates error:', e.message)
@@ -86,10 +83,9 @@ router.post('/rates/:shipmentId', async (req, res) => {
 
 // POST /api/novoxpress/label/:shipmentId — create label + save PDF
 router.post('/label/:shipmentId', async (req, res) => {
-  const tid = req.user.tenant_id
-  if (!isNovoxpressConfigured(tid)) return res.status(400).json({ error: 'Novoxpress non configuré' })
+  if (!isNovoxpressConfigured()) return res.status(400).json({ error: 'Novoxpress non configuré' })
 
-  const shipment = getShipmentWithAddress(req.params.shipmentId, tid)
+  const shipment = getShipmentWithAddress(req.params.shipmentId)
   if (!shipment) return res.status(404).json({ error: 'Envoi introuvable' })
 
   const { request_id, service_id, packaging_type, packages, declared_value } = req.body
@@ -97,7 +93,7 @@ router.post('/label/:shipmentId', async (req, res) => {
   if (!packages?.length) return res.status(400).json({ error: 'packages requis' })
 
   try {
-    const result = await createLabel(tid, shipment, req.params.shipmentId, {
+    const result = await createLabel(shipment, req.params.shipmentId, {
       request_id, service_id, packaging_type, packages, declared_value
     })
 
@@ -110,20 +106,19 @@ router.post('/label/:shipmentId', async (req, res) => {
           carrier = COALESCE(?, carrier),
           status = 'Envoyé',
           shipped_at = COALESCE(shipped_at, date('now'))
-      WHERE id = ? AND tenant_id = ?
+      WHERE id = ?
     `).run(
       result.shipment_id,
       result.filename,
       result.tracking_id || null,
       null, // carrier set manually or from service name
-      req.params.shipmentId,
-      tid
+      req.params.shipmentId
     )
 
     res.json({
       shipment_id: result.shipment_id,
       tracking_id: result.tracking_id,
-      label_url: `/api/novoxpress/labels/${result.filename}`
+      label_url: `/erp/api/novoxpress/labels/${result.filename}`
     })
   } catch (e) {
     console.error('Novoxpress createLabel error:', e.message)
@@ -133,10 +128,9 @@ router.post('/label/:shipmentId', async (req, res) => {
 
 // POST /api/novoxpress/pickup/:shipmentId — schedule a pickup
 router.post('/pickup/:shipmentId', async (req, res) => {
-  const tid = req.user.tenant_id
-  if (!isNovoxpressConfigured(tid)) return res.status(400).json({ error: 'Novoxpress non configuré' })
+  if (!isNovoxpressConfigured()) return res.status(400).json({ error: 'Novoxpress non configuré' })
 
-  const shipment = db.prepare('SELECT novoxpress_shipment_id FROM shipments WHERE id = ? AND tenant_id = ?').get(req.params.shipmentId, tid)
+  const shipment = db.prepare('SELECT novoxpress_shipment_id FROM shipments WHERE id = ?').get(req.params.shipmentId)
   if (!shipment) return res.status(404).json({ error: 'Envoi introuvable' })
   if (!shipment.novoxpress_shipment_id) return res.status(400).json({ error: 'Aucun shipment Novoxpress associé' })
 
@@ -144,11 +138,11 @@ router.post('/pickup/:shipmentId', async (req, res) => {
   if (!date?.year || !date?.month || !date?.day) return res.status(400).json({ error: 'Date de ramassage requise' })
 
   try {
-    const result = await schedulePickup(tid, shipment.novoxpress_shipment_id, {
+    const result = await schedulePickup(shipment.novoxpress_shipment_id, {
       date, ready_at, ready_until, quantity, weight, pickup_location, pickup_instructions
     })
-    db.prepare('UPDATE shipments SET novoxpress_pickup_id = ? WHERE id = ? AND tenant_id = ?')
-      .run(result.pickup_id || null, req.params.shipmentId, tid)
+    db.prepare('UPDATE shipments SET novoxpress_pickup_id = ? WHERE id = ?')
+      .run(result.pickup_id || null, req.params.shipmentId)
     res.json({ pickup_id: result.pickup_id, message: result.message })
   } catch (e) {
     console.error('Novoxpress pickup error:', e.message)
@@ -158,16 +152,15 @@ router.post('/pickup/:shipmentId', async (req, res) => {
 
 // DELETE /api/novoxpress/pickup/:shipmentId — cancel pickup
 router.delete('/pickup/:shipmentId', async (req, res) => {
-  const tid = req.user.tenant_id
-  if (!isNovoxpressConfigured(tid)) return res.status(400).json({ error: 'Novoxpress non configuré' })
+  if (!isNovoxpressConfigured()) return res.status(400).json({ error: 'Novoxpress non configuré' })
 
-  const shipment = db.prepare('SELECT novoxpress_pickup_id FROM shipments WHERE id = ? AND tenant_id = ?').get(req.params.shipmentId, tid)
+  const shipment = db.prepare('SELECT novoxpress_pickup_id FROM shipments WHERE id = ?').get(req.params.shipmentId)
   if (!shipment) return res.status(404).json({ error: 'Envoi introuvable' })
   if (!shipment.novoxpress_pickup_id) return res.status(400).json({ error: 'Aucun ramassage planifié pour cet envoi' })
 
   try {
-    await cancelPickup(tid, shipment.novoxpress_pickup_id)
-    db.prepare('UPDATE shipments SET novoxpress_pickup_id = NULL WHERE id = ? AND tenant_id = ?').run(req.params.shipmentId, tid)
+    await cancelPickup(shipment.novoxpress_pickup_id)
+    db.prepare('UPDATE shipments SET novoxpress_pickup_id = NULL WHERE id = ?').run(req.params.shipmentId)
     res.json({ success: true })
   } catch (e) {
     console.error('Novoxpress cancel-pickup error:', e.message)

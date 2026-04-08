@@ -12,8 +12,6 @@ dotenv.config()
 
 const CRM_DB_PATH = resolve('/home/ec2-user/crm/server/data/crm.db')
 const ERP_DB_PATH = resolve(process.env.DATABASE_PATH || './data/erp.db')
-const TENANT_ID = 'e07d65e0-e733-4721-84e1-b6dbe50cdbf5' // Orisha Technologies
-
 if (!existsSync(CRM_DB_PATH)) {
   console.error(`CRM DB not found: ${CRM_DB_PATH}`)
   process.exit(1)
@@ -31,17 +29,17 @@ function run() {
   const companyIdMap = new Map() // crm id → erp id
 
   const insertCompany = erp.prepare(`
-    INSERT OR IGNORE INTO companies (id, tenant_id, name, phone, website, address, notes, airtable_id, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
+    INSERT OR IGNORE INTO companies (id, name, phone, website, address, notes, airtable_id, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?)
   `)
 
   // Check which airtable_ids already exist to avoid duplicates
   const existingAirtable = new Set(
-    erp.prepare('SELECT airtable_id FROM companies WHERE tenant_id=? AND airtable_id IS NOT NULL').all(TENANT_ID)
+    erp.prepare('SELECT airtable_id FROM companies WHERE airtable_id IS NOT NULL').all()
       .map(r => r.airtable_id)
   )
   const existingNames = new Map(
-    erp.prepare('SELECT id, name FROM companies WHERE tenant_id=?').all(TENANT_ID).map(r => [r.name.toLowerCase(), r.id])
+    erp.prepare('SELECT id, name FROM companies WHERE 1=1').all().map(r => [r.name.toLowerCase(), r.id])
   )
 
   let companiesMigrated = 0
@@ -49,7 +47,7 @@ function run() {
     for (const co of crmCompanies) {
       // Skip if airtable_id already in ERP
       if (co.airtable_id && existingAirtable.has(co.airtable_id)) {
-        const erpId = erp.prepare('SELECT id FROM companies WHERE tenant_id=? AND airtable_id=?').get(TENANT_ID, co.airtable_id)?.id
+        const erpId = erp.prepare('SELECT id FROM companies WHERE airtable_id=?').get(co.airtable_id)?.id
         if (erpId) { companyIdMap.set(co.id, erpId); continue }
       }
       // Skip if same name exists
@@ -57,7 +55,7 @@ function run() {
       if (existing) { companyIdMap.set(co.id, existing); continue }
 
       const newId = uuid()
-      insertCompany.run(newId, TENANT_ID, co.name, co.phone || null, co.domain || null, co.address || null, co.notes || null, co.airtable_id || null, co.created_at, co.created_at)
+      insertCompany.run(newId, co.name, co.phone || null, co.domain || null, co.address || null, co.notes || null, co.airtable_id || null, co.created_at, co.created_at)
       companyIdMap.set(co.id, newId)
       companiesMigrated++
     }
@@ -70,22 +68,22 @@ function run() {
   const contactIdMap = new Map()
 
   const insertContact = erp.prepare(`
-    INSERT OR IGNORE INTO contacts (id, tenant_id, first_name, last_name, email, phone, company_id, notes, airtable_id, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
+    INSERT OR IGNORE INTO contacts (id, first_name, last_name, email, phone, company_id, notes, airtable_id, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?)
   `)
 
   const existingEmails = new Map(
-    erp.prepare('SELECT id, email FROM contacts WHERE tenant_id=? AND email IS NOT NULL').all(TENANT_ID).map(r => [r.email.toLowerCase(), r.id])
+    erp.prepare('SELECT id, email FROM contacts WHERE email IS NOT NULL').all().map(r => [r.email.toLowerCase(), r.id])
   )
   const existingContactAirtable = new Set(
-    erp.prepare('SELECT airtable_id FROM contacts WHERE tenant_id=? AND airtable_id IS NOT NULL').all(TENANT_ID).map(r => r.airtable_id)
+    erp.prepare('SELECT airtable_id FROM contacts WHERE airtable_id IS NOT NULL').all().map(r => r.airtable_id)
   )
 
   let contactsMigrated = 0
   erp.transaction(() => {
     for (const c of crmContacts) {
       if (c.airtable_id && existingContactAirtable.has(c.airtable_id)) {
-        const erpId = erp.prepare('SELECT id FROM contacts WHERE tenant_id=? AND airtable_id=?').get(TENANT_ID, c.airtable_id)?.id
+        const erpId = erp.prepare('SELECT id FROM contacts WHERE airtable_id=?').get(c.airtable_id)?.id
         if (erpId) { contactIdMap.set(c.id, erpId); continue }
       }
       if (c.email && existingEmails.has(c.email.toLowerCase())) {
@@ -100,7 +98,7 @@ function run() {
       const firstName = c.first_name || nameParts[0] || ''
       const lastName = c.last_name || nameParts.slice(1).join(' ') || ''
 
-      insertContact.run(newId, TENANT_ID, firstName, lastName, c.email || null, c.phone || null, companyId, c.notes || null, c.airtable_id || null, c.created_at)
+      insertContact.run(newId, firstName, lastName, c.email || null, c.phone || null, companyId, c.notes || null, c.airtable_id || null, c.created_at)
       contactIdMap.set(c.id, newId)
       contactsMigrated++
     }
@@ -113,8 +111,8 @@ function run() {
   const interactionIdMap = new Map()
 
   const insertInteraction = erp.prepare(`
-    INSERT OR IGNORE INTO interactions (id, tenant_id, contact_id, company_id, type, direction, timestamp, created_at)
-    VALUES (?,?,?,?,?,?,?,?)
+    INSERT OR IGNORE INTO interactions (id, contact_id, company_id, type, direction, timestamp, created_at)
+    VALUES (?,?,?,?,?,?,?)
   `)
 
   let interactionsMigrated = 0
@@ -123,7 +121,7 @@ function run() {
       const newId = uuid()
       const contactId = i.contact_id ? contactIdMap.get(i.contact_id) || null : null
       const companyId = i.company_id ? companyIdMap.get(i.company_id) || null : null
-      insertInteraction.run(newId, TENANT_ID, contactId, companyId, i.type, i.direction || null, i.timestamp, i.created_at)
+      insertInteraction.run(newId, contactId, companyId, i.type, i.direction || null, i.timestamp, i.created_at)
       interactionIdMap.set(i.id, newId)
       interactionsMigrated++
     }
@@ -177,12 +175,12 @@ function run() {
   let tokensMigrated = 0
   erp.transaction(() => {
     for (const t of crmTokens) {
-      const existing = erp.prepare(`SELECT id FROM connector_oauth WHERE tenant_id=? AND connector=? AND account_email=?`).get(TENANT_ID, t.provider, t.account_email)
+      const existing = erp.prepare(`SELECT id FROM connector_oauth WHERE connector=? AND account_email=?`).get(t.provider, t.account_email)
       if (existing) continue
       erp.prepare(`
-        INSERT INTO connector_oauth (id, tenant_id, connector, account_key, account_email, access_token, refresh_token, expiry_date, created_at, updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)
-      `).run(uuid(), TENANT_ID, t.provider, t.account_email || t.id, t.account_email || null, t.access_token || null, t.refresh_token || null, t.expiry_date || null, t.created_at, t.updated_at)
+        INSERT INTO connector_oauth (id, connector, account_key, account_email, access_token, refresh_token, expiry_date, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?)
+      `).run(uuid(), t.provider, t.account_email || t.id, t.account_email || null, t.access_token || null, t.refresh_token || null, t.expiry_date || null, t.created_at, t.updated_at)
       tokensMigrated++
     }
   })()
@@ -193,7 +191,7 @@ function run() {
   erp.transaction(() => {
     for (const s of crmGmailState) {
       // account_key was token.id in CRM, find matching connector_oauth
-      const oauthRow = erp.prepare('SELECT id FROM connector_oauth WHERE tenant_id=? AND connector=?').get(TENANT_ID, 'google')
+      const oauthRow = erp.prepare('SELECT id FROM connector_oauth WHERE connector=?').get('google')
       if (!oauthRow) continue
       erp.prepare(`
         INSERT OR IGNORE INTO gmail_sync_state (connector_oauth_id, last_history_id, last_synced_at)
@@ -206,9 +204,9 @@ function run() {
   const crmAirtableConfig = crm.prepare('SELECT * FROM airtable_sync_config WHERE id=1').get()
   if (crmAirtableConfig?.base_id) {
     erp.prepare(`
-      INSERT OR IGNORE INTO airtable_sync_config (tenant_id, base_id, contacts_table_id, companies_table_id, field_map_contacts, field_map_companies, last_synced_at)
-      VALUES (?,?,?,?,?,?,?)
-    `).run(TENANT_ID, crmAirtableConfig.base_id, crmAirtableConfig.contacts_table_id, crmAirtableConfig.companies_table_id, crmAirtableConfig.field_map_contacts, crmAirtableConfig.field_map_companies, crmAirtableConfig.last_synced_at)
+      INSERT OR IGNORE INTO airtable_sync_config (base_id, contacts_table_id, companies_table_id, field_map_contacts, field_map_companies, last_synced_at)
+      VALUES (?,?,?,?,?,?)
+    `).run(crmAirtableConfig.base_id, crmAirtableConfig.contacts_table_id, crmAirtableConfig.companies_table_id, crmAirtableConfig.field_map_contacts, crmAirtableConfig.field_map_companies, crmAirtableConfig.last_synced_at)
     console.log('✅ Airtable sync config migrated')
   }
 
@@ -216,9 +214,9 @@ function run() {
   const crmInventaire = crm.prepare('SELECT * FROM airtable_inventaire_config WHERE id=1').get()
   if (crmInventaire?.base_id) {
     erp.prepare(`
-      INSERT OR IGNORE INTO airtable_inventaire_config (tenant_id, base_id, projects_table_id, field_map_projects, last_synced_at)
-      VALUES (?,?,?,?,?)
-    `).run(TENANT_ID, crmInventaire.base_id, crmInventaire.projects_table_id, crmInventaire.field_map_projects, crmInventaire.last_synced_at)
+      INSERT OR IGNORE INTO airtable_inventaire_config (base_id, projects_table_id, field_map_projects, last_synced_at)
+      VALUES (?,?,?,?)
+    `).run(crmInventaire.base_id, crmInventaire.projects_table_id, crmInventaire.field_map_projects, crmInventaire.last_synced_at)
     console.log('✅ Inventaire config migrated')
   }
 

@@ -144,9 +144,23 @@ export function getFieldType(columns, fieldValue) {
   return col?.type || 'text'
 }
 
-export function getFieldOptions(columns, fieldValue) {
+export function getFieldOptions(columns, fieldValue, data) {
   const col = columns.find(c => c.field === fieldValue)
-  return col?.options || []
+  // Normalize options: can be an array, an object with choices, or an object (Airtable metadata)
+  let hardcoded = col?.options || []
+  if (!Array.isArray(hardcoded)) {
+    hardcoded = Array.isArray(hardcoded.choices) ? hardcoded.choices : []
+  }
+  // Enrich with unique values from actual data
+  if (data?.length && col?.field) {
+    const fromData = new Set(hardcoded)
+    for (const row of data) {
+      const v = row[col.field]
+      if (v !== null && v !== undefined && v !== '') fromData.add(String(v))
+    }
+    return [...fromData].sort((a, b) => a.localeCompare(b, 'fr'))
+  }
+  return hardcoded
 }
 
 export function getOpsForType(type) {
@@ -161,10 +175,10 @@ export function defaultOpForType(type) {
   return 'contains'
 }
 
-export function FilterRow({ columns, filter, onChange, onRemove, size = 'sm' }) {
+export function FilterRow({ columns, filter, onChange, onRemove, size = 'sm', data }) {
   const filterableCols = columns.filter(c => c.filterable !== false && c.field)
   const fieldType = getFieldType(filterableCols, filter.field)
-  const fieldOptions = getFieldOptions(filterableCols, filter.field)
+  const fieldOptions = getFieldOptions(filterableCols, filter.field, data)
   const ops = getOpsForType(fieldType)
   const needsValue = !VALUE_LESS_OPS.has(filter.op)
   const isMulti = MULTI_SELECT_OPS.has(filter.op)

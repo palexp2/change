@@ -1,7 +1,6 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth.jsx'
 import { ToastProvider } from './contexts/ToastContext.jsx'
-import { UndoRedoProvider } from './hooks/useUndoRedo.jsx'
 
 import Login from './pages/Login.jsx'
 import Setup from './pages/Setup.jsx'
@@ -106,9 +105,7 @@ export default function App() {
   return (
     <AuthProvider>
       <ToastProvider>
-        <UndoRedoProvider>
-          <AppRoutes />
-        </UndoRedoProvider>
+        <AppRoutes />
       </ToastProvider>
     </AuthProvider>
   )

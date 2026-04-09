@@ -4,16 +4,11 @@ import { Plus } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
-import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.jsx'
+import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-
-function fmtCurrency(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
 
 const PROCUREMENT_TYPES = ['Acheté', 'Fabriqué', 'Drop ship']
 
@@ -170,31 +165,7 @@ export default function Products() {
 
   useEffect(() => { load() }, [load])
 
-  const COLUMNS = useMemo(() => TABLE_COLUMN_META.products.map(meta => ({
-    ...meta,
-    render: meta.id === 'name_fr' ? row => (
-      <div className="flex items-center gap-3">
-        {row.image_url
-          ? <img src={row.image_url} alt="" className="w-8 h-8 object-cover rounded flex-shrink-0 border border-slate-200" />
-          : <div className="w-8 h-8 rounded bg-slate-100 flex-shrink-0" />
-        }
-        <div>
-          <div className="font-medium text-slate-900">{row.name_fr}</div>
-          {row.type && <div className="text-xs text-slate-400">{row.type}</div>}
-        </div>
-      </div>
-    ) : meta.id === 'sku' ? row => (
-      <span className="font-mono text-xs text-slate-500">{row.sku || '—'}</span>
-    ) : meta.id === 'unit_cost' ? row => (
-      <span className="text-slate-500">{row.unit_cost ? fmtCurrency(row.unit_cost) : '—'}</span>
-    ) : meta.id === 'price_cad' ? row => (
-      <span className="text-slate-500">{row.price_cad ? fmtCurrency(row.price_cad) : '—'}</span>
-    ) : meta.id === 'stock_qty' ? row => (
-      <span className="font-bold text-slate-900">{row.stock_qty}</span>
-    ) : meta.id === 'status' ? row => (
-      <Badge color={stockStatusColor(row)}>{stockStatusLabel(row)}</Badge>
-    ) : undefined
-  })), [])
+  const COLUMNS = useMemo(() => TABLE_COLUMN_META.products, [])
 
   async function handleCreate(form) {
     await api.products.create(form)

@@ -709,14 +709,7 @@ export function initSchema() {
     // delivery address on orders and shipments
     'ALTER TABLE orders ADD COLUMN address_id TEXT REFERENCES adresses(id)',
     'ALTER TABLE shipments ADD COLUMN address_id TEXT REFERENCES adresses(id)',
-    // Phase 1b — columns for dynamic tables/fields/views
-    'ALTER TABLE base_tables ADD COLUMN slug TEXT',
-    'ALTER TABLE base_tables ADD COLUMN color TEXT',
-    'ALTER TABLE base_tables ADD COLUMN autonumber_seq INTEGER DEFAULT 0',
-    'ALTER TABLE base_fields ADD COLUMN key TEXT',
-    'ALTER TABLE base_fields ADD COLUMN required INTEGER DEFAULT 0',
-    'ALTER TABLE base_fields ADD COLUMN default_value TEXT',
-    'ALTER TABLE base_views ADD COLUMN is_default INTEGER DEFAULT 0',
+
     'DROP TABLE IF EXISTS webhooks',
     'ALTER TABLE notifications ADD COLUMN read_at TEXT',
     // Phase 3 — Automations engine columns
@@ -725,10 +718,7 @@ export function initSchema() {
     'ALTER TABLE automations ADD COLUMN last_run_at TEXT',
     'ALTER TABLE automations ADD COLUMN last_run_status TEXT',
     'ALTER TABLE automation_logs ADD COLUMN duration_ms INTEGER',
-    // Phase 5a — Interface builder columns
-    'ALTER TABLE base_interfaces ADD COLUMN color TEXT DEFAULT \'indigo\'',
-    'ALTER TABLE base_interfaces ADD COLUMN role_access TEXT DEFAULT \'[]\'',
-    'ALTER TABLE base_interface_blocks ADD COLUMN condition TEXT',
+
     // Phase 6 — Airtable-like interactions
     `CREATE TABLE IF NOT EXISTS base_interactions (
       id TEXT PRIMARY KEY,
@@ -955,86 +945,10 @@ export function initSchema() {
     );
   `)
 
-  // ── Phase 1a: Airtable-like meta-tables ───────────────────────────────────
   db.exec(`
-    -- Dynamic tables registry
-    CREATE TABLE IF NOT EXISTS base_tables (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      icon TEXT,
-      description TEXT,
-      sort_order INTEGER DEFAULT 0,
-      deleted_at TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(name)
-    );
-
-    -- Dynamic fields registry
-    CREATE TABLE IF NOT EXISTS base_fields (
-      id TEXT PRIMARY KEY,
-      table_id TEXT NOT NULL REFERENCES base_tables(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      type TEXT NOT NULL DEFAULT 'single_line_text',
-      options TEXT DEFAULT '{}',
-      formula TEXT,
-      sort_order INTEGER DEFAULT 0,
-      width INTEGER DEFAULT 160,
-      is_primary INTEGER DEFAULT 0,
-      deleted_at TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
-    );
-
-    -- Dynamic records
-    CREATE TABLE IF NOT EXISTS base_records (
-      id TEXT PRIMARY KEY,
-      table_id TEXT NOT NULL REFERENCES base_tables(id) ON DELETE CASCADE,
-      data TEXT NOT NULL DEFAULT '{}',
-      sort_order INTEGER DEFAULT 0,
-      deleted_at TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
-    );
-
-    -- Record links (many-to-many between records of different tables)
-    CREATE TABLE IF NOT EXISTS base_record_links (
-      id TEXT PRIMARY KEY,
-      field_id TEXT NOT NULL REFERENCES base_fields(id) ON DELETE CASCADE,
-      source_record_id TEXT NOT NULL REFERENCES base_records(id) ON DELETE CASCADE,
-      target_record_id TEXT NOT NULL REFERENCES base_records(id) ON DELETE CASCADE,
-      created_at TEXT DEFAULT (datetime('now')),
-      UNIQUE(field_id, source_record_id, target_record_id)
-    );
-
-    -- Views (grid, etc.)
-    CREATE TABLE IF NOT EXISTS base_views (
-      id TEXT PRIMARY KEY,
-      table_id TEXT NOT NULL REFERENCES base_tables(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      type TEXT NOT NULL DEFAULT 'grid',
-      config TEXT DEFAULT '{}',
-      sort_order INTEGER DEFAULT 0,
-      deleted_at TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
-    );
-
-    -- Record history (audit trail)
-    CREATE TABLE IF NOT EXISTS record_history (
-      id TEXT PRIMARY KEY,
-      table_id TEXT NOT NULL,
-      record_id TEXT NOT NULL,
-      user_id TEXT REFERENCES users(id),
-      action TEXT NOT NULL CHECK(action IN ('create','update','delete','restore')),
-      diff TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-
     -- Automations
     CREATE TABLE IF NOT EXISTS automations (
       id TEXT PRIMARY KEY,
-      table_id TEXT REFERENCES base_tables(id),
       name TEXT NOT NULL,
       trigger_type TEXT NOT NULL,
       trigger_config TEXT DEFAULT '{}',
@@ -1055,39 +969,6 @@ export function initSchema() {
       result TEXT,
       error TEXT,
       created_at TEXT DEFAULT (datetime('now'))
-    );
-
-    -- Interface pages builder
-    CREATE TABLE IF NOT EXISTS base_interfaces (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      icon TEXT,
-      sort_order INTEGER DEFAULT 0,
-      deleted_at TEXT,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS base_interface_pages (
-      id TEXT PRIMARY KEY,
-      interface_id TEXT NOT NULL REFERENCES base_interfaces(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      sort_order INTEGER DEFAULT 0,
-      deleted_at TEXT,
-      created_at TEXT DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS base_interface_blocks (
-      id TEXT PRIMARY KEY,
-      page_id TEXT NOT NULL REFERENCES base_interface_pages(id) ON DELETE CASCADE,
-      type TEXT NOT NULL,
-      config TEXT DEFAULT '{}',
-      x INTEGER DEFAULT 0,
-      y INTEGER DEFAULT 0,
-      w INTEGER DEFAULT 4,
-      h INTEGER DEFAULT 4,
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
     );
 
     -- Notifications
@@ -1116,13 +997,8 @@ export function initSchema() {
     );
   `)
 
-  // Phase 1a indexes
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_base_records_table ON base_records(table_id, deleted_at)') } catch {}
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_base_fields_table ON base_fields(table_id, deleted_at, sort_order)') } catch {}
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_base_views_table ON base_views(table_id, deleted_at)') } catch {}
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_record_history_record ON record_history(table_id, record_id, created_at)') } catch {}
+  // Indexes
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_automation_logs_auto ON automation_logs(automation_id, created_at)') } catch {}
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_base_record_links_source ON base_record_links(field_id, source_record_id)') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read, created_at)') } catch {}
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }

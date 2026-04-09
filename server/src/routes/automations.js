@@ -121,24 +121,7 @@ router.post('/:id/run', async (req, res) => {
   ).get(req.params.id)
   if (!automation) return res.status(404).json({ error: 'Introuvable' })
 
-  const config = JSON.parse(automation.trigger_config || '{}')
-  let triggerData = { trigger: 'manual' }
-
-  if (config.table_id) {
-    const table = db.prepare('SELECT * FROM base_tables WHERE id = ? AND deleted_at IS NULL').get(config.table_id)
-    const record = db.prepare(`
-      SELECT * FROM base_records WHERE table_id = ? AND deleted_at IS NULL
-      ORDER BY created_at DESC LIMIT 1
-    `).get(config.table_id)
-
-    triggerData = {
-      trigger: 'manual',
-      table: table ? { id: table.id, name: table.name } : null,
-      record: record ? { id: record.id, data: JSON.parse(record.data) } : null,
-    }
-  }
-
-  const result = await runAutomation(automation, triggerData)
+  const result = await runAutomation(automation, { trigger: 'manual' })
   res.json(result)
 })
 

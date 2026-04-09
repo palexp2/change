@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { randomUUID } from 'crypto'
+import path from 'path'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 
@@ -257,7 +258,8 @@ router.get('/factures/:id', (req, res) => {
 router.get('/factures/:id/pdf', (req, res) => {
   const row = db.prepare('SELECT airtable_pdf_path FROM factures WHERE id=?').get(req.params.id)
   if (!row?.airtable_pdf_path) return res.status(404).json({ error: 'PDF non disponible' })
-  res.sendFile(row.airtable_pdf_path)
+  const uploadsBase = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads')
+  res.sendFile(path.join(uploadsBase, row.airtable_pdf_path))
 })
 
 router.patch('/factures/:id', (req, res) => {

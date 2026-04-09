@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const BASE_URL = 'https://api.novoxpress.ca/prod'
-const LABELS_DIR = path.join(__dirname, '../../../uploads/labels')
+const LABELS_DIR = path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')
 
 // In-memory JWT cache
 let tokenCache = null

@@ -4,7 +4,6 @@ import { Layout } from '../components/Layout.jsx'
 import { ArrowLeft, Play, ChevronDown } from 'lucide-react'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { api } from '../lib/api.js'
-import { baseAPI } from '../hooks/useBaseAPI.js'
 
 export default function AutomationDetail() {
   const { id } = useParams()
@@ -21,12 +20,7 @@ export default function AutomationDetail() {
   const [logs, setLogs] = useState([])
   const [testResult, setTestResult] = useState(null)
   const [testRunning, setTestRunning] = useState(false)
-  const [tables, setTables] = useState([])
   const [saving, setSaving] = useState(false)
-
-  useEffect(() => {
-    baseAPI.tables().then(r => setTables(r.tables || []))
-  }, [])
 
   useEffect(() => {
     if (isNew) return
@@ -144,7 +138,6 @@ export default function AutomationDetail() {
           <TriggerConfig
             triggerType={triggerType}
             triggerConfig={triggerConfig}
-            tables={tables}
             onTypeChange={setTriggerType}
             onConfigChange={setTriggerConfig}
           />
@@ -213,19 +206,7 @@ export default function AutomationDetail() {
   )
 }
 
-function TriggerConfig({ triggerType, triggerConfig, tables, onTypeChange, onConfigChange }) {
-  const [fields, setFields] = useState([])
-
-  useEffect(() => {
-    if (triggerConfig.table_id) {
-      baseAPI.fields(triggerConfig.table_id)
-        .then(r => setFields((r.fields || []).filter(f => !f.deleted_at)))
-        .catch(() => setFields([]))
-    } else {
-      setFields([])
-    }
-  }, [triggerConfig.table_id])
-
+function TriggerConfig({ triggerType, triggerConfig, onTypeChange, onConfigChange }) {
   const CRON_PRESETS = [
     { label: 'Chaque minute', value: '* * * * *' },
     { label: 'Toutes les 5min', value: '*/5 * * * *' },
@@ -241,49 +222,10 @@ function TriggerConfig({ triggerType, triggerConfig, tables, onTypeChange, onCon
         <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
         <select value={triggerType} onChange={e => { onTypeChange(e.target.value); onConfigChange({}) }}
           className="w-full border rounded-lg px-3 py-2 text-sm">
-          <option value="record_created">Quand un enregistrement est créé</option>
-          <option value="record_updated">Quand un enregistrement est modifié</option>
-          <option value="field_changed">Quand un champ change de valeur</option>
           <option value="schedule">Planifié (cron)</option>
           <option value="manual">Déclenchement manuel</option>
         </select>
       </div>
-
-      {['record_created', 'record_updated', 'field_changed'].includes(triggerType) && (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Table</label>
-          <select value={triggerConfig.table_id || ''}
-            onChange={e => onConfigChange({ ...triggerConfig, table_id: e.target.value, field_key: undefined })}
-            className="w-full border rounded-lg px-3 py-2 text-sm">
-            <option value="">Toutes les tables</option>
-            {tables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
-        </div>
-      )}
-
-      {['record_updated', 'field_changed'].includes(triggerType) && triggerConfig.table_id && (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            Champ {triggerType === 'record_updated' ? '(optionnel)' : ''}
-          </label>
-          <select value={triggerConfig.field_key || ''}
-            onChange={e => onConfigChange({ ...triggerConfig, field_key: e.target.value })}
-            className="w-full border rounded-lg px-3 py-2 text-sm">
-            <option value="">Tous les champs</option>
-            {fields.map(f => <option key={f.key} value={f.key}>{f.name}</option>)}
-          </select>
-        </div>
-      )}
-
-      {triggerType === 'field_changed' && triggerConfig.field_key && (
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">Valeur cible</label>
-          <input type="text" value={triggerConfig.target_value || ''}
-            onChange={e => onConfigChange({ ...triggerConfig, target_value: e.target.value })}
-            className="w-full border rounded-lg px-3 py-2 text-sm"
-            placeholder="Valeur qui déclenche l'automation" />
-        </div>
-      )}
 
       {triggerType === 'schedule' && (
         <div className="space-y-3">

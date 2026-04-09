@@ -73,10 +73,17 @@ function mapAirtableType(atField) {
     case 'rollup':
     case 'lookup':
     case 'multipleLookupValues':
+    case 'formula': {
+      // Use the result type if available (e.g. formula returning a number)
+      const resultType = atField.options?.result?.type
+      if (resultType === 'number' || resultType === 'currency' || resultType === 'percent')
+        return { field_type: 'number', options: { source: t, precision: atField.options?.result?.options?.precision } }
+      if (resultType === 'date' || resultType === 'dateTime')
+        return { field_type: 'date', options: { source: t } }
+      if (resultType === 'checkbox')
+        return { field_type: 'checkbox', options: { source: t } }
       return { field_type: 'text', options: { source: t } }
-
-    case 'formula':
-      return { field_type: 'text', options: { source: 'formula' } }
+    }
 
     case 'multipleAttachments':
       return { field_type: 'text', options: { format: 'attachment' } }
@@ -340,4 +347,26 @@ export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
 
   if (seenNewFields.size > 0) console.log(`✨ ${erpTable}: ${seenNewFields.size} nouveaux champs (webhook)`)
   if (count > 0) console.log(`🔄 ${erpTable}: ${count} records enrichis (webhook)`)
+}
+
+/**
+ * Register native (hardcoded) fields in airtable_field_defs so they appear
+ * in the views/filter UI alongside dynamic Airtable fields.
+ * Runs at startup — idempotent (INSERT OR IGNORE).
+ */
+export function ensureNativeFieldDefs(definitions) {
+  const stmt = db.prepare(
+    `INSERT OR IGNORE INTO airtable_field_defs (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, field_type, options, sort_order)
+     VALUES (?,?,?,?,?,?,?,?,?)`
+  )
+  let count = 0
+  for (const def of definitions) {
+    const result = stmt.run(
+      uuid(), def.module, def.erp_table, `native_${def.column_name}`,
+      def.label, def.column_name, def.field_type || 'text', JSON.stringify(def.options || {}),
+      def.sort_order ?? -(1000 - count)
+    )
+    if (result.changes > 0) count++
+  }
+  if (count > 0) console.log(`📋 ${count} native field(s) registered in airtable_field_defs`)
 }

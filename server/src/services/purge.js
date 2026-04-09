@@ -1,13 +1,7 @@
 import db from '../db/database.js'
 
 const TABLES_WITH_SOFT_DELETE = [
-  'base_tables',
-  'base_fields',
-  'base_records',
-  'base_views',
   'automations',
-  'base_interfaces',
-  'base_interface_pages',
 ]
 
 const RETENTION_DAYS = 30

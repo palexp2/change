@@ -90,20 +90,7 @@ export const TABLE_COLUMN_META = {
     { id: 'updated_at',     label: 'Modifié le',       field: 'updated_at',  type: 'date', defaultVisible: false },
   ],
 
-  products: [
-    { id: 'sku',       label: 'SKU',          field: 'sku' },
-    { id: 'name_fr',   label: 'Nom (FR)',     field: 'name_fr' },
-    { id: 'name_en',   label: 'Nom (EN)',     field: 'name_en',   defaultVisible: false },
-    { id: 'type',      label: 'Type',         field: 'type',      type: 'single_select', options: ['Produit', 'Service', 'Pièce', 'Autre'] },
-    { id: 'unit_cost', label: 'Coût (CAD)',   field: 'unit_cost', type: 'number', defaultVisible: false },
-    { id: 'price_cad', label: 'Prix (CAD)',   field: 'price_cad', type: 'number', defaultVisible: false },
-    { id: 'stock_qty', label: 'Stock',        field: 'stock_qty', type: 'number' },
-    { id: 'min_stock', label: 'Stock min',    field: 'min_stock', type: 'number', defaultVisible: false },
-    { id: 'order_qty', label: 'Qté à cmd',   field: 'order_qty', type: 'number', defaultVisible: false },
-    { id: 'supplier',    label: 'Fournisseur',  field: 'supplier',    defaultVisible: false },
-    { id: 'is_sellable', label: 'Vendable',     field: 'is_sellable', type: 'boolean', defaultVisible: false },
-    { id: 'status',      label: 'Statut stock', field: 'stock_qty',   sortable: false, filterable: false, groupable: false },
-  ],
+  products: [],
 
   orders: [
     { id: 'order_number',   label: '# Commande',       field: 'order_number' },

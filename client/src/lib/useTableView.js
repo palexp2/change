@@ -203,11 +203,20 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
           setSorts(currentView.sort?.length > 0 ? currentView.sort : (config.default_sort || []))
           setFilters(currentView.filters || [])
         } else if (pills.length > 0 && !forceAllView) {
-          // Default to first view sorted by sort_order
-          const firstView = [...pills].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))[0]
-          setActiveViewIdRaw(firstView.id)
-          setSorts(firstView.sort?.length > 0 ? firstView.sort : (config.default_sort || []))
-          setFilters(firstView.filters || [])
+          // Restore last selected view from localStorage, or fall back to first by sort_order
+          const savedId = localStorage.getItem(`erp_lastView_${table}`)
+          const savedView = savedId && pills.find(p => p.id === savedId)
+          // savedId === 'null' means user explicitly chose "Tous"
+          if (savedId === 'null') {
+            setActiveViewIdRaw(null)
+            setSorts(config.default_sort?.length > 0 ? config.default_sort : [])
+            setFilters([])
+          } else {
+            const targetView = savedView || [...pills].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))[0]
+            setActiveViewIdRaw(targetView.id)
+            setSorts(targetView.sort?.length > 0 ? targetView.sort : (config.default_sort || []))
+            setFilters(targetView.filters || [])
+          }
         } else {
           setActiveViewIdRaw(null)
           setSorts(config.default_sort?.length > 0 ? config.default_sort : [])
@@ -224,7 +233,14 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
   function setActiveViewId(id, currentViews, currentConfig) {
     const vList = currentViews ?? views
     const cfg = currentConfig ?? adminConfig
+    // Persist current view's state in local array before switching
+    if (activeViewId && activeViewId !== id) {
+      setViews(prev => prev.map(v =>
+        v.id === activeViewId ? { ...v, filters, sort: sorts } : v
+      ))
+    }
     setActiveViewIdRaw(id)
+    localStorage.setItem(`erp_lastView_${table}`, String(id))
     if (id === null) {
       setSorts(cfg?.default_sort?.length > 0 ? cfg.default_sort : [])
       setFilters([])
@@ -239,11 +255,24 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
 
   const activeView = activeViewId === null ? null : (views.find(v => v.id === activeViewId) || null)
 
+  // Merge hardcoded columns with dynamic Airtable fields
+  const allColumns = useMemo(() => {
+    if (!dynamicFields.length) return columns
+    const existingIds = new Set(columns.map(c => c.id))
+    const extra = dynamicFields
+      .filter(f => !existingIds.has(f.id))
+      .map(f => ({
+        ...f,
+        defaultVisible: (f.sort_order != null && f.sort_order < 0) ? true : false,
+      }))
+    return [...columns, ...extra]
+  }, [columns, dynamicFields])
+
   const viewVisibleColumns = useMemo(() => {
     if (activeView?.visible_columns?.length > 0) return activeView.visible_columns
     if (adminConfig?.visible_columns?.length > 0) return adminConfig.visible_columns
-    return columns.filter(c => c.defaultVisible !== false).map(c => c.id)
-  }, [activeView, adminConfig, columns])
+    return allColumns.filter(c => c.defaultVisible !== false).map(c => c.id)
+  }, [activeView, adminConfig, allColumns])
 
   const viewGroupBy = activeView?.group_by || null
 
@@ -270,19 +299,6 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
     const order = realViews.map((v, i) => ({ id: v.id, sort_order: i }))
     api.views.reorderPills(table, order, newAllViewSortOrder).catch(() => {})
   }
-
-  // Merge hardcoded columns with dynamic Airtable fields
-  const allColumns = useMemo(() => {
-    if (!dynamicFields.length) return columns
-    const existingIds = new Set(columns.map(c => c.id))
-    const extra = dynamicFields
-      .filter(f => !existingIds.has(f.id))
-      .map(f => ({
-        ...f,
-        defaultVisible: false,
-      }))
-    return [...columns, ...extra]
-  }, [columns, dynamicFields])
 
   return {
     filteredData,

@@ -41,15 +41,29 @@ router.get('/:table', requireAuth, (req, res) => {
     'SELECT id, label, color, filters, visible_columns, sort, group_by, sort_order FROM table_view_pills WHERE table_name=? ORDER BY sort_order, created_at'
   ).all(table)
 
-  // Dynamic fields from Airtable auto-sync
-  const dynamicFields = db.prepare(
-    'SELECT column_name, airtable_field_name, field_type, options, sort_order FROM airtable_field_defs WHERE erp_table=? ORDER BY sort_order'
-  ).all(table).map(f => ({
+  // Dynamic fields from Airtable auto-sync (deduplicate by label, prefer non-native over native)
+  const rawFields = db.prepare(
+    'SELECT airtable_field_id, column_name, airtable_field_name, field_type, options, sort_order FROM airtable_field_defs WHERE erp_table=? ORDER BY sort_order'
+  ).all(table)
+  const seenLabels = new Map()
+  for (const f of rawFields) {
+    const existing = seenLabels.get(f.airtable_field_name)
+    // Prefer non-native (Airtable-synced) fields over native ones when duplicates exist
+    if (!existing) {
+      seenLabels.set(f.airtable_field_name, f)
+    } else if (existing.airtable_field_id.startsWith('native_') && !f.airtable_field_id.startsWith('native_')) {
+      // Keep native sort_order so the field stays visible by default
+      f.sort_order = Math.min(existing.sort_order, f.sort_order)
+      seenLabels.set(f.airtable_field_name, f)
+    }
+  }
+  const dynamicFields = [...seenLabels.values()].map(f => ({
     id: f.column_name,
     label: f.airtable_field_name,
     field: f.column_name,
     type: f.field_type,
     options: JSON.parse(f.options || '{}'),
+    sort_order: f.sort_order,
     dynamic: true,
   }))
 
@@ -136,7 +150,7 @@ router.patch('/:table/pills/reorder', requireAdmin, (req, res) => {
 })
 
 // PUT /api/views/:table/pills/:id
-router.put('/:table/pills/:id', requireAdmin, (req, res) => {
+router.put('/:table/pills/:id', requireAuth, (req, res) => {
   if (!validateTable(req, res)) return
   const { table, id } = req.params
 

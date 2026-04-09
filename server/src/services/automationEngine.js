@@ -54,68 +54,6 @@ function logRun(automationId, status, triggerData, output, error, duration) {
 
 function buildSandbox(triggerData, logs) {
   return {
-    record: triggerData.record || null,
-    table: triggerData.table || null,
-    field: triggerData.field || null,
-    oldValue: triggerData.oldValue ?? null,
-    newValue: triggerData.newValue ?? null,
-
-    updateRecord: (recordId, data) => {
-      const row = db.prepare('SELECT * FROM base_records WHERE id = ?').get(recordId)
-      if (!row) throw new Error(`Record ${recordId} introuvable`)
-      const existing = JSON.parse(row.data)
-      const merged = { ...existing, ...data }
-      db.prepare("UPDATE base_records SET data = ?, updated_at = datetime('now') WHERE id = ?")
-        .run(JSON.stringify(merged), recordId)
-      for (const [key, val] of Object.entries(data)) {
-        if (JSON.stringify(existing[key]) !== JSON.stringify(val)) {
-          db.prepare(`
-            INSERT INTO record_history (id, table_id, record_id, action, diff)
-            VALUES (?, ?, ?, 'update', ?)
-          `).run(newId('record'), row.table_id, recordId,
-            JSON.stringify({ field_key: key, old_value: existing[key], new_value: val, source: 'automation' }))
-        }
-      }
-      return merged
-    },
-
-    createRecord: (tableId, data) => {
-      const id = newId('record')
-      const maxOrder = db.prepare('SELECT MAX(sort_order) as m FROM base_records WHERE table_id = ?').get(tableId)
-      db.prepare(`
-        INSERT INTO base_records (id, table_id, data, sort_order)
-        VALUES (?, ?, ?, ?)
-      `).run(id, tableId, JSON.stringify(data), (maxOrder?.m || 0) + 1)
-      db.prepare(`
-        INSERT INTO record_history (id, table_id, record_id, action, diff)
-        VALUES (?, ?, ?, 'create', ?)
-      `).run(newId('record'), tableId, id, JSON.stringify({ source: 'automation' }))
-      return { id, data }
-    },
-
-    deleteRecord: (recordId) => {
-      db.prepare("UPDATE base_records SET deleted_at = datetime('now') WHERE id = ?")
-        .run(recordId)
-    },
-
-    getRecords: (tableId, filters = {}) => {
-      let query = 'SELECT * FROM base_records WHERE table_id = ? AND deleted_at IS NULL'
-      const params = [tableId]
-      if (filters.where) {
-        for (const [key, val] of Object.entries(filters.where)) {
-          query += ` AND json_extract(data, '$.${key}') = ?`
-          params.push(val)
-        }
-      }
-      query += ' LIMIT 500'
-      return db.prepare(query).all(...params).map(r => ({ ...r, data: JSON.parse(r.data) }))
-    },
-
-    getRecord: (recordId) => {
-      const r = db.prepare('SELECT * FROM base_records WHERE id = ?').get(recordId)
-      return r ? { ...r, data: JSON.parse(r.data) } : null
-    },
-
     log: (...args) => {
       logs.push(args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' '))
     },

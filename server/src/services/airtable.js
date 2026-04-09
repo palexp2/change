@@ -1040,7 +1040,42 @@ export async function syncBillets(changes = null) {
     } else {
       updateDynamicFields('tickets', fieldMap, records)
     }
+
+    // Notify Slack when escalade = 'Hardware' (new only)
+    await notifyHardwareEscalades()
   } catch (e) { console.error('❌ Billets sync:', e.message) }
+}
+
+async function notifyHardwareEscalades() {
+  const webhookUrl = process.env.SLACK_WEBHOOK_HARDWARE
+  if (!webhookUrl) return
+
+  const tickets = db.prepare(`
+    SELECT t.id, t.title, t.status, t.type, c.name as company_name
+    FROM tickets t
+    LEFT JOIN companies c ON t.company_id = c.id
+    WHERE t.escalade = 'Hardware' AND t.slack_notified_hardware = 0
+  `).all()
+
+  for (const ticket of tickets) {
+    const text = `🔧 *Escalade Hardware* — ${ticket.title}\n` +
+      `Entreprise : ${ticket.company_name || 'N/A'}\n` +
+      `Type : ${ticket.type || 'N/A'} | Statut : ${ticket.status || 'N/A'}\n` +
+      `<${process.env.APP_URL}/erp/tickets/${ticket.id}|Voir le billet>`
+    try {
+      const resp = await fetch(webhookUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      })
+      if (resp.ok) {
+        db.prepare('UPDATE tickets SET slack_notified_hardware = 1 WHERE id = ?').run(ticket.id)
+        console.log(`📣 Slack: escalade Hardware notifiée pour ${ticket.title}`)
+      }
+    } catch (e) {
+      console.error(`❌ Slack notification failed for ${ticket.title}:`, e.message)
+    }
+  }
 }
 
 export async function syncProjets(changes = null) {
@@ -1190,6 +1225,13 @@ export async function syncProjets(changes = null) {
       const allRecords = [...records]
       for (const { extraRecords } of extraTableData) allRecords.push(...extraRecords)
       purgeOrphans('projects', allRecords)
+    }
+
+    // Auto-sync dynamic fields (all Airtable fields not in hardcoded map)
+    if (!changes) {
+      await syncDynamicFields('projets', 'projects', config.base_id, config.projects_table_id, fieldMap, records)
+    } else {
+      updateDynamicFields('projects', fieldMap, records)
     }
   } catch (e) { console.error('❌ Inventaire sync:', e.message) }
 }
@@ -1615,7 +1657,7 @@ export async function syncFactures(changes = null) {
 async function downloadFacturePdfs(records) {
   const { mkdir, writeFile } = await import('fs/promises')
   const path = await import('path')
-  const dir = path.resolve(process.cwd(), 'data/pdfs/factures')
+  const dir = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'factures')
   await mkdir(dir, { recursive: true })
   let downloaded = 0
   for (const rec of records) {
@@ -1629,7 +1671,7 @@ async function downloadFacturePdfs(records) {
       const buf = Buffer.from(await res.arrayBuffer())
       const filePath = `${dir}/${row.id}.pdf`
       await writeFile(filePath, buf)
-      db.prepare('UPDATE factures SET airtable_pdf_path=? WHERE id=?').run(filePath, row.id)
+      db.prepare('UPDATE factures SET airtable_pdf_path=? WHERE id=?').run(`factures/${row.id}.pdf`, row.id)
       downloaded++
     } catch(e) { console.error(`❌ PDF dl ${row.id}:`, e.message) }
   }

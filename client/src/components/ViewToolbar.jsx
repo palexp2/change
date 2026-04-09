@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, Save } from 'lucide-react'
+import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { FilterRow, defaultOpForType, getFieldType } from './FilterRow.jsx'
 import api from '../lib/api.js'
@@ -76,7 +76,7 @@ function FieldsPanel({ columns, visibleCols, onChange }) {
   )
 }
 
-function FilterPanel({ columns, filters, onChange }) {
+function FilterPanel({ columns, filters, onChange, data }) {
   const filterableCols = columns.filter(c => c.filterable !== false && c.field)
 
   // Normalize to {conjunction, rules} format
@@ -133,6 +133,7 @@ function FilterPanel({ columns, filters, onChange }) {
               onChange={updated => update(i, updated)}
               onRemove={() => remove(i)}
               size="xs"
+              data={data}
             />
           </div>
         ))}
@@ -216,13 +217,16 @@ export function ViewToolbar({
   processedCount,
   visibleCols, setVisibleCols,
   groupBy, setGroupBy,
+  data,
 }) {
   const [openPanel, setOpenPanel] = useState(null)
   const toolbarRef = useRef(null)
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
   const [draggingId, setDraggingId] = useState(null)
-  const [dragOverId, setDragOverId] = useState(null)
+  const [dragOverIdx, setDragOverIdx] = useState(null)
+  const dragStartIdx = useRef(null)
+  const tabsRef = useRef(null)
 
   // Merged list: real views + virtual "Tous" entry, sorted by their sort_order
   const ALL_ID = '__all__'
@@ -230,25 +234,30 @@ export function ViewToolbar({
     ...views.map((v, i) => ({ ...v, __sortOrder: v.sort_order ?? i })),
     { id: ALL_ID, label: tableLabel, __sortOrder: allViewSortOrder },
   ].sort((a, b) => a.__sortOrder - b.__sortOrder)
-  const [saving, setSaving] = useState(false)
+  // Auto-save view on any change (filters, sorts, visible columns, group by)
+  const autoSaveRef = useRef(null)
+  const pendingSaveRef = useRef(null)
 
-  async function handleSaveView() {
-    if (!table || !activeViewId) return
-    setSaving(true)
-    try {
-      await api.views.updatePill(table, activeViewId, {
-        sort: sorts,
-        filters: Array.isArray(filters) ? filters : [],
-        visible_columns: visibleCols || [],
-        group_by: groupBy || null,
-      })
-      window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
-    } catch (e) {
-      alert(e.message)
-    } finally {
-      setSaving(false)
-    }
+  function flushSave() {
+    const p = pendingSaveRef.current
+    if (!p) return
+    pendingSaveRef.current = null
+    clearTimeout(autoSaveRef.current)
+    api.views.updatePill(p.table, p.viewId, {
+      sort: p.sorts,
+      filters: p.filters || [],
+      visible_columns: p.visibleCols || [],
+      group_by: p.groupBy || null,
+    }).catch(() => {})
   }
+
+  useEffect(() => {
+    if (!table || !activeViewId) return
+    pendingSaveRef.current = { table, viewId: activeViewId, sorts, filters, visibleCols, groupBy }
+    clearTimeout(autoSaveRef.current)
+    autoSaveRef.current = setTimeout(flushSave, 600)
+    return () => clearTimeout(autoSaveRef.current)
+  }, [table, activeViewId, sorts, filters, visibleCols, groupBy])
 
   useEffect(() => {
     if (!openPanel) return
@@ -269,44 +278,53 @@ export function ViewToolbar({
   return (
     <div className="border-b border-slate-200">
 
-      {/* View tabs — "Tous" est draggable comme les autres */}
+      {/* View tabs — reorderable via pointer drag */}
       {mergedViews.length > 1 && (
-        <div className="flex items-end gap-0 px-2 overflow-x-auto border-b border-slate-200">
-          {mergedViews.map(v => {
+        <div ref={tabsRef} className="flex items-end gap-0 px-2 overflow-x-auto overflow-y-hidden border-b border-slate-200">
+          {mergedViews.map((v, idx) => {
             const realId = v.id === ALL_ID ? null : v.id
-            const isAll = v.id === ALL_ID
+            const canDrag = isAdmin && !!onReorderViews
+            const isDragging = draggingId === v.id
+            const isDropTarget = dragOverIdx === idx && draggingId && draggingId !== v.id
             return (
               <button
                 key={v.id}
-                className={`${tabCls(realId)} ${draggingId === v.id ? 'opacity-40' : ''} ${dragOverId === v.id && dragOverId !== draggingId ? 'border-b-2 border-indigo-300' : ''}`}
-                onClick={() => setActiveViewId(realId)}
-                draggable={isAdmin && !!onReorderViews}
-                onDragStart={isAdmin && onReorderViews ? (e) => {
+                className={`${tabCls(realId)} select-none ${isDragging ? 'opacity-40' : ''} ${isDropTarget ? 'border-l-2 border-l-indigo-400' : ''}`}
+                onClick={() => { if (!draggingId) { flushSave(); setActiveViewId(realId) } }}
+                onPointerDown={canDrag ? (e) => {
+                  if (e.button !== 0) return
+                  dragStartIdx.current = idx
                   setDraggingId(v.id)
-                  e.dataTransfer.effectAllowed = 'move'
+                  e.currentTarget.setPointerCapture(e.pointerId)
                 } : undefined}
-                onDragOver={isAdmin && onReorderViews ? (e) => {
-                  e.preventDefault()
-                  e.dataTransfer.dropEffect = 'move'
-                  setDragOverId(v.id)
+                onPointerMove={canDrag ? (e) => {
+                  if (!draggingId) return
+                  const container = tabsRef.current
+                  if (!container) return
+                  const tabs = [...container.children]
+                  for (let i = 0; i < tabs.length; i++) {
+                    const rect = tabs[i].getBoundingClientRect()
+                    const mid = rect.left + rect.width / 2
+                    if (e.clientX < mid) { setDragOverIdx(i); return }
+                  }
+                  setDragOverIdx(tabs.length)
                 } : undefined}
-                onDrop={isAdmin && onReorderViews ? (e) => {
-                  e.preventDefault()
-                  if (!draggingId || draggingId === v.id) return
+                onPointerUp={canDrag ? () => {
+                  if (!draggingId || dragOverIdx === null) { setDraggingId(null); setDragOverIdx(null); return }
                   const from = mergedViews.findIndex(x => x.id === draggingId)
-                  const to = mergedViews.findIndex(x => x.id === v.id)
-                  const reordered = [...mergedViews]
-                  const [item] = reordered.splice(from, 1)
-                  reordered.splice(to, 0, item)
-                  // Recalculate sort_order for each entry
-                  const newAllPos = reordered.findIndex(x => x.id === ALL_ID)
-                  const realReordered = reordered.filter(x => x.id !== ALL_ID)
-                  onReorderViews(realReordered, newAllPos)
+                  let to = dragOverIdx > from ? dragOverIdx - 1 : dragOverIdx
+                  if (from !== to) {
+                    const reordered = [...mergedViews]
+                    const [item] = reordered.splice(from, 1)
+                    reordered.splice(to, 0, item)
+                    const newAllPos = reordered.findIndex(x => x.id === ALL_ID)
+                    const realReordered = reordered.filter(x => x.id !== ALL_ID)
+                    onReorderViews(realReordered, newAllPos)
+                  }
                   setDraggingId(null)
-                  setDragOverId(null)
+                  setDragOverIdx(null)
                 } : undefined}
-                onDragEnd={() => { setDraggingId(null); setDragOverId(null) }}
-                style={isAdmin && onReorderViews ? { cursor: 'grab' } : undefined}
+                style={canDrag ? { cursor: isDragging ? 'grabbing' : 'grab' } : undefined}
               >
                 {v.label}
               </button>
@@ -354,17 +372,6 @@ export function ViewToolbar({
               onClick={() => setOpenPanel(p => p === 'group' ? null : 'group')} />
           )}
 
-          {isAdmin && activeViewId !== null && table && (
-            <button
-              onClick={handleSaveView}
-              disabled={saving}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-indigo-600 hover:bg-indigo-50 transition-colors disabled:opacity-50"
-              title="Enregistrer les filtres, tris et colonnes dans cette vue"
-            >
-              <Save size={13} />
-              {saving ? 'Enregistrement...' : 'Sauvegarder la vue'}
-            </button>
-          )}
 
           <span className="ml-auto text-xs text-slate-400 tabular-nums">
             {processedCount} ligne{processedCount !== 1 ? 's' : ''}
@@ -375,7 +382,7 @@ export function ViewToolbar({
           <FieldsPanel columns={columns} visibleCols={visibleCols} onChange={setVisibleCols} />
         )}
         {openPanel === 'filter' && (
-          <FilterPanel columns={columns.filter(c => c.filterable !== false)} filters={filters} onChange={setFilters} />
+          <FilterPanel columns={columns.filter(c => c.filterable !== false)} filters={filters} onChange={setFilters} data={data} />
         )}
         {openPanel === 'sort' && (
           <SortPanel columns={columns.filter(c => c.sortable !== false)} sorts={sorts} onChange={setSorts} />

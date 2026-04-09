@@ -42,6 +42,13 @@ function DynamicCell({ value, col }) {
   if (type === 'phone') {
     return <span className="font-mono text-sm">{fmtPhone(value)}</span>
   }
+  // Image URL — render as thumbnail
+  if (type === 'text' && col.options?.format === 'url') {
+    const str = String(value)
+    if (/\.(jpe?g|png|gif|webp|svg|avif)(\?.*)?$/i.test(str) || str.includes('/product-images/')) {
+      return <img src={str} alt="" className="h-8 w-8 object-cover rounded" loading="lazy" />
+    }
+  }
   // text, long_text, link, etc.
   const str = String(value)
   return <span className="truncate">{str.length > 100 ? str.slice(0, 100) + '…' : str}</span>
@@ -136,6 +143,7 @@ export function DataTable({
         processedCount={filteredData.length}
         visibleCols={visibleCols} setVisibleCols={setVisibleCols}
         groupBy={groupBy} setGroupBy={setGroupBy}
+        data={data}
       />
 
       <div

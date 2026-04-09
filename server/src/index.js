@@ -6,7 +6,6 @@ import dotenv from 'dotenv'
 
 import { initSchema, seedSellableProducts } from './db/schema.js'
 import { runPurge } from './services/purge.js'
-import { seedBaseTables } from './services/baseSeed.js'
 import authRouter from './routes/auth.js'
 import companiesRouter from './routes/companies.js'
 import contactsRouter from './routes/contacts.js'
@@ -27,7 +26,6 @@ import catalogRouter from './routes/catalog.js'
 import documentsRouter from './routes/documents.js'
 import searchRouter from './routes/search.js'
 import shipmentsRouter from './routes/shipments.js'
-// import baseRouter from './routes/base.js' // Dynamic tables — disabled
 import automationsRouter from './routes/automations.js'
 import tasksRouter from './routes/tasks.js'
 import agentRouter from './routes/agent.js'
@@ -85,10 +83,27 @@ app.use('/api/product-images', express.static(path.join(process.cwd(), process.e
 // Serve record attachments
 app.use('/api/attachments', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'attachments')))
 
+import { ensureNativeFieldDefs } from './services/airtableAutoSync.js'
+
 initSchema()
 seedSellableProducts()
-seedBaseTables()
 runPurge()
+
+// Register native fields in airtable_field_defs so they appear in views/filters
+ensureNativeFieldDefs([
+  { module: 'pieces', erp_table: 'products', column_name: 'name_fr',    label: 'Nom',                      field_type: 'text',   sort_order: -1000 },
+  { module: 'pieces', erp_table: 'products', column_name: 'name_en',    label: 'Nom (EN)',                  field_type: 'text',   sort_order: -999 },
+  { module: 'pieces', erp_table: 'products', column_name: 'sku',        label: 'SKU',                       field_type: 'text',   sort_order: -998 },
+  { module: 'pieces', erp_table: 'products', column_name: 'type',       label: 'Type',                      field_type: 'single_select', sort_order: -997 },
+  { module: 'pieces', erp_table: 'products', column_name: 'unit_cost',  label: 'Coût unitaire',             field_type: 'number', sort_order: -996 },
+  { module: 'pieces', erp_table: 'products', column_name: 'price_cad',  label: 'Prix (CAD)',                field_type: 'number', sort_order: -995 },
+  { module: 'pieces', erp_table: 'products', column_name: 'stock_qty',  label: 'Quantité en inventaire',    field_type: 'number', sort_order: -994 },
+  { module: 'pieces', erp_table: 'products', column_name: 'min_stock',  label: 'Stock minimum',             field_type: 'number', sort_order: -993 },
+  { module: 'pieces', erp_table: 'products', column_name: 'order_qty',  label: 'Quantité à commander',      field_type: 'number', sort_order: -992 },
+  { module: 'pieces', erp_table: 'products', column_name: 'supplier',   label: 'Fournisseur',               field_type: 'text',   sort_order: -991 },
+  { module: 'pieces', erp_table: 'products', column_name: 'image_url',  label: 'Image',                     field_type: 'text',   sort_order: -990, options: { format: 'url' } },
+  { module: 'pieces', erp_table: 'products', column_name: 'location',   label: 'Emplacement',               field_type: 'text',   sort_order: -989 },
+])
 
 // API Routes
 app.use('/api/auth', authRouter)
@@ -111,7 +126,6 @@ app.use('/api/catalog', catalogRouter)
 app.use('/api/documents', documentsRouter)
 app.use('/api/search', searchRouter)
 app.use('/api/shipments', shipmentsRouter)
-// app.use('/api/base', baseRouter) // Dynamic tables — disabled
 app.use('/api/automations', automationsRouter)
 app.use('/api/tasks', tasksRouter)
 app.use('/api/agent', agentRouter)
@@ -121,7 +135,7 @@ app.use('/api/sale-receipts', saleReceiptsRouter)
 app.use('/api/stripe-queue', stripeQueueRouter)
 app.use('/api/employees', employeesRouter)
 app.use('/api/receipt-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')))
-app.use('/api/novoxpress/labels', express.static(path.join(__dirname, '../../uploads/labels')))
+app.use('/api/novoxpress/labels', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')))
 app.use('/api/novoxpress', novoxpressRouter)
 app.use('/api/track', trackRouter)
 app.use('/api/interaction-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'interactions')))

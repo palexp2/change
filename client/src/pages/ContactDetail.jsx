@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, Mail, MessageSquare, Edit2, Building2, PhoneCall, PhoneIncoming, PhoneOutgoing, Plus, Save, X, Zap, Eye, ChevronDown } from 'lucide-react'
+import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
@@ -18,21 +19,6 @@ function fmtDuration(s) {
   return m > 0 ? `${m}m ${sec}s` : `${sec}s`
 }
 
-const TYPE_LABELS = { call: 'Appel', email: 'Courriel', sms: 'SMS', meeting: 'Réunion', note: 'Note' }
-const TYPE_COLORS = {
-  call: 'bg-blue-100 text-blue-700',
-  email: 'bg-purple-100 text-purple-700',
-  sms: 'bg-green-100 text-green-700',
-  meeting: 'bg-amber-100 text-amber-700',
-  note: 'bg-slate-100 text-slate-600',
-}
-const TYPE_ICONS = {
-  call: PhoneCall,
-  email: Mail,
-  sms: MessageSquare,
-  meeting: Building2,
-  note: Edit2,
-}
 
 function fieldTypeInput(type) {
   if (type === 'number') return 'number'
@@ -147,67 +133,6 @@ function InlineField({ field, value, saving, onSave, companies = [] }) {
   }
   return (
     <input type={fieldTypeInput(field.type)} value={local} onChange={e => setLocal(e.target.value)} onBlur={e => commit(e.target.value)} className="input text-sm" disabled={saving} />
-  )
-}
-
-function InteractionItem({ item }) {
-  const [expanded, setExpanded] = useState(false)
-  const Icon = TYPE_ICONS[item.type] || MessageSquare
-  const hasBody = item.transcript_formatted || item.body_text || item.body_html || item.meeting_notes
-
-  return (
-    <div className="card p-4">
-      <div className="flex items-start gap-3">
-        <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${TYPE_COLORS[item.type] || 'bg-slate-100'}`}>
-          <Icon size={14} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm font-medium text-slate-800">{TYPE_LABELS[item.type] || item.type}</span>
-              {item.direction === 'in'
-                ? <PhoneIncoming size={12} className="text-slate-400" />
-                : item.direction === 'out'
-                ? <PhoneOutgoing size={12} className="text-slate-400" />
-                : null}
-              {item.subject && <span className="text-sm text-slate-600 truncate">{item.subject}</span>}
-              {item.type === 'email' && item.from_address && <span className="text-xs text-slate-400 font-mono truncate">De: {item.from_address}</span>}
-              {item.type === 'email' && item.to_address && <span className="text-xs text-slate-400 font-mono truncate">À: {item.to_address}</span>}
-              {item.automated === 1 && <span title="Courriel automatisé" className="inline-flex items-center gap-0.5 text-xs text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded"><Zap size={10} /> Auto</span>}
-              {item.automated === 1 && item.open_count > 0 && <span title={`Ouvert ${item.open_count} fois`} className="inline-flex items-center gap-0.5 text-xs text-green-700 bg-green-50 border border-green-100 px-1.5 py-0.5 rounded"><Eye size={10} /> {item.open_count}</span>}
-              {item.automated === 1 && item.open_count === 0 && <span title="Non ouvert" className="inline-flex items-center gap-0.5 text-xs text-slate-400 bg-slate-50 border border-slate-100 px-1.5 py-0.5 rounded"><Eye size={10} /> 0</span>}
-              {item.meeting_title && item.meeting_title !== 'Note' && <span className="text-sm text-slate-600">{item.meeting_title}</span>}
-              {item.duration_seconds && <span className="text-xs text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">{fmtDuration(item.duration_seconds)}</span>}
-              {item.callee_number && <span className="text-xs text-slate-400 font-mono">{item.callee_number}</span>}
-              {item.transcription_status === 'pending' && <Badge color="yellow" size="sm">Transcription...</Badge>}
-              {item.drive_filename && <span className="text-xs text-slate-400 truncate max-w-xs">{item.drive_filename}</span>}
-            </div>
-            <span className="text-xs text-slate-400 flex-shrink-0">{fmtDate(item.timestamp)}</span>
-          </div>
-
-          {item.call_id && (item.recording_path || item.drive_file_id) && (
-            <audio controls className="mt-2 w-full h-8"
-              src={`/erp/api/calls/${item.call_id}/recording?token=${localStorage.getItem('erp_token')}`} />
-          )}
-          {hasBody && (
-            <button
-              onClick={() => setExpanded(e => !e)}
-              className="mt-2 text-xs text-indigo-600 hover:underline"
-            >
-              {expanded ? 'Masquer' : 'Voir le contenu'}
-            </button>
-          )}
-          {expanded && (
-            <div className="mt-2 rounded overflow-hidden border border-slate-200">
-              {item.body_html
-                ? <iframe srcDoc={item.body_html} sandbox="allow-same-origin" scrolling="no" className="w-full border-0" style={{ minHeight: '200px' }} onLoad={e => { e.target.style.height = e.target.contentDocument.body.scrollHeight + 'px' }} />
-                : <div className="p-3 bg-slate-50 text-xs text-slate-600 whitespace-pre-wrap">{item.transcript_formatted || item.body_text || item.meeting_notes}</div>
-              }
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
   )
 }
 
@@ -384,18 +309,13 @@ export default function ContactDetail() {
           <h2 className="text-base font-semibold text-slate-900 mb-3">
             Historique ({total})
           </h2>
-          {interactions.length === 0 ? (
-            <div className="card p-10 text-center text-slate-400">Aucune interaction</div>
-          ) : (
-            <div className="space-y-2">
-              {interactions.map(item => <InteractionItem key={item.id} item={item} />)}
-              {interactions.length < total && (
-                <button onClick={loadMore} disabled={loadingMore} className="btn-secondary w-full">
-                  {loadingMore ? 'Chargement...' : `Charger plus (${total - interactions.length} restants)`}
-                </button>
-              )}
-            </div>
-          )}
+          <InteractionTimeline
+            interactions={interactions}
+            total={total}
+            onLoadMore={loadMore}
+            loadingMore={loadingMore}
+            showContact={false}
+          />
         </div>
       </div>
 

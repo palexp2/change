@@ -25,6 +25,7 @@ function parsePill(p) {
     filters: JSON.parse(p.filters || '[]'),
     visible_columns: JSON.parse(p.visible_columns || '[]'),
     sort: JSON.parse(p.sort || '[]'),
+    collapsed_groups: JSON.parse(p.collapsed_groups || '[]'),
   }
 }
 
@@ -34,11 +35,11 @@ router.get('/:table', requireAuth, (req, res) => {
   const { table } = req.params
 
   const config = db.prepare(
-    'SELECT visible_columns, default_sort, all_view_sort_order FROM table_view_configs WHERE table_name=?'
+    'SELECT visible_columns, default_sort, all_view_sort_order, column_widths FROM table_view_configs WHERE table_name=?'
   ).get(table)
 
   const pills = db.prepare(
-    'SELECT id, label, color, filters, visible_columns, sort, group_by, sort_order FROM table_view_pills WHERE table_name=? ORDER BY sort_order, created_at'
+    'SELECT id, label, color, filters, visible_columns, sort, group_by, collapsed_groups, sort_order FROM table_view_pills WHERE table_name=? ORDER BY sort_order, created_at'
   ).all(table)
 
   // Dynamic fields from Airtable auto-sync (deduplicate by label, prefer non-native over native)
@@ -69,8 +70,8 @@ router.get('/:table', requireAuth, (req, res) => {
 
   res.json({
     config: config
-      ? { visible_columns: JSON.parse(config.visible_columns), default_sort: JSON.parse(config.default_sort), all_view_sort_order: config.all_view_sort_order ?? -1 }
-      : { visible_columns: [], default_sort: [], all_view_sort_order: -1 },
+      ? { visible_columns: JSON.parse(config.visible_columns), default_sort: JSON.parse(config.default_sort), all_view_sort_order: config.all_view_sort_order ?? -1, column_widths: JSON.parse(config.column_widths || '{}') }
+      : { visible_columns: [], default_sort: [], all_view_sort_order: -1, column_widths: {} },
     pills: pills.map(parsePill),
     dynamicFields,
   })
@@ -100,6 +101,24 @@ router.put('/:table', requireAdmin, (req, res) => {
     ).run(uuidv4(), table, JSON.stringify(visible_columns), JSON.stringify(default_sort))
   }
 
+  res.json({ ok: true })
+})
+
+// PATCH /api/views/:table/column-widths
+router.patch('/:table/column-widths', requireAuth, (req, res) => {
+  if (!validateTable(req, res)) return
+  const { table } = req.params
+  const { column_widths } = req.body
+  if (!column_widths || typeof column_widths !== 'object') return res.status(400).json({ error: 'column_widths requis' })
+
+  const existing = db.prepare('SELECT id FROM table_view_configs WHERE table_name=?').get(table)
+  if (existing) {
+    db.prepare("UPDATE table_view_configs SET column_widths=?, updated_at=datetime('now') WHERE table_name=?")
+      .run(JSON.stringify(column_widths), table)
+  } else {
+    db.prepare('INSERT INTO table_view_configs (id, table_name, visible_columns, default_sort, column_widths) VALUES (?,?,?,?,?)')
+      .run(uuidv4(), table, '[]', '[]', JSON.stringify(column_widths))
+  }
   res.json({ ok: true })
 })
 
@@ -169,6 +188,7 @@ router.put('/:table/pills/:id', requireAuth, (req, res) => {
   if (body.visible_columns !== undefined) { updates.push('visible_columns = ?'); values.push(JSON.stringify(body.visible_columns)) }
   if (body.sort !== undefined)            { updates.push('sort = ?');            values.push(JSON.stringify(body.sort)) }
   if ('group_by' in body)                 { updates.push('group_by = ?');        values.push(body.group_by) }
+  if (body.collapsed_groups !== undefined){ updates.push('collapsed_groups = ?'); values.push(JSON.stringify(body.collapsed_groups)) }
   if (body.sort_order !== undefined)      { updates.push('sort_order = ?');      values.push(body.sort_order) }
 
   if (updates.length === 0) return res.status(400).json({ error: 'Aucun champ à modifier' })

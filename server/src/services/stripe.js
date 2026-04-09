@@ -122,6 +122,24 @@ export async function syncStripeSubscriptions() {
     const stripeUrl = `https://dashboard.stripe.com/subscriptions/${sub.id}`
 
     if (existingRow) {
+      // Detect changes and log them
+      const prev = db.prepare('SELECT * FROM subscriptions WHERE id=?').get(existingRow.id)
+      const changes = []
+      if (prev.status !== status) changes.push(`Statut: ${prev.status} → ${status}`)
+      if (Math.abs((prev.amount_monthly || 0) - amountMonthly) > 0.01) changes.push(`Montant: ${(prev.amount_monthly || 0).toFixed(2)} → ${amountMonthly.toFixed(2)} ${currency}`)
+      if (prev.cancel_date !== cancelDate) {
+        if (!prev.cancel_date && cancelDate) changes.push(`Annulé le ${cancelDate}`)
+        else if (prev.cancel_date && !cancelDate) changes.push('Annulation retirée')
+      }
+      if (prev.interval_type !== intervalType || prev.interval_count !== intervalCount) {
+        changes.push(`Intervalle: ${prev.interval_count || 1} ${prev.interval_type || 'month'} → ${intervalCount} ${intervalType}`)
+      }
+
+      if (changes.length > 0) {
+        db.prepare('INSERT INTO subscription_events (id, subscription_id, event_date, event_type, details) VALUES (?,?,datetime(\'now\'),?,?)')
+          .run(uuid(), existingRow.id, 'update', JSON.stringify(changes))
+      }
+
       db.prepare(`
         UPDATE subscriptions SET
           company_id=COALESCE(?,company_id),
@@ -139,6 +157,7 @@ export async function syncStripeSubscriptions() {
       )
       updated++
     } else {
+      const newId = uuid()
       db.prepare(`
         INSERT INTO subscriptions (
           id, company_id, stripe_id, status, amount_monthly, currency,
@@ -146,11 +165,13 @@ export async function syncStripeSubscriptions() {
           interval_count, interval_type
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(
-        uuid(), companyId, sub.id, status, amountMonthly, currency,
+        newId, companyId, sub.id, status, amountMonthly, currency,
         startDate, cancelDate, trialEndDate,
         stripeUrl, customerId, customerEmail,
         intervalCount, intervalType
       )
+      db.prepare('INSERT INTO subscription_events (id, subscription_id, event_date, event_type, details) VALUES (?,?,?,?,?)')
+        .run(uuid(), newId, startDate || new Date().toISOString(), 'creation', JSON.stringify([`Création: ${amountMonthly.toFixed(2)} ${currency}/${intervalType}`]))
       created++
     }
   }

@@ -159,7 +159,6 @@ export const TABLE_COLUMN_META = {
     { id: 'due_date',        label: 'Échéance',       field: 'due_date',        type: 'date', defaultVisible: false },
     { id: 'total_cad',       label: 'Total',          field: 'total_cad',       type: 'number' },
     { id: 'balance_due_cad', label: 'Solde dû',       field: 'balance_due_cad', type: 'number' },
-    { id: 'shipping_country', label: 'Pays de livraison', field: 'shipping_country' },
   ],
 
   abonnements: [

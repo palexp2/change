@@ -6,6 +6,13 @@ import { requireAuth } from '../middleware/auth.js';
 const router = Router();
 router.use(requireAuth);
 
+// GET /api/tickets/meta — distinct types & statuses
+router.get('/meta', (req, res) => {
+  const types = db.prepare("SELECT DISTINCT type FROM tickets WHERE type IS NOT NULL AND type != '' ORDER BY type").all().map(r => r.type);
+  const statuses = db.prepare("SELECT DISTINCT status FROM tickets WHERE status IS NOT NULL AND status != '' ORDER BY status").all().map(r => r.status);
+  res.json({ types, statuses });
+});
+
 // GET /api/tickets
 router.get('/', (req, res) => {
   const { search, status, type, company_id, assigned_to, page = 1, limit = 50 } = req.query;
@@ -73,15 +80,13 @@ router.get('/:id', (req, res) => {
 
 // POST /api/tickets
 router.post('/', (req, res) => {
-  const { company_id, contact_id, assigned_to, title, description, type, status, duration_minutes, notes } = req.body;
-  if (!title) return res.status(400).json({ error: 'Title is required' });
-
+  const { company_id, contact_id, assigned_to, title, description, type, status, duration_minutes } = req.body;
   const id = uuidv4();
   db.prepare(
-    `INSERT INTO tickets (id, company_id, contact_id, assigned_to, title, description, type, status, duration_minutes, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO tickets (id, company_id, contact_id, assigned_to, title, description, type, status, duration_minutes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(id, company_id || null, contact_id || null, assigned_to || null,
-    title, description || null, type || null, status || 'Waiting on us', duration_minutes || 0, notes || null);
+    title, description || null, type || null, status || 'Waiting on us', duration_minutes || 0);
 
   res.status(201).json(db.prepare(
     `SELECT t.*, c.name as company_name, u.name as assigned_name FROM tickets t LEFT JOIN companies c ON t.company_id = c.id LEFT JOIN users u ON t.assigned_to = u.id WHERE t.id = ?`
@@ -93,12 +98,12 @@ router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM tickets WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Ticket not found' });
 
-  const { company_id, contact_id, assigned_to, title, description, type, status, duration_minutes, notes } = req.body;
+  const { company_id, contact_id, assigned_to, title, description, type, status, duration_minutes } = req.body;
   db.prepare(
-    `UPDATE tickets SET company_id=?, contact_id=?, assigned_to=?, title=?, description=?, type=?, status=?, duration_minutes=?, notes=?, updated_at=datetime('now')
+    `UPDATE tickets SET company_id=?, contact_id=?, assigned_to=?, title=?, description=?, type=?, status=?, duration_minutes=?, updated_at=datetime('now')
      WHERE id = ?`
   ).run(company_id || null, contact_id || null, assigned_to || null, title, description || null,
-    type || null, status, duration_minutes || 0, notes || null, req.params.id);
+    type || null, status, duration_minutes || 0, req.params.id);
 
   res.json(db.prepare(
     `SELECT t.*, c.name as company_name, u.name as assigned_name FROM tickets t LEFT JOIN companies c ON t.company_id = c.id LEFT JOIN users u ON t.assigned_to = u.id WHERE t.id = ?`
@@ -111,10 +116,7 @@ router.patch('/:id/status', (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Ticket not found' });
 
   const { status } = req.body;
-  const validStatuses = ['Waiting on us', 'Waiting on them', 'Closed'];
-  if (!validStatuses.includes(status)) {
-    return res.status(400).json({ error: 'Invalid status' });
-  }
+  if (!status) return res.status(400).json({ error: 'Status is required' });
   db.prepare(`UPDATE tickets SET status=?, updated_at=datetime('now') WHERE id = ?`)
     .run(status, req.params.id);
   res.json({ message: 'Status updated' });

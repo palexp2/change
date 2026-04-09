@@ -293,7 +293,7 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
   }, [data, search, searchFields, filters, sorts])
 
   function reorderViews(newViews, newAllViewSortOrder) {
-    const realViews = newViews.filter(v => v.id !== null)
+    const realViews = newViews.filter(v => v.id !== null).map((v, i) => ({ ...v, sort_order: i }))
     setViews(realViews)
     if (newAllViewSortOrder !== undefined) setAllViewSortOrder(newAllViewSortOrder)
     const order = realViews.map((v, i) => ({ id: v.id, sort_order: i }))
@@ -317,5 +317,6 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
     viewGroupBy,
     allColumns,
     dynamicFields,
+    columnWidths: adminConfig?.column_widths || {},
   }
 }

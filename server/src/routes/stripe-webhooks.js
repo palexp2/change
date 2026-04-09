@@ -155,7 +155,48 @@ async function handleWebhook(req, res) {
       JSON.stringify(invoice)
     )
 
-    console.log(`✅ Stripe invoice ${invoice.id} queued`)
+    // Also update/create in factures table
+    try {
+      const total = (invoice.total || 0) / 100
+      const subtotal = (invoice.subtotal || 0) / 100
+      const balanceDue = (invoice.amount_remaining || 0) / 100
+      const currency = (invoice.currency || 'cad').toUpperCase()
+      const invoiceDate = invoice.created ? new Date(invoice.created * 1000).toISOString().slice(0, 10) : null
+
+      // Resolve subscription
+      let subscriptionId = null
+      const stripeSub = typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id
+      if (stripeSub) {
+        const subRow = db.prepare('SELECT id FROM subscriptions WHERE stripe_id=?').get(stripeSub)
+        if (subRow) subscriptionId = subRow.id
+      }
+
+      const existingFacture = db.prepare("SELECT id FROM factures WHERE invoice_id=?").get(invoice.id)
+      if (existingFacture) {
+        db.prepare(`
+          UPDATE factures SET
+            status='Payé', total_amount=?, amount_before_tax_cad=?, balance_due=0,
+            currency=?, document_date=COALESCE(document_date,?),
+            document_number=COALESCE(document_number,?),
+            subscription_id=COALESCE(subscription_id,?), company_id=COALESCE(company_id,?),
+            sync_source='Factures Stripe', updated_at=datetime('now')
+          WHERE id=?
+        `).run(total, subtotal, currency, invoiceDate, invoice.number || null,
+          subscriptionId, companyId, existingFacture.id)
+      } else {
+        db.prepare(`
+          INSERT INTO factures (id, invoice_id, company_id, document_number, document_date,
+            status, currency, amount_before_tax_cad, total_amount, balance_due,
+            subscription_id, sync_source, created_at, updated_at)
+          VALUES (?,?,?,?,?,'Payé',?,?,?,0,?,'Factures Stripe',datetime('now'),datetime('now'))
+        `).run(randomUUID(), invoice.id, companyId, invoice.number || null, invoiceDate,
+          currency, subtotal, total, subscriptionId)
+      }
+    } catch (factureErr) {
+      console.error('Could not update factures table:', factureErr.message)
+    }
+
+    console.log(`✅ Stripe invoice ${invoice.id} queued + facture synced`)
     res.json({ received: true, queued: true, id })
   } catch (err) {
     console.error('Stripe webhook processing error:', err.message)

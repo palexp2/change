@@ -11,6 +11,7 @@ import OrderDetail from './pages/OrderDetail.jsx'
 import Products from './pages/Products.jsx'
 import ProductDetail from './pages/ProductDetail.jsx'
 import Tickets from './pages/Tickets.jsx'
+import TicketDetail from './pages/TicketDetail.jsx'
 import Admin from './pages/Admin.jsx'
 import Interactions from './pages/Interactions.jsx'
 import Connectors from './pages/Connectors.jsx'
@@ -65,6 +66,7 @@ function AppRoutes() {
       <Route path="/products/:id" element={<ProtectedRoute><ProductDetail /></ProtectedRoute>} />
       <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
       <Route path="/tickets" element={<ProtectedRoute><Tickets /></ProtectedRoute>} />
+      <Route path="/tickets/:id" element={<ProtectedRoute><TicketDetail /></ProtectedRoute>} />
       <Route path="/interactions" element={<ProtectedRoute><Interactions /></ProtectedRoute>} />
       <Route path="/connectors" element={<ProtectedRoute><Connectors /></ProtectedRoute>} />
       <Route path="/purchases" element={<ProtectedRoute><Purchases /></ProtectedRoute>} />

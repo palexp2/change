@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
@@ -9,19 +10,11 @@ import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
-const typeColors = {
-  'Aide software': 'blue', 'Defect software': 'red', 'Aide hardware': 'indigo',
-  'Defect hardware': 'red', 'Erreur de commande': 'orange', 'Formation': 'green', 'Installation': 'teal',
-}
-
 function fmtDuration(mins) {
   if (!mins) return '—'
   const h = Math.floor(mins / 60), m = mins % 60
   return h === 0 ? `${m}m` : `${h}h${m > 0 ? m + 'm' : ''}`
 }
-
-const TICKET_TYPES = ['Aide software', 'Defect software', 'Aide hardware', 'Defect hardware', 'Erreur de commande', 'Formation', 'Installation']
-const STATUSES = ['Waiting on us', 'Waiting on them', 'Closed']
 
 const RENDERS = {
   title: row => (
@@ -31,17 +24,17 @@ const RENDERS = {
     </div>
   ),
   status: row => <Badge color={ticketStatusColor(row.status)}>{row.status}</Badge>,
-  type: row => row.type ? <Badge color={typeColors[row.type] || 'gray'}>{row.type}</Badge> : null,
+  type: row => row.type ? <Badge color="gray">{row.type}</Badge> : null,
   duration_minutes: row => <span className="text-slate-500">{fmtDuration(row.duration_minutes)}</span>,
   created_at: row => row.created_at ? <span className="text-slate-500 text-sm">{new Date(row.created_at).toLocaleDateString('fr-CA')}</span> : null,
 }
 
 const COLUMNS = TABLE_COLUMN_META.tickets.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
-function TicketForm({ initial = {}, companies = [], users = [], contacts = [], onSave, onClose }) {
+function TicketForm({ initial = {}, meta = {}, companies = [], users = [], contacts = [], onSave, onClose }) {
   const [form, setForm] = useState({
     title: '', company_id: '', contact_id: '', assigned_to: '',
-    type: '', status: 'Waiting on us', description: '', duration_minutes: 0, notes: '',
+    type: '', status: 'Waiting on us', description: '', duration_minutes: 0,
     ...initial
   })
   const [saving, setSaving] = useState(false)
@@ -61,21 +54,22 @@ function TicketForm({ initial = {}, companies = [], users = [], contacts = [], o
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
-        <label className="label">Titre *</label>
-        <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} className="input" required />
+        <label className="label">Titre</label>
+        <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} className="input" />
       </div>
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="label">Type</label>
           <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className="select">
             <option value="">—</option>
-            {TICKET_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+            {(meta.types || []).map(t => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
         <div>
           <label className="label">Statut</label>
           <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))} className="select">
-            {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+            <option value="">—</option>
+            {(meta.statuses || []).map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
         <div>
@@ -93,24 +87,20 @@ function TicketForm({ initial = {}, companies = [], users = [], contacts = [], o
           </select>
         </div>
         <div>
-          <label className="label">Assigné à</label>
+          <label className="label">Assigne a</label>
           <select value={form.assigned_to} onChange={e => setForm(f => ({ ...f, assigned_to: e.target.value }))} className="select">
             <option value="">—</option>
             {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
         </div>
         <div>
-          <label className="label">Durée (minutes)</label>
+          <label className="label">Duree (minutes)</label>
           <input type="number" min="0" value={form.duration_minutes} onChange={e => setForm(f => ({ ...f, duration_minutes: e.target.value }))} className="input" />
         </div>
       </div>
       <div>
         <label className="label">Description</label>
         <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} className="input" rows={3} />
-      </div>
-      <div>
-        <label className="label">Notes internes</label>
-        <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input" rows={2} />
       </div>
       {error && <p className="text-red-600 text-sm">{error}</p>}
       <div className="flex justify-end gap-3 pt-2">
@@ -126,9 +116,10 @@ export default function Tickets() {
   const [companies, setCompanies] = useState([])
   const [contacts, setContacts] = useState([])
   const [users, setUsers] = useState([])
+  const [meta, setMeta] = useState({ types: [], statuses: [] })
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
-  const [editTicket, setEditTicket] = useState(null)
+  const navigate = useNavigate()
 
   const load = useCallback(async () => {
     await loadProgressive(
@@ -142,10 +133,10 @@ export default function Tickets() {
     api.companies.list({ limit: 'all' }).then(r => setCompanies(r.data)).catch(() => {})
     api.contacts.list({ limit: 'all' }).then(r => setContacts(r.data)).catch(() => {})
     api.admin.listUsers().then(setUsers).catch(() => {})
+    api.tickets.meta().then(setMeta).catch(() => {})
   }, [])
 
   async function handleCreate(form) { await api.tickets.create(form); load() }
-  async function handleUpdate(form) { await api.tickets.update(editTicket.id, form); setEditTicket(null); load() }
 
   return (
     <Layout>
@@ -167,20 +158,15 @@ export default function Tickets() {
           columns={COLUMNS}
           data={tickets}
           loading={loading}
-          onRowClick={setEditTicket}
+          onRowClick={row => navigate(`/tickets/${row.id}`)}
           searchFields={['title', 'company_name']}
         />
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau billet" size="lg">
-        <TicketForm companies={companies} contacts={contacts} users={users} onSave={handleCreate} onClose={() => setShowModal(false)} />
+        <TicketForm meta={meta} companies={companies} contacts={contacts} users={users} onSave={handleCreate} onClose={() => setShowModal(false)} />
       </Modal>
 
-      <Modal isOpen={!!editTicket} onClose={() => setEditTicket(null)} title="Modifier le billet" size="lg">
-        {editTicket && (
-          <TicketForm initial={editTicket} companies={companies} contacts={contacts} users={users} onSave={handleUpdate} onClose={() => setEditTicket(null)} />
-        )}
-      </Modal>
     </Layout>
   )
 }

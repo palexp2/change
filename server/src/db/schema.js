@@ -171,12 +171,12 @@ export function initSchema() {
       company_id TEXT REFERENCES companies(id),
       contact_id TEXT REFERENCES contacts(id),
       assigned_to TEXT REFERENCES users(id),
-      title TEXT NOT NULL,
+      title TEXT,
       description TEXT,
-      type TEXT CHECK(type IN ('Aide software','Defect software','Aide hardware','Defect hardware','Erreur de commande','Formation','Installation')),
-      status TEXT NOT NULL DEFAULT 'Waiting on us' CHECK(status IN ('Waiting on us','Waiting on them','Closed')),
+      type TEXT,
+      status TEXT DEFAULT 'Waiting on us',
       duration_minutes INTEGER DEFAULT 0,
-      notes TEXT,
+      airtable_id TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     );
@@ -706,6 +706,7 @@ export function initSchema() {
     'ALTER TABLE table_view_pills ADD COLUMN visible_columns TEXT DEFAULT \'[]\'',
     'ALTER TABLE table_view_pills ADD COLUMN sort TEXT DEFAULT \'[]\'',
     'ALTER TABLE table_view_pills ADD COLUMN group_by TEXT DEFAULT NULL',
+    "ALTER TABLE table_view_configs ADD COLUMN column_widths TEXT DEFAULT '{}'",
     // delivery address on orders and shipments
     'ALTER TABLE orders ADD COLUMN address_id TEXT REFERENCES adresses(id)',
     'ALTER TABLE shipments ADD COLUMN address_id TEXT REFERENCES adresses(id)',
@@ -890,11 +891,12 @@ export function initSchema() {
       id TEXT PRIMARY KEY,
       stripe_tax_id TEXT NOT NULL,
       stripe_tax_description TEXT,
-      stripe_tax_percentage REAL,
       qb_tax_code TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now')),
       UNIQUE(stripe_tax_id)
     )`,
+    // Persist collapsed groups state per view
+    "ALTER TABLE table_view_pills ADD COLUMN collapsed_groups TEXT DEFAULT '[]'",
   ]
 
   // Backfill shipped_unit_cost from Airtable's "Coût total au moment de l'envoi" (total cost / qty)
@@ -980,6 +982,16 @@ export function initSchema() {
       body TEXT,
       read INTEGER DEFAULT 0,
       link TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+
+    -- Subscription change history
+    CREATE TABLE IF NOT EXISTS subscription_events (
+      id TEXT PRIMARY KEY,
+      subscription_id TEXT NOT NULL REFERENCES subscriptions(id),
+      event_date TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      details TEXT,
       created_at TEXT DEFAULT (datetime('now'))
     );
 
@@ -1094,6 +1106,54 @@ export function initSchema() {
       PRAGMA foreign_keys = ON;
     `)
     console.log('✅ Tickets table migrated to new statuses (Waiting on us / Waiting on them / Closed)')
+  }
+
+  // Remove CHECK constraints from tickets table
+  const ticketsDef2 = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tickets'").get()
+  if (ticketsDef2 && ticketsDef2.sql.includes('CHECK')) {
+    const cols = db.pragma('table_info(tickets)').map(c => c.name)
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+      CREATE TABLE tickets_new (
+        id TEXT PRIMARY KEY,
+        company_id TEXT REFERENCES companies(id),
+        contact_id TEXT REFERENCES contacts(id),
+        assigned_to TEXT REFERENCES users(id),
+        title TEXT,
+        description TEXT,
+        type TEXT,
+        status TEXT DEFAULT 'Waiting on us',
+        duration_minutes INTEGER DEFAULT 0,
+        notes TEXT,
+        airtable_id TEXT,
+        created_at TEXT DEFAULT (datetime('now')),
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+      INSERT INTO tickets_new SELECT ${cols.slice(0, 13).map(c => '"' + c + '"').join(', ')} FROM tickets;
+    `)
+    // Re-add dynamic columns and copy data
+    const baseCols = new Set(['id','company_id','contact_id','assigned_to','title','description','type','status','duration_minutes','notes','airtable_id','created_at','updated_at'])
+    const dynCols = cols.filter(c => !baseCols.has(c))
+    for (const col of dynCols) {
+      try { db.exec(`ALTER TABLE tickets_new ADD COLUMN "${col}" TEXT`) } catch(e) {}
+    }
+    if (dynCols.length > 0) {
+      const allCols = cols.map(c => '"' + c + '"').join(', ')
+      db.exec(`DELETE FROM tickets_new; INSERT INTO tickets_new (${allCols}) SELECT ${allCols} FROM tickets;`)
+    }
+    db.exec(`
+      DROP TABLE tickets;
+      ALTER TABLE tickets_new RENAME TO tickets;
+      PRAGMA foreign_keys = ON;
+    `)
+    console.log('✅ Tickets: CHECK constraints removed')
+  }
+
+  // Drop unused 'notes' column from tickets
+  const ticketHasNotes = db.pragma('table_info(tickets)').some(c => c.name === 'notes')
+  if (ticketHasNotes) {
+    db.exec('ALTER TABLE tickets DROP COLUMN notes')
+    console.log('✅ Tickets: dropped unused notes column')
   }
 
   // Rebuild document_items if it still references catalog_products (old FK)

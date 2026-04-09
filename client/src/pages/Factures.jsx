@@ -44,7 +44,6 @@ const RENDERS = {
     if (!val && val !== 0) return <span className="text-slate-400">—</span>
     return <span className={`font-medium ${val > 0 ? 'text-red-600' : 'text-green-600'}`}>{fmtCad(val)}</span>
   },
-  shipping_country: row => <span className="text-slate-600">{row.shipping_country || '—'}</span>,
 }
 
 const COLUMNS = TABLE_COLUMN_META.factures.map(meta => ({ ...meta, render: RENDERS[meta.id] }))

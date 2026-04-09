@@ -1,8 +1,14 @@
 import { Router } from 'express'
 import { randomUUID } from 'crypto'
 import path from 'path'
+import Stripe from 'stripe'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+
+function getStripeKey() {
+  const row = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'").get()
+  return row?.value || null
+}
 
 const router = Router()
 router.use(requireAuth)
@@ -361,6 +367,79 @@ router.get('/abonnements/:id', (req, res) => {
   `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
+})
+
+router.get('/abonnements/:id/stripe-details', async (req, res) => {
+  const row = db.prepare('SELECT id, stripe_id FROM subscriptions WHERE id=?').get(req.params.id)
+  if (!row?.stripe_id) return res.status(404).json({ error: 'Abonnement ou stripe_id introuvable' })
+
+  const key = getStripeKey()
+  if (!key) return res.status(503).json({ error: 'Stripe non configuré' })
+
+  try {
+    const stripe = new Stripe(key)
+
+    // Fetch subscription with line items expanded
+    const sub = await stripe.subscriptions.retrieve(row.stripe_id, {
+      expand: ['items.data.price.product', 'discount.coupon'],
+    })
+
+    const items = sub.items.data.map(si => ({
+      id: si.id,
+      product_name: si.price.product?.name || si.price.nickname || si.price.id,
+      description: si.price.product?.description || null,
+      unit_amount: si.price.unit_amount ? si.price.unit_amount / 100 : null,
+      currency: si.price.currency?.toUpperCase(),
+      quantity: si.quantity,
+      interval: si.price.recurring?.interval,
+      interval_count: si.price.recurring?.interval_count,
+      total: si.price.unit_amount ? (si.price.unit_amount / 100) * si.quantity : null,
+    }))
+
+    // Local change history (persistent, survives Stripe 30-day event window)
+    const localEvents = db.prepare(
+      'SELECT * FROM subscription_events WHERE subscription_id=? ORDER BY event_date DESC'
+    ).all(row.id)
+
+    const history = localEvents.map(ev => ({
+      date: ev.event_date,
+      type: ev.event_type,
+      changes: JSON.parse(ev.details || '[]'),
+    }))
+
+    // Fetch invoices with line items for this subscription
+    const invoices = await stripe.invoices.list({
+      subscription: row.stripe_id,
+      limit: 24,
+      expand: ['data.lines'],
+    })
+
+    const invoiceHistory = invoices.data.map(inv => ({
+      date: new Date(inv.created * 1000).toISOString(),
+      amount: inv.amount_paid / 100,
+      currency: inv.currency?.toUpperCase(),
+      status: inv.status,
+      pdf: inv.invoice_pdf,
+      number: inv.number,
+      lines: (inv.lines?.data || []).map(li => ({
+        description: li.description,
+        amount: li.amount / 100,
+        quantity: li.quantity,
+        proration: li.proration || false,
+      })),
+    }))
+
+    const discount = sub.discount ? {
+      name: sub.discount.coupon.name || sub.discount.coupon.id,
+      percent_off: sub.discount.coupon.percent_off,
+      amount_off: sub.discount.coupon.amount_off ? sub.discount.coupon.amount_off / 100 : null,
+    } : null
+
+    res.json({ items, history, invoices: invoiceHistory, discount })
+  } catch (e) {
+    console.error('Stripe details error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
 })
 
 router.patch('/abonnements/:id', (req, res) => {

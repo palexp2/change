@@ -407,6 +407,7 @@ function ProfitabilityChart({ data, recentOrders }) {
   const navigate = useNavigate()
   const [tooltip, setTooltip] = useState(null)
   const [activeFilter, setActiveFilter] = useState('Tous') // 'Tous' | 'Abonnement' | 'Achat'
+  const [showOrders, setShowOrders] = useState(false)
 
   // Build last 16 weeks grid, merging rows by is_subscription
   const weeks = []
@@ -443,19 +444,24 @@ function ProfitabilityChart({ data, recentOrders }) {
   const subRevenue28   = last4.reduce((s, w) => s + w.subRevenue, 0)
   const achatRevenue28 = last4.reduce((s, w) => s + w.achatRevenue, 0)
 
-  const maxRevenue = Math.max(...weeks.map(w => w.revenue), 1)
+  // Compute margin % per week
+  const weekMargins = weeks.map(w => w.revenue > 0 ? Math.round(((w.revenue - w.cogs) / w.revenue) * 100) : null)
 
   const W = 600, H = 160
-  const padL = 44, padR = 8, padT = 12, padB = 28
+  const padL = 32, padR = 8, padT = 12, padB = 28
   const chartW = W - padL - padR
   const chartH = H - padT - padB
   const n = weeks.length
-  const barW = Math.floor(chartW / n) - 4
 
-  function xCenter(i) { return padL + (i + 0.5) * (chartW / n) }
-  function barH(val) { return (val / maxRevenue) * chartH }
+  // Y-axis range: 0% to max margin (at least 60%)
+  const validMargins = weekMargins.filter(m => m !== null)
+  const minPct = Math.min(0, ...validMargins)
+  const maxPct = Math.max(60, ...validMargins)
+  const rangePct = maxPct - minPct
 
-  const gridVals = [0, maxRevenue / 2, maxRevenue].map(v => Math.round(v))
+  function xPos(i) { return padL + (i + 0.5) * (chartW / n) }
+  function yPos(pct) { return padT + chartH - ((pct - minPct) / rangePct) * chartH }
+
   const fmtK = v => v >= 1000 ? `${Math.round(v / 1000)}k` : `${Math.round(v)}`
 
   if (!data || data.length === 0) {
@@ -513,60 +519,61 @@ function ProfitabilityChart({ data, recentOrders }) {
         </div>
       </div>
 
-      {/* Weekly bar chart */}
+      {/* Weekly line chart — margin % */}
       <div className="relative">
         <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 180 }}>
           <defs>
-            <linearGradient id="revenueGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#6ee7b7" stopOpacity="0.9" />
-              <stop offset="100%" stopColor="#34d399" stopOpacity="0.6" />
-            </linearGradient>
-            <linearGradient id="cogsGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#94a3b8" stopOpacity="0.9" />
-              <stop offset="100%" stopColor="#64748b" stopOpacity="0.7" />
+            <linearGradient id="marginFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#10b981" stopOpacity="0.15" />
+              <stop offset="100%" stopColor="#10b981" stopOpacity="0.02" />
             </linearGradient>
           </defs>
 
-          {/* Grid */}
-          {gridVals.map((v, gi) => {
-            const y = padT + chartH - (v / maxRevenue) * chartH
+          {/* Grid lines */}
+          {[0, 20, 40, 60].filter(v => v >= minPct && v <= maxPct).map(v => {
+            const y = yPos(v)
             return (
-              <g key={gi}>
-                <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="#f1f5f9" strokeWidth={1} />
-                <text x={padL - 4} y={y + 3.5} textAnchor="end" fontSize="9" fill="#94a3b8">{fmtK(v)}</text>
+              <g key={v}>
+                <line x1={padL} x2={W - padR} y1={y} y2={y} stroke={v === 0 ? '#cbd5e1' : '#f1f5f9'} strokeWidth={v === 0 ? 0.8 : 1} />
+                <text x={padL - 4} y={y + 3.5} textAnchor="end" fontSize="9" fill="#94a3b8">{v}%</text>
               </g>
             )
           })}
 
-          {/* Bars */}
+          {/* Area fill under the line */}
+          {(() => {
+            const points = weeks.map((w, i) => weekMargins[i] !== null ? { x: xPos(i), y: yPos(weekMargins[i]) } : null).filter(Boolean)
+            if (points.length < 2) return null
+            const areaPath = `M${points[0].x},${points[0].y} ${points.map(p => `L${p.x},${p.y}`).join(' ')} L${points[points.length - 1].x},${yPos(0)} L${points[0].x},${yPos(0)} Z`
+            return <path d={areaPath} fill="url(#marginFill)" />
+          })()}
+
+          {/* Line */}
+          {(() => {
+            const points = weeks.map((w, i) => weekMargins[i] !== null ? `${xPos(i)},${yPos(weekMargins[i])}` : null).filter(Boolean)
+            if (points.length < 2) return null
+            return <polyline points={points.join(' ')} fill="none" stroke="#10b981" strokeWidth="2" strokeLinejoin="round" />
+          })()}
+
+          {/* Points + hover zones */}
           {weeks.map((w, i) => {
-            const revH = barH(w.revenue)
-            const cogsH = barH(w.cogs)
-            const x = xCenter(i) - barW / 2
+            if (weekMargins[i] === null) return null
+            const cx = xPos(i)
+            const cy = yPos(weekMargins[i])
             const isHovered = tooltip?.i === i
+            const isLast4 = i >= n - 4
             const showLabel = i === 0 || i === n - 1 || w.date.getDate() <= 7
             const label = w.date.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
-            const isLast4 = i >= n - 4
+            const color = weekMargins[i] >= 40 ? '#10b981' : weekMargins[i] >= 20 ? '#f59e0b' : '#ef4444'
             return (
               <g key={w.key}
-                onMouseEnter={() => w.revenue > 0 && setTooltip({ i, x: xCenter(i), y: padT + chartH - revH, w })}
+                onMouseEnter={() => setTooltip({ i, x: cx, y: cy, w, pct: weekMargins[i] })}
                 onMouseLeave={() => setTooltip(null)}
               >
                 <rect x={padL + i * (chartW / n)} y={0} width={chartW / n} height={H} fill="transparent" />
-                {revH > 0 && (
-                  <rect x={x} y={padT + chartH - revH} width={barW} height={revH} rx="2"
-                    fill={isHovered ? '#10b981' : 'url(#revenueGrad)'}
-                    opacity={isLast4 ? 1 : 0.6}
-                  />
-                )}
-                {cogsH > 0 && (
-                  <rect x={x} y={padT + chartH - cogsH} width={barW} height={cogsH} rx="2"
-                    fill={isHovered ? '#475569' : 'url(#cogsGrad)'}
-                    opacity={isLast4 ? 1 : 0.6}
-                  />
-                )}
+                <circle cx={cx} cy={cy} r={isHovered ? 5 : 3.5} fill={color} stroke="white" strokeWidth={isHovered ? 2 : 1.5} opacity={isLast4 ? 1 : 0.5} />
                 {showLabel && (
-                  <text x={xCenter(i)} y={H - 4} textAnchor="middle" fontSize="8" fill="#94a3b8">{label}</text>
+                  <text x={cx} y={H - 4} textAnchor="middle" fontSize="8" fill="#94a3b8">{label}</text>
                 )}
               </g>
             )
@@ -577,20 +584,20 @@ function ProfitabilityChart({ data, recentOrders }) {
             const tx = Math.min(Math.max(tooltip.x, 70), W - 70)
             const ty = Math.max(tooltip.y - 8, padT + 4)
             const w = tooltip.w
-            const marginPct = w.revenue > 0 ? Math.round(((w.revenue - w.cogs) / w.revenue) * 100) : 0
             const hasBreakdown = activeFilter === 'Tous' && (w.subRevenue > 0 || w.achatRevenue > 0)
+            const tooltipH = hasBreakdown ? 68 : 52
             return (
               <g pointerEvents="none">
-                <rect x={tx - 64} y={ty - 14} width={128} height={hasBreakdown ? 68 : 52} rx="5" fill="#1e293b" opacity="0.93" />
-                <text x={tx} y={ty + 2} textAnchor="middle" fontSize="10" fontWeight="bold" fill="#6ee7b7">
+                <rect x={tx - 64} y={ty - 14} width={128} height={tooltipH} rx="5" fill="#1e293b" opacity="0.93" />
+                <text x={tx} y={ty + 2} textAnchor="middle" fontSize="10" fontWeight="bold"
+                  fill={tooltip.pct >= 40 ? '#6ee7b7' : tooltip.pct >= 20 ? '#fbbf24' : '#f87171'}>
+                  Marge: {tooltip.pct}%
+                </text>
+                <text x={tx} y={ty + 16} textAnchor="middle" fontSize="10" fill="#6ee7b7">
                   Rev: {fmtK(w.revenue)}$
                 </text>
-                <text x={tx} y={ty + 16} textAnchor="middle" fontSize="10" fill="#94a3b8">
+                <text x={tx} y={ty + 30} textAnchor="middle" fontSize="10" fill="#94a3b8">
                   Coûts: {fmtK(w.cogs)}$
-                </text>
-                <text x={tx} y={ty + 30} textAnchor="middle" fontSize="10" fontWeight="bold"
-                  fill={marginPct >= 40 ? '#6ee7b7' : marginPct >= 20 ? '#fbbf24' : '#f87171'}>
-                  Marge: {marginPct}%
                 </text>
                 {hasBreakdown && (
                   <text x={tx} y={ty + 46} textAnchor="middle" fontSize="9" fill="#a78bfa">
@@ -602,9 +609,8 @@ function ProfitabilityChart({ data, recentOrders }) {
           })()}
         </svg>
         <div className="flex items-center gap-4 text-xs text-slate-400 mt-1 px-1">
-          <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-emerald-400 inline-block" /> Revenus</span>
-          <span className="flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-slate-400 inline-block" /> Coûts</span>
-          <span className="ml-auto">Zone plus opaque = 28 derniers jours</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" /> Marge %</span>
+          <span className="ml-auto">Points opaques = 28 derniers jours</span>
         </div>
       </div>
 
@@ -616,10 +622,14 @@ function ProfitabilityChart({ data, recentOrders }) {
         if (!filtered.length) return null
         return (
           <div className="mt-6 border-t border-slate-100 pt-5">
-            <h3 className="text-sm font-semibold text-slate-700 mb-3">
+            <button
+              onClick={() => setShowOrders(!showOrders)}
+              className="text-sm text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1"
+            >
+              <span className="text-xs">{showOrders ? '▼' : '▶'}</span>
               Commandes envoyées — 28 derniers jours ({filtered.length})
-            </h3>
-            <div className="overflow-x-auto">
+            </button>
+            {showOrders && <div className="overflow-x-auto mt-3">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-100">
@@ -661,7 +671,7 @@ function ProfitabilityChart({ data, recentOrders }) {
                   })}
                 </tbody>
               </table>
-            </div>
+            </div>}
           </div>
         )
       })()}
@@ -692,16 +702,14 @@ function ReplacementRateChart({ replacementRate }) {
   const totalLast12 = byMonth.reduce((s, m) => s + (m.replacement_cost || 0), 0)
   const annualized = parkValue > 0 ? (totalLast12 / parkValue) * 100 : 0
 
-  const maxRate = Math.max(...months.map(m => m.rate), 0.01)
   const W = 600, H = 160
   const padL = 44, padR = 8, padT = 12, padB = 28
   const chartW = W - padL - padR
   const chartH = H - padT - padB
   const n = months.length
-  const barW = Math.floor(chartW / n) - 4
-  function xCenter(i) { return padL + (i + 0.5) * (chartW / n) }
-  function barH(val) { return (val / maxRate) * chartH }
-  const gridRates = [0, maxRate / 2, maxRate]
+  const maxRate = Math.max(...months.map(m => m.rate), 0.5)
+  function xPos(i) { return padL + (i + 0.5) * (chartW / n) }
+  function yPos(val) { return padT + chartH - (val / maxRate) * chartH }
   const fmtPct = v => v.toFixed(2) + '%'
 
   return (
@@ -732,64 +740,85 @@ function ReplacementRateChart({ replacementRate }) {
         </div>
       </div>
 
-      {/* Monthly bar chart */}
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 180 }}>
-        <defs>
-          <linearGradient id="replGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.9" />
-            <stop offset="100%" stopColor="#d97706" stopOpacity="0.6" />
-          </linearGradient>
-        </defs>
-        {gridRates.map((v, gi) => {
-          const y = padT + chartH - (v / maxRate) * chartH
-          return (
-            <g key={gi}>
-              <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="#f1f5f9" strokeWidth={1} />
-              <text x={padL - 4} y={y + 3.5} textAnchor="end" fontSize="9" fill="#94a3b8">{v.toFixed(2)}%</text>
-            </g>
-          )
-        })}
-        {months.map((m, i) => {
-          const bh = barH(m.rate)
-          const x = xCenter(i) - barW / 2
-          const isHovered = tooltip?.i === i
-          return (
-            <g key={m.key}
-              onMouseEnter={() => m.rate > 0 && setTooltip({ i, x: xCenter(i), y: padT + chartH - bh, m })}
-              onMouseLeave={() => setTooltip(null)}
-            >
-              <rect x={padL + i * (chartW / n)} y={0} width={chartW / n} height={H} fill="transparent" />
-              {bh > 0 && (
-                <rect x={x} y={padT + chartH - bh} width={barW} height={bh} rx="2"
-                  fill={isHovered ? '#d97706' : 'url(#replGrad)'} />
-              )}
+      {/* Monthly line chart — replacement rate % */}
+      <div className="relative">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 180 }}>
+          <defs>
+            <linearGradient id="replFill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.15" />
+              <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.02" />
+            </linearGradient>
+          </defs>
 
-              <text x={xCenter(i)} y={H - 4} textAnchor="middle" fontSize="9" fill="#94a3b8">{m.label}</text>
-            </g>
-          )
-        })}
-        {tooltip && (() => {
-          const tx = Math.min(Math.max(tooltip.x, 70), W - 70)
-          const ty = Math.max(tooltip.y - 8, padT + 4)
-          return (
-            <g pointerEvents="none">
-              <rect x={tx - 56} y={ty - 14} width={112} height={52} rx="5" fill="#1e293b" opacity="0.93" />
-              <text x={tx} y={ty + 2} textAnchor="middle" fontSize="10" fontWeight="bold" fill="#fbbf24">
-                {fmtPct(tooltip.m.rate)} du parc
-              </text>
-              <text x={tx} y={ty + 16} textAnchor="middle" fontSize="10" fill="#94a3b8">
-                {fmtCad(tooltip.m.cost)}
-              </text>
-              <text x={tx} y={ty + 30} textAnchor="middle" fontSize="9" fill="#94a3b8">
-                {tooltip.m.nb_orders} commande{tooltip.m.nb_orders > 1 ? 's' : ''}
-              </text>
-            </g>
-          )
-        })()}
-      </svg>
-      <p className="text-xs text-slate-400 mt-1 px-1">
-        Vert ≤ 5%/an · Jaune ≤ 10%/an · Rouge &gt; 10%/an
-      </p>
+          {/* Grid lines */}
+          {(() => {
+            const step = maxRate > 1 ? Math.ceil(maxRate / 3 * 10) / 10 : maxRate / 3
+            const vals = [0, step, step * 2, maxRate]
+            return vals.map((v, gi) => {
+              const y = yPos(v)
+              return (
+                <g key={gi}>
+                  <line x1={padL} x2={W - padR} y1={y} y2={y} stroke={v === 0 ? '#cbd5e1' : '#f1f5f9'} strokeWidth={v === 0 ? 0.8 : 1} />
+                  <text x={padL - 4} y={y + 3.5} textAnchor="end" fontSize="9" fill="#94a3b8">{v.toFixed(v >= 1 ? 1 : 2)}%</text>
+                </g>
+              )
+            })
+          })()}
+
+          {/* Area fill */}
+          {(() => {
+            const points = months.map((m, i) => ({ x: xPos(i), y: yPos(m.rate) }))
+            const areaPath = `M${points[0].x},${points[0].y} ${points.map(p => `L${p.x},${p.y}`).join(' ')} L${points[points.length - 1].x},${yPos(0)} L${points[0].x},${yPos(0)} Z`
+            return <path d={areaPath} fill="url(#replFill)" />
+          })()}
+
+          {/* Line */}
+          {(() => {
+            const points = months.map((m, i) => `${xPos(i)},${yPos(m.rate)}`)
+            return <polyline points={points.join(' ')} fill="none" stroke="#f59e0b" strokeWidth="2" strokeLinejoin="round" />
+          })()}
+
+          {/* Points + hover zones */}
+          {months.map((m, i) => {
+            const cx = xPos(i)
+            const cy = yPos(m.rate)
+            const isHovered = tooltip?.i === i
+            return (
+              <g key={m.key}
+                onMouseEnter={() => setTooltip({ i, x: cx, y: cy, m })}
+                onMouseLeave={() => setTooltip(null)}
+              >
+                <rect x={padL + i * (chartW / n)} y={0} width={chartW / n} height={H} fill="transparent" />
+                <circle cx={cx} cy={cy} r={isHovered ? 5 : 3.5} fill="#f59e0b" stroke="white" strokeWidth={isHovered ? 2 : 1.5} />
+                <text x={cx} y={H - 4} textAnchor="middle" fontSize="9" fill="#94a3b8">{m.label}</text>
+              </g>
+            )
+          })}
+
+          {/* Tooltip */}
+          {tooltip && (() => {
+            const tx = Math.min(Math.max(tooltip.x, 70), W - 70)
+            const ty = Math.max(tooltip.y - 8, padT + 4)
+            return (
+              <g pointerEvents="none">
+                <rect x={tx - 56} y={ty - 14} width={112} height={52} rx="5" fill="#1e293b" opacity="0.93" />
+                <text x={tx} y={ty + 2} textAnchor="middle" fontSize="10" fontWeight="bold" fill="#fbbf24">
+                  {fmtPct(tooltip.m.rate)} du parc
+                </text>
+                <text x={tx} y={ty + 16} textAnchor="middle" fontSize="10" fill="#94a3b8">
+                  {fmtCad(tooltip.m.cost)}
+                </text>
+                <text x={tx} y={ty + 30} textAnchor="middle" fontSize="9" fill="#94a3b8">
+                  {tooltip.m.nb_orders} commande{tooltip.m.nb_orders > 1 ? 's' : ''}
+                </text>
+              </g>
+            )
+          })()}
+        </svg>
+        <div className="flex items-center gap-4 text-xs text-slate-400 mt-1 px-1">
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block" /> Taux de remplacement %</span>
+        </div>
+      </div>
 
       {/* Replacement items detail table */}
       {items.length > 0 && (

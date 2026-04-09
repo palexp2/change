@@ -1,5 +1,5 @@
-import { useState, useRef, useEffect } from 'react'
-import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search } from 'lucide-react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { FilterRow, defaultOpForType, getFieldType } from './FilterRow.jsx'
 import api from '../lib/api.js'
@@ -183,15 +183,44 @@ function SortPanel({ columns, sorts, onChange }) {
   )
 }
 
-function GroupPanel({ columns, groupBy, onChange }) {
+function GroupPanel({ columns, groupBy, onChange, onCollapseAll, onExpandAll }) {
+  const [search, setSearch] = useState('')
+  const filtered = search
+    ? columns.filter(c => c.label.toLowerCase().includes(search.toLowerCase()))
+    : columns
+
   return (
     <Panel className="w-56">
       <PanelTitle>Grouper par</PanelTitle>
+      {groupBy && (
+        <div className="flex items-center gap-1 mb-2">
+          <button onClick={onExpandAll} className="flex items-center gap-1 flex-1 justify-center px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded border border-slate-200 transition-colors">
+            <ChevronsUpDown size={12} /> Tout ouvrir
+          </button>
+          <button onClick={onCollapseAll} className="flex items-center gap-1 flex-1 justify-center px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded border border-slate-200 transition-colors">
+            <ChevronsDownUp size={12} /> Tout fermer
+          </button>
+        </div>
+      )}
+      <div className="relative mb-2">
+        <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-indigo-400"
+          placeholder="Rechercher..."
+          autoFocus
+        />
+      </div>
       <div className="space-y-0.5 max-h-60 overflow-y-auto">
-        <button onClick={() => onChange(null)} className={`flex items-center justify-between w-full px-2 py-1.5 rounded text-sm text-left transition-colors ${!groupBy ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-slate-50 text-slate-600'}`}>
-          Aucun {!groupBy && <Check size={13} />}
-        </button>
-        {columns.map(col => (
+        {!search && (
+          <button onClick={() => onChange(null)} className={`flex items-center justify-between w-full px-2 py-1.5 rounded text-sm text-left transition-colors ${!groupBy ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-slate-50 text-slate-600'}`}>
+            Aucun {!groupBy && <Check size={13} />}
+          </button>
+        )}
+        {filtered.length === 0
+          ? <p className="text-xs text-slate-400 text-center py-2">Aucun résultat</p>
+          : filtered.map(col => (
           <button key={col.id} onClick={() => onChange(col.field)} className={`flex items-center justify-between w-full px-2 py-1.5 rounded text-sm text-left transition-colors ${groupBy === col.field ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-slate-50 text-slate-600'}`}>
             {col.label} {groupBy === col.field && <Check size={13} />}
           </button>
@@ -217,16 +246,22 @@ export function ViewToolbar({
   processedCount,
   visibleCols, setVisibleCols,
   groupBy, setGroupBy,
+  onCollapseAll, onExpandAll,
   data,
 }) {
   const [openPanel, setOpenPanel] = useState(null)
   const toolbarRef = useRef(null)
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
-  const [draggingId, setDraggingId] = useState(null)
-  const [dragOverIdx, setDragOverIdx] = useState(null)
-  const dragStartIdx = useRef(null)
+  const [draggingId, _setDraggingId] = useState(null)
+  const draggingIdRef = useRef(null)
+  function setDraggingId(v) { draggingIdRef.current = v; _setDraggingId(v) }
+  const [dragPreview, _setDragPreview] = useState(null)
+  const dragPreviewRef = useRef(null)
+  function setDragPreview(v) { dragPreviewRef.current = v; _setDragPreview(v) }
   const tabsRef = useRef(null)
+  const tabElsRef = useRef({})
+  const flipRectsRef = useRef({})
 
   // Merged list: real views + virtual "Tous" entry, sorted by their sort_order
   const ALL_ID = '__all__'
@@ -234,6 +269,36 @@ export function ViewToolbar({
     ...views.map((v, i) => ({ ...v, __sortOrder: v.sort_order ?? i })),
     { id: ALL_ID, label: tableLabel, __sortOrder: allViewSortOrder },
   ].sort((a, b) => a.__sortOrder - b.__sortOrder)
+
+  const displayViews = dragPreview || mergedViews
+
+  function captureRects() {
+    const rects = {}
+    for (const [id, el] of Object.entries(tabElsRef.current)) {
+      if (el) rects[id] = el.getBoundingClientRect()
+    }
+    flipRectsRef.current = rects
+  }
+
+  // FLIP animation after reorder
+  useLayoutEffect(() => {
+    const prev = flipRectsRef.current
+    if (!Object.keys(prev).length) return
+    flipRectsRef.current = {}
+    for (const [id, el] of Object.entries(tabElsRef.current)) {
+      if (!el || !prev[id]) continue
+      if (id === draggingIdRef.current) continue
+      const newRect = el.getBoundingClientRect()
+      const dx = prev[id].left - newRect.left
+      if (Math.abs(dx) < 1) continue
+      el.style.transform = `translateX(${dx}px)`
+      el.style.transition = 'none'
+      el.offsetHeight
+      el.style.transition = 'transform 150ms ease'
+      el.style.transform = ''
+    }
+  })
+
   // Auto-save view on any change (filters, sorts, visible columns, group by)
   const autoSaveRef = useRef(null)
   const pendingSaveRef = useRef(null)
@@ -259,6 +324,7 @@ export function ViewToolbar({
     return () => clearTimeout(autoSaveRef.current)
   }, [table, activeViewId, sorts, filters, visibleCols, groupBy])
 
+
   useEffect(() => {
     if (!openPanel) return
     function handler(e) {
@@ -278,51 +344,60 @@ export function ViewToolbar({
   return (
     <div className="border-b border-slate-200">
 
-      {/* View tabs — reorderable via pointer drag */}
-      {mergedViews.length > 1 && (
+      {/* View tabs — reorderable via pointer drag with live preview */}
+      {displayViews.length > 1 && (
         <div ref={tabsRef} className="flex items-end gap-0 px-2 overflow-x-auto overflow-y-hidden border-b border-slate-200">
-          {mergedViews.map((v, idx) => {
+          {displayViews.map((v, idx) => {
             const realId = v.id === ALL_ID ? null : v.id
             const canDrag = isAdmin && !!onReorderViews
             const isDragging = draggingId === v.id
-            const isDropTarget = dragOverIdx === idx && draggingId && draggingId !== v.id
             return (
               <button
                 key={v.id}
-                className={`${tabCls(realId)} select-none ${isDragging ? 'opacity-40' : ''} ${isDropTarget ? 'border-l-2 border-l-indigo-400' : ''}`}
+                ref={el => { if (el) tabElsRef.current[v.id] = el }}
+                className={`${tabCls(realId)} select-none ${isDragging ? 'opacity-40 scale-95' : ''}`}
                 onClick={() => { if (!draggingId) { flushSave(); setActiveViewId(realId) } }}
                 onPointerDown={canDrag ? (e) => {
                   if (e.button !== 0) return
-                  dragStartIdx.current = idx
                   setDraggingId(v.id)
+                  setDragPreview([...mergedViews])
                   e.currentTarget.setPointerCapture(e.pointerId)
                 } : undefined}
                 onPointerMove={canDrag ? (e) => {
-                  if (!draggingId) return
+                  if (!draggingIdRef.current) return
                   const container = tabsRef.current
                   if (!container) return
+                  const preview = dragPreviewRef.current || mergedViews
+                  const dragIdx = preview.findIndex(x => x.id === draggingIdRef.current)
+                  if (dragIdx === -1) return
                   const tabs = [...container.children]
+                  let insertIdx = 0
+                  let count = 0
                   for (let i = 0; i < tabs.length; i++) {
+                    if (i === dragIdx) continue
                     const rect = tabs[i].getBoundingClientRect()
-                    const mid = rect.left + rect.width / 2
-                    if (e.clientX < mid) { setDragOverIdx(i); return }
+                    if (e.clientX > rect.left + rect.width / 2) insertIdx = count + 1
+                    count++
                   }
-                  setDragOverIdx(tabs.length)
+                  const draggedItem = preview[dragIdx]
+                  const without = preview.filter(x => x.id !== draggingIdRef.current)
+                  const newPreview = [...without]
+                  newPreview.splice(insertIdx, 0, draggedItem)
+                  if (newPreview.every((x, i) => x.id === preview[i]?.id)) return
+                  captureRects()
+                  setDragPreview(newPreview)
                 } : undefined}
                 onPointerUp={canDrag ? () => {
-                  if (!draggingId || dragOverIdx === null) { setDraggingId(null); setDragOverIdx(null); return }
-                  const from = mergedViews.findIndex(x => x.id === draggingId)
-                  let to = dragOverIdx > from ? dragOverIdx - 1 : dragOverIdx
-                  if (from !== to) {
-                    const reordered = [...mergedViews]
-                    const [item] = reordered.splice(from, 1)
-                    reordered.splice(to, 0, item)
-                    const newAllPos = reordered.findIndex(x => x.id === ALL_ID)
-                    const realReordered = reordered.filter(x => x.id !== ALL_ID)
-                    onReorderViews(realReordered, newAllPos)
+                  if (!draggingIdRef.current) { setDraggingId(null); setDragPreview(null); return }
+                  const preview = dragPreviewRef.current
+                  if (preview) {
+                    captureRects()
+                    const newAllPos = preview.findIndex(x => x.id === ALL_ID)
+                    const realReordered = preview.filter(x => x.id !== ALL_ID)
+                    onReorderViews(realReordered, newAllPos - 0.5)
                   }
                   setDraggingId(null)
-                  setDragOverIdx(null)
+                  setDragPreview(null)
                 } : undefined}
                 style={canDrag ? { cursor: isDragging ? 'grabbing' : 'grab' } : undefined}
               >
@@ -389,7 +464,8 @@ export function ViewToolbar({
         )}
         {openPanel === 'group' && setGroupBy && (
           <GroupPanel columns={columns.filter(c => c.groupable !== false)} groupBy={groupBy}
-            onChange={v => { setGroupBy(v); setOpenPanel(null) }} />
+            onChange={v => { setGroupBy(v); setOpenPanel(null) }}
+            onCollapseAll={onCollapseAll} onExpandAll={onExpandAll} />
         )}
       </div>
     </div>

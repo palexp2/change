@@ -112,6 +112,7 @@ export const api = {
 
   // Tickets
   tickets: {
+    meta: () => get('/tickets/meta'),
     list: (params = {}) => get('/tickets?' + new URLSearchParams(params)),
     get: (id) => get(`/tickets/${id}`),
     create: (data) => post('/tickets', data),
@@ -222,6 +223,7 @@ export const api = {
     updatePill: (table, id, data) => put(`/views/${table}/pills/${id}`, data),
     deletePill: (table, id) => del(`/views/${table}/pills/${id}`),
     reorderPills: (table, order, all_view_sort_order) => patch(`/views/${table}/pills/reorder`, { order, all_view_sort_order }),
+    saveColumnWidths: (table, column_widths) => patch(`/views/${table}/column-widths`, { column_widths }),
     getDetailLayout: (entityType) => get(`/views/detail/${entityType}`),
     saveDetailLayout: (entityType, field_order) => put(`/views/detail/${entityType}`, { field_order }),
   },
@@ -287,6 +289,7 @@ export const api = {
   abonnements: {
     list: (params = {}) => get('/projets/abonnements?' + new URLSearchParams(params)),
     get: (id) => get(`/projets/abonnements/${id}`),
+    stripeDetails: (id) => get(`/projets/abonnements/${id}/stripe-details`),
     patch: (id, body) => patch(`/projets/abonnements/${id}`, body),
   },
 
@@ -437,6 +440,9 @@ export const api = {
     taxMappings: () => get('/stripe-queue/tax-mappings/list'),
     saveTaxMapping: (data) => post('/stripe-queue/tax-mappings', data),
     deleteTaxMapping: (id) => del(`/stripe-queue/tax-mappings/${id}`),
+    uniqueTaxRates: () => get('/stripe-queue/tax-rates/unique'),
+    batchEnrich: () => post('/stripe-queue/batch-enrich'),
+    batchStatus: () => get('/stripe-queue/batch-enrich/status'),
   },
 
 }

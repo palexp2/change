@@ -36,14 +36,14 @@ function extractBodies(payload) {
 
 function findOrCreateContact(emailAddress, displayName) {
   if (!emailAddress) return null
-  const existing = db.prepare('SELECT id FROM contacts WHERE email=?').get(emailAddress)
-  if (existing) return existing.id
+  const existing = db.prepare('SELECT id, company_id FROM contacts WHERE email=?').get(emailAddress)
+  if (existing) return { contactId: existing.id, companyId: existing.company_id }
 
   const parts = (displayName || '').replace(/<.*>/, '').trim().split(' ')
   const id = uuid()
   db.prepare('INSERT INTO contacts (id, first_name, last_name, email) VALUES (?,?,?,?)')
     .run(id, parts[0] || '', parts.slice(1).join(' ') || '', emailAddress)
-  return id
+  return { contactId: id, companyId: null }
 }
 
 async function syncAccount(oauthRow) {
@@ -51,6 +51,9 @@ async function syncAccount(oauthRow) {
   let gmail
   try { gmail = await getGmailClient(oauthId) }
   catch (e) { console.error(`❌ Gmail client ${account_email}:`, e.message); return }
+
+  const ownerUser = db.prepare('SELECT id FROM users WHERE email=?').get(account_email)
+  const userId = ownerUser?.id || null
 
   const state = db.prepare('SELECT * FROM gmail_sync_state WHERE connector_oauth_id=?').get(oauthId)
 
@@ -67,7 +70,8 @@ async function syncAccount(oauthRow) {
           for (const m of (record.messagesAdded || [])) messages.push(m.message)
         }
         newHistoryId = hist.data.historyId || newHistoryId
-      } catch {
+      } catch (histErr) {
+        console.log(`⚠️ Gmail ${account_email}: history expiré, resync complet`)
         const list = await gmail.users.messages.list({ userId: 'me', maxResults: 50 })
         messages = list.data.messages || []
       }
@@ -80,7 +84,14 @@ async function syncAccount(oauthRow) {
     for (const msgRef of messages) {
       if (db.prepare('SELECT id FROM emails WHERE gmail_message_id=?').get(msgRef.id)) continue
 
-      const msg = await gmail.users.messages.get({ userId: 'me', id: msgRef.id, format: 'full' })
+      let msg
+      try {
+        msg = await gmail.users.messages.get({ userId: 'me', id: msgRef.id, format: 'full' })
+      } catch (getMsgErr) {
+        // Message supprimé/inaccessible entre le list et le get — on skip
+        continue
+      }
+
       const headers = msg.data.payload.headers
       const fromEmail = parseEmailAddress(getHeader(headers, 'from'))
       const toEmail = parseEmailAddress(getHeader(headers, 'to'))
@@ -92,17 +103,17 @@ async function syncAccount(oauthRow) {
       const externalEmail = direction === 'out' ? toEmail : fromEmail
       const externalName = direction === 'out' ? getHeader(headers, 'to') : getHeader(headers, 'from')
 
-      const contactId = findOrCreateContact(externalEmail, externalName)
+      const { contactId, companyId } = findOrCreateContact(externalEmail, externalName) || {}
       const interactionId = uuid()
       const emailId = uuid()
 
       db.prepare(`
-        INSERT INTO interactions (id, contact_id, type, direction, timestamp)
-        VALUES (?,?,?,?,?)
-      `).run(interactionId, contactId, 'email', direction, timestamp)
+        INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
+        VALUES (?,?,?,?,?,?,?)
+      `).run(interactionId, contactId || null, companyId || null, userId, 'email', direction, timestamp)
 
       db.prepare(`
-        INSERT INTO emails (id, interaction_id, subject, body_html, body_text, from_address, to_address, cc, gmail_message_id, gmail_thread_id)
+        INSERT OR IGNORE INTO emails (id, interaction_id, subject, body_html, body_text, from_address, to_address, cc, gmail_message_id, gmail_thread_id)
         VALUES (?,?,?,?,?,?,?,?,?,?)
       `).run(
         emailId, interactionId,

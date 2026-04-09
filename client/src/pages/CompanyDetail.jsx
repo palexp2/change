@@ -1,80 +1,12 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ChevronDown, ChevronUp, Phone, Mail, MessageSquare, Building2, PhoneCall, PhoneIncoming, PhoneOutgoing, Eye, CheckCircle2, Circle, Clock, AlertCircle, Zap } from 'lucide-react'
+import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, phaseBadgeColor, orderStatusColor, ticketStatusColor, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { useAuth } from '../lib/auth.jsx'
-
-const TYPE_LABELS = { call: 'Appel', email: 'Courriel', sms: 'SMS', meeting: 'Réunion', note: 'Note' }
-const TYPE_COLORS = { call: 'bg-blue-100 text-blue-700', email: 'bg-purple-100 text-purple-700', sms: 'bg-green-100 text-green-700', meeting: 'bg-amber-100 text-amber-700', note: 'bg-slate-100 text-slate-600' }
-const TYPE_ICONS = { call: PhoneCall, email: Mail, sms: MessageSquare, meeting: Building2, note: Edit2 }
-
-function fmtDuration(s) {
-  if (!s) return null
-  const m = Math.floor(s / 60), sec = s % 60
-  return m > 0 ? `${m}m ${sec}s` : `${sec}s`
-}
-
-function InteractionItem({ item }) {
-  const [expanded, setExpanded] = useState(false)
-  const Icon = TYPE_ICONS[item.type] || MessageSquare
-  const hasBody = item.transcript_formatted || item.body_text || item.body_html || item.meeting_notes
-
-  return (
-    <div className="card p-4">
-      <div className="flex items-start gap-3">
-        <div className={`w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0 ${TYPE_COLORS[item.type] || 'bg-slate-100'}`}>
-          <Icon size={14} />
-        </div>
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-sm font-medium text-slate-800">{TYPE_LABELS[item.type] || item.type}</span>
-              {item.direction === 'in' ? <PhoneIncoming size={12} className="text-slate-400" /> : item.direction === 'out' ? <PhoneOutgoing size={12} className="text-slate-400" /> : null}
-              {item.contact_name?.trim() && (
-                <Link to={`/contacts/${item.contact_id}`} onClick={e => e.stopPropagation()} className="text-sm text-indigo-600 hover:underline">
-                  {item.contact_name.trim()}
-                </Link>
-              )}
-              {item.subject && <span className="text-sm text-slate-600 truncate">{item.subject}</span>}
-              {item.type === 'email' && item.from_address && <span className="text-xs text-slate-400 font-mono truncate">De: {item.from_address}</span>}
-              {item.type === 'email' && item.to_address && <span className="text-xs text-slate-400 font-mono truncate">À: {item.to_address}</span>}
-              {item.automated === 1 && <span title="Courriel automatisé" className="inline-flex items-center gap-0.5 text-xs text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded"><Zap size={10} /> Auto</span>}
-              {item.automated === 1 && item.open_count > 0 && <span title={`Ouvert ${item.open_count} fois`} className="inline-flex items-center gap-0.5 text-xs text-green-700 bg-green-50 border border-green-100 px-1.5 py-0.5 rounded"><Eye size={10} /> {item.open_count}</span>}
-              {item.automated === 1 && item.open_count === 0 && <span title="Non ouvert" className="inline-flex items-center gap-0.5 text-xs text-slate-400 bg-slate-50 border border-slate-100 px-1.5 py-0.5 rounded"><Eye size={10} /> 0</span>}
-              {item.meeting_title && item.meeting_title !== 'Note' && <span className="text-sm text-slate-600">{item.meeting_title}</span>}
-              {item.duration_seconds && <span className="text-xs text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">{fmtDuration(item.duration_seconds)}</span>}
-              {item.callee_number && <span className="text-xs text-slate-400 font-mono">{item.callee_number}</span>}
-              {item.transcription_status === 'pending' && <span className="text-xs bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded">Transcription...</span>}
-            </div>
-            <span className="text-xs text-slate-400 flex-shrink-0">
-              {new Date(item.timestamp).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
-            </span>
-          </div>
-          {item.call_id && (item.recording_path || item.drive_file_id) && (
-            <audio controls className="mt-2 w-full h-8"
-              src={`/erp/api/calls/${item.call_id}/recording?token=${localStorage.getItem('erp_token')}`} />
-          )}
-          {hasBody && (
-            <button onClick={() => setExpanded(e => !e)} className="mt-2 text-xs text-indigo-600 hover:underline">
-              {expanded ? 'Masquer' : 'Voir le contenu'}
-            </button>
-          )}
-          {expanded && (
-            <div className="mt-2 rounded overflow-hidden border border-slate-200">
-              {item.body_html
-                ? <iframe srcDoc={item.body_html} sandbox="allow-same-origin" scrolling="no" className="w-full border-0" style={{ minHeight: '200px' }} onLoad={e => { e.target.style.height = e.target.contentDocument.body.scrollHeight + 'px' }} />
-                : <div className="p-3 bg-slate-50 text-xs text-slate-600 whitespace-pre-wrap">{item.transcript_formatted || item.body_text || item.meeting_notes}</div>
-              }
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
 
 const PHASES = ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore']
 const TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin', 'Agriculture urbaine', 'Cannabis', 'Particulier', 'Distributeur', 'Partenaire', 'Compétiteur', 'Consultant', 'Autre']
@@ -171,7 +103,11 @@ export default function CompanyDetail() {
   const [factures, setFactures] = useState([])
   const [facturesTotal, setFacturesTotal] = useState(0)
   const [envoisTotal, setEnvoisTotal] = useState(0)
+  const [abonnementsTotal, setAbonnementsTotal] = useState(0)
   const [abonnements, setAbonnements] = useState([])
+  const [selectedAbonnement, setSelectedAbonnement] = useState(null)
+  const [abonnementDetails, setAbonnementDetails] = useState(null)
+  const [loadingAbDetails, setLoadingAbDetails] = useState(false)
   const [tasks, setTasks] = useState([])
   const [users, setUsers] = useState([])
   const [showTaskModal, setShowTaskModal] = useState(false)
@@ -230,6 +166,7 @@ export default function CompanyDetail() {
     api.interactions.list({ company_id: id, limit: 1, offset: 0 }).then(d => setInteractionsTotal(d.total || 0)).catch(() => {})
     api.shipments.list({ company_id: id, limit: 1 }).then(r => setEnvoisTotal(r.total || 0)).catch(() => {})
     api.factures.list({ company_id: id, limit: 1 }).then(r => setFacturesTotal(r.total || 0)).catch(() => {})
+    api.abonnements.list({ company_id: id, limit: 1 }).then(r => setAbonnementsTotal(r.total || r.data?.length || 0)).catch(() => {})
   }, [id])
 
   const visibleFields = useMemo(() => COMPANY_FIELDS.filter(f => f.defaultVisible !== false), [])
@@ -352,7 +289,7 @@ export default function CompanyDetail() {
                   support: company.tickets?.length,
                   'numéros de série': company.serials?.length,
                   factures: facturesTotal || undefined,
-                  abonnements: abonnements.length || undefined,
+                  abonnements: abonnementsTotal || undefined,
                   tâches: tasks.length || undefined,
                   'fact-fourn': facturesFournTotal || undefined,
                   depenses: depensesTotal || undefined,
@@ -476,22 +413,13 @@ export default function CompanyDetail() {
 
         {/* Interactions Tab */}
         {tab === 'interactions' && (
-          <div>
-            {loadingInteractions ? (
-              <div className="flex justify-center py-10"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" /></div>
-            ) : interactions.length === 0 ? (
-              <div className="card p-10 text-center text-slate-400">Aucune interaction</div>
-            ) : (
-              <div className="space-y-2">
-                {interactions.map(item => <InteractionItem key={item.id} item={item} />)}
-                {interactions.length < interactionsTotal && (
-                  <button onClick={loadMoreInteractions} disabled={loadingMoreInteractions} className="btn-secondary w-full">
-                    {loadingMoreInteractions ? 'Chargement...' : `Charger plus (${interactionsTotal - interactions.length} restants)`}
-                  </button>
-                )}
-              </div>
-            )}
-          </div>
+          <InteractionTimeline
+            interactions={interactions}
+            loading={loadingInteractions}
+            total={interactionsTotal}
+            onLoadMore={loadMoreInteractions}
+            loadingMore={loadingMoreInteractions}
+          />
         )}
 
         {/* Projects Tab */}
@@ -690,34 +618,170 @@ export default function CompanyDetail() {
 
         {/* Abonnements Tab */}
         {tab === 'abonnements' && (
-          <div className="card overflow-hidden">
-            {!abonnements.length ? (
-              <p className="text-center py-10 text-slate-400">Aucun abonnement</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Produit</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Type</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
-                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Montant</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Début</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Fin</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {abonnements.map(a => (
-                    <tr key={a.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                      <td className="px-4 py-3 text-slate-900">{a.product_name || '—'}</td>
-                      <td className="px-4 py-3 text-slate-600">{a.type || '—'}</td>
-                      <td className="px-4 py-3 text-slate-600">{a.status || '—'}</td>
-                      <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(a.amount_cad)}</td>
-                      <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{fmtDate(a.start_date)}</td>
-                      <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(a.end_date)}</td>
+          <div>
+            <div className="card overflow-hidden">
+              {!abonnements.length ? (
+                <p className="text-center py-10 text-slate-400">Aucun abonnement</p>
+              ) : (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 bg-slate-50">
+                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Produit</th>
+                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Type</th>
+                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
+                      <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Montant</th>
+                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Début</th>
+                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Fin</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {abonnements.map(a => (
+                      <tr key={a.id} className={`border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer ${selectedAbonnement?.id === a.id ? 'bg-indigo-50' : ''}`}
+                        onClick={() => {
+                          if (selectedAbonnement?.id === a.id) { setSelectedAbonnement(null); setAbonnementDetails(null); return }
+                          setSelectedAbonnement(a)
+                          setAbonnementDetails(null)
+                          setLoadingAbDetails(true)
+                          api.abonnements.stripeDetails(a.id).then(setAbonnementDetails).catch(() => setAbonnementDetails(null)).finally(() => setLoadingAbDetails(false))
+                        }}>
+                        <td className="px-4 py-3 text-slate-900">{a.product_name || '—'}</td>
+                        <td className="px-4 py-3 text-slate-600">{a.type || '—'}</td>
+                        <td className="px-4 py-3 text-slate-600">
+                          <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${a.status === 'active' ? 'bg-green-100 text-green-700' : a.status === 'canceled' ? 'bg-red-100 text-red-700' : a.status === 'past_due' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
+                            {a.status === 'active' ? 'Actif' : a.status === 'canceled' ? 'Annulé' : a.status === 'past_due' ? 'En retard' : a.status === 'trialing' ? 'Essai' : a.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(a.amount_cad)}</td>
+                        <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{fmtDate(a.start_date)}</td>
+                        <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(a.end_date)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            {/* Détail abonnement */}
+            {selectedAbonnement && (
+              <div className="mt-4 card p-5 space-y-5">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-base font-semibold text-slate-900">Détails de l'abonnement</h3>
+                  <div className="flex items-center gap-2">
+                    {selectedAbonnement.stripe_url && (
+                      <a href={selectedAbonnement.stripe_url} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:underline">Voir sur Stripe</a>
+                    )}
+                    <button onClick={() => { setSelectedAbonnement(null); setAbonnementDetails(null) }} className="text-slate-400 hover:text-slate-600">
+                      <X size={16} />
+                    </button>
+                  </div>
+                </div>
+
+                {loadingAbDetails ? (
+                  <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600" /></div>
+                ) : !abonnementDetails ? (
+                  <p className="text-center py-6 text-slate-400 text-sm">Impossible de charger les détails Stripe</p>
+                ) : (
+                  <>
+                    {/* Produits / Line items */}
+                    <div>
+                      <h4 className="text-sm font-semibold text-slate-700 mb-2">Produits</h4>
+                      <div className="border border-slate-200 rounded-lg overflow-hidden">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="bg-slate-50 border-b border-slate-200">
+                              <th className="text-left px-4 py-2 text-xs font-semibold text-slate-500">Produit</th>
+                              <th className="text-right px-4 py-2 text-xs font-semibold text-slate-500">Prix unitaire</th>
+                              <th className="text-right px-4 py-2 text-xs font-semibold text-slate-500">Qté</th>
+                              <th className="text-right px-4 py-2 text-xs font-semibold text-slate-500">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {abonnementDetails.items.map(item => (
+                              <tr key={item.id} className="border-b border-slate-100 last:border-0">
+                                <td className="px-4 py-2.5">
+                                  <div className="font-medium text-slate-800">{item.product_name}</div>
+                                  {item.description && <div className="text-xs text-slate-400 mt-0.5">{item.description}</div>}
+                                  {item.interval && <div className="text-xs text-slate-400">/ {item.interval_count > 1 ? `${item.interval_count} ` : ''}{item.interval === 'month' ? 'mois' : item.interval === 'year' ? 'an' : item.interval}</div>}
+                                </td>
+                                <td className="px-4 py-2.5 text-right text-slate-600">{item.unit_amount != null ? `${item.unit_amount.toFixed(2)} ${item.currency}` : '—'}</td>
+                                <td className="px-4 py-2.5 text-right text-slate-600">{item.quantity}</td>
+                                <td className="px-4 py-2.5 text-right font-medium text-slate-800">{item.total != null ? `${item.total.toFixed(2)} ${item.currency}` : '—'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {abonnementDetails.discount && (
+                        <div className="mt-2 text-xs text-indigo-600">
+                          Rabais: {abonnementDetails.discount.name}
+                          {abonnementDetails.discount.percent_off && ` (${abonnementDetails.discount.percent_off}%)`}
+                          {abonnementDetails.discount.amount_off && ` (${abonnementDetails.discount.amount_off} $)`}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Historique des changements */}
+                    {abonnementDetails.history.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-semibold text-slate-700 mb-2">Historique des changements</h4>
+                        <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
+                          {abonnementDetails.history.map((h, i) => (
+                            <div key={i} className="flex items-start gap-3 px-4 py-2.5 text-sm">
+                              <div className="flex-shrink-0 pt-0.5 w-28">
+                                <div className="text-xs text-slate-400">{fmtDate(h.date)}</div>
+                                <div className={`text-[10px] font-medium mt-0.5 ${h.type === 'creation' ? 'text-green-600' : 'text-amber-600'}`}>
+                                  {h.type === 'creation' ? 'Création' : 'Modification'}
+                                </div>
+                              </div>
+                              <div className="flex-1 space-y-0.5">
+                                {h.changes.map((c, j) => (
+                                  <div key={j} className="text-slate-600 text-sm">{typeof c === 'string' ? c : `${c.field}: ${c.from || ''} → ${c.to || ''}`}</div>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Factures récentes */}
+                    {abonnementDetails.invoices.length > 0 && (
+                      <div>
+                        <h4 className="text-sm font-semibold text-slate-700 mb-2">Factures ({abonnementDetails.invoices.length})</h4>
+                        <div className="border border-slate-200 rounded-lg overflow-hidden divide-y divide-slate-100">
+                          {abonnementDetails.invoices.map((inv, i) => (
+                            <div key={i} className="px-4 py-2.5">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                  <span className="text-xs text-slate-700 font-mono">{inv.number || '—'}</span>
+                                  <span className="text-xs text-slate-400">{fmtDate(inv.date)}</span>
+                                  <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-medium ${inv.status === 'paid' ? 'bg-green-100 text-green-700' : inv.status === 'open' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
+                                    {inv.status === 'paid' ? 'Payée' : inv.status === 'open' ? 'Ouverte' : inv.status === 'draft' ? 'Brouillon' : inv.status}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-3">
+                                  <span className="font-medium text-slate-700 text-sm">{inv.amount.toFixed(2)} $</span>
+                                  {inv.pdf && <a href={inv.pdf} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline text-xs">PDF</a>}
+                                </div>
+                              </div>
+                              {inv.lines && inv.lines.length > 0 && (
+                                <div className="mt-1.5 space-y-0.5">
+                                  {inv.lines.map((li, j) => (
+                                    <div key={j} className={`flex items-center justify-between text-xs ${li.proration ? 'text-amber-600' : 'text-slate-400'}`}>
+                                      <span className="truncate mr-4">{li.proration ? '↕ ' : ''}{li.description}</span>
+                                      <span className="flex-shrink-0 font-mono">{li.amount >= 0 ? '' : '-'}{Math.abs(li.amount).toFixed(2)} $</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
             )}
           </div>
         )}

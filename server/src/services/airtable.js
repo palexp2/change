@@ -954,7 +954,6 @@ export async function syncBillets(changes = null) {
             company:          autoMapField(rec.fields, 'entreprise', 'company', 'client', 'compte'),
             contact:          autoMapField(rec.fields, 'contact', 'personne'),
             duration_minutes: autoMapField(rec.fields, 'durée', 'duree', 'duration', 'minutes', 'temps'),
-            notes:            autoMapField(rec.fields, 'notes', 'commentaires'),
             created_at:       autoMapField(rec.fields, 'date de création', 'date creation', 'created', 'créé le', 'cree le', 'date'),
           }
         }
@@ -974,7 +973,7 @@ export async function syncBillets(changes = null) {
         } else if (fieldMap?.status_map && fieldMap.status_map[rawStatus]) {
           status = fieldMap.status_map[rawStatus]
         } else {
-          status = FALLBACK_STATUS_MAP[rawStatus.toLowerCase()] || 'Closed'
+          status = FALLBACK_STATUS_MAP[rawStatus.toLowerCase()] || rawStatus
         }
 
         const TYPE_MAP = {
@@ -983,7 +982,7 @@ export async function syncBillets(changes = null) {
           'erreur de commande': 'Erreur de commande', 'formation': 'Formation', 'installation': 'Installation',
         }
         const rawType = (getVal(rec.fields, fieldMap?.type) || '').trim()
-        const type = TYPE_MAP[rawType.toLowerCase()] || null
+        const type = TYPE_MAP[rawType.toLowerCase()] || rawType || null
 
         function toInt(fieldKey) {
           const raw = fieldKey ? rec.fields[fieldKey] : null
@@ -1019,7 +1018,6 @@ export async function syncBillets(changes = null) {
           title, status, type,
           description:      getVal(rec.fields, fieldMap?.description),
           duration_minutes: toInt(fieldMap?.duration_minutes) ?? 0,
-          notes:            getVal(rec.fields, fieldMap?.notes),
           company_id:       companyId,
           contact_id:       contactId,
           created_at:       createdAt,
@@ -1626,15 +1624,14 @@ export async function syncFactures(changes = null) {
         const totalAmount = parseFloat(String(rec.fields[fm.total_amount] ?? 0).replace(/[^0-9.-]/g, '')) || 0
         const balanceDue = parseFloat(String(rec.fields[fm.balance_due] ?? 0).replace(/[^0-9.-]/g, '')) || 0
         const notes = getVal(rec.fields, fm.notes)
-        const shippingCountry = getVal(rec.fields, fm.shipping_country)
         const existing = db.prepare('SELECT id FROM factures WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE factures SET company_id=?, project_id=?, order_id=?, invoice_id=?, document_number=?, document_date=?, due_date=?, status=?, currency=?, amount_before_tax_cad=?, total_amount=?, balance_due=?, notes=?, shipping_country=?, updated_at=datetime('now') WHERE id=?`)
-            .run(companyId, projectId, orderId, invoiceId, documentNumber, documentDate, dueDate, status, currency, amountBeforeTaxCad, totalAmount, balanceDue, notes, shippingCountry, existing.id)
+          db.prepare(`UPDATE factures SET company_id=?, project_id=?, order_id=?, invoice_id=?, document_number=?, document_date=?, due_date=?, status=?, currency=?, amount_before_tax_cad=?, total_amount=?, balance_due=?, notes=?, updated_at=datetime('now') WHERE id=?`)
+            .run(companyId, projectId, orderId, invoiceId, documentNumber, documentDate, dueDate, status, currency, amountBeforeTaxCad, totalAmount, balanceDue, notes, existing.id)
           updated++
         } else {
-          db.prepare('INSERT INTO factures (id, airtable_id, company_id, project_id, order_id, invoice_id, document_number, document_date, due_date, status, currency, amount_before_tax_cad, total_amount, balance_due, notes, shipping_country) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), rec.id, companyId, projectId, orderId, invoiceId, documentNumber, documentDate, dueDate, status, currency, amountBeforeTaxCad, totalAmount, balanceDue, notes, shippingCountry)
+          db.prepare('INSERT INTO factures (id, airtable_id, company_id, project_id, order_id, invoice_id, document_number, document_date, due_date, status, currency, amount_before_tax_cad, total_amount, balance_due, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+            .run(uuid(), rec.id, companyId, projectId, orderId, invoiceId, documentNumber, documentDate, dueDate, status, currency, amountBeforeTaxCad, totalAmount, balanceDue, notes)
           imported++
         }
       }

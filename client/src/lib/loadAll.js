@@ -1,24 +1,37 @@
+import { readStale, writeStale } from './swr.js'
+
 /**
- * Progressive loader: shows first page immediately, loads the rest in background.
+ * Bulk loader: fetches all rows in a single request via `limit=all`.
+ * Signature kept for backwards-compat — the `pageSize` arg is ignored.
+ * Backends must support `limit === 'all'` (all list endpoints currently do).
+ *
+ * When `opts.cacheKey` is provided, applies stale-while-revalidate: if a cached
+ * response exists for that key, renders it immediately (setLoading(false)) and
+ * refetches in background, updating state when fresh data arrives.
+ *
  * @param {Function} loadPage  (page, limit) => Promise<{ data: [], total: number }>
  * @param {Function} setData   React state setter
  * @param {Function} setLoading React state setter
- * @param {number}   pageSize  rows per page (default 200)
+ * @param {Object}   [opts]
+ * @param {string}   [opts.cacheKey] — enables SWR; used as the storage key
  */
-export async function loadProgressive(loadPage, setData, setLoading, pageSize = 200) {
-  setLoading(true)
-  try {
-    const first = await loadPage(1, pageSize)
-    setData(first.data)
+export async function loadProgressive(loadPage, setData, setLoading, opts = {}) {
+  const { cacheKey } = opts
+  const stale = cacheKey ? readStale(cacheKey) : null
+  if (stale) {
+    setData(stale)
     setLoading(false)
-    if (first.total > pageSize) {
-      const totalPages = Math.ceil(first.total / pageSize)
-      const rest = await Promise.all(
-        Array.from({ length: totalPages - 1 }, (_, i) => loadPage(i + 2, pageSize))
-      )
-      setData(first.data.concat(...rest.map(r => r.data)))
-    }
+  } else {
+    setLoading(true)
+  }
+  try {
+    const res = await loadPage(1, 'all')
+    const data = res?.data || []
+    setData(data)
+    if (cacheKey) writeStale(cacheKey, data)
   } catch {
+    if (!stale) setData([])
+  } finally {
     setLoading(false)
   }
 }

@@ -1,12 +1,20 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ChevronDown, ChevronUp, Phone, Mail, MessageSquare, Building2, PhoneCall, PhoneIncoming, PhoneOutgoing, Eye, CheckCircle2, Circle, Clock, AlertCircle, Zap } from 'lucide-react'
+import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown } from 'lucide-react'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
+import { CreateInvoiceModal } from '../components/CreateInvoiceModal.jsx'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, phaseBadgeColor, orderStatusColor, ticketStatusColor, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useAuth } from '../lib/auth.jsx'
+import { fmtDate } from '../lib/formatDate.js'
 
 const PHASES = ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore']
 const TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin', 'Agriculture urbaine', 'Cannabis', 'Particulier', 'Distributeur', 'Partenaire', 'Compétiteur', 'Consultant', 'Autre']
@@ -14,10 +22,6 @@ const TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centr
 function fmtCad(n) {
   if (!n) return '$0'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
-}
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
 function fieldTypeInput(type) {
@@ -35,6 +39,24 @@ function fmtPhone(val) {
   if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`
   return val
 }
+
+const SERIAL_RENDERS = {
+  serial: row => <span className="font-mono font-medium text-slate-900">{row.serial}</span>,
+  product_name: row => row.product_id
+    ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-2 text-indigo-600 hover:underline">
+        {row.product_image
+          ? <img src={row.product_image} alt="" className="w-8 h-8 object-cover rounded border border-slate-200 shrink-0" />
+          : <div className="w-8 h-8 rounded border border-slate-200 bg-slate-100 shrink-0" />}
+        <span>{row.product_name || row.sku || '—'}</span>
+      </Link>
+    : <span className="text-slate-400">—</span>,
+  manufacture_date: row => <span className="text-slate-500">{fmtDate(row.manufacture_date)}</span>,
+}
+
+// company_name is redundant on the company detail page — filter it out.
+const SERIAL_COLUMNS = TABLE_COLUMN_META.serial_numbers
+  .filter(m => m.id !== 'company_name')
+  .map(meta => ({ ...meta, render: SERIAL_RENDERS[meta.id] }))
 
 function InlineField({ field, value, saving, onSave }) {
   const [local, setLocal] = useState(String(value ?? ''))
@@ -81,19 +103,331 @@ const COMPANY_FIELDS = [
   { key: 'lifecycle_phase', label: 'Phase',     type: 'select', options: PHASES },
   { key: 'phone',           label: 'Téléphone', type: 'phone' },
   { key: 'website',         label: 'Site web',  type: 'url', span2: true },
+  { key: 'currency',        label: 'Devise',    type: 'select', options: ['CAD','USD','EUR'] },
+  { key: 'language',        label: 'Langue',    type: 'select', options: ['French','English'] },
   { key: 'notes',           label: 'Notes',     type: 'textarea', span2: true, defaultVisible: false },
 ]
+
+function AdresseModalContent({ companyId, company, editingAdresse, adresseForm, setAdresseForm, setAdresses, onClose }) {
+  const isEdit = !!editingAdresse
+  const { addToast } = useToast()
+  const [fieldSaving, setFieldSaving] = useState({})
+  const [saving, setSaving] = useState(false)
+
+  const saveField = async (key, value) => {
+    setAdresseForm(f => ({ ...f, [key]: value }))
+    if (!isEdit) return
+    setFieldSaving(s => ({ ...s, [key]: true }))
+    try {
+      const updated = await api.adresses.update(editingAdresse.id, { [key]: value })
+      setAdresses(prev => prev.map(a => a.id === editingAdresse.id ? updated : a))
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally {
+      setFieldSaving(s => ({ ...s, [key]: false }))
+    }
+  }
+
+  const saveCountry = async (value) => {
+    setAdresseForm(f => ({ ...f, country: value, province: '' }))
+    if (!isEdit) return
+    setFieldSaving(s => ({ ...s, country: true }))
+    try {
+      const updated = await api.adresses.update(editingAdresse.id, { country: value, province: '' })
+      setAdresses(prev => prev.map(a => a.id === editingAdresse.id ? updated : a))
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally {
+      setFieldSaving(s => ({ ...s, country: false }))
+    }
+  }
+
+  async function handleSubmitCreate(e) {
+    e.preventDefault()
+    setSaving(true)
+    try {
+      const created = await api.adresses.create({ ...adresseForm, company_id: companyId })
+      setAdresses(prev => [...prev, created])
+      onClose()
+    } catch (err) { addToast({ message: err.message, type: 'error' }) } finally { setSaving(false) }
+  }
+
+  const anySaving = Object.values(fieldSaving).some(Boolean)
+
+  const fields = (
+    <div className="grid grid-cols-2 gap-4">
+      <div className="col-span-2">
+        <label className="label">Rue / Ligne 1</label>
+        <input
+          value={adresseForm.line1}
+          onChange={e => setAdresseForm(f => ({ ...f, line1: e.target.value }))}
+          onBlur={isEdit ? e => saveField('line1', e.target.value) : undefined}
+          className="input"
+        />
+      </div>
+      <div>
+        <label className="label">Ville</label>
+        <input
+          value={adresseForm.city}
+          onChange={e => setAdresseForm(f => ({ ...f, city: e.target.value }))}
+          onBlur={isEdit ? e => saveField('city', e.target.value) : undefined}
+          className="input"
+        />
+      </div>
+      <div>
+        <label className="label">Province / État</label>
+        <select
+          value={adresseForm.province}
+          onChange={e => isEdit ? saveField('province', e.target.value) : setAdresseForm(f => ({ ...f, province: e.target.value }))}
+          className="select"
+        >
+          <option value="">—</option>
+          {adresseForm.country === 'US' ? (
+            ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'].map(c => <option key={c} value={c}>{c}</option>)
+          ) : (
+            ['AB','BC','MB','NB','NL','NS','NT','NU','ON','PE','QC','SK','YT'].map(c => <option key={c} value={c}>{c}</option>)
+          )}
+        </select>
+      </div>
+      <div>
+        <label className="label">Code postal</label>
+        <input
+          value={adresseForm.postal_code}
+          onChange={e => setAdresseForm(f => ({ ...f, postal_code: e.target.value }))}
+          onBlur={isEdit ? e => saveField('postal_code', e.target.value) : undefined}
+          className="input"
+        />
+      </div>
+      <div>
+        <label className="label">Pays</label>
+        <select value={adresseForm.country} onChange={e => saveCountry(e.target.value)} className="select">
+          <option value="CA">Canada (CA)</option>
+          <option value="US">États-Unis (US)</option>
+        </select>
+      </div>
+      <div>
+        <label className="label">Type</label>
+        <select
+          value={adresseForm.address_type}
+          onChange={e => isEdit ? saveField('address_type', e.target.value) : setAdresseForm(f => ({ ...f, address_type: e.target.value }))}
+          className="select"
+        >
+          {['Ferme', 'Livraison', 'Facturation'].map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+      </div>
+      <div className="col-span-2">
+        <label className="label">Contact associé</label>
+        <LinkedRecordField
+          name="address_contact_id"
+          value={adresseForm.contact_id}
+          options={company?.contacts || []}
+          labelFn={c => `${c.first_name || ''} ${c.last_name || ''}`.trim()}
+          getHref={c => `/contacts/${c.id}`}
+          placeholder="Contact"
+          saving={!!fieldSaving.contact_id}
+          onChange={v => isEdit ? saveField('contact_id', v) : setAdresseForm(f => ({ ...f, contact_id: v }))}
+        />
+      </div>
+    </div>
+  )
+
+  if (isEdit) {
+    return (
+      <div className="space-y-4">
+        {fields}
+        <div className="flex items-center justify-end gap-3 pt-2">
+          {anySaving && <span className="text-xs text-slate-400">Sauvegarde…</span>}
+          <button type="button" onClick={onClose} className="btn-secondary">Fermer</button>
+        </div>
+      </div>
+    )
+  }
+  return (
+    <form onSubmit={handleSubmitCreate} className="space-y-4">
+      {fields}
+      <div className="flex justify-end gap-3 pt-2">
+        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
+        <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
+      </div>
+    </form>
+  )
+}
+
+function CompanyTaskModal({ companyId, company, users, editingTask, taskForm, setTaskForm, savingTask, setSavingTask, onClose, onRefresh }) {
+  const isEdit = !!editingTask
+  const [fieldSaving, setFieldSaving] = useState({})
+  const confirm = useConfirm()
+  const { addToast } = useToast()
+  const undoableDelete = useUndoableDelete()
+
+  const saveField = async (key, value) => {
+    setTaskForm(f => ({ ...f, [key]: value }))
+    if (!isEdit) return
+    setFieldSaving(s => ({ ...s, [key]: true }))
+    try {
+      await api.tasks.update(editingTask.id, { [key]: value })
+      onRefresh()
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally {
+      setFieldSaving(s => ({ ...s, [key]: false }))
+    }
+  }
+
+  async function handleSubmitCreate(e) {
+    e.preventDefault()
+    setSavingTask(true)
+    try {
+      await api.tasks.create({ ...taskForm, company_id: companyId })
+      await onRefresh()
+      onClose()
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally {
+      setSavingTask(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (!(await confirm('Supprimer cette tâche ?'))) return
+    onClose()
+    await undoableDelete({
+      table: 'tasks',
+      id: editingTask.id,
+      deleteFn: () => api.tasks.delete(editingTask.id),
+      label: 'Tâche supprimée',
+      onChange: onRefresh,
+    })
+  }
+
+  const anySaving = Object.values(fieldSaving).some(Boolean)
+
+  const fields = (
+    <>
+      <div>
+        <label className="label">Titre *</label>
+        <input
+          value={taskForm.title}
+          onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))}
+          onBlur={isEdit ? e => saveField('title', e.target.value) : undefined}
+          className="input" required autoFocus
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="label">Statut</label>
+          <select
+            value={taskForm.status}
+            onChange={e => isEdit ? saveField('status', e.target.value) : setTaskForm(f => ({ ...f, status: e.target.value }))}
+            className="select"
+          >
+            {['À faire','En cours','Terminé','Annulé'].map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="label">Priorité</label>
+          <select
+            value={taskForm.priority}
+            onChange={e => isEdit ? saveField('priority', e.target.value) : setTaskForm(f => ({ ...f, priority: e.target.value }))}
+            className="select"
+          >
+            {['Basse','Normal','Haute','Urgente'].map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+      </div>
+      <div>
+        <label className="label">Échéance</label>
+        <input
+          type="date"
+          value={taskForm.due_date || ''}
+          onChange={e => isEdit ? saveField('due_date', e.target.value) : setTaskForm(f => ({ ...f, due_date: e.target.value }))}
+          className="input"
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="label">Contact</label>
+          <LinkedRecordField
+            name="task_contact_id"
+            value={taskForm.contact_id || ''}
+            options={company.contacts || []}
+            labelFn={c => `${c.first_name || ''} ${c.last_name || ''}`.trim()}
+            getHref={c => `/contacts/${c.id}`}
+            placeholder="Contact"
+            saving={!!fieldSaving.contact_id}
+            onChange={v => isEdit ? saveField('contact_id', v) : setTaskForm(f => ({ ...f, contact_id: v }))}
+          />
+        </div>
+        <div>
+          <label className="label">Responsable</label>
+          <LinkedRecordField
+            name="task_assigned_to"
+            value={taskForm.assigned_to || ''}
+            options={users}
+            labelFn={u => u.name}
+            placeholder="Responsable"
+            saving={!!fieldSaving.assigned_to}
+            onChange={v => isEdit ? saveField('assigned_to', v) : setTaskForm(f => ({ ...f, assigned_to: v }))}
+          />
+        </div>
+      </div>
+      <div>
+        <label className="label">Notes</label>
+        <textarea
+          value={taskForm.notes || ''}
+          onChange={e => setTaskForm(f => ({ ...f, notes: e.target.value }))}
+          onBlur={isEdit ? e => saveField('notes', e.target.value) : undefined}
+          className="input" rows={2}
+        />
+      </div>
+    </>
+  )
+
+  return (
+    <Modal title={isEdit ? 'Modifier la tâche' : 'Nouvelle tâche'} onClose={onClose}>
+      {isEdit ? (
+        <div className="space-y-4">
+          {fields}
+          <div className="flex items-center justify-between pt-2">
+            <button type="button" onClick={handleDelete} className="text-sm text-red-500 hover:text-red-700 hover:underline">Supprimer</button>
+            <div className="flex items-center gap-3 ml-auto">
+              {anySaving && <span className="text-xs text-slate-400">Sauvegarde…</span>}
+              <button type="button" onClick={onClose} className="btn-secondary"><X size={14} /> Fermer</button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <form onSubmit={handleSubmitCreate} className="space-y-4">
+          {fields}
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="btn-secondary"><X size={14} /> Annuler</button>
+            <button type="submit" disabled={savingTask} className="btn-primary"><Save size={14} /> {savingTask ? 'Enregistrement...' : 'Enregistrer'}</button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  )
+}
 
 export default function CompanyDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user: _user } = useAuth()
+  const confirm = useConfirm()
   const [company, setCompany] = useState(null)
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('info')
   const [fieldSaving, setFieldSaving] = useState(null)
   const [showContactModal, setShowContactModal] = useState(false)
   const [contactForm, setContactForm] = useState({ first_name: '', last_name: '', email: '', phone: '', mobile: '', language: '' })
+  const [contactMode, setContactMode] = useState('new') // 'new' | 'link'
+  const [linkQuery, setLinkQuery] = useState('')
+  const [linkResults, setLinkResults] = useState([])
+  const [linkSelected, setLinkSelected] = useState(null)
+  const [linkSearching, setLinkSearching] = useState(false)
+  const [invoiceMenuOpen, setInvoiceMenuOpen] = useState(false)
+  const [invoiceModalOpen, setInvoiceModalOpen] = useState(false)
+  const [invoiceModalMode, setInvoiceModalMode] = useState('new')
   const [interactions, setInteractions] = useState([])
   const [interactionsTotal, setInteractionsTotal] = useState(0)
   const [interactionsOffset, setInteractionsOffset] = useState(0)
@@ -115,37 +449,13 @@ export default function CompanyDetail() {
   const [taskForm, setTaskForm] = useState({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' })
   const [savingTask, setSavingTask] = useState(false)
   const [envois, setEnvois] = useState([])
-  const [facturesFourn, setFacturesFourn] = useState([])
-  const [facturesFournTotal, setFacturesFournTotal] = useState(0)
-  const [depenses, setDepenses] = useState([])
-  const [depensesTotal, setDepensesTotal] = useState(0)
+  const [achats, setAchats] = useState([])
+  const [achatsTotal, setAchatsTotal] = useState(0)
   const [retours, setRetours] = useState([])
   const [adresses, setAdresses] = useState([])
   const [showAdresseModal, setShowAdresseModal] = useState(false)
   const [editingAdresse, setEditingAdresse] = useState(null)
   const [adresseForm, setAdresseForm] = useState({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' })
-  const [serialCols, setSerialCols] = useState(['serial', 'product_name', 'status', 'manufacture_date', 'last_programmed_date'])
-  const [showSerialColPicker, setShowSerialColPicker] = useState(false)
-  const serialColPickerRef = useRef(null)
-
-  const SERIAL_COL_DEFS = [
-    { id: 'serial',               label: 'N° de série' },
-    { id: 'product_name',         label: 'Produit' },
-    { id: 'status',               label: 'Statut' },
-    { id: 'manufacture_date',     label: 'Date fab.' },
-    { id: 'last_programmed_date', label: 'Dernière prog.' },
-  ]
-
-  useEffect(() => {
-    function onClick(e) {
-      if (serialColPickerRef.current && !serialColPickerRef.current.contains(e.target)) {
-        setShowSerialColPicker(false)
-      }
-    }
-    document.addEventListener('mousedown', onClick)
-    return () => document.removeEventListener('mousedown', onClick)
-  }, [])
-
   async function load() {
     setLoading(true)
     try {
@@ -156,6 +466,7 @@ export default function CompanyDetail() {
     }
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [id])
 
   useEffect(() => {
@@ -176,7 +487,7 @@ export default function CompanyDetail() {
       setLoadingInteractions(true)
       setInteractions([])
       setInteractionsOffset(0)
-      api.interactions.list({ company_id: id, limit: INTER_LIMIT, offset: 0 })
+      api.interactions.list({ company_id: id, limit: INTER_LIMIT, offset: 0, include: 'heavy' })
         .then(d => {
           setInteractions(d.interactions || [])
           setInteractionsTotal(d.total || 0)
@@ -200,11 +511,8 @@ export default function CompanyDetail() {
     if (tab === 'envois') {
       api.shipments.list({ company_id: id, limit: 'all' }).then(r => { setEnvois(r.data || []); setEnvoisTotal(r.total || r.data?.length || 0) }).catch(() => {})
     }
-    if (tab === 'fact-fourn') {
-      api.facturesFournisseurs.list({ vendor_id: id, limit: 'all' }).then(r => { setFacturesFourn(r.data || []); setFacturesFournTotal(r.total || r.data?.length || 0) }).catch(() => {})
-    }
-    if (tab === 'depenses') {
-      api.depenses.list({ vendor_id: id, limit: 'all' }).then(r => { setDepenses(r.data || []); setDepensesTotal(r.total || r.data?.length || 0) }).catch(() => {})
+    if (tab === 'achats') {
+      api.achatsFournisseurs.list({ vendor_id: id, limit: 'all' }).then(r => { setAchats(r.data || []); setAchatsTotal(r.total || r.data?.length || 0) }).catch(() => {})
     }
     if (tab === 'retours') {
       api.returns.listByCompany(id).then(r => setRetours(r.data || [])).catch(() => {})
@@ -214,7 +522,7 @@ export default function CompanyDetail() {
   async function loadMoreInteractions() {
     setLoadingMoreInteractions(true)
     try {
-      const d = await api.interactions.list({ company_id: id, limit: INTER_LIMIT, offset: interactionsOffset })
+      const d = await api.interactions.list({ company_id: id, limit: INTER_LIMIT, offset: interactionsOffset, include: 'heavy' })
       setInteractions(prev => [...prev, ...(d.interactions || [])])
       setInteractionsOffset(o => o + INTER_LIMIT)
     } finally {
@@ -234,11 +542,45 @@ export default function CompanyDetail() {
 
   async function handleAddContact(e) {
     e.preventDefault()
-    await api.contacts.create({ ...contactForm, company_id: id })
+    if (contactMode === 'link') {
+      if (!linkSelected) return
+      await api.contacts.update(linkSelected.id, {
+        first_name: linkSelected.first_name || '',
+        last_name: linkSelected.last_name || '',
+        email: linkSelected.email || '',
+        phone: linkSelected.phone || '',
+        mobile: linkSelected.mobile || '',
+        language: linkSelected.language || '',
+        notes: linkSelected.notes || '',
+        company_id: id,
+      })
+    } else {
+      await api.contacts.create({ ...contactForm, company_id: id })
+    }
     setShowContactModal(false)
     setContactForm({ first_name: '', last_name: '', email: '', phone: '', mobile: '', language: '' })
+    setContactMode('new')
+    setLinkQuery('')
+    setLinkResults([])
+    setLinkSelected(null)
     load()
   }
+
+  useEffect(() => {
+    if (contactMode !== 'link' || !linkQuery || linkQuery.length < 2) { setLinkResults([]); return }
+    const tid = setTimeout(async () => {
+      setLinkSearching(true)
+      try {
+        const { data } = await api.contacts.list({ search: linkQuery, limit: 10 })
+        setLinkResults((data || []).filter(c => c.company_id !== id))
+      } catch {
+        setLinkResults([])
+      } finally {
+        setLinkSearching(false)
+      }
+    }, 200)
+    return () => clearTimeout(tid)
+  }, [linkQuery, contactMode, id])
 
   if (loading) {
     return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" /></div></Layout>
@@ -247,7 +589,7 @@ export default function CompanyDetail() {
     return <Layout><div className="p-6 text-slate-500">Entreprise introuvable.</div></Layout>
   }
 
-  const tabs = ['info', 'contacts', 'interactions', 'projets', 'commandes', 'envois', 'retours', 'support', 'numéros de série', 'factures', 'abonnements', 'tâches', ...(company.quickbooks_vendor_id ? ['fact-fourn', 'depenses'] : [])]
+  const tabs = ['info', 'contacts', 'interactions', 'projets', 'commandes', 'envois', 'retours', 'support', 'numéros de série', 'factures', 'abonnements', 'tâches', ...(company.quickbooks_vendor_id ? ['achats'] : [])]
 
   return (
     <Layout>
@@ -267,11 +609,58 @@ export default function CompanyDetail() {
             <div className="flex items-center gap-3 mt-1 text-sm text-slate-500 flex-wrap">
               {company.type && <span>{company.type}</span>}
               {company.phone && <span>· {fmtPhone(company.phone)}</span>}
+              {company.central_controllers?.length > 0 && (
+                <span className="flex items-center gap-3 flex-wrap">
+                  {company.central_controllers.map(cc => (
+                    <a
+                      key={cc.address}
+                      href={`https://app.orisha.io/#admin/${encodeURIComponent(cc.address)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={cc.serial ? `Contrôleur ${cc.serial} · adresse ${cc.address}` : `Adresse ${cc.address}`}
+                      className="inline-flex items-center gap-1 text-indigo-600 hover:underline"
+                    >
+                      <ExternalLink size={12} />
+                      {company.central_controllers.length === 1 ? 'Ouvrir dans Orisha' : `Orisha ${cc.address}`}
+                    </a>
+                  ))}
+                </span>
+              )}
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <div className="relative">
+              <button
+                onClick={() => setInvoiceMenuOpen(o => !o)}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg"
+              >
+                <FileText size={14} /> Nouvelle facture <ChevronDown size={14} />
+              </button>
+              {invoiceMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setInvoiceMenuOpen(false)} />
+                  <div className="absolute right-0 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-lg min-w-[240px] py-1">
+                    <button
+                      onClick={() => { setInvoiceModalMode('new'); setInvoiceModalOpen(true); setInvoiceMenuOpen(false) }}
+                      className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                    >Créer une nouvelle facture</button>
+                    <button
+                      onClick={() => { setInvoiceModalMode('convert'); setInvoiceModalOpen(true); setInvoiceMenuOpen(false) }}
+                      className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                    >Convertir une soumission en facture</button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
+
+        <CreateInvoiceModal
+          companyId={id}
+          initialMode={invoiceModalMode}
+          isOpen={invoiceModalOpen}
+          onClose={() => setInvoiceModalOpen(false)}
+        />
 
         {/* Tabs + Content */}
         <div className="flex gap-6 items-start">
@@ -279,7 +668,7 @@ export default function CompanyDetail() {
           <div className="w-44 flex-shrink-0">
             <nav className="flex flex-col gap-0.5">
               {tabs.map(t => {
-                const tabLabel = t === 'info' ? 'Informations' : t === 'interactions' ? 'Interactions' : t === 'numéros de série' ? 'N° de série' : t === 'fact-fourn' ? 'Fact. fournisseurs' : t === 'depenses' ? 'Dépenses' : t === 'retours' ? 'Retours (RMA)' : t.charAt(0).toUpperCase() + t.slice(1)
+                const tabLabel = t === 'info' ? 'Informations' : t === 'interactions' ? 'Interactions' : t === 'numéros de série' ? 'N° de série' : t === 'achats' ? 'Achats fourn.' : t === 'retours' ? 'Retours (RMA)' : t.charAt(0).toUpperCase() + t.slice(1)
                 const counts = {
                   contacts: company.contacts?.length,
                   projets: company.projects?.length,
@@ -291,8 +680,7 @@ export default function CompanyDetail() {
                   factures: facturesTotal || undefined,
                   abonnements: abonnementsTotal || undefined,
                   tâches: tasks.length || undefined,
-                  'fact-fourn': facturesFournTotal || undefined,
-                  depenses: depensesTotal || undefined,
+                  achats: achatsTotal || undefined,
                   retours: (tab === 'retours' ? retours.length : company.returns_count) || undefined,
                 }
                 const count = counts[t]
@@ -367,7 +755,7 @@ export default function CompanyDetail() {
                     </div>
                     <div className="flex gap-1 flex-shrink-0">
                       <button onClick={() => { setEditingAdresse(a); setAdresseForm({ line1: a.line1||'', city: a.city||'', province: a.province||'', postal_code: a.postal_code||'', country: a.country||'Canada', address_type: a.address_type||'Ferme', contact_id: a.contact_id||'' }); setShowAdresseModal(true) }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit2 size={13} /></button>
-                      <button onClick={async () => { if (!confirm('Supprimer cette adresse ?')) return; await api.adresses.delete(a.id); setAdresses(prev => prev.filter(x => x.id !== a.id)) }} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={13} /></button>
+                      <button onClick={async () => { if (!(await confirm('Supprimer cette adresse ?'))) return; await api.adresses.delete(a.id); setAdresses(prev => prev.filter(x => x.id !== a.id)) }} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={13} /></button>
                     </div>
                   </div>
                 ))}
@@ -436,7 +824,7 @@ export default function CompanyDetail() {
                   <div className="flex items-start justify-between gap-2">
                     <div>
                       <div className="font-medium text-slate-900">{p.name}</div>
-                      <div className="text-xs text-slate-500 mt-0.5">{p.type} · {p.assigned_name || 'Non assigné'}</div>
+                      <div className="text-xs text-slate-500 mt-0.5">{p.type || '—'}</div>
                     </div>
                     <Badge color={projectStatusColor(p.status)}>{p.status}</Badge>
                   </div>
@@ -494,7 +882,11 @@ export default function CompanyDetail() {
                 </tr></thead>
                 <tbody>
                   {company.tickets.map(t => (
-                    <tr key={t.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                    <tr
+                      key={t.id}
+                      onClick={() => navigate(`/tickets/${t.id}`)}
+                      className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer"
+                    >
                       <td className="px-4 py-3 font-medium">{t.title}</td>
                       <td className="px-4 py-3"><Badge color="blue">{t.type}</Badge></td>
                       <td className="px-4 py-3"><Badge color={ticketStatusColor(t.status)}>{t.status}</Badge></td>
@@ -509,73 +901,14 @@ export default function CompanyDetail() {
 
         {/* Numéros de série Tab */}
         {tab === 'numéros de série' && (
-          <div>
-            <div className="flex justify-end mb-3 relative" ref={serialColPickerRef}>
-              <button
-                onClick={() => setShowSerialColPicker(s => !s)}
-                className="btn-secondary btn-sm flex items-center gap-1.5"
-              >
-                <Eye size={13} /> Colonnes
-              </button>
-              {showSerialColPicker && (
-                <div className="absolute top-full right-0 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-xl p-3 w-52">
-                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Colonnes visibles</p>
-                  <div className="space-y-0.5">
-                    {SERIAL_COL_DEFS.map(col => (
-                      <label key={col.id} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-slate-50 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={serialCols.includes(col.id)}
-                          onChange={e => setSerialCols(prev => e.target.checked ? [...prev, col.id] : prev.filter(c => c !== col.id))}
-                          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
-                        />
-                        <span className="text-sm text-slate-700">{col.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="card overflow-hidden">
-              {!company.serials?.length ? (
-                <p className="text-center py-10 text-slate-400">Aucun numéro de série</p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead><tr className="border-b border-slate-200 bg-slate-50">
-                    {serialCols.includes('serial') && <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">N° de série</th>}
-                    {serialCols.includes('product_name') && <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Produit</th>}
-                    {serialCols.includes('status') && <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>}
-                    {serialCols.includes('manufacture_date') && <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Date fab.</th>}
-                    {serialCols.includes('last_programmed_date') && <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Dernière prog.</th>}
-                  </tr></thead>
-                  <tbody>
-                    {company.serials.map(s => (
-                      <tr key={s.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                        {serialCols.includes('serial') && <td className="px-4 py-3 font-mono font-medium text-slate-900">{s.serial}</td>}
-                        {serialCols.includes('product_name') && (
-                          <td className="px-4 py-3">
-                            {s.product_id
-                              ? <Link to={`/products/${s.product_id}`} className="flex items-center gap-2 text-indigo-600 hover:underline">
-                                  {s.product_image
-                                    ? <img src={s.product_image} alt="" className="w-8 h-8 object-cover rounded border border-slate-200 shrink-0" />
-                                    : <div className="w-8 h-8 rounded border border-slate-200 bg-slate-100 shrink-0" />
-                                  }
-                                  <span>{s.product_name || s.sku || '—'}</span>
-                                </Link>
-                              : '—'
-                            }
-                          </td>
-                        )}
-                        {serialCols.includes('status') && <td className="px-4 py-3 text-slate-600">{s.status || '—'}</td>}
-                        {serialCols.includes('manufacture_date') && <td className="px-4 py-3 text-slate-500">{fmtDate(s.manufacture_date)}</td>}
-                        {serialCols.includes('last_programmed_date') && <td className="px-4 py-3 text-slate-500">{fmtDate(s.last_programmed_date)}</td>}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
+          <DataTable
+            table="company_serials"
+            columns={SERIAL_COLUMNS}
+            data={company.serials || []}
+            searchFields={['serial', 'product_name', 'status']}
+            onRowClick={row => navigate(`/serials/${row.id}`)}
+            height="calc(100vh - 360px)"
+          />
         )}
 
         {/* Factures Tab */}
@@ -855,16 +1188,17 @@ export default function CompanyDetail() {
             </div>
           </div>
         )}
-        {/* Factures fournisseurs Tab */}
-        {tab === 'fact-fourn' && (
+        {/* Achats fournisseurs Tab */}
+        {tab === 'achats' && (
           <div className="card overflow-hidden">
-            {!facturesFourn.length ? (
-              <p className="text-center py-10 text-slate-400">Aucune facture fournisseur</p>
+            {!achats.length ? (
+              <p className="text-center py-10 text-slate-400">Aucun achat fournisseur</p>
             ) : (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">N° facture</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Type</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Référence</th>
                     <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
                     <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Date</th>
                     <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Échéance</th>
@@ -873,31 +1207,30 @@ export default function CompanyDetail() {
                   </tr>
                 </thead>
                 <tbody>
-                  {facturesFourn.map(f => {
-                    const balance = f.balance_due_cad ?? (f.total_cad - f.amount_paid_cad)
-                    const overdue = f.status !== 'Payée' && f.status !== 'Annulée' && f.due_date && new Date(f.due_date) < new Date()
+                  {achats.map(a => {
+                    const balance = a.balance_due_cad ?? (a.total_cad - a.amount_paid_cad)
+                    const overdue = a.status !== 'Payée' && a.status !== 'Annulée' && a.due_date && new Date(a.due_date) < new Date()
+                    const ref = a.bill_number || a.vendor_invoice_number || a.reference || a.description || '—'
                     return (
-                      <tr key={f.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                        <td className="px-4 py-3 font-mono font-medium text-slate-900">{f.bill_number || f.vendor_invoice_number || '—'}</td>
+                      <tr key={a.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
                         <td className="px-4 py-3">
-                          <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${
-                            f.status === 'Payée' ? 'bg-green-100 text-green-700' :
-                            f.status === 'En retard' ? 'bg-red-100 text-red-700' :
-                            f.status === 'Payée partiellement' ? 'bg-yellow-100 text-yellow-700' :
-                            f.status === 'Approuvée' ? 'bg-indigo-100 text-indigo-700' :
-                            f.status === 'Annulée' ? 'bg-slate-100 text-slate-400' :
-                            'bg-blue-100 text-blue-700'
-                          }`}>{f.status}</span>
+                          <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${a.type === 'bill' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>
+                            {a.type === 'bill' ? 'Facture' : 'Dépense'}
+                          </span>
                         </td>
-                        <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{fmtDate(f.date_facture)}</td>
+                        <td className="px-4 py-3 font-mono text-slate-900 truncate max-w-xs">{ref}</td>
+                        <td className="px-4 py-3 text-slate-500">{a.status}</td>
+                        <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{fmtDate(a.date_achat)}</td>
                         <td className="px-4 py-3 hidden md:table-cell">
-                          {f.due_date
-                            ? <span className={overdue ? 'text-red-600 font-medium' : 'text-slate-500'}>{fmtDate(f.due_date)}</span>
+                          {a.due_date
+                            ? <span className={overdue ? 'text-red-600 font-medium' : 'text-slate-500'}>{fmtDate(a.due_date)}</span>
                             : <span className="text-slate-400">—</span>}
                         </td>
-                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(f.total_cad)}</td>
+                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(a.total_cad)}</td>
                         <td className="px-4 py-3 text-right font-medium">
-                          <span className={balance > 0 ? 'text-red-600' : 'text-green-600'}>{fmtCad(balance)}</span>
+                          {a.type === 'bill'
+                            ? <span className={balance > 0 ? 'text-red-600' : 'text-green-600'}>{fmtCad(balance)}</span>
+                            : <span className="text-slate-400">—</span>}
                         </td>
                       </tr>
                     )
@@ -954,37 +1287,6 @@ export default function CompanyDetail() {
           </div>
         )}
 
-        {/* Dépenses Tab */}
-        {tab === 'depenses' && (
-          <div className="card overflow-hidden">
-            {!depenses.length ? (
-              <p className="text-center py-10 text-slate-400">Aucune dépense</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Description</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Catégorie</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Paiement</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Date</th>
-                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {depenses.map(d => (
-                    <tr key={d.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                      <td className="px-4 py-3 text-slate-900">{d.description || '—'}</td>
-                      <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{d.category || '—'}</td>
-                      <td className="px-4 py-3 hidden md:table-cell text-slate-500">{d.payment_method || '—'}</td>
-                      <td className="px-4 py-3 text-slate-500">{fmtDate(d.date_depense)}</td>
-                      <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(d.amount_cad)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-        )}
 
           </div>{/* end tab content */}
         </div>{/* end flex tabs+content */}
@@ -992,191 +1294,140 @@ export default function CompanyDetail() {
 
       {/* Task Modal */}
       {showTaskModal && (
-        <Modal title={editingTask ? 'Modifier la tâche' : 'Nouvelle tâche'} onClose={() => setShowTaskModal(false)}>
-          <form onSubmit={async e => {
-            e.preventDefault()
-            setSavingTask(true)
-            try {
-              if (editingTask) {
-                await api.tasks.update(editingTask.id, { ...taskForm, company_id: id })
-              } else {
-                await api.tasks.create({ ...taskForm, company_id: id })
-              }
-              const r = await api.tasks.list({ company_id: id, limit: 'all' })
-              setTasks(r.data || [])
-              setShowTaskModal(false)
-            } catch(err) {
-              alert(err.message)
-            } finally {
-              setSavingTask(false)
-            }
-          }} className="space-y-4">
-            <div>
-              <label className="label">Titre *</label>
-              <input value={taskForm.title} onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))} className="input" required autoFocus />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="label">Statut</label>
-                <select value={taskForm.status} onChange={e => setTaskForm(f => ({ ...f, status: e.target.value }))} className="select">
-                  {['À faire','En cours','Terminé','Annulé'].map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="label">Priorité</label>
-                <select value={taskForm.priority} onChange={e => setTaskForm(f => ({ ...f, priority: e.target.value }))} className="select">
-                  {['Basse','Normal','Haute','Urgente'].map(p => <option key={p} value={p}>{p}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className="label">Échéance</label>
-              <input type="date" value={taskForm.due_date || ''} onChange={e => setTaskForm(f => ({ ...f, due_date: e.target.value }))} className="input" />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="label">Contact</label>
-                <select value={taskForm.contact_id || ''} onChange={e => setTaskForm(f => ({ ...f, contact_id: e.target.value }))} className="select">
-                  <option value="">—</option>
-                  {(company.contacts || []).map(c => <option key={c.id} value={c.id}>{c.first_name} {c.last_name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="label">Responsable</label>
-                <select value={taskForm.assigned_to || ''} onChange={e => setTaskForm(f => ({ ...f, assigned_to: e.target.value }))} className="select">
-                  <option value="">—</option>
-                  {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className="label">Notes</label>
-              <textarea value={taskForm.notes || ''} onChange={e => setTaskForm(f => ({ ...f, notes: e.target.value }))} className="input" rows={2} />
-            </div>
-            <div className="flex items-center justify-between pt-2">
-              {editingTask && (
-                <button type="button" onClick={async () => {
-                  if (!confirm('Supprimer cette tâche ?')) return
-                  await api.tasks.delete(editingTask.id)
-                  const r = await api.tasks.list({ company_id: id, limit: 'all' })
-                  setTasks(r.data || [])
-                  setShowTaskModal(false)
-                }} className="text-sm text-red-500 hover:text-red-700 hover:underline">Supprimer</button>
-              )}
-              <div className="flex gap-3 ml-auto">
-                <button type="button" onClick={() => setShowTaskModal(false)} className="btn-secondary"><X size={14} /> Annuler</button>
-                <button type="submit" disabled={savingTask} className="btn-primary"><Save size={14} /> {savingTask ? 'Enregistrement...' : 'Enregistrer'}</button>
-              </div>
-            </div>
-          </form>
-        </Modal>
+        <CompanyTaskModal
+          companyId={id}
+          company={company}
+          users={users}
+          editingTask={editingTask}
+          taskForm={taskForm}
+          setTaskForm={setTaskForm}
+          savingTask={savingTask}
+          setSavingTask={setSavingTask}
+          onClose={() => setShowTaskModal(false)}
+          onRefresh={async () => {
+            const r = await api.tasks.list({ company_id: id, limit: 'all' })
+            setTasks(r.data || [])
+          }}
+        />
       )}
 
       {/* Adresse Modal */}
       <Modal isOpen={showAdresseModal} onClose={() => setShowAdresseModal(false)} title={editingAdresse ? 'Modifier l\'adresse' : 'Ajouter une adresse'}>
-        <form onSubmit={async e => {
-          e.preventDefault()
-          try {
-            if (editingAdresse) {
-              const updated = await api.adresses.update(editingAdresse.id, adresseForm)
-              setAdresses(prev => prev.map(a => a.id === editingAdresse.id ? updated : a))
-            } else {
-              const created = await api.adresses.create({ ...adresseForm, company_id: id })
-              setAdresses(prev => [...prev, created])
-            }
-            setShowAdresseModal(false)
-          } catch (err) { alert(err.message) }
-        }} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="col-span-2">
-              <label className="label">Rue / Ligne 1</label>
-              <input value={adresseForm.line1} onChange={e => setAdresseForm(f => ({ ...f, line1: e.target.value }))} className="input" />
-            </div>
-            <div>
-              <label className="label">Ville</label>
-              <input value={adresseForm.city} onChange={e => setAdresseForm(f => ({ ...f, city: e.target.value }))} className="input" />
-            </div>
-            <div>
-              <label className="label">Province / État</label>
-              <select value={adresseForm.province} onChange={e => setAdresseForm(f => ({ ...f, province: e.target.value }))} className="select">
-                <option value="">—</option>
-                {adresseForm.country === 'US' ? (
-                  ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'].map(c => <option key={c} value={c}>{c}</option>)
-                ) : (
-                  ['AB','BC','MB','NB','NL','NS','NT','NU','ON','PE','QC','SK','YT'].map(c => <option key={c} value={c}>{c}</option>)
-                )}
-              </select>
-            </div>
-            <div>
-              <label className="label">Code postal</label>
-              <input value={adresseForm.postal_code} onChange={e => setAdresseForm(f => ({ ...f, postal_code: e.target.value }))} className="input" />
-            </div>
-            <div>
-              <label className="label">Pays</label>
-              <select value={adresseForm.country} onChange={e => setAdresseForm(f => ({ ...f, country: e.target.value, province: '' }))} className="select">
-                <option value="CA">Canada (CA)</option>
-                <option value="US">États-Unis (US)</option>
-              </select>
-            </div>
-            <div>
-              <label className="label">Type</label>
-              <select value={adresseForm.address_type} onChange={e => setAdresseForm(f => ({ ...f, address_type: e.target.value }))} className="select">
-                {['Ferme', 'Livraison', 'Facturation'].map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
-            <div className="col-span-2">
-              <label className="label">Contact associé</label>
-              <select value={adresseForm.contact_id} onChange={e => setAdresseForm(f => ({ ...f, contact_id: e.target.value }))} className="select">
-                <option value="">— Aucun —</option>
-                {(company?.contacts || []).map(c => (
-                  <option key={c.id} value={c.id}>{c.first_name} {c.last_name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-          <div className="flex justify-end gap-3 pt-2">
-            <button type="button" onClick={() => setShowAdresseModal(false)} className="btn-secondary">Annuler</button>
-            <button type="submit" className="btn-primary">Enregistrer</button>
-          </div>
-        </form>
+        <AdresseModalContent
+          companyId={id}
+          company={company}
+          editingAdresse={editingAdresse}
+          adresseForm={adresseForm}
+          setAdresseForm={setAdresseForm}
+          setAdresses={setAdresses}
+          onClose={() => setShowAdresseModal(false)}
+        />
       </Modal>
 
       {/* Add Contact Modal */}
       <Modal isOpen={showContactModal} onClose={() => setShowContactModal(false)} title="Ajouter un contact">
+        <div className="mb-4 inline-flex bg-slate-100 rounded-lg p-0.5 text-xs font-medium">
+          <button type="button" onClick={() => setContactMode('new')}
+            className={`px-3 py-1.5 rounded-md transition ${contactMode === 'new' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
+            Nouveau contact
+          </button>
+          <button type="button" onClick={() => setContactMode('link')}
+            className={`px-3 py-1.5 rounded-md transition ${contactMode === 'link' ? 'bg-white shadow text-slate-900' : 'text-slate-500 hover:text-slate-700'}`}>
+            Lier un contact existant
+          </button>
+        </div>
         <form onSubmit={handleAddContact} className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="label">Prénom *</label>
-              <input value={contactForm.first_name} onChange={e => setContactForm(f => ({ ...f, first_name: e.target.value }))} className="input" required />
+          {contactMode === 'new' ? (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="label">Prénom *</label>
+                <input value={contactForm.first_name} onChange={e => setContactForm(f => ({ ...f, first_name: e.target.value }))} className="input" required />
+              </div>
+              <div>
+                <label className="label">Nom *</label>
+                <input value={contactForm.last_name} onChange={e => setContactForm(f => ({ ...f, last_name: e.target.value }))} className="input" required />
+              </div>
+              <div>
+                <label className="label">Courriel</label>
+                <input type="email" value={contactForm.email} onChange={e => setContactForm(f => ({ ...f, email: e.target.value }))} className="input" />
+              </div>
+              <div>
+                <label className="label">Téléphone</label>
+                <input value={contactForm.phone} onChange={e => setContactForm(f => ({ ...f, phone: e.target.value }))} className="input" />
+              </div>
+              <div>
+                <label className="label">Mobile</label>
+                <input value={contactForm.mobile} onChange={e => setContactForm(f => ({ ...f, mobile: e.target.value }))} className="input" />
+              </div>
+              <div>
+                <label className="label">Langue</label>
+                <select value={contactForm.language} onChange={e => setContactForm(f => ({ ...f, language: e.target.value }))} className="select">
+                  <option value="">—</option>
+                  <option value="French">Français</option>
+                  <option value="English">Anglais</option>
+                </select>
+              </div>
             </div>
-            <div>
-              <label className="label">Nom *</label>
-              <input value={contactForm.last_name} onChange={e => setContactForm(f => ({ ...f, last_name: e.target.value }))} className="input" required />
+          ) : (
+            <div className="space-y-3">
+              <div>
+                <label className="label">Rechercher un contact</label>
+                <input
+                  value={linkQuery}
+                  onChange={e => { setLinkQuery(e.target.value); setLinkSelected(null) }}
+                  className="input"
+                  placeholder="Nom, courriel ou téléphone…"
+                  autoFocus
+                />
+              </div>
+              {linkSelected ? (
+                <div className="border border-indigo-200 bg-indigo-50 rounded-lg px-3 py-2 flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-medium text-slate-900">{linkSelected.first_name} {linkSelected.last_name}</div>
+                    <div className="text-xs text-slate-500">
+                      {linkSelected.email || '—'}{linkSelected.company_name ? ` · Actuellement chez ${linkSelected.company_name}` : ''}
+                    </div>
+                  </div>
+                  <button type="button" onClick={() => setLinkSelected(null)} className="text-slate-400 hover:text-red-500">
+                    <X size={16} />
+                  </button>
+                </div>
+              ) : linkQuery.length < 2 ? (
+                <p className="text-xs text-slate-400">Tape au moins 2 caractères pour rechercher.</p>
+              ) : linkSearching ? (
+                <p className="text-xs text-slate-400">Recherche…</p>
+              ) : linkResults.length === 0 ? (
+                <p className="text-xs text-slate-400">Aucun contact trouvé.</p>
+              ) : (
+                <ul className="border border-slate-200 rounded-lg divide-y divide-slate-100 max-h-64 overflow-y-auto">
+                  {linkResults.map(c => (
+                    <li key={c.id}>
+                      <button type="button" onClick={() => setLinkSelected(c)}
+                        className="w-full text-left px-3 py-2 hover:bg-slate-50 flex items-center justify-between">
+                        <div>
+                          <div className="text-sm text-slate-900">{c.first_name} {c.last_name}</div>
+                          <div className="text-xs text-slate-500">
+                            {c.email || '—'}{c.company_name ? ` · ${c.company_name}` : ''}
+                          </div>
+                        </div>
+                        <Plus size={14} className="text-slate-400" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {linkSelected?.company_id && linkSelected.company_id !== id && (
+                <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  Ce contact est déjà lié à une autre entreprise. Le rattacher ici remplacera ce lien.
+                </p>
+              )}
             </div>
-            <div>
-              <label className="label">Courriel</label>
-              <input type="email" value={contactForm.email} onChange={e => setContactForm(f => ({ ...f, email: e.target.value }))} className="input" />
-            </div>
-            <div>
-              <label className="label">Téléphone</label>
-              <input value={contactForm.phone} onChange={e => setContactForm(f => ({ ...f, phone: e.target.value }))} className="input" />
-            </div>
-            <div>
-              <label className="label">Mobile</label>
-              <input value={contactForm.mobile} onChange={e => setContactForm(f => ({ ...f, mobile: e.target.value }))} className="input" />
-            </div>
-            <div>
-              <label className="label">Langue</label>
-              <select value={contactForm.language} onChange={e => setContactForm(f => ({ ...f, language: e.target.value }))} className="select">
-                <option value="">—</option>
-                <option value="French">Français</option>
-                <option value="English">Anglais</option>
-              </select>
-            </div>
-          </div>
+          )}
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={() => setShowContactModal(false)} className="btn-secondary">Annuler</button>
-            <button type="submit" className="btn-primary">Ajouter</button>
+            <button type="submit" disabled={contactMode === 'link' && !linkSelected} className="btn-primary">
+              {contactMode === 'link' ? 'Lier' : 'Ajouter'}
+            </button>
           </div>
         </form>
       </Modal>

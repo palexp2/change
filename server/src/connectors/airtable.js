@@ -95,7 +95,7 @@ export async function getAccessToken() {
       const tokens = await resp.json()
       db.prepare(`
         UPDATE connector_oauth
-        SET access_token=?, refresh_token=COALESCE(?,refresh_token), expiry_date=?, updated_at=datetime('now')
+        SET access_token=?, refresh_token=COALESCE(?,refresh_token), expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id=?
       `).run(tokens.access_token, tokens.refresh_token || null, tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null, fresh.id)
       return tokens.access_token

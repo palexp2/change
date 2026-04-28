@@ -1,70 +1,20 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Save, X, Trash2, ChevronDown } from 'lucide-react'
+import { ArrowLeft, Trash2, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, ticketStatusColor } from '../components/Badge.jsx'
+import InteractionTimeline from '../components/InteractionTimeline.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { fmtDateTime } from '../lib/formatDate.js'
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
 
 function fmtDuration(mins) {
   if (!mins) return '—'
   const h = Math.floor(mins / 60), m = mins % 60
   return h === 0 ? `${m}m` : `${h}h${m > 0 ? m + 'm' : ''}`
-}
-
-function SearchSelect({ value, options, labelFn, placeholder, saving, onSave }) {
-  const [open, setOpen] = useState(false)
-  const [search, setSearch] = useState('')
-  const ref = useRef(null)
-  const selected = options.find(o => o.id === value)
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase()
-    return q ? options.filter(o => labelFn(o).toLowerCase().includes(q)).slice(0, 60) : options.slice(0, 60)
-  }, [options, search, labelFn])
-
-  useEffect(() => { if (!open) setSearch('') }, [open])
-  useEffect(() => {
-    function handle(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
-  }, [])
-
-  return (
-    <div ref={ref} className="relative">
-      <button type="button" onClick={() => !saving && setOpen(o => !o)} disabled={saving}
-        className="input text-sm text-left w-full flex items-center justify-between gap-2">
-        <span className={selected ? 'text-slate-900 truncate' : 'text-slate-400'}>
-          {selected ? labelFn(selected) : placeholder || '—'}
-        </span>
-        <ChevronDown size={14} className="text-slate-400 flex-shrink-0" />
-      </button>
-      {open && (
-        <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden">
-          <div className="p-2 border-b border-slate-100">
-            <input autoFocus type="text" value={search} onChange={e => setSearch(e.target.value)}
-              placeholder="Rechercher..." className="input text-sm py-1 w-full" />
-          </div>
-          <div className="max-h-52 overflow-y-auto">
-            <button type="button" onClick={() => { onSave(''); setOpen(false) }}
-              className="w-full text-left px-3 py-2 text-sm text-slate-400 hover:bg-slate-50">
-              {placeholder || '—'}
-            </button>
-            {filtered.map(o => (
-              <button key={o.id} type="button" onClick={() => { onSave(o.id); setOpen(false) }}
-                className={`w-full text-left px-3 py-2 text-sm hover:bg-indigo-50 hover:text-indigo-700 ${o.id === value ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-slate-900'}`}>
-                {labelFn(o)}
-              </button>
-            ))}
-            {filtered.length === 0 && <div className="px-3 py-2 text-sm text-slate-400">Aucun resultat</div>}
-          </div>
-        </div>
-      )}
-    </div>
-  )
 }
 
 export default function TicketDetail() {
@@ -77,6 +27,33 @@ export default function TicketDetail() {
   const [meta, setMeta] = useState({ types: [], statuses: [] })
   const [loading, setLoading] = useState(true)
   const [fieldSaving, setFieldSaving] = useState({})
+  const [ticketIds, setTicketIds] = useState([])
+  const [linkedInteractions, setLinkedInteractions] = useState([])
+  const [loadingInteractions, setLoadingInteractions] = useState(false)
+  const confirm = useConfirm()
+  const { addToast } = useToast()
+
+  useEffect(() => {
+    api.tickets.list({ limit: 'all' })
+      .then(res => setTicketIds((res.data || []).map(t => t.id)))
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!ticket?.company_id) {
+      setLinkedInteractions([])
+      return
+    }
+    setLoadingInteractions(true)
+    api.interactions.list({ company_id: ticket.company_id, limit: 'all', include: 'heavy' })
+      .then(d => setLinkedInteractions(d.interactions || []))
+      .catch(() => setLinkedInteractions([]))
+      .finally(() => setLoadingInteractions(false))
+  }, [ticket?.company_id])
+
+  const currentIdx = ticketIds.indexOf(id)
+  const prevId = currentIdx > 0 ? ticketIds[currentIdx - 1] : null
+  const nextId = currentIdx >= 0 && currentIdx < ticketIds.length - 1 ? ticketIds[currentIdx + 1] : null
 
   useEffect(() => {
     async function load() {
@@ -84,13 +61,13 @@ export default function TicketDetail() {
       try {
         const [t, comps, conts, m] = await Promise.all([
           api.tickets.get(id),
-          api.companies.list({ limit: 'all' }),
-          api.contacts.list({ limit: 'all' }),
+          api.companies.lookup(),
+          api.contacts.lookup(),
           api.tickets.meta(),
         ])
         setTicket(t)
-        setCompanies(comps.data || [])
-        setContacts(conts.data || [])
+        setCompanies(comps)
+        setContacts(conts)
         setMeta(m)
         api.admin.listUsers().then(setUsers).catch(() => {})
       } finally {
@@ -106,14 +83,14 @@ export default function TicketDetail() {
       const updated = await api.tickets.update(id, { ...ticket, [key]: value || null })
       setTicket(updated)
     } catch (err) {
-      alert(err.message)
+      addToast({ message: err.message, type: 'error' })
     } finally {
       setFieldSaving(s => ({ ...s, [key]: false }))
     }
   }
 
   async function handleDelete() {
-    if (!confirm('Supprimer ce billet ?')) return
+    if (!(await confirm('Supprimer ce billet ?'))) return
     await api.tickets.delete(id)
     navigate('/tickets')
   }
@@ -147,7 +124,26 @@ export default function TicketDetail() {
                   {ticket.company_name}
                 </Link>
               )}
+              <OrishaLinks controllers={ticket.central_controllers} />
             </div>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => prevId && navigate(`/tickets/${prevId}`)}
+              disabled={!prevId}
+              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+              title="Billet précédent"
+            >
+              <ChevronUp size={16} />
+            </button>
+            <button
+              onClick={() => nextId && navigate(`/tickets/${nextId}`)}
+              disabled={!nextId}
+              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+              title="Billet suivant"
+            >
+              <ChevronDown size={16} />
+            </button>
           </div>
           <button onClick={handleDelete} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Supprimer">
             <Trash2 size={16} />
@@ -177,32 +173,41 @@ export default function TicketDetail() {
             </div>
             <div>
               <FieldLabel label="Entreprise" saving={fieldSaving.company_id} />
-              <SearchSelect
+              <LinkedRecordField
+                name="company_id"
                 value={ticket.company_id}
                 options={companies}
                 labelFn={c => c.name}
-                placeholder="— Aucune entreprise —"
+                getHref={c => `/companies/${c.id}`}
+                placeholder="Entreprise"
                 saving={!!fieldSaving.company_id}
-                onSave={v => saveField('company_id', v)}
+                onChange={v => saveField('company_id', v)}
               />
             </div>
             <div>
               <FieldLabel label="Contact" saving={fieldSaving.contact_id} />
-              <SearchSelect
+              <LinkedRecordField
+                name="contact_id"
                 value={ticket.contact_id}
                 options={filteredContacts}
                 labelFn={c => `${c.first_name} ${c.last_name}`}
-                placeholder="— Aucun contact —"
+                getHref={c => `/contacts/${c.id}`}
+                placeholder="Contact"
                 saving={!!fieldSaving.contact_id}
-                onSave={v => saveField('contact_id', v)}
+                onChange={v => saveField('contact_id', v)}
               />
             </div>
             <div>
               <FieldLabel label="Assigne a" saving={fieldSaving.assigned_to} />
-              <select value={ticket.assigned_to || ''} onChange={e => saveField('assigned_to', e.target.value)} className="select text-sm w-full" disabled={!!fieldSaving.assigned_to}>
-                <option value="">—</option>
-                {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-              </select>
+              <LinkedRecordField
+                name="assigned_to"
+                value={ticket.assigned_to}
+                options={users}
+                labelFn={u => u.name}
+                placeholder="Assigner"
+                saving={!!fieldSaving.assigned_to}
+                onChange={v => saveField('assigned_to', v)}
+              />
             </div>
             <div>
               <FieldLabel label="Duree" saving={fieldSaving.duration_minutes} />
@@ -214,19 +219,64 @@ export default function TicketDetail() {
               </div>
             </div>
             <div className="sm:col-span-2">
-              <FieldLabel label="Description" saving={fieldSaving.description} />
+              <FieldLabel label="Question" saving={fieldSaving.description} />
               <InlineTextarea value={ticket.description} saving={!!fieldSaving.description} onSave={v => saveField('description', v)} />
+            </div>
+            <div className="sm:col-span-2">
+              <FieldLabel label="Réponse" saving={fieldSaving.response} />
+              <InlineTextarea value={ticket.response} saving={!!fieldSaving.response} onSave={v => saveField('response', v)} />
             </div>
           </div>
         </div>
 
         {/* Meta */}
         <div className="text-xs text-slate-400 flex gap-4">
-          <span>Cree: {fmtDate(ticket.created_at)}</span>
-          {ticket.updated_at && <span>Modifie: {fmtDate(ticket.updated_at)}</span>}
+          <span>Cree: {fmtDateTime(ticket.created_at)}</span>
+          {ticket.updated_at && <span>Modifie: {fmtDateTime(ticket.updated_at)}</span>}
         </div>
+
+        {/* Interactions liées (toutes, même entreprise) */}
+        {ticket.company_id && (
+          <div className="mt-8">
+            <div className="flex items-baseline justify-between mb-3">
+              <h2 className="text-sm font-semibold text-slate-700 uppercase tracking-wide">
+                Interactions liées
+              </h2>
+              <span className="text-xs text-slate-400">
+                Même entreprise
+              </span>
+            </div>
+            <InteractionTimeline
+              interactions={linkedInteractions}
+              loading={loadingInteractions}
+              total={linkedInteractions.length}
+            />
+          </div>
+        )}
       </div>
     </Layout>
+  )
+}
+
+function OrishaLinks({ controllers }) {
+  if (!controllers?.length) return null
+  const single = controllers.length === 1
+  return (
+    <>
+      {controllers.map(cc => (
+        <a
+          key={cc.address}
+          href={`https://app.orisha.io/#admin/${encodeURIComponent(cc.address)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={cc.serial ? `Contrôleur ${cc.serial} · adresse ${cc.address}` : `Adresse ${cc.address}`}
+          className="inline-flex items-center gap-1 text-sm text-indigo-600 hover:underline"
+        >
+          <ExternalLink size={12} />
+          {single ? 'Ouvrir dans Orisha' : `Orisha ${cc.address}`}
+        </a>
+      ))}
+    </>
   )
 }
 

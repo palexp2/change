@@ -11,7 +11,7 @@ export function runPurge() {
   for (const table of TABLES_WITH_SOFT_DELETE) {
     try {
       const result = db.prepare(
-        `DELETE FROM ${table} WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', '-${RETENTION_DAYS} days')`
+        `DELETE FROM ${table} WHERE deleted_at IS NOT NULL AND deleted_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${RETENTION_DAYS} days')`
       ).run()
       total += result.changes
     } catch (err) {

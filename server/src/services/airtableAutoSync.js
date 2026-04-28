@@ -5,6 +5,7 @@
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { getAccessToken, airtableFetch } from '../connectors/airtable.js'
+import { getFrozenColumns } from './airtableFrozenColumns.js'
 
 // ── Airtable type → ERP type mapping ────────────────────────────────────────
 
@@ -140,8 +141,11 @@ function convertValue(val, fieldType) {
     case 'number':
       return typeof val === 'number' ? val : null
 
-    case 'date':
-      return val ? new Date(val).toISOString() : null
+    case 'date': {
+      if (!val) return null
+      const d = new Date(val)
+      return isNaN(d.getTime()) ? null : d.toISOString()
+    }
 
     case 'link':
       // Store raw Airtable record IDs as JSON array (for display/reference)
@@ -172,11 +176,22 @@ function getTableColumns(table) {
   return _tableColumns.get(table)
 }
 
+function refreshTableColumns(table) {
+  _tableColumns.set(table, new Set(
+    db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name)
+  ))
+  return _tableColumns.get(table)
+}
+
 function ensureColumn(table, colName) {
   const cols = getTableColumns(table)
   if (!cols.has(colName)) {
+    // Confirm against live schema before ALTER — cache may be stale vs. another
+    // connection / startup having already created the column.
+    const live = refreshTableColumns(table)
+    if (live.has(colName)) return
     db.prepare(`ALTER TABLE ${table} ADD COLUMN ${colName} TEXT`).run()
-    cols.add(colName)
+    live.add(colName)
     console.log(`🔧 Auto-created column ${table}.${colName}`)
   }
 }
@@ -265,9 +280,11 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
     }
   }
 
-  // 3. Populate dynamic fields for all records
-  if (dynamicFieldMap.length > 0 && records.length > 0) {
-    const updateStmt = dynamicFieldMap.map(f => `${f.columnName}=?`).join(', ')
+  // 3. Populate dynamic fields for all records (skip frozen columns)
+  const frozen = getFrozenColumns(erpTable)
+  const writable = dynamicFieldMap.filter(f => !frozen.has(f.columnName))
+  if (writable.length > 0 && records.length > 0) {
+    const updateStmt = writable.map(f => `${f.columnName}=?`).join(', ')
     const stmt = db.prepare(
       `UPDATE ${erpTable} SET ${updateStmt} WHERE airtable_id=?`
     )
@@ -275,7 +292,7 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
     const populated = db.transaction((recs) => {
       let count = 0
       for (const rec of recs) {
-        const values = dynamicFieldMap.map(f => convertValue(rec.fields[f.airtableFieldName], f.fieldType))
+        const values = writable.map(f => convertValue(rec.fields[f.airtableFieldName], f.fieldType))
         const result = stmt.run(...values, rec.id)
         if (result.changes > 0) count++
       }
@@ -299,7 +316,12 @@ export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
   const defs = db.prepare('SELECT * FROM airtable_field_defs WHERE erp_table=?').all(erpTable)
   const defsByName = new Map(defs.map(d => [d.airtable_field_name, d]))
   const mappedFields = new Set(Object.values(hardcodedFieldMap || {}).filter(v => typeof v === 'string'))
-  const existingCols = getTableColumns(erpTable)
+  // Refresh cache from live schema — guards against drift between
+  // airtable_field_defs and actual table columns (e.g. schema rebuilt).
+  const existingCols = refreshTableColumns(erpTable)
+  // Self-heal: any def whose column is missing gets created now, so the
+  // UPDATE statement below doesn't fail with "no such column".
+  for (const d of defs) ensureColumn(erpTable, d.column_name)
 
   // Detect new fields from records that aren't in hardcoded map or field_defs
   const seenNewFields = new Map() // airtableFieldName → colName
@@ -332,13 +354,17 @@ export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
 
   if (!dynamicFields.length) return
 
-  const updateStmt = dynamicFields.map(f => `${f.columnName}=?`).join(', ')
+  const frozen = getFrozenColumns(erpTable)
+  const writable = dynamicFields.filter(f => !frozen.has(f.columnName))
+  if (!writable.length) return
+
+  const updateStmt = writable.map(f => `${f.columnName}=?`).join(', ')
   const stmt = db.prepare(`UPDATE ${erpTable} SET ${updateStmt} WHERE airtable_id=?`)
 
   const count = db.transaction((recs) => {
     let n = 0
     for (const rec of recs) {
-      const values = dynamicFields.map(f => convertValue(rec.fields[f.airtableFieldName], f.fieldType))
+      const values = writable.map(f => convertValue(rec.fields[f.airtableFieldName], f.fieldType))
       const result = stmt.run(...values, rec.id)
       if (result.changes > 0) n++
     }

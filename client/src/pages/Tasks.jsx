@@ -1,18 +1,19 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, CheckCircle2, Circle, Clock, AlertCircle, X, Save } from 'lucide-react'
+import { Plus, CheckCircle2, Circle, Clock, AlertCircle, X, Save, Trash2 } from 'lucide-react'
 import { api } from '../lib/api.js'
+import { useAuth } from '../lib/auth.jsx'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { fmtDate } from '../lib/formatDate.js'
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric' })
-}
 
 function statusColor(s) {
   if (s === 'Terminé') return 'green'
@@ -37,6 +38,7 @@ function StatusIcon({ status }) {
 
 const STATUSES = ['À faire', 'En cours', 'Terminé', 'Annulé']
 const PRIORITIES = ['Basse', 'Normal', 'Haute', 'Urgente']
+const TYPES = ['Problème']
 
 const RENDERS = {
   title: (row) => (
@@ -71,11 +73,86 @@ const RENDERS = {
 
 const COLUMNS = TABLE_COLUMN_META.tasks.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
-function TaskForm({ initial = {}, companies = [], contacts = [], users = [], onSave, onClose }) {
+function parseKeywords(v) {
+  if (Array.isArray(v)) return v
+  if (typeof v === 'string' && v.trim()) { try { const p = JSON.parse(v); return Array.isArray(p) ? p : [] } catch { return [] } }
+  return []
+}
+
+function KeywordPicker({ value, onChange }) {
+  const [catalog, setCatalog] = useState([])
+  const [open, setOpen] = useState(false)
+  const [newLabel, setNewLabel] = useState('')
+  const confirm = useConfirm()
+
+  const load = useCallback(() => {
+    api.tasks.keywords.list().then(r => setCatalog(r.data || [])).catch(() => {})
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  function toggle(id) {
+    onChange(value.includes(id) ? value.filter(v => v !== id) : [...value, id])
+  }
+
+  async function handleCreate(e) {
+    e.preventDefault()
+    if (!newLabel.trim()) return
+    const created = await api.tasks.keywords.create({ label: newLabel.trim() })
+    setNewLabel('')
+    setCatalog(c => c.some(k => k.id === created.id) ? c : [...c, created].sort((a, b) => a.label.localeCompare(b.label)))
+    if (!value.includes(created.id)) onChange([...value, created.id])
+  }
+
+  async function handleDelete(id) {
+    if (!(await confirm('Supprimer ce mot-clé du catalogue ?'))) return
+    await api.tasks.keywords.delete(id)
+    setCatalog(c => c.filter(k => k.id !== id))
+    if (value.includes(id)) onChange(value.filter(v => v !== id))
+  }
+
+  const selectedLabels = value.map(id => catalog.find(k => k.id === id)).filter(Boolean)
+
+  return (
+    <div>
+      <label className="label">Mots-clés</label>
+      <div className="relative">
+        <button type="button" onClick={() => setOpen(o => !o)} className="input text-left flex flex-wrap gap-1 min-h-[38px] items-center">
+          {selectedLabels.length === 0 && <span className="text-slate-400">Choisir…</span>}
+          {selectedLabels.map(k => (
+            <span key={k.id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-xs">{k.label}</span>
+          ))}
+        </button>
+        {open && (
+          <div className="absolute z-10 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+            {catalog.length === 0 && <div className="px-3 py-2 text-sm text-slate-400">Aucun mot-clé. Ajoutez-en un ci-dessous.</div>}
+            {catalog.map(k => (
+              <div key={k.id} className="flex items-center justify-between px-3 py-1.5 hover:bg-slate-50">
+                <label className="flex items-center gap-2 text-sm flex-1 cursor-pointer">
+                  <input type="checkbox" checked={value.includes(k.id)} onChange={() => toggle(k.id)} />
+                  {k.label}
+                </label>
+                <button type="button" onClick={() => handleDelete(k.id)} className="text-slate-400 hover:text-red-500"><Trash2 size={14} /></button>
+              </div>
+            ))}
+            <div className="flex gap-1 p-2 border-t border-slate-200">
+              <input value={newLabel} onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleCreate(e)} className="input flex-1 text-sm" placeholder="Nouveau mot-clé…" />
+              <button type="button" onClick={handleCreate} className="btn-secondary px-2"><Plus size={14} /></button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function TaskForm({ initial = {}, companies = [], contacts = [], users = [], defaultAssignedTo = '', onSave, onClose }) {
   const [form, setForm] = useState({
-    title: '', description: '', status: 'À faire', priority: 'Normal',
-    due_date: '', company_id: '', contact_id: '', assigned_to: '', notes: '',
+    title: '', description: '', status: 'À faire', priority: 'Normal', type: '',
+    due_date: '', company_id: '', contact_id: '', notes: '',
     ...initial,
+    type: initial.type || '',
+    assigned_to: initial.id ? (initial.assigned_to || '') : (defaultAssignedTo || ''),
+    keywords: parseKeywords(initial.keywords),
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -96,6 +173,7 @@ function TaskForm({ initial = {}, companies = [], contacts = [], users = [], onS
   }
 
   const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }))
+  const setKey = (k) => (v) => setForm(p => ({ ...p, [k]: v }))
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -120,6 +198,13 @@ function TaskForm({ initial = {}, companies = [], contacts = [], users = [], onS
             {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
+        <div>
+          <label className="label">Type</label>
+          <select value={form.type || ''} onChange={f('type')} className="select">
+            <option value="">—</option>
+            {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
       </div>
       <div>
         <label className="label">Date d'échéance</label>
@@ -128,26 +213,39 @@ function TaskForm({ initial = {}, companies = [], contacts = [], users = [], onS
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="label">Entreprise</label>
-          <select value={form.company_id || ''} onChange={f('company_id')} className="select">
-            <option value="">—</option>
-            {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
+          <LinkedRecordField
+            name="task_company_id"
+            value={form.company_id || ''}
+            options={companies}
+            labelFn={c => c.name}
+            placeholder="Entreprise"
+            onChange={setKey('company_id')}
+          />
         </div>
         <div>
           <label className="label">Contact</label>
-          <select value={form.contact_id || ''} onChange={f('contact_id')} className="select">
-            <option value="">—</option>
-            {contacts.map(c => <option key={c.id} value={c.id}>{c.first_name} {c.last_name}</option>)}
-          </select>
+          <LinkedRecordField
+            name="task_contact_id"
+            value={form.contact_id || ''}
+            options={contacts}
+            labelFn={c => `${c.first_name || ''} ${c.last_name || ''}`.trim()}
+            placeholder="Contact"
+            onChange={setKey('contact_id')}
+          />
         </div>
       </div>
       <div>
         <label className="label">Responsable</label>
-        <select value={form.assigned_to || ''} onChange={f('assigned_to')} className="select">
-          <option value="">—</option>
-          {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-        </select>
+        <LinkedRecordField
+          name="task_assigned_to"
+          value={form.assigned_to || ''}
+          options={users}
+          labelFn={u => u.name}
+          placeholder="Responsable"
+          onChange={setKey('assigned_to')}
+        />
       </div>
+      <KeywordPicker value={form.keywords} onChange={(kw) => setForm(p => ({ ...p, keywords: kw }))} />
       <div>
         <label className="label">Notes</label>
         <textarea value={form.notes || ''} onChange={f('notes')} className="input" rows={2} />
@@ -162,6 +260,7 @@ function TaskForm({ initial = {}, companies = [], contacts = [], users = [], onS
 }
 
 export default function Tasks() {
+  const { user } = useAuth()
   const [tasks, setTasks] = useState([])
   const [companies, setCompanies] = useState([])
   const [contacts, setContacts] = useState([])
@@ -169,6 +268,7 @@ export default function Tasks() {
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState(null)
+  const undoableDelete = useUndoableDelete()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -183,15 +283,9 @@ export default function Tasks() {
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
-    Promise.all([
-      api.companies.list({ limit: 'all' }),
-      api.contacts.list({ limit: 'all' }),
-      api.auth.users(),
-    ]).then(([c, ct, u]) => {
-      setCompanies(c.data || [])
-      setContacts(ct.data || [])
-      setUsers(u || [])
-    }).catch(() => {})
+    api.auth.users().then(u => setUsers(u || [])).catch(() => {})
+    api.companies.lookup().then(setCompanies).catch(() => {})
+    api.contacts.lookup().then(setContacts).catch(() => {})
   }, [])
 
   async function handleCreate(form) {
@@ -206,9 +300,14 @@ export default function Tasks() {
   }
 
   async function handleDelete(row) {
-    if (!confirm(`Supprimer la tâche « ${row.title} » ?`)) return
-    await api.tasks.delete(row.id)
-    await load()
+    setEditing(null)
+    await undoableDelete({
+      table: 'tasks',
+      id: row.id,
+      deleteFn: () => api.tasks.delete(row.id),
+      label: 'Tâche supprimée',
+      onChange: load,
+    })
   }
 
   return (
@@ -234,23 +333,31 @@ export default function Tasks() {
           loading={loading}
           onRowClick={(row) => setEditing(row)}
           searchFields={['title', 'company_name', 'contact_name']}
+          onBulkDelete={async (ids) => {
+            await undoableDelete({
+              table: 'tasks',
+              ids,
+              deleteFn: () => Promise.all(ids.map(id => api.tasks.delete(id))),
+              label: `${ids.length} tâche${ids.length > 1 ? 's' : ''} supprimée${ids.length > 1 ? 's' : ''}`,
+              onChange: load,
+            })
+          }}
         />
       </div>
 
-      {showModal && (
-        <Modal title="Nouvelle tâche" onClose={() => setShowModal(false)}>
-          <TaskForm
-            companies={companies}
-            contacts={contacts}
-            users={users}
-            onSave={handleCreate}
-            onClose={() => setShowModal(false)}
-          />
-        </Modal>
-      )}
+      <Modal isOpen={showModal} title="Nouvelle tâche" onClose={() => setShowModal(false)}>
+        <TaskForm
+          companies={companies}
+          contacts={contacts}
+          users={users}
+          defaultAssignedTo={user?.id || ''}
+          onSave={handleCreate}
+          onClose={() => setShowModal(false)}
+        />
+      </Modal>
 
       {editing && (
-        <Modal title="Modifier la tâche" onClose={() => setEditing(null)}>
+        <Modal isOpen={!!editing} title="Modifier la tâche" onClose={() => setEditing(null)}>
           <TaskForm
             initial={editing}
             companies={companies}

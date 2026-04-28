@@ -1,13 +1,13 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
-import { FilterRow, defaultOpForType, getFieldType } from './FilterRow.jsx'
+import { FilterRow, defaultOpForType } from './FilterRow.jsx'
 import api from '../lib/api.js'
 
 function ToolbarBtn({ icon, label, active, badge, onClick }) {
   return (
     <button
-      onClick={onClick}
+      onClick={(e) => onClick(e)}
       className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-colors ${
         active ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-100'
       }`}
@@ -23,9 +23,12 @@ function ToolbarBtn({ icon, label, active, badge, onClick }) {
   )
 }
 
-function Panel({ children, className = '' }) {
+function Panel({ children, className = '', left = 0 }) {
   return (
-    <div className={`absolute top-full left-0 z-50 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl p-4 ${className}`}>
+    <div
+      style={{ left }}
+      className={`absolute top-full z-50 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl p-4 ${className}`}
+    >
       {children}
     </div>
   )
@@ -35,14 +38,26 @@ function PanelTitle({ children }) {
   return <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">{children}</p>
 }
 
-function FieldsPanel({ columns, visibleCols, onChange }) {
+function FieldsPanel({ columns, visibleCols, onChange, left }) {
   const [search, setSearch] = useState('')
   const filtered = search
     ? columns.filter(c => c.label.toLowerCase().includes(search.toLowerCase()))
     : columns
 
+  const filteredIds = filtered.map(c => c.id)
+  const allVisible = filteredIds.every(id => visibleCols.includes(id))
+  const noneVisible = filteredIds.every(id => !visibleCols.includes(id))
+
+  function showAll() {
+    onChange(v => Array.from(new Set([...v, ...filteredIds])))
+  }
+  function hideAll() {
+    const hideSet = new Set(filteredIds)
+    onChange(v => v.filter(id => !hideSet.has(id)))
+  }
+
   return (
-    <Panel className="w-64">
+    <Panel className="w-64" left={left}>
       <PanelTitle>Colonnes visibles</PanelTitle>
       <div className="relative mb-2">
         <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
@@ -72,11 +87,31 @@ function FieldsPanel({ columns, visibleCols, onChange }) {
           </label>
         ))}
       </div>
+      {filtered.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-slate-100 flex items-center gap-1.5">
+          <button
+            type="button"
+            onClick={showAll}
+            disabled={allVisible}
+            className="flex-1 text-xs font-medium text-slate-600 hover:text-indigo-700 hover:bg-indigo-50 rounded px-2 py-1.5 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 disabled:cursor-not-allowed"
+          >
+            Tout voir
+          </button>
+          <button
+            type="button"
+            onClick={hideAll}
+            disabled={noneVisible}
+            className="flex-1 text-xs font-medium text-slate-600 hover:text-indigo-700 hover:bg-indigo-50 rounded px-2 py-1.5 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 disabled:cursor-not-allowed"
+          >
+            Tout cacher
+          </button>
+        </div>
+      )}
     </Panel>
   )
 }
 
-function FilterPanel({ columns, filters, onChange, data }) {
+function FilterPanel({ columns, filters, onChange, data, left }) {
   const filterableCols = columns.filter(c => c.filterable !== false && c.field)
 
   // Normalize to {conjunction, rules} format
@@ -98,7 +133,7 @@ function FilterPanel({ columns, filters, onChange, data }) {
   }
 
   return (
-    <Panel className="w-[540px]">
+    <Panel className="w-[540px]" left={left}>
       <div className="flex items-center justify-between mb-3">
         <PanelTitle className="mb-0">Filtres</PanelTitle>
         {rules.length > 1 && (
@@ -145,7 +180,7 @@ function FilterPanel({ columns, filters, onChange, data }) {
   )
 }
 
-function SortPanel({ columns, sorts, onChange }) {
+function SortPanel({ columns, sorts, onChange, left }) {
   function add() {
     const used = new Set(sorts.map(s => s.field))
     const next = columns.find(c => !used.has(c.field))
@@ -160,7 +195,7 @@ function SortPanel({ columns, sorts, onChange }) {
   }
 
   return (
-    <Panel className="w-80">
+    <Panel className="w-80" left={left}>
       <PanelTitle>Trier par</PanelTitle>
       <div className="space-y-2 max-h-60 overflow-y-auto">
         {sorts.length === 0 && <p className="text-sm text-slate-400 py-1">Aucun tri actif</p>}
@@ -183,14 +218,14 @@ function SortPanel({ columns, sorts, onChange }) {
   )
 }
 
-function GroupPanel({ columns, groupBy, onChange, onCollapseAll, onExpandAll }) {
+function GroupPanel({ columns, groupBy, onChange, onCollapseAll, onExpandAll, left }) {
   const [search, setSearch] = useState('')
   const filtered = search
     ? columns.filter(c => c.label.toLowerCase().includes(search.toLowerCase()))
     : columns
 
   return (
-    <Panel className="w-56">
+    <Panel className="w-56" left={left}>
       <PanelTitle>Grouper par</PanelTitle>
       {groupBy && (
         <div className="flex items-center gap-1 mb-2">
@@ -250,7 +285,15 @@ export function ViewToolbar({
   data,
 }) {
   const [openPanel, setOpenPanel] = useState(null)
+  const [panelLeft, setPanelLeft] = useState(0)
   const toolbarRef = useRef(null)
+
+  function togglePanel(name, e) {
+    if (openPanel === name) { setOpenPanel(null); return }
+    const btn = e?.currentTarget
+    if (btn) setPanelLeft(btn.offsetLeft)
+    setOpenPanel(name)
+  }
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
   const [draggingId, _setDraggingId] = useState(null)
@@ -302,6 +345,7 @@ export function ViewToolbar({
   // Auto-save view on any change (filters, sorts, visible columns, group by)
   const autoSaveRef = useRef(null)
   const pendingSaveRef = useRef(null)
+  const flushSaveRef = useRef(null)
 
   function flushSave() {
     const p = pendingSaveRef.current
@@ -315,14 +359,35 @@ export function ViewToolbar({
       group_by: p.groupBy || null,
     }).catch(() => {})
   }
+  flushSaveRef.current = flushSave
+
+  const prevActiveViewIdRef = useRef(activeViewId)
+  useEffect(() => {
+    if (prevActiveViewIdRef.current && prevActiveViewIdRef.current !== activeViewId) {
+      flushSaveRef.current()
+    }
+    prevActiveViewIdRef.current = activeViewId
+  }, [activeViewId])
 
   useEffect(() => {
-    if (!table || !activeViewId) return
-    pendingSaveRef.current = { table, viewId: activeViewId, sorts, filters, visibleCols, groupBy }
-    clearTimeout(autoSaveRef.current)
-    autoSaveRef.current = setTimeout(flushSave, 600)
-    return () => clearTimeout(autoSaveRef.current)
+    if (!table) return
+    if (activeViewId) {
+      pendingSaveRef.current = { table, viewId: activeViewId, sorts, filters, visibleCols, groupBy }
+      clearTimeout(autoSaveRef.current)
+      autoSaveRef.current = setTimeout(() => flushSaveRef.current(), 600)
+    } else if (visibleCols && visibleCols.length > 0) {
+      try { localStorage.setItem(`erp_allView_cols_${table}`, JSON.stringify(visibleCols)) } catch {}
+    }
   }, [table, activeViewId, sorts, filters, visibleCols, groupBy])
+
+  useEffect(() => {
+    function onBeforeUnload() { flushSaveRef.current() }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => {
+      window.removeEventListener('beforeunload', onBeforeUnload)
+      flushSaveRef.current()
+    }
+  }, [])
 
 
   useEffect(() => {
@@ -347,7 +412,7 @@ export function ViewToolbar({
       {/* View tabs — reorderable via pointer drag with live preview */}
       {displayViews.length > 1 && (
         <div ref={tabsRef} className="flex items-end gap-0 px-2 overflow-x-auto overflow-y-hidden border-b border-slate-200">
-          {displayViews.map((v, idx) => {
+          {displayViews.map((v, _idx) => {
             const realId = v.id === ALL_ID ? null : v.id
             const canDrag = isAdmin && !!onReorderViews
             const isDragging = draggingId === v.id
@@ -431,20 +496,20 @@ export function ViewToolbar({
 
           {visibleCols && setVisibleCols && (
             <ToolbarBtn icon={<Eye size={14} />} label="Champs" active={openPanel === 'fields'}
-              onClick={() => setOpenPanel(p => p === 'fields' ? null : 'fields')} />
+              onClick={(e) => togglePanel('fields', e)} />
           )}
 
           <ToolbarBtn icon={<Filter size={14} />} label="Filtrer" active={openPanel === 'filter'}
             badge={Array.isArray(filters) ? filters.length : (filters?.rules?.length || 0)}
-            onClick={() => setOpenPanel(p => p === 'filter' ? null : 'filter')} />
+            onClick={(e) => togglePanel('filter', e)} />
 
           <ToolbarBtn icon={<ArrowUpDown size={14} />} label="Trier" active={openPanel === 'sort'}
             badge={sorts.length}
-            onClick={() => setOpenPanel(p => p === 'sort' ? null : 'sort')} />
+            onClick={(e) => togglePanel('sort', e)} />
 
           {setGroupBy && (
             <ToolbarBtn icon={<Layers size={14} />} label="Grouper" active={openPanel === 'group' || !!groupBy}
-              onClick={() => setOpenPanel(p => p === 'group' ? null : 'group')} />
+              onClick={(e) => togglePanel('group', e)} />
           )}
 
 
@@ -454,18 +519,18 @@ export function ViewToolbar({
         </div>
 
         {openPanel === 'fields' && visibleCols && setVisibleCols && (
-          <FieldsPanel columns={columns} visibleCols={visibleCols} onChange={setVisibleCols} />
+          <FieldsPanel columns={columns} visibleCols={visibleCols} onChange={setVisibleCols} left={panelLeft} />
         )}
         {openPanel === 'filter' && (
-          <FilterPanel columns={columns.filter(c => c.filterable !== false)} filters={filters} onChange={setFilters} data={data} />
+          <FilterPanel columns={columns.filter(c => c.filterable !== false)} filters={filters} onChange={setFilters} data={data} left={panelLeft} />
         )}
         {openPanel === 'sort' && (
-          <SortPanel columns={columns.filter(c => c.sortable !== false)} sorts={sorts} onChange={setSorts} />
+          <SortPanel columns={columns.filter(c => c.sortable !== false)} sorts={sorts} onChange={setSorts} left={panelLeft} />
         )}
         {openPanel === 'group' && setGroupBy && (
           <GroupPanel columns={columns.filter(c => c.groupable !== false)} groupBy={groupBy}
             onChange={v => { setGroupBy(v); setOpenPanel(null) }}
-            onCollapseAll={onCollapseAll} onExpandAll={onExpandAll} />
+            onCollapseAll={onCollapseAll} onExpandAll={onExpandAll} left={panelLeft} />
         )}
       </div>
     </div>

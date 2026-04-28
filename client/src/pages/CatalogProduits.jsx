@@ -1,7 +1,11 @@
 import { useState, useEffect } from 'react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
-import { Plus, Pencil, Check, X } from 'lucide-react'
+import { Plus } from 'lucide-react'
+import { DataTable } from '../components/DataTable.jsx'
+import { Modal } from '../components/Modal.jsx'
+import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 function fmt(n, currency) {
   if (!n && n !== 0) return '—'
@@ -10,124 +14,136 @@ function fmt(n, currency) {
 
 const EMPTY_FORM = { name_fr: '', name_en: '', unit_price_cad: 0, price_usd: 0, monthly_price_cad: 0, monthly_price_usd: 0 }
 
-function PriceInput({ value, onChange }) {
+const RENDERS = {
+  name_fr: row => <span className="font-medium text-slate-900">{row.name_fr}</span>,
+  name_en: row => <span className="text-slate-600">{row.name_en}</span>,
+  unit_price_cad:    row => <span className="font-mono text-sm">{fmt(row.unit_price_cad, 'CAD')}</span>,
+  price_usd:         row => <span className="font-mono text-sm">{fmt(row.price_usd, 'USD')}</span>,
+  monthly_price_cad: row => <span className="font-mono text-sm">{fmt(row.monthly_price_cad, 'CAD')}</span>,
+  monthly_price_usd: row => <span className="font-mono text-sm">{fmt(row.monthly_price_usd, 'USD')}</span>,
+}
+
+const COLUMNS = TABLE_COLUMN_META.catalog.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
+
+function PriceInput({ value, onChange, onBlur }) {
   return (
     <input
       type="number" min="0" step="0.01"
-      className="w-full border rounded px-2 py-1 text-sm text-right"
+      className="w-full border rounded px-2 py-1.5 text-sm text-right"
       value={value}
       onChange={e => onChange(parseFloat(e.target.value) || 0)}
+      onBlur={onBlur}
     />
   )
 }
 
-function ProductRow({ product, onSaved }) {
-  const [editing, setEditing] = useState(false)
-  const [form, setForm] = useState({
+function EditProductModal({ product, onClose, onSaved }) {
+  const isEdit = !!product
+  const [form, setForm] = useState(isEdit ? {
     name_fr: product.name_fr,
     name_en: product.name_en,
     unit_price_cad: product.unit_price_cad ?? 0,
     price_usd: product.price_usd ?? 0,
     monthly_price_cad: product.monthly_price_cad ?? 0,
     monthly_price_usd: product.monthly_price_usd ?? 0,
-  })
-  const [saving, setSaving] = useState(false)
+  } : EMPTY_FORM)
+  const [saving, setSaving] = useState({})
+  const [error, setError] = useState('')
 
   const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
 
-  const save = async () => {
-    setSaving(true)
+  async function saveField(key, value) {
+    if (!isEdit) return
+    setSaving(s => ({ ...s, [key]: true }))
     try {
-      await api.catalog.update(product.id, form)
+      await api.catalog.update(product.id, { ...form, [key]: value })
       onSaved()
-      setEditing(false)
-    } catch (e) {
-      alert(e.message)
-    } finally {
-      setSaving(false)
-    }
+    } catch (e) { setError(e.message) }
+    finally { setSaving(s => ({ ...s, [key]: false })) }
   }
 
-  if (editing) {
+  async function handleCreate(e) {
+    e.preventDefault()
+    if (!form.name_fr || !form.name_en) { setError('Nom FR et EN requis'); return }
+    setError('')
+    try {
+      await api.catalog.create(form)
+      onSaved()
+      onClose()
+    } catch (e) { setError(e.message) }
+  }
+
+  const savingIndicator = (k) => saving[k] ? <span className="text-xs text-slate-400 ml-1">(sauvegarde...)</span> : null
+
+  const fields = (
+    <>
+      <div>
+        <label className="label">Nom FR{savingIndicator('name_fr')}</label>
+        <input className="input" value={form.name_fr}
+          onChange={e => set('name_fr', e.target.value)}
+          onBlur={e => saveField('name_fr', e.target.value)} placeholder="Nom FR" />
+      </div>
+      <div>
+        <label className="label">Name EN{savingIndicator('name_en')}</label>
+        <input className="input" value={form.name_en}
+          onChange={e => set('name_en', e.target.value)}
+          onBlur={e => saveField('name_en', e.target.value)} placeholder="Name EN" />
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="label">Prix CAD{savingIndicator('unit_price_cad')}</label>
+          <PriceInput value={form.unit_price_cad}
+            onChange={v => set('unit_price_cad', v)}
+            onBlur={() => saveField('unit_price_cad', form.unit_price_cad)} />
+        </div>
+        <div>
+          <label className="label">Prix USD{savingIndicator('price_usd')}</label>
+          <PriceInput value={form.price_usd}
+            onChange={v => set('price_usd', v)}
+            onBlur={() => saveField('price_usd', form.price_usd)} />
+        </div>
+        <div>
+          <label className="label">Mensuel CAD{savingIndicator('monthly_price_cad')}</label>
+          <PriceInput value={form.monthly_price_cad}
+            onChange={v => set('monthly_price_cad', v)}
+            onBlur={() => saveField('monthly_price_cad', form.monthly_price_cad)} />
+        </div>
+        <div>
+          <label className="label">Mensuel USD{savingIndicator('monthly_price_usd')}</label>
+          <PriceInput value={form.monthly_price_usd}
+            onChange={v => set('monthly_price_usd', v)}
+            onBlur={() => saveField('monthly_price_usd', form.monthly_price_usd)} />
+        </div>
+      </div>
+      {error && <p className="text-red-600 text-sm">{error}</p>}
+    </>
+  )
+
+  if (isEdit) {
     return (
-      <tr className="bg-indigo-50">
-        <td className="px-3 py-2">
-          <input className="w-full border rounded px-2 py-1 text-sm mb-1" value={form.name_fr}
-            onChange={e => set('name_fr', e.target.value)} placeholder="Nom FR" />
-          <input className="w-full border rounded px-2 py-1 text-sm" value={form.name_en}
-            onChange={e => set('name_en', e.target.value)} placeholder="Name EN" />
-        </td>
-        <td className="px-3 py-2"><PriceInput value={form.unit_price_cad} onChange={v => set('unit_price_cad', v)} /></td>
-        <td className="px-3 py-2"><PriceInput value={form.price_usd} onChange={v => set('price_usd', v)} /></td>
-        <td className="px-3 py-2"><PriceInput value={form.monthly_price_cad} onChange={v => set('monthly_price_cad', v)} /></td>
-        <td className="px-3 py-2"><PriceInput value={form.monthly_price_usd} onChange={v => set('monthly_price_usd', v)} /></td>
-        <td className="px-3 py-2 text-right whitespace-nowrap">
-          <button onClick={save} disabled={saving} className="text-indigo-600 hover:text-indigo-800 mr-2"><Check size={16} /></button>
-          <button onClick={() => setEditing(false)} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
-        </td>
-      </tr>
+      <div className="space-y-4">
+        {fields}
+        <div className="flex justify-end pt-2">
+          <button onClick={onClose} className="btn-primary">Fermer</button>
+        </div>
+      </div>
     )
   }
-
   return (
-    <tr className="border-b hover:bg-slate-50">
-      <td className="px-3 py-3">
-        <div className="font-medium text-slate-900">{product.name_fr}</div>
-        <div className="text-xs text-slate-500">{product.name_en}</div>
-      </td>
-      <td className="px-3 py-3 text-right font-mono text-sm text-slate-800">{fmt(product.unit_price_cad, 'CAD')}</td>
-      <td className="px-3 py-3 text-right font-mono text-sm text-slate-800">{fmt(product.price_usd, 'USD')}</td>
-      <td className="px-3 py-3 text-right font-mono text-sm text-slate-800">{fmt(product.monthly_price_cad, 'CAD')}</td>
-      <td className="px-3 py-3 text-right font-mono text-sm text-slate-800">{fmt(product.monthly_price_usd, 'USD')}</td>
-      <td className="px-3 py-3 text-right">
-        <button onClick={() => setEditing(true)} className="text-slate-400 hover:text-indigo-600"><Pencil size={15} /></button>
-      </td>
-    </tr>
-  )
-}
-
-function AddRow({ onAdd, onCancel, sortOrder }) {
-  const [form, setForm] = useState(EMPTY_FORM)
-  const [saving, setSaving] = useState(false)
-  const set = (key, val) => setForm(f => ({ ...f, [key]: val }))
-
-  const save = async () => {
-    if (!form.name_fr || !form.name_en) return
-    setSaving(true)
-    try {
-      await api.catalog.create({ ...form, sort_order: sortOrder })
-      onAdd()
-    } catch (e) {
-      alert(e.message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <tr className="bg-indigo-50 border-b">
-      <td className="px-3 py-2">
-        <input className="w-full border rounded px-2 py-1 text-sm mb-1" value={form.name_fr}
-          onChange={e => set('name_fr', e.target.value)} placeholder="Nom FR *" />
-        <input className="w-full border rounded px-2 py-1 text-sm" value={form.name_en}
-          onChange={e => set('name_en', e.target.value)} placeholder="Name EN *" />
-      </td>
-      <td className="px-3 py-2"><PriceInput value={form.unit_price_cad} onChange={v => set('unit_price_cad', v)} /></td>
-      <td className="px-3 py-2"><PriceInput value={form.price_usd} onChange={v => set('price_usd', v)} /></td>
-      <td className="px-3 py-2"><PriceInput value={form.monthly_price_cad} onChange={v => set('monthly_price_cad', v)} /></td>
-      <td className="px-3 py-2"><PriceInput value={form.monthly_price_usd} onChange={v => set('monthly_price_usd', v)} /></td>
-      <td className="px-3 py-2 text-right whitespace-nowrap">
-        <button onClick={save} disabled={saving} className="text-indigo-600 hover:text-indigo-800 mr-2"><Check size={16} /></button>
-        <button onClick={onCancel} className="text-slate-400 hover:text-slate-600"><X size={16} /></button>
-      </td>
-    </tr>
+    <form onSubmit={handleCreate} className="space-y-4">
+      {fields}
+      <div className="flex justify-end gap-3 pt-2">
+        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
+        <button type="submit" className="btn-primary">Créer</button>
+      </div>
+    </form>
   )
 }
 
 export default function CatalogProduits() {
   const [products, setProducts] = useState([])
   const [loading, setLoading] = useState(true)
-  const [adding, setAdding] = useState(false)
+  const [editing, setEditing] = useState(null) // null | product | 'new'
 
   const load = async () => {
     try { setProducts(await api.catalog.list()) }
@@ -139,46 +155,45 @@ export default function CatalogProduits() {
 
   return (
     <Layout>
-      <div className="max-w-6xl mx-auto px-4 py-6">
+      <div className="max-w-7xl mx-auto px-4 py-6">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Catalogue de produits</h1>
             <p className="text-sm text-slate-500 mt-1">Produits et services disponibles pour les soumissions et factures</p>
           </div>
-          <button
-            onClick={() => setAdding(true)}
-            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700"
-          >
-            <Plus size={16} /> Ajouter un produit
-          </button>
+          <div className="flex items-center gap-2">
+            <TableConfigModal table="catalog" />
+            <button
+              onClick={() => setEditing('new')}
+              className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700"
+            >
+              <Plus size={16} /> Ajouter un produit
+            </button>
+          </div>
         </div>
 
-        <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="bg-slate-50 border-b">
-                <th className="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Produit</th>
-                <th className="px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Prix CAD</th>
-                <th className="px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Prix USD</th>
-                <th className="px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Mensuel CAD</th>
-                <th className="px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">Mensuel USD</th>
-                <th className="px-3 py-3 w-16"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">Chargement…</td></tr>
-              ) : products.length === 0 && !adding ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">Aucun produit</td></tr>
-              ) : (
-                products.map(p => <ProductRow key={p.id} product={p} onSaved={load} />)
-              )}
-              {adding && (
-                <AddRow sortOrder={products.length} onAdd={() => { setAdding(false); load() }} onCancel={() => setAdding(false)} />
-              )}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          table="catalog"
+          columns={COLUMNS}
+          data={products}
+          loading={loading}
+          onRowClick={row => setEditing(row)}
+          searchFields={['name_fr', 'name_en']}
+        />
+
+        <Modal
+          isOpen={!!editing}
+          onClose={() => setEditing(null)}
+          title={editing === 'new' ? 'Nouveau produit' : 'Modifier le produit'}
+        >
+          {editing && (
+            <EditProductModal
+              product={editing === 'new' ? null : editing}
+              onClose={() => setEditing(null)}
+              onSaved={load}
+            />
+          )}
+        </Modal>
       </div>
     </Layout>
   )

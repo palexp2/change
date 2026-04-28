@@ -1,16 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { fmtDate } from '../lib/formatDate.js'
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', year: 'numeric' })
-}
 
 const RENDERS = {
   serial: row => <span className="font-mono font-medium text-slate-900">{row.serial}</span>,
@@ -26,6 +23,7 @@ const RENDERS = {
 const COLUMNS = TABLE_COLUMN_META.serial_numbers.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
 export default function SerialNumbers() {
+  const navigate = useNavigate()
   const [serials, setSerials] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -54,6 +52,7 @@ export default function SerialNumbers() {
           data={serials}
           loading={loading}
           searchFields={['serial', 'product_name', 'company_name']}
+          onRowClick={row => navigate(`/serials/${row.id}`)}
         />
       </div>
     </Layout>

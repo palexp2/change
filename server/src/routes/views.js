@@ -8,7 +8,9 @@ const router = Router()
 const ALLOWED_TABLES = new Set([
   'companies', 'contacts', 'projects', 'products',
   'orders', 'tickets', 'purchases', 'serial_numbers', 'interactions', 'shipments',
-  'abonnements', 'retours', 'factures', 'assemblages', 'depenses', 'factures_fournisseurs', 'tasks',
+  'abonnements', 'retours', 'factures', 'assemblages', 'achats_fournisseurs', 'tasks',
+  'employees', 'paies', 'paie_items', 'bom_items',
+  'company_serials',
 ])
 
 function validateTable(req, res) {
@@ -35,7 +37,7 @@ router.get('/:table', requireAuth, (req, res) => {
   const { table } = req.params
 
   const config = db.prepare(
-    'SELECT visible_columns, default_sort, all_view_sort_order, column_widths FROM table_view_configs WHERE table_name=?'
+    'SELECT visible_columns, default_sort, all_view_sort_order, column_widths, bulk_delete_enabled FROM table_view_configs WHERE table_name=?'
   ).get(table)
 
   const pills = db.prepare(
@@ -44,23 +46,22 @@ router.get('/:table', requireAuth, (req, res) => {
 
   // Dynamic fields from Airtable auto-sync (deduplicate by label, prefer non-native over native)
   const rawFields = db.prepare(
-    'SELECT airtable_field_id, column_name, airtable_field_name, field_type, options, sort_order FROM airtable_field_defs WHERE erp_table=? ORDER BY sort_order'
+    'SELECT airtable_field_id, column_name, airtable_field_name, display_label, field_type, options, sort_order FROM airtable_field_defs WHERE erp_table=? ORDER BY sort_order'
   ).all(table)
   const seenLabels = new Map()
   for (const f of rawFields) {
-    const existing = seenLabels.get(f.airtable_field_name)
-    // Prefer non-native (Airtable-synced) fields over native ones when duplicates exist
+    const effectiveLabel = f.display_label || f.airtable_field_name
+    const existing = seenLabels.get(effectiveLabel)
     if (!existing) {
-      seenLabels.set(f.airtable_field_name, f)
+      seenLabels.set(effectiveLabel, f)
     } else if (existing.airtable_field_id.startsWith('native_') && !f.airtable_field_id.startsWith('native_')) {
-      // Keep native sort_order so the field stays visible by default
       f.sort_order = Math.min(existing.sort_order, f.sort_order)
-      seenLabels.set(f.airtable_field_name, f)
+      seenLabels.set(effectiveLabel, f)
     }
   }
   const dynamicFields = [...seenLabels.values()].map(f => ({
     id: f.column_name,
-    label: f.airtable_field_name,
+    label: f.display_label || f.airtable_field_name,
     field: f.column_name,
     type: f.field_type,
     options: JSON.parse(f.options || '{}'),
@@ -70,11 +71,28 @@ router.get('/:table', requireAuth, (req, res) => {
 
   res.json({
     config: config
-      ? { visible_columns: JSON.parse(config.visible_columns), default_sort: JSON.parse(config.default_sort), all_view_sort_order: config.all_view_sort_order ?? -1, column_widths: JSON.parse(config.column_widths || '{}') }
-      : { visible_columns: [], default_sort: [], all_view_sort_order: -1, column_widths: {} },
+      ? { visible_columns: JSON.parse(config.visible_columns), default_sort: JSON.parse(config.default_sort), all_view_sort_order: config.all_view_sort_order ?? -1, column_widths: JSON.parse(config.column_widths || '{}'), bulk_delete_enabled: config.bulk_delete_enabled === 1 }
+      : { visible_columns: [], default_sort: [], all_view_sort_order: -1, column_widths: {}, bulk_delete_enabled: false },
     pills: pills.map(parsePill),
     dynamicFields,
   })
+})
+
+// PATCH /api/views/:table/bulk-delete-enabled
+router.patch('/:table/bulk-delete-enabled', requireAdmin, (req, res) => {
+  if (!validateTable(req, res)) return
+  const { table } = req.params
+  const enabled = req.body.enabled ? 1 : 0
+
+  const existing = db.prepare('SELECT id FROM table_view_configs WHERE table_name=?').get(table)
+  if (existing) {
+    db.prepare("UPDATE table_view_configs SET bulk_delete_enabled=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE table_name=?")
+      .run(enabled, table)
+  } else {
+    db.prepare('INSERT INTO table_view_configs (id, table_name, visible_columns, default_sort, bulk_delete_enabled) VALUES (?,?,?,?,?)')
+      .run(uuidv4(), table, '[]', '[]', enabled)
+  }
+  res.json({ ok: true, bulk_delete_enabled: enabled === 1 })
 })
 
 // PUT /api/views/:table
@@ -93,7 +111,7 @@ router.put('/:table', requireAdmin, (req, res) => {
 
   if (existing) {
     db.prepare(
-      "UPDATE table_view_configs SET visible_columns=?, default_sort=?, updated_at=datetime('now') WHERE table_name=?"
+      "UPDATE table_view_configs SET visible_columns=?, default_sort=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE table_name=?"
     ).run(JSON.stringify(visible_columns), JSON.stringify(default_sort), table)
   } else {
     db.prepare(
@@ -113,7 +131,7 @@ router.patch('/:table/column-widths', requireAuth, (req, res) => {
 
   const existing = db.prepare('SELECT id FROM table_view_configs WHERE table_name=?').get(table)
   if (existing) {
-    db.prepare("UPDATE table_view_configs SET column_widths=?, updated_at=datetime('now') WHERE table_name=?")
+    db.prepare("UPDATE table_view_configs SET column_widths=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE table_name=?")
       .run(JSON.stringify(column_widths), table)
   } else {
     db.prepare('INSERT INTO table_view_configs (id, table_name, visible_columns, default_sort, column_widths) VALUES (?,?,?,?,?)')
@@ -155,7 +173,7 @@ router.patch('/:table/pills/reorder', requireAdmin, (req, res) => {
     if (all_view_sort_order !== undefined) {
       const existing = db.prepare('SELECT id FROM table_view_configs WHERE table_name=?').get(table)
       if (existing) {
-        db.prepare("UPDATE table_view_configs SET all_view_sort_order=?, updated_at=datetime('now') WHERE table_name=?")
+        db.prepare("UPDATE table_view_configs SET all_view_sort_order=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE table_name=?")
           .run(all_view_sort_order, table)
       } else {
         db.prepare('INSERT INTO table_view_configs (id, table_name, visible_columns, default_sort, all_view_sort_order) VALUES (?,?,?,?,?)')

@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Pre-push guard: bloque un push si le serveur a une régression d'auth
+# ou si une route backend n'est référencée nulle part côté client.
+#
+# Active en local avec :
+#   git config core.hooksPath .githooks
+#
+# Bypass d'urgence (à éviter) :
+#   git push --no-verify
+
+set -e
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root/server"
+
+echo "[pre-push] npm test (inclut _auth-audit)…"
+if ! npm test --silent >/tmp/erp-prepush-test.log 2>&1; then
+  echo ""
+  echo "❌ npm test a échoué — push bloqué."
+  echo "   Log complet : /tmp/erp-prepush-test.log"
+  tail -40 /tmp/erp-prepush-test.log
+  exit 1
+fi
+
+echo "[pre-push] audit:dead-routes…"
+dead_output="$(npm run audit:dead-routes --silent 2>&1)"
+dead_count="$(echo "$dead_output" | grep -oE 'candidates mortes : [0-9]+' | grep -oE '[0-9]+$' || echo '0')"
+
+if [ "${dead_count:-0}" -gt 0 ]; then
+  echo ""
+  echo "❌ $dead_count route(s) serveur ne sont référencées nulle part côté client :"
+  echo "$dead_output" | sed -n '/DEAD/,$p'
+  echo ""
+  echo "   → Soit supprime la route, soit ajoute un appel client, soit whiteliste"
+  echo "     dans server/src/scripts/find-dead-routes.js (EXTERNAL_PATTERNS)."
+  exit 1
+fi
+
+echo "[pre-push] OK"

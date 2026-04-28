@@ -14,7 +14,7 @@ const STATUS_CONFIG = {
 }
 
 // ─── Tool icon helper ────────────────────────────────────────────────────────
-function toolIcon(name) {
+function _toolIcon(name) {
   if (!name) return <Terminal size={11} />
   const n = name.toLowerCase()
   if (n === 'bash') return <Terminal size={11} />

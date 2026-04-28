@@ -2,49 +2,108 @@ import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard, Settings,
-  ChevronLeft, ChevronRight, LogOut, Menu, X,
-  KeyRound, Search,
+  ChevronLeft, ChevronRight, ChevronDown, LogOut, Menu, X,
+  Search,
   TrendingUp, ShoppingCart, Package, LifeBuoy,
   ShoppingBag, Truck, RotateCcw, FileText, RefreshCw, Wrench,
-  Barcode, MessageSquare, Plug, Zap, Bot, CheckSquare,
-  Receipt, CreditCard, ReceiptText, Landmark, Users
+  Barcode, MessageSquare, CheckSquare,
+  Receipt, ReceiptText, Landmark, Users, Banknote, Contact, BookOpen,
+  ArrowLeftRight, CreditCard, Clock, Tag, Wallet
 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
 import { api } from '../lib/api.js'
+import { prefetch } from '../lib/prefetch.js'
 import { Modal } from './Modal.jsx'
 import { GlobalSearch as CRMSearch } from './GlobalSearch.jsx'
 
+// When the user hovers a nav link, kick off the page's primary list fetch.
+// The request-level cache in prefetch.js keeps the in-flight promise, so the
+// fetch fired on page mount (the real <NavLink> click) reuses it instead of
+// re-hitting the server. Each entry mirrors the exact args the target page
+// passes to its first api.*.list(...) call — ordering matters for the
+// cache key (URLSearchParams preserves insertion order).
+const NAV_PREFETCH = {
+  '/interactions':  () => api.interactions.list({ limit: 'all', offset: 0 }),
+  '/contacts':      () => api.contacts.list({ limit: 'all', page: 1 }),
+  '/companies':     () => api.companies.list({ limit: 'all', page: 1 }),
+  '/orders':        () => api.orders.list({ limit: 'all', page: 1 }),
+  '/factures':      () => api.factures.list({ limit: 'all', page: 1 }),
+  '/retours':       () => api.retours.list({ limit: 'all', page: 1 }),
+  '/products':      () => api.products.list({ limit: 'all', page: 1, active: true }),
+  '/purchases':     () => api.purchases.list({ limit: 'all', page: 1 }),
+  '/tickets':       () => api.tickets.list({ limit: 'all', page: 1 }),
+  '/tasks':         () => api.tasks.list({ limit: 'all' }),
+  '/abonnements':   () => api.abonnements.list({ limit: 'all', page: 1 }),
+}
+
+// Short delay so sweeping the mouse across the sidebar doesn't trigger a
+// dozen fetches — only hovers that last this long count as intent.
+const PREFETCH_DELAY_MS = 120
+
+function useHoverPrefetch(to) {
+  const timerRef = useRef(null)
+  const firedRef = useRef(false)
+  const getter = NAV_PREFETCH[to]
+  const onEnter = () => {
+    if (!getter || firedRef.current) return
+    timerRef.current = setTimeout(() => {
+      firedRef.current = true
+      prefetch(getter)
+    }, PREFETCH_DELAY_MS)
+  }
+  const onLeave = () => {
+    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
+  }
+  return { onMouseEnter: onEnter, onMouseLeave: onLeave }
+}
+
 const defaultNavItems = [
   { to: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/pipeline',     icon: TrendingUp,      label: 'Projets' },
-  { to: '/orders',       icon: ShoppingCart,    label: 'Commandes' },
-  { to: '/factures',     icon: FileText,        label: 'Factures' },
-  { to: '/abonnements',  icon: RefreshCw,       label: 'Abonnements' },
-  { group: 'Comptabilité', icon: Landmark, items: [
-    { to: '/factures-fournisseurs', icon: Receipt,    label: 'Fact. fournisseurs' },
-    { to: '/depenses',              icon: CreditCard, label: 'Dépenses' },
-    { to: '/sale-receipts',         icon: ReceiptText,label: 'Reçus de vente' },
-    { to: '/stripe-queue',          icon: Zap,        label: 'Stripe → QB' },
+  { group: 'Clients', icon: Contact, items: [
+    { to: '/pipeline',     icon: TrendingUp,    label: 'Projets' },
+    { to: '/tasks',        icon: CheckSquare,   label: 'Tâches' },
+    { to: '/tickets',      icon: LifeBuoy,      label: 'Billets' },
+    { to: '/interactions', icon: MessageSquare, label: 'Interactions' },
   ]},
-  { to: '/purchases',    icon: ShoppingBag,     label: 'Achats' },
-  { to: '/envois',       icon: Truck,           label: 'Envois' },
-  { to: '/retours',      icon: RotateCcw,       label: 'Retours' },
-  { to: '/assemblages',  icon: Wrench,          label: 'Assemblages' },
-  { to: '/products',     icon: Package,         label: 'Produits' },
-  { to: '/serials',      icon: Barcode,         label: 'Numéros de série' },
-  { to: '/tasks',        icon: CheckSquare,     label: 'Tâches' },
-  { to: '/tickets',      icon: LifeBuoy,        label: 'Billets' },
-  { to: '/interactions', icon: MessageSquare,   label: 'Interactions' },
-  { to: '/employees',    icon: Users,           label: 'Employés' },
+  { group: 'Envois', icon: Truck, items: [
+    { to: '/orders',   icon: ShoppingCart, label: 'Commandes' },
+    { to: '/envois',   icon: Truck,        label: 'Envois' },
+    { to: '/retours',  icon: RotateCcw,    label: 'Retours' },
+  ]},
+  { group: 'Comptabilité', icon: Landmark, items: [
+    { to: '/factures',              icon: FileText,   label: 'Factures clients' },
+    { to: '/abonnements',           icon: RefreshCw,  label: 'Abonnements' },
+    { to: '/achats-fournisseurs',   icon: Receipt,    label: 'Achats fournisseurs' },
+    { to: '/sale-receipts',         icon: ReceiptText,label: 'Extraction de données' },
+    { to: '/stripe-payouts',        icon: CreditCard, label: 'Stripe Payouts' },
+    { to: '/journal-entries',       icon: BookOpen,   label: 'Écritures de journal' },
+    { to: '/comptabilite/regles-serials', icon: BookOpen, label: 'Mouvements numéros de série' },
+    { to: '/stock-movement',        icon: ArrowLeftRight, label: "Mouvements d'inventaire" },
+  ]},
+  { group: 'Inventaire', icon: Package, items: [
+    { to: '/purchases',    icon: ShoppingBag, label: 'Achats' },
+    { to: '/assemblages',  icon: Wrench,      label: 'Assemblages' },
+    { to: '/products',     icon: Package,     label: 'Pièces/Produits' },
+    { to: '/serials',      icon: Barcode,     label: 'Numéros de série' },
+  ]},
+  { group: 'RH', icon: Users, items: [
+    { to: '/employees',        icon: Users,    label: 'Employés' },
+    { to: '/feuille-de-temps', icon: Clock,    label: 'Feuille de temps' },
+    { to: '/codes-activite',   icon: Tag,      label: "Codes d'activité" },
+    { to: '/paies',            icon: Banknote, label: 'Paies' },
+    { to: '/banque-heures',    icon: Wallet,   label: "Banque d'heures" },
+  ]},
 ]
 
 const bottomNavItems = []
 
 function NavItem({ to, icon: Icon, label, collapsed, badge }) {
+  const hover = useHoverPrefetch(to)
   return (
     <NavLink
       to={to}
+      {...hover}
       className={({ isActive }) =>
         `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all
         ${isActive
@@ -69,70 +128,229 @@ function NavItem({ to, icon: Icon, label, collapsed, badge }) {
   )
 }
 
-function NavGroup({ group, icon: Icon, items, collapsed }) {
+function FlyoutNavLink({ item }) {
+  const hover = useHoverPrefetch(item.to)
+  return (
+    <NavLink
+      to={item.to}
+      {...hover}
+      className={({ isActive }) =>
+        `flex items-center gap-2.5 px-3 py-2 mx-1 rounded-md text-sm font-medium transition-colors
+        ${isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700'}`
+      }
+    >
+      <item.icon size={15} className="flex-shrink-0" />
+      {item.label}
+    </NavLink>
+  )
+}
+
+function GroupNavLink({ item }) {
+  const hover = useHoverPrefetch(item.to)
+  return (
+    <NavLink
+      to={item.to}
+      {...hover}
+      className={({ isActive }) =>
+        `flex items-center gap-2.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors
+        ${isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'}`
+      }
+    >
+      <item.icon size={14} className="flex-shrink-0" />
+      {item.label}
+    </NavLink>
+  )
+}
+
+function NavGroupCollapsedFlyout({ group, icon: Icon, items }) {
   const [open, setOpen] = useState(false)
   const [flyoutPos, setFlyoutPos] = useState({ top: 0, left: 0 })
   const triggerRef = useRef(null)
-  const closeTimer = useRef(null)
+  const flyoutRef = useRef(null)
   const location = useLocation()
   const isActive = items.some(item => location.pathname === item.to || location.pathname.startsWith(item.to + '/'))
 
   function openMenu() {
-    clearTimeout(closeTimer.current)
     if (triggerRef.current) {
       const rect = triggerRef.current.getBoundingClientRect()
-      setFlyoutPos({ top: rect.top, left: rect.right + 6 })
+      setFlyoutPos({ top: rect.top, left: rect.right })
     }
     setOpen(true)
   }
 
-  function scheduleClose() {
-    closeTimer.current = setTimeout(() => setOpen(false), 80)
-  }
-
-  function cancelClose() {
-    clearTimeout(closeTimer.current)
-  }
-
-  useEffect(() => () => clearTimeout(closeTimer.current), [])
+  useEffect(() => {
+    if (!open) return
+    let closeTimer = null
+    function onMove(e) {
+      const tRect = triggerRef.current?.getBoundingClientRect()
+      const fRect = flyoutRef.current?.getBoundingClientRect()
+      const inside = (r) => r && e.clientX >= r.left - 4 && e.clientX <= r.right + 4 && e.clientY >= r.top - 4 && e.clientY <= r.bottom + 4
+      if (inside(tRect) || inside(fRect)) {
+        if (closeTimer) { clearTimeout(closeTimer); closeTimer = null }
+      } else if (!closeTimer) {
+        closeTimer = setTimeout(() => setOpen(false), 150)
+      }
+    }
+    document.addEventListener('mousemove', onMove)
+    return () => {
+      document.removeEventListener('mousemove', onMove)
+      if (closeTimer) clearTimeout(closeTimer)
+    }
+  }, [open])
 
   return (
     <>
-      <div ref={triggerRef} onMouseEnter={openMenu} onMouseLeave={scheduleClose}>
+      <div ref={triggerRef} onMouseEnter={openMenu}>
         <div
-          className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium select-none cursor-default transition-all
-            ${isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'}
-            ${collapsed ? 'justify-center' : ''}`}
+          title={group}
+          className={`flex items-center justify-center gap-3 px-3 py-2 rounded-lg text-sm font-medium select-none cursor-default transition-all
+            ${isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'}`}
         >
           <Icon size={16} className="flex-shrink-0" />
-          {!collapsed && <span className="flex-1">{group}</span>}
-          {!collapsed && (
-            <ChevronRight size={12} className={`flex-shrink-0 ${isActive ? 'text-indigo-200' : 'text-slate-500'}`} />
-          )}
         </div>
       </div>
 
       {open && (
         <div
+          ref={flyoutRef}
           className="fixed bg-slate-800 rounded-lg shadow-2xl border border-slate-700 py-1.5 min-w-52 z-[200]"
           style={{ top: flyoutPos.top, left: flyoutPos.left }}
-          onMouseEnter={cancelClose}
-          onMouseLeave={scheduleClose}
         >
           <p className="px-3 pt-0.5 pb-1 text-xs font-semibold text-slate-400 uppercase tracking-wider">{group}</p>
           {items.map(item => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              className={({ isActive }) =>
-                `flex items-center gap-2.5 px-3 py-2 mx-1 rounded-md text-sm font-medium transition-colors
-                ${isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700'}`
-              }
-            >
-              <item.icon size={15} className="flex-shrink-0" />
-              {item.label}
-            </NavLink>
+            <FlyoutNavLink key={item.to} item={item} />
           ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+function NavGroup({ group, icon: Icon, items, collapsed }) {
+  const location = useLocation()
+  const isActive = items.some(item => location.pathname === item.to || location.pathname.startsWith(item.to + '/'))
+
+  const storageKey = `erp.navgroup.${group}`
+  const [open, setOpen] = useState(() => {
+    if (typeof window === 'undefined') return isActive
+    const stored = window.localStorage.getItem(storageKey)
+    if (stored === '1') return true
+    if (stored === '0') return false
+    return isActive
+  })
+
+  useEffect(() => {
+    if (isActive && !open) setOpen(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isActive])
+
+  function toggle() {
+    setOpen(prev => {
+      const next = !prev
+      try { window.localStorage.setItem(storageKey, next ? '1' : '0') } catch {}
+      return next
+    })
+  }
+
+  if (collapsed) {
+    return <NavGroupCollapsedFlyout group={group} icon={Icon} items={items} />
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium w-full transition-all
+          ${isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'}`}
+      >
+        <Icon size={16} className="flex-shrink-0" />
+        <span className="flex-1 text-left">{group}</span>
+        <ChevronDown
+          size={12}
+          className={`flex-shrink-0 transition-transform duration-150 ${open ? '' : '-rotate-90'} ${isActive ? 'text-indigo-200' : 'text-slate-500'}`}
+        />
+      </button>
+
+      {open && (
+        <div className="mt-0.5 ml-4 pl-2 border-l border-slate-800 space-y-0.5">
+          {items.map(item => (
+            <GroupNavLink key={item.to} item={item} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function UserAvatarMenu({ user, roleLabel, onLogout }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState({ top: 0, left: 0 })
+  const triggerRef = useRef(null)
+  const flyoutRef = useRef(null)
+
+  const parts = (user?.name || '').trim().split(/\s+/)
+  const firstInitial = parts[0]?.[0]?.toUpperCase() || 'U'
+  const lastInitial = parts.length > 1 ? parts[parts.length - 1][0].toUpperCase() : ''
+  const initials = firstInitial + lastInitial
+
+  function openMenu() {
+    if (triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect()
+      setPos({ top: rect.top, left: rect.right + 8 })
+    }
+    setOpen(true)
+  }
+
+  useEffect(() => {
+    if (!open) return
+    let closeTimer = null
+    function onMove(e) {
+      const tRect = triggerRef.current?.getBoundingClientRect()
+      const fRect = flyoutRef.current?.getBoundingClientRect()
+      const inside = (r) => r && e.clientX >= r.left - 4 && e.clientX <= r.right + 4 && e.clientY >= r.top - 4 && e.clientY <= r.bottom + 4
+      if (inside(tRect) || inside(fRect)) {
+        if (closeTimer) { clearTimeout(closeTimer); closeTimer = null }
+      } else if (!closeTimer) {
+        closeTimer = setTimeout(() => setOpen(false), 150)
+      }
+    }
+    document.addEventListener('mousemove', onMove)
+    return () => {
+      document.removeEventListener('mousemove', onMove)
+      if (closeTimer) clearTimeout(closeTimer)
+    }
+  }, [open])
+
+  return (
+    <>
+      <div
+        ref={triggerRef}
+        onMouseEnter={openMenu}
+        className="w-8 h-8 bg-gradient-to-br from-indigo-400 to-violet-500 rounded-full flex items-center justify-center cursor-pointer ring-2 ring-transparent hover:ring-indigo-300/40 transition"
+      >
+        <span className="text-white text-xs font-semibold tracking-tight">{initials}</span>
+      </div>
+
+      {open && (
+        <div
+          ref={flyoutRef}
+          className="fixed bg-slate-800 rounded-lg shadow-2xl border border-slate-700 py-2 min-w-56 z-[200]"
+          style={{ bottom: window.innerHeight - pos.top - 32, left: pos.left }}
+        >
+          <div className="px-3 py-2 border-b border-slate-700">
+            <div className="text-white text-sm font-medium truncate">{user?.name}</div>
+            <div className="text-slate-400 text-xs mt-0.5">{roleLabel[user?.role] || user?.role}</div>
+          </div>
+          <button
+            onClick={onLogout}
+            className="flex items-center gap-2.5 w-full px-3 py-2 mt-1 mx-1 rounded-md text-sm text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
+            style={{ width: 'calc(100% - 0.5rem)' }}
+          >
+            <LogOut size={14} />
+            Déconnexion
+          </button>
         </div>
       )}
     </>
@@ -206,7 +424,11 @@ export function Layout({ children }) {
   }, [])
 
   // WebSocket global — notifications
+  // Désactivé : nginx n'a pas de location /ws (ni /erp/ws) pour router l'upgrade
+  // vers le backend, donc toutes les tentatives tombent en 404 et rebouclent
+  // toutes les 5s. À réactiver quand la conf nginx aura un proxy WebSocket.
   useEffect(() => {
+    if (!import.meta.env.VITE_REALTIME_ENABLED) return
     const token = localStorage.getItem('erp_token')
     if (!token) return
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -240,16 +462,8 @@ export function Layout({ children }) {
   const SidebarContent = ({ mobile = false }) => (
     <div className={`flex flex-col h-full bg-slate-900 ${mobile ? 'w-72' : collapsed ? 'w-16' : 'w-56'} transition-all duration-200`}>
       {/* Logo */}
-      <div className={`flex items-center h-14 px-4 border-b border-slate-800 flex-shrink-0 ${collapsed && !mobile ? 'justify-center' : 'gap-3'}`}>
-        <div className="w-7 h-7 bg-gradient-to-br from-indigo-500 to-violet-600 rounded-lg flex items-center justify-center flex-shrink-0 shadow-md shadow-indigo-900/40">
-          <span className="text-white font-bold text-xs">O</span>
-        </div>
-        {(!collapsed || mobile) && (
-          <div>
-            <div className="text-white font-semibold text-sm leading-tight">Orisha</div>
-            <div className="text-slate-400 text-xs">ERP</div>
-          </div>
-        )}
+      <div className={`flex items-center h-14 px-4 border-b border-slate-800 flex-shrink-0 justify-center`}>
+        <img src="/erp/favicon.png" alt="Orisha ERP" className={collapsed && !mobile ? 'h-7 w-auto' : 'h-9 w-auto'} />
         {!mobile && (
           <button
             onClick={() => setCollapsed(!collapsed)}
@@ -298,28 +512,9 @@ export function Layout({ children }) {
         {user?.role === 'admin' && (
           <NavItem to="/admin" icon={Settings} label="Paramètres" collapsed={collapsed && !mobile} />
         )}
-        {/* User info */}
-        <div className={`flex items-center gap-2.5 px-3 py-2 rounded-lg mt-1 ${collapsed && !mobile ? 'justify-center' : ''}`}>
-          <div className="w-6 h-6 bg-gradient-to-br from-indigo-400 to-violet-500 rounded-full flex items-center justify-center flex-shrink-0">
-            <span className="text-white text-xs font-semibold">{user?.name?.[0]?.toUpperCase() || 'U'}</span>
-          </div>
-          {(!collapsed || mobile) && (
-            <div className="flex-1 min-w-0">
-              <div className="text-white text-xs font-medium truncate">{user?.name}</div>
-              <div className="text-slate-400 text-xs">{roleLabel[user?.role] || user?.role}</div>
-            </div>
-          )}
-          {(!collapsed || mobile) && (
-            <div className="flex items-center gap-0.5 flex-shrink-0">
-              <button
-                onClick={logout}
-                className="text-slate-400 hover:text-white p-1 rounded transition-colors"
-                title="Déconnexion"
-              >
-                <LogOut size={13} />
-              </button>
-            </div>
-          )}
+        {/* User avatar with hover menu */}
+        <div className="flex justify-start px-2 py-2 mt-1">
+          <UserAvatarMenu user={user} roleLabel={roleLabel} onLogout={logout} />
         </div>
       </div>
     </div>
@@ -329,7 +524,7 @@ export function Layout({ children }) {
     <div className="flex h-screen overflow-hidden bg-slate-50">
       {/* Desktop Sidebar */}
       <div className="hidden md:flex flex-shrink-0">
-        <SidebarContent />
+        {SidebarContent({})}
       </div>
 
       {/* Mobile sidebar */}
@@ -337,7 +532,7 @@ export function Layout({ children }) {
         <div className="fixed inset-0 z-50 md:hidden">
           <div className="fixed inset-0 bg-black/60" onClick={() => setMobileOpen(false)} />
           <div className="fixed left-0 top-0 bottom-0 z-50 flex">
-            <SidebarContent mobile />
+            {SidebarContent({ mobile: true })}
             <button
               onClick={() => setMobileOpen(false)}
               className="absolute top-4 right-4 text-white"
@@ -355,10 +550,7 @@ export function Layout({ children }) {
           <button onClick={() => setMobileOpen(true)} className="text-slate-600 mr-3">
             <Menu size={20} />
           </button>
-          <div className="w-6 h-6 bg-gradient-to-br from-indigo-500 to-violet-600 rounded flex items-center justify-center mr-2">
-            <span className="text-white font-bold text-xs">O</span>
-          </div>
-          <span className="font-semibold text-slate-900">Orisha ERP</span>
+          <img src="/erp/favicon.png" alt="Orisha ERP" className="h-7 w-auto" />
         </div>
 
         {/* Page content */}

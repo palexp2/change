@@ -1,15 +1,16 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
+import { ArrowLeft, FileText, ExternalLink } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.jsx'
+import { VendorSelect } from '../components/VendorSelect.jsx'
+import { PurchaseOrderModal } from '../components/PurchaseOrderModal.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useAuth } from '../lib/auth.jsx'
+import { fmtDateTime } from '../lib/formatDate.js'
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
 
 const PROCUREMENT_TYPES = ['Acheté', 'Fabriqué', 'Drop ship']
 
@@ -27,7 +28,11 @@ const PRODUCT_FIELDS = [
   { key: 'min_stock',          label: 'Stock minimum',      type: 'number' },
   { key: 'order_qty',          label: 'Qté à commander',    type: 'number', defaultVisible: false },
   { key: 'location',           label: 'Emplacement',        type: 'text' },
-  { key: 'supplier',           label: 'Fournisseur',        type: 'text' },
+  { key: 'supplier_company_id',label: 'Fournisseur',        type: 'vendor' },
+  { key: 'manufacturier',      label: 'Nom fabricant',      type: 'text' },
+  { key: 'supplier',           label: 'Fournisseur (legacy texte)', type: 'text', defaultVisible: false },
+  { key: 'buy_via_po',         label: 'Achat par PO',       type: 'checkbox' },
+  { key: 'order_email',        label: 'Courriel pour commande', type: 'text', span2: true },
   { key: 'procurement_type',   label: 'Approvisionnement',  type: 'select', options: PROCUREMENT_TYPES },
   { key: 'weight_lbs',         label: 'Poids (lbs)',        type: 'number', step: '0.01', defaultVisible: false },
   { key: 'notes',              label: 'Notes',              type: 'textarea', span2: true, defaultVisible: false },
@@ -36,6 +41,36 @@ const PRODUCT_FIELDS = [
 ]
 const movTypeColor = { in: 'green', out: 'red', adjustment: 'blue' }
 const movTypeLabel = { in: 'Entrée', out: 'Sortie', adjustment: 'Ajustement' }
+
+const BOM_RENDERS = {
+  component_image: row => (
+    row.component_image_url ? (
+      <img src={row.component_image_url} alt={row.component_name || ''}
+        className="h-10 w-10 object-cover rounded border border-slate-200" loading="lazy" />
+    ) : (
+      <div className="h-10 w-10 rounded border border-dashed border-slate-200" />
+    )
+  ),
+  component_name: row => (
+    row.component_id ? (
+      <Link to={`/products/${row.component_id}`} className="font-medium text-blue-600 hover:underline">
+        {row.component_name || '—'}
+      </Link>
+    ) : <span className="font-medium text-slate-900">{row.component_name || '—'}</span>
+  ),
+  component_sku: row => <span className="text-xs text-slate-500 font-mono">{row.component_sku || '—'}</span>,
+  qty_required: row => <span className="font-bold text-slate-900">{row.qty_required ?? '—'}</span>,
+  ref_des: row => <span className="text-slate-500 text-xs">{row.ref_des || '—'}</span>,
+  product_name: row => (
+    row.product_id ? (
+      <Link to={`/products/${row.product_id}`} className="text-blue-600 hover:underline">
+        {row.product_name || '—'}
+      </Link>
+    ) : <span>{row.product_name || '—'}</span>
+  ),
+  product_sku: row => <span className="text-xs text-slate-500 font-mono">{row.product_sku || '—'}</span>,
+}
+const BOM_COLUMNS = TABLE_COLUMN_META.bom_items.map(meta => ({ ...meta, render: BOM_RENDERS[meta.id] }))
 
 function Field({ label, children, span2 = false }) {
   return (
@@ -49,12 +84,13 @@ function Field({ label, children, span2 = false }) {
 export default function ProductDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user: _user } = useAuth()
   const [product, setProduct] = useState(null)
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('info')
   const [form, setForm] = useState({})
   const [bom, setBom] = useState([])
+  const [showPoModal, setShowPoModal] = useState(false)
   const saveTimer = useRef(null)
   const visibleFields = PRODUCT_FIELDS.filter(f => f.defaultVisible !== false)
 
@@ -78,6 +114,11 @@ export default function ProductDetail() {
         order_qty: data.order_qty ?? 0,
         location: data.location || '',
         supplier: data.supplier || '',
+        manufacturier: data.manufacturier || '',
+        supplier_company_id: data.supplier_company_id || null,
+        supplier_company_name: data.supplier_company?.name || data.supplier || '',
+        buy_via_po: data.buy_via_po === 1,
+        order_email: data.order_email || '',
         procurement_type: data.procurement_type || '',
         weight_lbs: data.weight_lbs ?? 0,
         notes: data.notes || '',
@@ -88,6 +129,7 @@ export default function ProductDetail() {
     }
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [id])
 
   useEffect(() => {
@@ -135,6 +177,14 @@ export default function ProductDetail() {
               <span>Stock: <strong>{product.stock_qty}</strong> / min: {form.min_stock || 0}</span>
             </div>
           </div>
+          {form.buy_via_po && form.supplier_company_id && (
+            <button
+              onClick={() => setShowPoModal(true)}
+              className="btn-primary flex items-center gap-1.5 text-sm"
+            >
+              <FileText size={14} /> Générer un PO
+            </button>
+          )}
         </div>
 
         {/* Tabs */}
@@ -175,6 +225,37 @@ export default function ProductDetail() {
                         <span className="text-sm text-slate-700">{field.label}</span>
                       </label>
                     </div>
+                  )
+                }
+                if (field.type === 'vendor') {
+                  return (
+                    <Field key={field.key} label={
+                      <span className="flex items-center gap-2">
+                        {field.label}
+                        {form.supplier_company_id && (
+                          <Link
+                            to={`/companies/${form.supplier_company_id}`}
+                            className="text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-1 text-xs normal-case font-normal tracking-normal"
+                            title="Ouvrir la fiche fournisseur"
+                          >
+                            <ExternalLink size={12} /> Ouvrir la fiche
+                          </Link>
+                        )}
+                      </span>
+                    } span2={field.span2}>
+                      <VendorSelect
+                        value={form.supplier_company_name || ''}
+                        vendorId={form.supplier_company_id}
+                        onChange={({ vendor, vendor_id }) => {
+                          const next = { ...form, supplier_company_name: vendor, supplier_company_id: vendor_id }
+                          setForm(next)
+                          clearTimeout(saveTimer.current)
+                          saveTimer.current = setTimeout(() => {
+                            api.products.update(id, next).catch(console.error)
+                          }, 300)
+                        }}
+                      />
+                    </Field>
                   )
                 }
                 if (field.type === 'select') {
@@ -230,7 +311,7 @@ export default function ProductDetail() {
                 <tbody>
                   {product.movements.map(m => (
                     <tr key={m.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                      <td className="px-4 py-3 text-slate-500 text-xs">{fmtDate(m.created_at)}</td>
+                      <td className="px-4 py-3 text-slate-500 text-xs">{fmtDateTime(m.created_at)}</td>
                       <td className="px-4 py-3"><Badge color={movTypeColor[m.type]}>{movTypeLabel[m.type]}</Badge></td>
                       <td className={`px-4 py-3 text-right font-bold ${m.type === 'in' ? 'text-green-600' : m.type === 'out' ? 'text-red-600' : 'text-blue-600'}`}>
                         {m.type === 'in' ? '+' : m.type === 'out' ? '-' : '='}{m.qty}
@@ -246,38 +327,22 @@ export default function ProductDetail() {
         )}
 
         {tab === 'bom' && (
-          <div className="card overflow-hidden">
-            {!bom.length ? (
-              <p className="text-center py-10 text-slate-400">Aucun composant BOM pour ce produit.</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Composant</th>
-                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Qté requise</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Ref. des.</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {bom.map((b, i) => (
-                    <tr key={b.id || i} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-slate-900">{b.component_name || '—'}</div>
-                        {b.component_sku && <div className="text-xs text-slate-400 font-mono">{b.component_sku}</div>}
-                      </td>
-                      <td className="px-4 py-3 text-right font-bold text-slate-900">{b.qty_required ?? '—'}</td>
-                      <td className="px-4 py-3 hidden sm:table-cell text-slate-500 text-xs">{b.reference_designator || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <DataTable
+            table="bom_items"
+            columns={BOM_COLUMNS}
+            data={bom}
+            searchFields={['component_name', 'component_sku', 'ref_des']}
+            height="calc(100vh - 360px)"
+          />
         )}
 
       </div>
 
-
+      <PurchaseOrderModal
+        productId={id}
+        isOpen={showPoModal}
+        onClose={() => setShowPoModal(false)}
+      />
     </Layout>
   )
 }

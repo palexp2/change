@@ -87,7 +87,7 @@ export async function getAccessToken() {
       const t = await resp.json()
       db.prepare(`
         UPDATE connector_oauth
-        SET access_token=?, refresh_token=COALESCE(?,refresh_token), expiry_date=?, updated_at=datetime('now')
+        SET access_token=?, refresh_token=COALESCE(?,refresh_token), expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id=?
       `).run(t.access_token, t.refresh_token || null, t.expires_in ? Date.now() + t.expires_in * 1000 : null, fresh.id)
       return { accessToken: t.access_token, realmId: JSON.parse(fresh.metadata || '{}').realm_id }
@@ -122,3 +122,44 @@ export async function qbRequest(method, path, body) {
 
 export const qbGet  = (path)       => qbRequest('GET',  path)
 export const qbPost = (path, body) => qbRequest('POST', path, body)
+
+// Read realm_id without triggering a token refresh — only used to build deep
+// links to QB app pages (which don't need the access token, just the realm).
+export function getQbRealmIdSync() {
+  const row = db.prepare(`
+    SELECT metadata FROM connector_oauth WHERE connector='quickbooks'
+    ORDER BY updated_at DESC LIMIT 1
+  `).get()
+  if (!row) return null
+  try { return JSON.parse(row.metadata || '{}').realm_id || null } catch { return null }
+}
+
+const QB_APP_HOST = process.env.QB_SANDBOX === 'true'
+  ? 'https://app.sandbox.qbo.intuit.com'
+  : 'https://app.qbo.intuit.com'
+
+// Build a clickable URL to a QB entity's edit page. Returns null if realm_id missing.
+export function qbEntityUrl(entity, txnId) {
+  const realmId = getQbRealmIdSync()
+  if (!realmId || !txnId) return null
+  return `${QB_APP_HOST}/app/${entity}?txnId=${txnId}`
+}
+
+// Récupère l'URL signée (S3) pour télécharger une pièce jointe QB.
+// L'endpoint /download/{id} retourne du texte brut (pas du JSON) contenant l'URL.
+export async function qbAttachmentDownloadUrl(attachmentId) {
+  const { accessToken, realmId } = await getAccessToken()
+  const url = `${QB_API_BASE}/${realmId}/download/${attachmentId}?minorversion=65`
+  const resp = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'text/plain',
+    },
+  })
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`QB download ${attachmentId} ${resp.status}: ${text}`)
+  }
+  return (await resp.text()).trim()
+}

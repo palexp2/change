@@ -42,31 +42,12 @@ router.get('/', (req, res) => {
      AND strftime('%Y-%m', o.updated_at) = strftime('%Y-%m', 'now')`
   ).get();
 
-  // Recent orders
-  const recentOrders = db.prepare(
-    `SELECT o.*, c.name as company_name,
-      (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) as items_count,
-      (SELECT SUM(oi.qty * oi.unit_cost) FROM order_items oi WHERE oi.order_id = o.id) as total_value
-     FROM orders o
-     LEFT JOIN companies c ON o.company_id = c.id
-     ORDER BY o.created_at DESC LIMIT 5`
-  ).all();
-
-  // Recent tickets
-  const recentTickets = db.prepare(
-    `SELECT t.*, c.name as company_name, u.name as assigned_name
-     FROM tickets t
-     LEFT JOIN companies c ON t.company_id = c.id
-     LEFT JOIN users u ON t.assigned_to = u.id
-     ORDER BY t.created_at DESC LIMIT 5`
-  ).all();
-
   // Total companies count
   const companiesTotal = db.prepare('SELECT COUNT(*) as count FROM companies').get();
 
   // Pipeline summary
   const pipelineOpen = projectsByStatus.find(p => p.status === 'Ouvert') || { count: 0, total_value: 0, weighted_value: 0 };
-  const pipelineWon = projectsByStatus.find(p => p.status === 'Gagné') || { count: 0, total_value: 0 };
+  const _pipelineWon = projectsByStatus.find(p => p.status === 'Gagné') || { count: 0, total_value: 0 };
 
   // Won this month
   const wonThisMonth = db.prepare(
@@ -103,7 +84,7 @@ router.get('/', (req, res) => {
     SELECT
       date(created_at, '-' || cast(strftime('%w', created_at) as integer) || ' days') as week_start,
       COUNT(*) as total,
-      SUM(CASE WHEN numero_de_l_issue_github IS NOT NULL AND numero_de_l_issue_github != '' THEN 1 ELSE 0 END) as with_issue,
+      SUM(CASE WHEN escalade IN ('Software', 'Hardware') THEN 1 ELSE 0 END) as with_issue,
       SUM(CASE WHEN CAST(duration_minutes AS INTEGER) > 15 THEN 1 ELSE 0 END) as over_15min,
       SUM(CASE WHEN est_ce_que_le_probleme_a_ete_regle_grace_a_l_arbre IS NOT NULL AND est_ce_que_le_probleme_a_ete_regle_grace_a_l_arbre != '' THEN 1 ELSE 0 END) as with_arbre
     FROM tickets
@@ -112,17 +93,45 @@ router.get('/', (req, res) => {
     ORDER BY week_start DESC
   `).all();
 
-  // Geo clients (farm addresses by province/state)
+  // Geo clients — customers only, using the FIRST shipping address registered
+  // (earliest adresses.created_at) per company. Excludes soft-deleted companies.
   const geoClients = db.prepare(`
-    SELECT a.province, a.country, COUNT(DISTINCT co.id) as count
-    FROM adresses a
-    JOIN contacts ct ON ct.id = a.contact_id
-    JOIN companies co ON co.id = ct.company_id
-    WHERE a.address_type = 'Ferme'
-      AND a.province IS NOT NULL AND a.province != ''
-    GROUP BY a.province, a.country
+    WITH ranked AS (
+      SELECT ct.company_id, a.province, a.country,
+        ROW_NUMBER() OVER (
+          PARTITION BY ct.company_id
+          ORDER BY a.created_at ASC, a.id ASC
+        ) AS rn
+      FROM adresses a
+      JOIN contacts ct ON ct.id = a.contact_id
+      WHERE a.address_type = 'Livraison'
+        AND a.province IS NOT NULL AND a.province != ''
+        AND ct.company_id IS NOT NULL
+    )
+    SELECT r.province, r.country, COUNT(*) AS count
+    FROM ranked r
+    JOIN companies co ON co.id = r.company_id
+    WHERE r.rn = 1
+      AND co.deleted_at IS NULL
+      AND co.lifecycle_phase = 'Customer'
+    GROUP BY r.province, r.country
     ORDER BY count DESC
   `).all();
+
+  // Customers with no usable shipping address province (cannot be placed on the map)
+  const geoClientsUnplaced = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM companies c
+    WHERE c.deleted_at IS NULL
+      AND c.lifecycle_phase = 'Customer'
+      AND c.id NOT IN (
+        SELECT ct.company_id FROM adresses a
+        JOIN contacts ct ON ct.id = a.contact_id
+        WHERE a.address_type = 'Livraison'
+          AND a.province IS NOT NULL AND a.province != ''
+          AND ct.company_id IS NOT NULL
+      )
+  `).get().count;
 
   // Weekly profitability — last 16 weeks, fully-shipped orders ('Envoyé')
   // Excludes orders that are 100% replacement (no Facturable items)
@@ -234,6 +243,36 @@ router.get('/', (req, res) => {
     ORDER BY MAX(s.shipped_at) DESC
   `).all();
 
+  // Inventory valuation — "Pièces" from products (stock_qty × unit_cost)
+  // + serial_numbers by status (manufacture_value), excluding statuses that
+  // aren't actually held in inventory (sold, destroyed, in-use, unknown, not built)
+  const EXCLUDED_SN_STATUSES = [
+    'Opérationnel - Vendu',
+    'Opérationnel - Loué',
+    'Détruit',
+    "Utilisé par l'équipe Orisha",
+    'Inconnu',
+    'Non construit',
+  ];
+  const piecesInventory = db.prepare(`
+    SELECT COALESCE(SUM(stock_qty * unit_cost), 0) AS total_value,
+           COALESCE(SUM(CASE WHEN stock_qty > 0 THEN 1 ELSE 0 END), 0) AS count
+    FROM products
+    WHERE active = 1
+      AND (type IS NULL OR type NOT IN ('PIÈCE OBSOLÈTE', 'PRODUIT OBSOLÈTE'))
+  `).get();
+  const placeholders = EXCLUDED_SN_STATUSES.map(() => '?').join(',');
+  const serialInventoryByStatus = db.prepare(`
+    SELECT status,
+           COUNT(*) AS count,
+           COALESCE(SUM(manufacture_value), 0) AS total_value
+    FROM serial_numbers
+    WHERE status IS NOT NULL AND status != ''
+      AND status NOT IN (${placeholders})
+    GROUP BY status
+    ORDER BY total_value DESC
+  `).all(...EXCLUDED_SN_STATUSES);
+
   // Replacement rate — monthly for last 12 months
   // Cost: manufacture_value for serialized items, unit_cost×qty otherwise
   // Only Remplacement items on fully shipped orders
@@ -300,6 +339,55 @@ router.get('/', (req, res) => {
     ORDER BY month ASC
   `).all();
 
+  // Weekly shipping costs — aggregate account 65000 "Expédition, livraison et poste"
+  // from achats_fournisseurs (both QB Bills and Purchases).
+  // Line amounts are in transaction currency; multiply by exchange_rate for CAD.
+  const shippingRows = db.prepare(`
+    SELECT date_achat AS txn_date, lines, exchange_rate FROM achats_fournisseurs
+    WHERE lines LIKE '%Expédition%'
+      AND date_achat >= date('now', '-370 days')
+  `).all();
+
+  // Per transaction: CAD amount on the expédition account
+  const shippingByDate = {};
+  for (const row of shippingRows) {
+    if (!row.lines) continue;
+    let lines;
+    try { lines = JSON.parse(row.lines); } catch { continue; }
+    const fx = Number(row.exchange_rate) > 0 ? Number(row.exchange_rate) : 1;
+    let amount = 0;
+    for (const l of lines) {
+      if (l.account_name && l.account_name.includes('Expédition')) {
+        amount += (l.amount || 0) * fx;
+      }
+    }
+    if (amount <= 0) continue;
+    shippingByDate[row.txn_date] = (shippingByDate[row.txn_date] || 0) + amount;
+  }
+
+  // Rolling 28-day sum anchored on each Monday (inclusive of the Monday itself).
+  // E.g. Monday 30 mars → sum all transactions from 2 mars to 30 mars inclusive.
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const mondayThisWeek = new Date(today);
+  mondayThisWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7));
+  const weeklyShippingCosts = [];
+  for (let i = 3; i >= 0; i--) {
+    const anchor = new Date(mondayThisWeek);
+    anchor.setDate(mondayThisWeek.getDate() - i * 7);
+    const windowStart = new Date(anchor);
+    windowStart.setDate(anchor.getDate() - 27); // 28-day window, inclusive
+    let total = 0;
+    for (const [date, amt] of Object.entries(shippingByDate)) {
+      const d = new Date(date + 'T00:00:00');
+      if (d >= windowStart && d <= anchor) total += amt;
+    }
+    weeklyShippingCosts.push({
+      week_start: anchor.toISOString().slice(0, 10),
+      amount: Math.round(total * 100) / 100,
+    });
+  }
+
   // Replacement line items detail — last 12 months
   const replacementItems = db.prepare(`
     WITH shipped_orders AS (
@@ -353,19 +441,26 @@ router.get('/', (req, res) => {
     },
     inventory: {
       lowStockCount: lowStockCount.count,
+      valuation: {
+        pieces: {
+          total_value: piecesInventory.total_value,
+          count: piecesInventory.count,
+        },
+        serialsByStatus: serialInventoryByStatus,
+      },
     },
     support: {
       openTickets: openTickets.count,
     },
-    recentOrders,
-    recentTickets,
     closingByMonth,
     weeklyShipments,
     weeklySupportStats,
     geoClients,
+    geoClientsUnplaced,
     weeklyProfitability,
     recentShippedOrders,
     replacementRate: { parkValue, last28: replacementLast28, byMonth: replacementByMonth, items: replacementItems },
+    weeklyShippingCosts,
   });
 });
 

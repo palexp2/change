@@ -1,9 +1,6 @@
 import { WebSocketServer } from 'ws'
 import jwt from 'jsonwebtoken'
-import dotenv from 'dotenv'
-dotenv.config()
-
-const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-production'
+import { JWT_SECRET } from '../config/secrets.js'
 
 const clients = new Set()
 
@@ -26,7 +23,7 @@ export function createRealtimeServer(httpServer) {
       try {
         const data = JSON.parse(message.toString())
         if (data.type === 'auth') {
-          jwt.verify(data.token, JWT_SECRET)
+          jwt.verify(data.token, JWT_SECRET, { algorithms: ['HS256'] })
           authenticated = true
           clearTimeout(authTimeout)
           clients.add(ws)

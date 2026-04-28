@@ -1,12 +1,10 @@
 import { Router } from 'express'
 import { v4 as uuid } from 'uuid'
 import { createHash, randomBytes } from 'crypto'
-import jwt from 'jsonwebtoken'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import db from '../db/database.js'
 import { readFileSync, writeFileSync, existsSync, statSync, unlinkSync } from 'fs'
 import { resolve, join } from 'path'
-import os from 'os'
 
 const FTP_USERS_FILE = process.env.FTP_USERS_FILE || '/home/ec2-user/ftp-server/users.json'
 const FTP_HOST = process.env.FTP_PUBLIC_IP || '3.132.49.255'
@@ -19,30 +17,22 @@ function writeFtpUsers(users) {
   writeFileSync(FTP_USERS_FILE, JSON.stringify(users, null, 2))
 }
 
-// Auth middleware that also accepts token as query param (needed for browser OAuth redirects)
-function requireAuthOrQuery(req, res, next) {
-  const tokenStr = req.headers['authorization']?.slice(7) || req.query.token
-  if (!tokenStr) return res.status(401).json({ error: 'Authentication required' })
-  try {
-    const payload = jwt.verify(tokenStr, process.env.JWT_SECRET || 'change-this-secret-in-production')
-    req.user = { id: payload.id, role: payload.role, name: payload.name }
-    next()
-  } catch {
-    return res.status(401).json({ error: 'Invalid or expired token' })
-  }
-}
 import { getAuthUrl as googleAuthUrl, exchangeCode as googleExchange } from '../connectors/google.js'
 import { getAuthUrl as airtableAuthUrl, exchangeCode as airtableExchange, airtableFetch, getAccessToken } from '../connectors/airtable.js'
 import { getAuthUrl as qbAuthUrl, exchangeCode as qbExchange, qbGet } from '../connectors/quickbooks.js'
-import { syncAllDepensesToQB, syncAllFacturesToQB, importFromQB } from '../services/quickbooks.js'
+import { syncAllAchatsToQB, importFromQB } from '../services/quickbooks.js'
 import { syncAllMailboxes } from '../services/gmail.js'
 import { syncDrive } from '../services/drive.js'
-import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncFactures } from '../services/airtable.js'
+import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncEmployees, syncPaies, syncPaieItems, syncStockMovements } from '../services/airtable.js'
 import { tracked, getStatus } from '../services/syncState.js'
 import { syncStripeSubscriptions, isStripeConfigured } from '../services/stripe.js'
+import { isHubSpotConfigured } from '../connectors/hubspot.js'
+import { pullDelta as hsPullDelta, getOwnerMappingStatus as hsOwnerStatus, setUserOwnerOverride as hsSetOwnerOverride } from '../services/hubspotSync.js'
 import { isNovoxpressConfigured } from '../services/novoxpress.js'
 import { processWebhookPing, registerWebhookForBase } from '../services/airtableWebhooks.js'
-import { logSync, purgeSyncLogs } from '../services/syncLog.js'
+import { listFromAddresses, getDefaultFrom, setDefaultFrom } from '../services/postmarkConfig.js'
+import { logSync } from '../services/syncLog.js'
+import { listFrozenColumns, setFrozen } from '../services/airtableFrozenColumns.js'
 
 // Wrap a sync call with logging
 function trackedWithLog(module, fn, trigger) {
@@ -69,11 +59,14 @@ router.post('/airtable/webhook-ping', (req, res) => {
 // ── Sync log
 router.get('/sync-log', requireAuth, (req, res) => {
   const { module, limit = 100 } = req.query
-  let sql = "SELECT * FROM sync_log WHERE created_at > datetime('now', '-7 days')"
+  let sql = "SELECT * FROM sync_log WHERE created_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')"
   const params = []
   if (module) { sql += ' AND module = ?'; params.push(module) }
-  sql += ' ORDER BY created_at DESC LIMIT ?'
-  params.push(parseInt(limit))
+  sql += ' ORDER BY created_at DESC'
+  if (limit !== 'all') {
+    sql += ' LIMIT ?'
+    params.push(parseInt(limit))
+  }
   const logs = db.prepare(sql).all(...params)
   res.json(logs)
 })
@@ -122,12 +115,49 @@ router.get('/', requireAuth, (req, res) => {
     contacts_sync: contactsSync, companies_sync: companiesSync,
     stripe_configured: isStripeConfigured(),
     novoxpress_configured: isNovoxpressConfigured(),
+    hubspot_configured: isHubSpotConfigured(),
     ...moduleConfigs,
   })
 })
 
+// ── Postmark : adresses expéditeur disponibles + défaut
+router.get('/postmark', requireAuth, (req, res) => {
+  res.json({
+    addresses: listFromAddresses(),
+    default_from: getDefaultFrom(),
+  })
+})
+
+router.put('/postmark/default', requireAuth, (req, res) => {
+  try {
+    setDefaultFrom(req.body?.default_from || null)
+    res.json({ ok: true, default_from: getDefaultFrom() })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// ── Liste légère des comptes Gmail connectés (pour picker d'envoi).
+// `is_current_user` permet au front de défaut sur le compte de l'utilisateur
+// actif — si aucun ne match, la modale d'envoi doit refuser de tomber
+// silencieusement sur un autre compte.
+router.get('/gmail/accounts', requireAuth, (req, res) => {
+  const me = db.prepare('SELECT email FROM users WHERE id = ?').get(req.user.id)
+  const myEmail = me?.email?.toLowerCase() || null
+  const rows = db.prepare(`
+    SELECT account_email, id
+    FROM connector_oauth
+    WHERE connector='google' AND refresh_token IS NOT NULL
+    ORDER BY account_email
+  `).all()
+  res.json(rows.map(r => ({
+    ...r,
+    is_current_user: !!(myEmail && r.account_email?.toLowerCase() === myEmail),
+  })))
+})
+
 // ── Google OAuth start
-router.get('/google/connect', requireAuthOrQuery, (req, res) => {
+router.get('/google/connect', requireAuth, (req, res) => {
   const state = Buffer.from(JSON.stringify({ user_id: req.user.id })).toString('base64url')
   try {
     const url = googleAuthUrl(state)
@@ -152,7 +182,7 @@ router.get('/google/callback', async (req, res) => {
     if (existing) {
       db.prepare(`
         UPDATE connector_oauth SET access_token=?, refresh_token=COALESCE(?,refresh_token),
-        expiry_date=?, updated_at=datetime('now') WHERE id=?
+        expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?
       `).run(tokens.access_token, tokens.refresh_token || null, tokens.expiry_date || null, existing.id)
     } else {
       db.prepare(`
@@ -169,7 +199,7 @@ router.get('/google/callback', async (req, res) => {
 })
 
 // ── Airtable OAuth start (PKCE)
-router.get('/airtable/connect', requireAuthOrQuery, (req, res) => {
+router.get('/airtable/connect', requireAuth, (req, res) => {
   const verifier = randomBytes(32).toString('base64url')
   const challenge = createHash('sha256').update(verifier).digest('base64url')
   const state = Buffer.from(JSON.stringify({ verifier })).toString('base64url')
@@ -196,7 +226,7 @@ router.get('/airtable/callback', async (req, res) => {
     const expiry = tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null
     if (existing) {
       db.prepare(`
-        UPDATE connector_oauth SET access_token=?, refresh_token=?, expiry_date=?, updated_at=datetime('now') WHERE id=?
+        UPDATE connector_oauth SET access_token=?, refresh_token=?, expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?
       `).run(tokens.access_token, tokens.refresh_token, expiry, existing.id)
     } else {
       db.prepare(`
@@ -255,7 +285,7 @@ router.get('/airtable/bases/:baseId/tables', requireAuth, async (req, res) => {
     const token = await getAccessToken()
     const data = await airtableFetch(`/meta/bases/${req.params.baseId}/tables`, token)
     res.json(data.tables || [])
-  } catch (e) {
+  } catch {
     res.json([])
   }
 })
@@ -263,6 +293,43 @@ router.get('/airtable/bases/:baseId/tables', requireAuth, async (req, res) => {
 router.get('/airtable/field-defs/:erpTable', requireAuth, (req, res) => {
   const defs = db.prepare('SELECT airtable_field_name, field_type FROM airtable_field_defs WHERE erp_table=?').all(req.params.erpTable)
   res.json(defs)
+})
+
+// Returns the actual SQLite columns of an ERP table (name + sql type), used by
+// sync UIs to show what's available on the ERP side independent of any Airtable mapping.
+router.get('/erp-table-columns/:erpTable', requireAuth, (req, res) => {
+  const t = req.params.erpTable
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(t)) return res.status(400).json({ error: 'Table invalide' })
+  let cols
+  try { cols = db.prepare(`PRAGMA table_info(${t})`).all() }
+  catch { return res.status(400).json({ error: `Table inconnue: ${t}` }) }
+  if (!cols.length) return res.status(404).json({ error: `Table inconnue: ${t}` })
+  res.json(cols.map(c => ({ name: c.name, type: (c.type || '').toLowerCase() || 'text', notnull: !!c.notnull, pk: !!c.pk })))
+})
+
+// Frozen columns: columns that Airtable sync must NOT overwrite.
+router.get('/frozen-columns/:erpTable', requireAuth, (req, res) => {
+  const t = req.params.erpTable
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(t)) return res.status(400).json({ error: 'Table invalide' })
+  res.json(listFrozenColumns(t))
+})
+
+router.put('/frozen-columns/:erpTable', requireAuth, (req, res) => {
+  const t = req.params.erpTable
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(t)) return res.status(400).json({ error: 'Table invalide' })
+  const { column_name, frozen } = req.body || {}
+  if (!column_name || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(column_name)) {
+    return res.status(400).json({ error: 'column_name invalide' })
+  }
+  // Confirm column actually exists on the table
+  let cols
+  try { cols = db.prepare(`PRAGMA table_info(${t})`).all() }
+  catch { return res.status(400).json({ error: `Table inconnue: ${t}` }) }
+  if (!cols.some(c => c.name === column_name)) {
+    return res.status(400).json({ error: `Colonne inconnue: ${t}.${column_name}` })
+  }
+  setFrozen(t, column_name, !!frozen, req.user?.id || null)
+  res.json({ ok: true, frozen: !!frozen })
 })
 
 // ── Save Airtable CRM config (legacy full save)
@@ -361,7 +428,7 @@ router.post('/sync/projets', requireAuth, async (req, res) => {
 })
 
 // ── Save generic module config (pieces, achats, billets, serials, envois)
-const SIMPLE_MODULES = ['pieces', 'achats', 'billets', 'serials', 'envois', 'soumissions', 'retours', 'retour_items', 'adresses', 'bom', 'serial_changes', 'assemblages', 'factures']
+const SIMPLE_MODULES = ['pieces', 'achats', 'billets', 'serials', 'envois', 'soumissions', 'retours', 'retour_items', 'adresses', 'bom', 'serial_changes', 'assemblages', 'employees', 'paies', 'paie_items']
 router.put('/airtable/module-config/:module', requireAuth, (req, res) => {
   const { module } = req.params
   if (!SIMPLE_MODULES.includes(module)) return res.status(400).json({ error: 'Module invalide' })
@@ -454,8 +521,20 @@ router.post('/sync/assemblages', requireAuth, async (req, res) => {
   trackedWithLog('assemblages', syncAssemblages, 'manual')
   res.json({ ok: true })
 })
-router.post('/sync/factures', requireAuth, async (req, res) => {
-  trackedWithLog('factures', syncFactures, 'manual')
+router.post('/sync/employees', requireAuth, async (req, res) => {
+  trackedWithLog('employees', syncEmployees, 'manual')
+  res.json({ ok: true })
+})
+router.post('/sync/paies', requireAuth, async (req, res) => {
+  trackedWithLog('paies', syncPaies, 'manual')
+  res.json({ ok: true })
+})
+router.post('/sync/paie_items', requireAuth, async (req, res) => {
+  trackedWithLog('paie_items', syncPaieItems, 'manual')
+  res.json({ ok: true })
+})
+router.post('/sync/stock_movements', requireAuth, async (req, res) => {
+  trackedWithLog('stock_movements', syncStockMovements, 'manual')
   res.json({ ok: true })
 })
 
@@ -476,7 +555,10 @@ router.post('/sync/airtable-all', requireAuth, async (req, res) => {
     ['bom',           syncBomItems],
     ['serial_changes',syncSerialStateChanges],
     ['assemblages',   syncAssemblages],
-    ['factures',      syncFactures],
+    ['employees',     syncEmployees],
+    ['paies',         syncPaies],
+    ['paie_items',    syncPaieItems],
+    ['stock_movements', syncStockMovements],
   ]
   ALL_AIRTABLE_MODULES.forEach(([key, fn]) => {
     trackedWithLog(key, fn, 'manual')
@@ -692,7 +774,7 @@ router.put('/ftp/phones/:ftpUser', requireAuth, (req, res) => {
 //   2. Même numéro (10 derniers chiffres) + même durée (±15s) → très probable
 // Pour chaque doublon : supprime l'enregistrement FTP + son fichier audio,
 // met à jour le timestamp Drive depuis le nom de fichier.
-router.post('/deduplicate-ftp-calls', (req, res) => {
+router.post('/deduplicate-ftp-calls', requireAdmin, (req, res) => {
   const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls')
 
   function normalize(p) { return p ? p.replace(/\D/g, '').slice(-10) : null }
@@ -802,7 +884,7 @@ router.post('/deduplicate-ftp-calls', (req, res) => {
 // Parcourt tous les fichiers Drive, parse leur date depuis le nom, et met à jour
 // les appels FTP dont le timestamp est faux (timestamp ≈ created_at) en matchant
 // par numéro de téléphone (10 derniers chiffres) + durée (±30s).
-router.post('/fix-ftp-timestamps', async (req, res) => {
+router.post('/fix-ftp-timestamps', requireAdmin, async (req, res) => {
   // Récupère les dossiers Drive configurés
   let folders = []
   const foldersRow = db.prepare(`SELECT value FROM connector_config WHERE connector='google' AND key='drive_folders'`).get()
@@ -923,7 +1005,7 @@ router.post('/fix-ftp-timestamps', async (req, res) => {
 
 // ── QuickBooks OAuth ─────────────────────────────────────────────────────────
 
-router.get('/quickbooks/connect', requireAuthOrQuery, (req, res) => {
+router.get('/quickbooks/connect', requireAuth, (req, res) => {
   const state = Buffer.from(JSON.stringify({})).toString('base64url')
   try {
     const url = qbAuthUrl(state)
@@ -950,7 +1032,7 @@ router.get('/quickbooks/callback', async (req, res) => {
     if (existing) {
       db.prepare(`
         UPDATE connector_oauth
-        SET access_token=?, refresh_token=?, expiry_date=?, metadata=?, updated_at=datetime('now')
+        SET access_token=?, refresh_token=?, expiry_date=?, metadata=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id=?
       `).run(tokens.access_token, tokens.refresh_token, expiry, metadata, existing.id)
     } else {
@@ -967,12 +1049,34 @@ router.get('/quickbooks/callback', async (req, res) => {
   }
 })
 
-// GET /api/connectors/quickbooks/accounts — liste des comptes QB (Expense + Bank + CreditCard)
+// GET /api/connectors/quickbooks/accounts — liste des comptes QB
+// Par défaut: Expense + Bank + CreditCard. Avec ?all=1: tous les types actifs (pour journal entries).
 router.get('/quickbooks/accounts', requireAuth, async (req, res) => {
   try {
-    const q = new URLSearchParams({ query: "SELECT * FROM Account WHERE AccountType IN ('Expense', 'Other Expense', 'Bank', 'Credit Card') MAXRESULTS 200" })
+    const all = req.query.all === '1' || req.query.all === 'true'
+    const query = all
+      ? "SELECT * FROM Account WHERE Active = true MAXRESULTS 1000"
+      : "SELECT * FROM Account WHERE AccountType IN ('Expense', 'Other Expense', 'Bank', 'Credit Card') MAXRESULTS 200"
+    const q = new URLSearchParams({ query })
     const data = await qbGet(`/query?${q}`)
     res.json(data.QueryResponse?.Account || [])
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// GET /api/connectors/quickbooks/tax-codes — liste des codes de taxe QB actifs
+router.get('/quickbooks/tax-codes', requireAuth, async (req, res) => {
+  try {
+    const q = new URLSearchParams({ query: "SELECT * FROM TaxCode WHERE Active = true MAXRESULTS 500" })
+    const data = await qbGet(`/query?${q}`)
+    const codes = (data.QueryResponse?.TaxCode || []).map(tc => ({
+      Id: tc.Id,
+      Name: tc.Name,
+      Description: tc.Description || null,
+      Taxable: tc.Taxable,
+    }))
+    res.json(codes)
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
@@ -989,16 +1093,9 @@ router.get('/quickbooks/vendors', requireAuth, async (req, res) => {
   }
 })
 
-// POST /api/connectors/sync/qb-depenses — publier les dépenses non synchronisées
-router.post('/sync/qb-depenses', requireAuth, (req, res) => {
-  tracked('qb-depenses', () => syncAllDepensesToQB())
-    .catch(console.error)
-  res.json({ ok: true })
-})
-
-// POST /api/connectors/sync/qb-factures — publier les factures fournisseurs non synchronisées
-router.post('/sync/qb-factures', requireAuth, (req, res) => {
-  tracked('qb-factures', () => syncAllFacturesToQB())
+// POST /api/connectors/sync/qb-achats — publier les achats fournisseurs non synchronisés
+router.post('/sync/qb-achats', requireAuth, (req, res) => {
+  tracked('qb-achats', () => syncAllAchatsToQB())
     .catch(console.error)
   res.json({ ok: true })
 })
@@ -1048,6 +1145,53 @@ router.delete('/stripe', requireAuth, (req, res) => {
 router.post('/sync/stripe', requireAuth, async (req, res) => {
   tracked('stripe', () => syncStripeSubscriptions()).catch(console.error)
   res.json({ ok: true })
+})
+
+// ── HubSpot ──────────────────────────────────────────────────────────────────
+
+// GET /api/connectors/hubspot — état + mapping owners
+router.get('/hubspot', requireAuth, async (req, res) => {
+  const status = await hsOwnerStatus()
+  res.json(status)
+})
+
+// PUT /api/connectors/hubspot — enregistrer le token Private App
+router.put('/hubspot', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
+  const { access_token } = req.body
+  if (!access_token || !access_token.startsWith('pat-')) {
+    return res.status(400).json({ error: 'Token HubSpot invalide (doit commencer par pat-)' })
+  }
+  db.prepare(`
+    INSERT INTO connector_config (connector, key, value) VALUES (?,?,?)
+    ON CONFLICT(connector, key) DO UPDATE SET value=excluded.value
+  `).run('hubspot', 'access_token', access_token)
+  res.json({ ok: true })
+})
+
+// DELETE /api/connectors/hubspot — supprimer le token et reset le curseur
+router.delete('/hubspot', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
+  db.prepare("DELETE FROM connector_config WHERE connector='hubspot'").run()
+  res.json({ ok: true })
+})
+
+// POST /api/connectors/sync/hubspot — pull delta à la demande
+router.post('/sync/hubspot', requireAuth, async (req, res) => {
+  const full = !!req.body?.full
+  trackedWithLog('hubspot_tasks', () => hsPullDelta({ full }), 'manual')
+  res.json({ ok: true })
+})
+
+// PUT /api/connectors/hubspot/mapping — override explicite user ERP → owner HS
+router.put('/hubspot/mapping', requireAuth, (req, res) => {
+  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
+  const { user_id, hubspot_owner_id } = req.body || {}
+  if (!user_id) return res.status(400).json({ error: 'user_id requis' })
+  try {
+    hsSetOwnerOverride(user_id, hubspot_owner_id || null)
+    res.json({ ok: true })
+  } catch (e) { res.status(400).json({ error: e.message }) }
 })
 
 export default router

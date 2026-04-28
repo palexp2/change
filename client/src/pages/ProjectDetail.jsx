@@ -3,23 +3,35 @@ import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
 import { ArrowLeft, ExternalLink, Plus, FileDown, Trash2, ChevronUp, ChevronDown, X, FileText } from 'lucide-react'
 import { api } from '../lib/api.js'
 
-function pdfUrl(id) {
+function pdfUrl(id, download = false) {
   const token = localStorage.getItem('erp_token')
-  return `/erp/api/documents/soumissions/${id}/pdf${token ? `?token=${token}` : ''}`
+  const params = new URLSearchParams()
+  if (token) params.set('token', token)
+  if (download) params.set('download', '1')
+  const qs = params.toString()
+  return `/erp/api/documents/soumissions/${id}/pdf${qs ? `?${qs}` : ''}`
 }
 import { Layout } from '../components/Layout.jsx'
 import { Badge, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { fmtDate } from '../lib/formatDate.js'
 
 function fmtCad(n) {
   if (!n && n !== 0) return '—'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
 }
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d + 'T00:00:00').toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric' })
+function fmtCurrency(n, currency = 'CAD') {
+  if (!n && n !== 0) return '—'
+  try {
+    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency, maximumFractionDigits: 0 }).format(n)
+  } catch {
+    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
+  }
 }
+
 
 function fmtMoney(n) {
   if (!n && n !== 0) return '—'
@@ -39,6 +51,7 @@ function blankItem() {
 }
 
 function CreateSoumissionModal({ project, onClose, onCreated }) {
+  const { addToast } = useToast()
   const [catalog, setCatalog] = useState([])
   const [form, setForm] = useState({
     language: project.contact_language || 'French',
@@ -54,7 +67,7 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
   useEffect(() => { api.catalog.list().then(setCatalog).catch(console.error) }, [])
 
   const isFr = form.language !== 'English'
-  const fmt = (n) => fmtMoney(n) // CAD/USD handled by currency field but fmtMoney is CAD; we'll show currency label
+  const _fmt = (n) => fmtMoney(n) // CAD/USD handled by currency field but fmtMoney is CAD; we'll show currency label
 
   const removeItem = (idx) => setItems(prev => prev.filter((_, i) => i !== idx))
   const updateItem = (idx, key, val) => setItems(prev => prev.map((it, i) => i === idx ? { ...it, [key]: val } : it))
@@ -111,7 +124,7 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
       })
       onCreated(result)
     } catch (e) {
-      alert(e.message)
+      addToast({ message: e.message, type: 'error' })
     } finally {
       setSaving(false)
     }
@@ -179,11 +192,15 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
                 {items.map((it, idx) => (
                   <tr key={idx} className="border-b last:border-0">
                     <td className="px-2 py-1.5">
-                      <select className={`${inp} w-full`} value={it.catalog_product_id || ''}
-                        onChange={e => selectProduct(idx, e.target.value)}>
-                        <option value="">— Personnalisé —</option>
-                        {catalog.map(p => <option key={p.id} value={p.id}>{isFr ? p.name_fr : (p.name_en || p.name_fr)}</option>)}
-                      </select>
+                      <LinkedRecordField
+                        name={`project_item_${idx}`}
+                        value={it.catalog_product_id || ''}
+                        options={catalog}
+                        labelFn={p => isFr ? p.name_fr : (p.name_en || p.name_fr)}
+                        getHref={p => `/products/${p.id}`}
+                        placeholder="Personnalisé"
+                        onChange={v => selectProduct(idx, v)}
+                      />
                     </td>
                     <td className="px-2 py-1.5">
                       <input type="number" min="1" className={`${inp} w-12 text-center`}
@@ -307,6 +324,7 @@ export default function ProjectDetail() {
   useEffect(() => {
     if (tab === 'soumissions') loadSoumissions()
     if (tab === 'factures') loadFactures()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, id])
 
   if (loading) {
@@ -381,10 +399,20 @@ export default function ProjectDetail() {
                 <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Date de clôture</dt>
                 <dd className="text-slate-700">{fmtDate(project.close_date)}</dd>
               </div>
-              <div>
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Responsable</dt>
-                <dd className="text-slate-900">{project.assigned_name || '—'}</dd>
-              </div>
+              {project.orders?.length > 0 && (
+                <div className="col-span-2 md:col-span-3">
+                  <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Commandes</dt>
+                  <dd className="flex flex-wrap gap-2">
+                    {project.orders.map(o => (
+                      <Link key={o.id} to={`/orders/${o.id}`}
+                        className="inline-flex items-center gap-1 font-mono text-xs text-indigo-600 hover:underline bg-indigo-50 px-2 py-1 rounded">
+                        #{o.order_number}
+                        {o.status && <span className="text-slate-500 font-sans">· {o.status}</span>}
+                      </Link>
+                    ))}
+                  </dd>
+                </div>
+              )}
               {project.refusal_reason && (
                 <div className="col-span-2 md:col-span-3">
                   <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Raison du refus</dt>
@@ -420,12 +448,13 @@ export default function ProjectDetail() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50">
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Titre</th>
+                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">ID</th>
                       <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
                       <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Date</th>
                       <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Expiration</th>
                       <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Prix achat</th>
                       <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Prix abo</th>
+                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Devise</th>
                       <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Liens</th>
                     </tr>
                   </thead>
@@ -434,8 +463,8 @@ export default function ProjectDetail() {
                       <tr key={s.id || i}
                         onClick={() => s.status !== 'legacy' && navigate(`/soumissions/${s.id}`)}
                         className={`border-b border-slate-100 last:border-0 hover:bg-slate-50 ${s.status !== 'legacy' ? 'cursor-pointer' : ''}`}>
-                        <td className="px-4 py-3 text-slate-800 font-medium">
-                          {s.title || <span className="text-slate-400 italic font-normal">Sans titre</span>}
+                        <td className="px-4 py-3 text-slate-500 text-xs font-mono">
+                          {s.at_id || <span className="text-slate-300">—</span>}
                         </td>
                         <td className="px-4 py-3">
                           {s.status
@@ -444,8 +473,13 @@ export default function ProjectDetail() {
                         </td>
                         <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(s.created_at?.slice(0, 10))}</td>
                         <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(s.expiration_date)}</td>
-                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(s.purchase_price_cad)}</td>
-                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(s.subscription_price_cad)}</td>
+                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCurrency(s.purchase_price, s.currency)}</td>
+                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCurrency(s.subscription_price, s.currency)}</td>
+                        <td className="px-4 py-3 text-slate-500 text-xs">
+                          <span title={s.shipping_country ? `Adresse de livraison : ${s.shipping_country}` : 'Devise par défaut'}>
+                            {s.currency || 'CAD'}
+                          </span>
+                        </td>
                         <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                           <div className="flex items-center gap-2">
                             {s.generated_pdf_path && (
@@ -462,10 +496,11 @@ export default function ProjectDetail() {
                               </a>
                             )}
                             {s.pdf_url && (
-                              <a href={s.pdf_url} target="_blank" rel="noreferrer"
+                              <button
+                                onClick={() => setShowPdf({ url: s.pdf_url, title: s.title, external: true })}
                                 className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:underline px-2 py-1 bg-indigo-50 rounded">
-                                <ExternalLink size={11} /> PDF Airtable
-                              </a>
+                                <FileText size={11} /> PDF Airtable
+                              </button>
                             )}
                             {!s.generated_pdf_path && !s.quote_url && !s.pdf_url && <span className="text-slate-400">—</span>}
                           </div>
@@ -542,7 +577,12 @@ export default function ProjectDetail() {
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 flex-shrink-0">
               <span className="text-sm font-semibold text-slate-900 truncate">{showPdf.title || 'Soumission'}</span>
               <div className="flex items-center gap-2 flex-shrink-0">
-                <a href={pdfUrl(showPdf.id)} download className="inline-flex items-center gap-1.5 btn-secondary btn-sm">
+                <a
+                  href={showPdf.external ? showPdf.url : pdfUrl(showPdf.id, true)}
+                  download
+                  target={showPdf.external ? '_blank' : undefined}
+                  rel={showPdf.external ? 'noreferrer' : undefined}
+                  className="inline-flex items-center gap-1.5 btn-secondary btn-sm">
                   <FileDown size={13} /> Télécharger
                 </a>
                 <button onClick={() => setShowPdf(null)} className="p-1.5 text-slate-400 hover:text-slate-600 rounded">
@@ -550,7 +590,7 @@ export default function ProjectDetail() {
                 </button>
               </div>
             </div>
-            <iframe src={pdfUrl(showPdf.id)} className="flex-1 w-full" title="Soumission PDF" />
+            <iframe src={showPdf.external ? showPdf.url : pdfUrl(showPdf.id)} className="flex-1 w-full" title="Soumission PDF" />
           </div>
         </div>
       )}

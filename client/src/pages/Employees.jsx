@@ -1,220 +1,270 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Users, Plus, X, Check, Pencil, Trash2 } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Plus, RefreshCw, Database, ChevronDown, ChevronRight } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import { Modal } from '../components/Modal.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { fmtDate } from '../lib/formatDate.js'
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric' })
+function bool(row, key) {
+  return row[key] ? <span className="text-green-600">✓</span> : <span className="text-slate-300">—</span>
 }
 
-const EMPTY = {
-  first_name: '', last_name: '', phone_personal: '', phone_work: '',
-  email_personal: '', email_work: '', birth_date: '', hire_date: '', matricule: '',
+const RENDERS = {
+  full_name: row => (
+    <div className="flex items-center gap-2">
+      <div className="w-7 h-7 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-semibold text-xs flex-shrink-0">
+        {(row.first_name?.[0] || '') + (row.last_name?.[0] || '')}
+      </div>
+      <span className="font-medium text-slate-900">{row.first_name} {row.last_name}</span>
+    </div>
+  ),
+  active: row => bool(row, 'active'),
+  is_salesperson: row => bool(row, 'is_salesperson'),
+  is_consultant: row => bool(row, 'is_consultant'),
+  group_insurance: row => bool(row, 'group_insurance'),
+  office_key: row => bool(row, 'office_key'),
+  address_verified: row => bool(row, 'address_verified'),
+  hire_date: row => <span className="text-slate-500">{fmtDate(row.hire_date)}</span>,
+  end_date: row => <span className="text-slate-500">{fmtDate(row.end_date)}</span>,
+  birth_date: row => <span className="text-slate-500">{fmtDate(row.birth_date)}</span>,
+  last_raise_date: row => <span className="text-slate-500">{fmtDate(row.last_raise_date)}</span>,
+  email_personal: row => <span className="text-slate-500">{row.email_personal || '—'}</span>,
+  phone_personal: row => <span className="text-slate-500">{row.phone_personal || '—'}</span>,
 }
 
-function EmployeeForm({ initial = EMPTY, onSave, onCancel, saving }) {
-  const [form, setForm] = useState(initial)
-  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+const COLUMNS = TABLE_COLUMN_META.employees.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
+
+function NewEmployeeModal({ onClose, onCreated }) {
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    setSaving(true)
+    setError('')
+    try {
+      const created = await api.employees.create({ first_name: firstName.trim(), last_name: lastName.trim(), active: 1 })
+      onCreated(created)
+    } catch (err) {
+      setError(err.message)
+      setSaving(false)
+    }
+  }
 
   return (
-    <div className="grid grid-cols-2 gap-3 p-4 bg-slate-50 rounded-xl border border-slate-200">
-      <div>
-        <label className="label text-xs">Prénom *</label>
-        <input className="input text-sm" value={form.first_name} onChange={e => set('first_name', e.target.value)} />
+    <form onSubmit={handleSubmit} className="space-y-4">
+      {error && <p className="text-red-600 text-sm">{error}</p>}
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="label">Prénom *</label>
+          <input value={firstName} onChange={e => setFirstName(e.target.value)} className="input" required autoFocus />
+        </div>
+        <div>
+          <label className="label">Nom *</label>
+          <input value={lastName} onChange={e => setLastName(e.target.value)} className="input" required />
+        </div>
       </div>
-      <div>
-        <label className="label text-xs">Nom *</label>
-        <input className="input text-sm" value={form.last_name} onChange={e => set('last_name', e.target.value)} />
-      </div>
-      <div>
-        <label className="label text-xs">Matricule</label>
-        <input className="input text-sm" value={form.matricule} onChange={e => set('matricule', e.target.value)} />
-      </div>
-      <div>
-        <label className="label text-xs">Date d'embauche</label>
-        <input type="date" className="input text-sm" value={form.hire_date} onChange={e => set('hire_date', e.target.value)} />
-      </div>
-      <div>
-        <label className="label text-xs">Date de naissance</label>
-        <input type="date" className="input text-sm" value={form.birth_date} onChange={e => set('birth_date', e.target.value)} />
-      </div>
-      <div />
-      <div>
-        <label className="label text-xs">Courriel travail</label>
-        <input type="email" className="input text-sm" value={form.email_work} onChange={e => set('email_work', e.target.value)} />
-      </div>
-      <div>
-        <label className="label text-xs">Courriel perso</label>
-        <input type="email" className="input text-sm" value={form.email_personal} onChange={e => set('email_personal', e.target.value)} />
-      </div>
-      <div>
-        <label className="label text-xs">Téléphone travail</label>
-        <input type="tel" className="input text-sm" value={form.phone_work} onChange={e => set('phone_work', e.target.value)} />
-      </div>
-      <div>
-        <label className="label text-xs">Téléphone perso</label>
-        <input type="tel" className="input text-sm" value={form.phone_personal} onChange={e => set('phone_personal', e.target.value)} />
-      </div>
-      <div className="col-span-2 flex justify-end gap-2 pt-1">
-        <button onClick={onCancel} className="btn-secondary btn-sm flex items-center gap-1.5">
-          <X size={13} /> Annuler
-        </button>
-        <button
-          onClick={() => onSave(form)}
-          disabled={saving || !form.first_name || !form.last_name}
-          className="btn-primary btn-sm flex items-center gap-1.5"
-        >
-          <Check size={13} /> {saving ? 'Enregistrement…' : 'Enregistrer'}
+      <p className="text-xs text-slate-500">
+        Les autres informations s'éditent directement sur la fiche de l'employé (autosave).
+      </p>
+      <div className="flex justify-end gap-2 pt-2">
+        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
+        <button type="submit" disabled={saving || !firstName.trim() || !lastName.trim()} className="btn-primary">
+          {saving ? 'Création…' : 'Créer et ouvrir'}
         </button>
       </div>
-    </div>
+    </form>
   )
 }
 
-function EmployeeRow({ emp, onEdit, onDelete }) {
-  const [confirming, setConfirming] = useState(false)
+function SyncPanel({ onSynced }) {
+  const [open, setOpen] = useState(false)
+  const [config, setConfig] = useState(null)
+  const [bases, setBases] = useState([])
+  const [tables, setTables] = useState([])
+  const [baseId, setBaseId] = useState('')
+  const [tableId, setTableId] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    api.employees.syncConfig().then(setConfig).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!open || bases.length > 0) return
+    setLoading(true)
+    setError(null)
+    api.airtable.bases()
+      .then(basesList => {
+        setBases(basesList || [])
+        if (config?.base_id) setBaseId(config.base_id)
+        if (config?.table_id) setTableId(config.table_id)
+      })
+      .catch(e => setError(e.message || 'Erreur de chargement'))
+      .finally(() => setLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+
+  useEffect(() => {
+    if (!baseId) { setTables([]); return }
+    api.airtable.tables(baseId).then(t => setTables(t || [])).catch(() => setTables([]))
+  }, [baseId])
+
+  async function handleSave() {
+    setSaving(true)
+    setError(null)
+    try {
+      await api.employees.saveSyncConfig({ base_id: baseId, table_id: tableId })
+      const cfg = await api.employees.syncConfig()
+      setConfig(cfg)
+    } catch (e) { setError(e.message || 'Erreur enregistrement') }
+    finally { setSaving(false) }
+  }
+
+  async function handleSync() {
+    if (!baseId || !tableId) return
+    setSyncing(true)
+    setError(null)
+    try {
+      await api.employees.sync()
+      const start = Date.now()
+      while (Date.now() - start < 60000) {
+        await new Promise(r => setTimeout(r, 1500))
+        const status = await api.connectors.syncStatus().catch(() => ({}))
+        if (!status?.employees) break
+      }
+      const cfg = await api.employees.syncConfig()
+      setConfig(cfg)
+      onSynced?.()
+    } catch (e) { setError(e.message || 'Erreur sync') }
+    finally { setSyncing(false) }
+  }
+
+  const configured = !!(config?.base_id && config?.table_id)
 
   return (
-    <div className="card p-4 flex items-center gap-4 hover:shadow-sm transition-shadow">
-      <div className="w-9 h-9 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-semibold text-sm flex-shrink-0">
-        {emp.first_name[0]}{emp.last_name[0]}
-      </div>
-      <div className="flex-1 min-w-0 grid grid-cols-4 gap-x-4 gap-y-0.5">
-        <div className="col-span-2">
-          <p className="font-semibold text-slate-900 text-sm">{emp.first_name} {emp.last_name}</p>
-          {emp.matricule && <p className="text-xs text-slate-400">#{emp.matricule}</p>}
-        </div>
-        <div>
-          {emp.email_work && <p className="text-xs text-slate-600 truncate">{emp.email_work}</p>}
-          {emp.email_personal && <p className="text-xs text-slate-400 truncate">{emp.email_personal}</p>}
-        </div>
-        <div>
-          {emp.phone_work && <p className="text-xs text-slate-600">{emp.phone_work}</p>}
-          {emp.phone_personal && <p className="text-xs text-slate-400">{emp.phone_personal}</p>}
-        </div>
-        <div>
-          {emp.hire_date && <p className="text-xs text-slate-500">Embauche: {fmtDate(emp.hire_date)}</p>}
-        </div>
-        <div>
-          {emp.birth_date && <p className="text-xs text-slate-500">Naissance: {fmtDate(emp.birth_date)}</p>}
-        </div>
-      </div>
-      <div className="flex items-center gap-1 flex-shrink-0">
-        <button onClick={() => onEdit(emp)} className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors">
-          <Pencil size={14} />
-        </button>
-        {confirming
-          ? <>
-              <button onClick={() => onDelete(emp.id)} className="p-1.5 text-red-600 hover:bg-red-50 rounded-lg transition-colors text-xs font-medium">Supprimer</button>
-              <button onClick={() => setConfirming(false)} className="p-1.5 text-slate-400 hover:bg-slate-100 rounded-lg transition-colors"><X size={14} /></button>
+    <div className="card mb-4 overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-2 px-4 py-3 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
+      >
+        {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+        <Database size={15} className="text-indigo-500" />
+        <span className="font-medium">Synchronisation Airtable</span>
+        {configured ? (
+          <span className="text-xs text-slate-400 ml-2">
+            {config.last_synced_at ? `Dernière sync: ${fmtDate(config.last_synced_at)}` : 'Configurée'}
+          </span>
+        ) : (
+          <span className="text-xs text-amber-600 ml-2">Non configurée</span>
+        )}
+      </button>
+
+      {open && (
+        <div className="border-t border-slate-200 p-4 space-y-3 bg-slate-50">
+          {loading ? (
+            <p className="text-xs text-slate-400">Chargement…</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label text-xs">Base Airtable</label>
+                  <select className="input text-sm" value={baseId} onChange={e => { setBaseId(e.target.value); setTableId('') }}>
+                    <option value="">— Sélectionner —</option>
+                    {bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="label text-xs">Table</label>
+                  <select className="input text-sm" value={tableId} onChange={e => setTableId(e.target.value)} disabled={!baseId}>
+                    <option value="">— Sélectionner —</option>
+                    {tables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </div>
+              </div>
+              <p className="text-xs text-slate-500">
+                Le mappage des champs (prénom, nom, courriels, téléphones, dates, matricule) est détecté automatiquement au premier import.
+              </p>
+              {error && <p className="text-xs text-red-600">{error}</p>}
+              <div className="flex items-center gap-2 pt-1">
+                <button onClick={handleSave} disabled={saving || !baseId || !tableId} className="btn-secondary btn-sm">
+                  {saving ? 'Enregistrement…' : 'Enregistrer'}
+                </button>
+                <button onClick={handleSync} disabled={syncing || !configured} className="btn-primary btn-sm flex items-center gap-1.5">
+                  <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
+                  {syncing ? 'Synchronisation…' : 'Synchroniser maintenant'}
+                </button>
+              </div>
             </>
-          : <button onClick={() => setConfirming(true)} className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors">
-              <Trash2 size={14} />
-            </button>
-        }
-      </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
 export default function Employees() {
+  const navigate = useNavigate()
+  const { addToast } = useToast()
   const [employees, setEmployees] = useState([])
   const [loading, setLoading] = useState(true)
-  const [showForm, setShowForm] = useState(false)
-  const [editing, setEditing] = useState(null)
-  const [saving, setSaving] = useState(false)
-  const [q, setQ] = useState('')
+  const [showNew, setShowNew] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const { data } = await api.employees.list({ limit: 200 })
+      const { data } = await api.employees.list({ limit: 500 })
       setEmployees(data || [])
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally { setLoading(false) }
+  }, [addToast])
 
   useEffect(() => { load() }, [load])
 
-  async function handleCreate(form) {
-    setSaving(true)
-    try {
-      const emp = await api.employees.create(form)
-      setEmployees(prev => [emp, ...prev])
-      setShowForm(false)
-    } catch (e) { alert(e.message) } finally { setSaving(false) }
+  function handleCreated(emp) {
+    setShowNew(false)
+    navigate(`/employees/${emp.id}`)
   }
-
-  async function handleUpdate(form) {
-    setSaving(true)
-    try {
-      const emp = await api.employees.update(editing.id, form)
-      setEmployees(prev => prev.map(e => e.id === emp.id ? emp : e))
-      setEditing(null)
-    } catch (e) { alert(e.message) } finally { setSaving(false) }
-  }
-
-  async function handleDelete(id) {
-    try {
-      await api.employees.delete(id)
-      setEmployees(prev => prev.filter(e => e.id !== id))
-    } catch (e) { alert(e.message) }
-  }
-
-  const filtered = q
-    ? employees.filter(e =>
-        `${e.first_name} ${e.last_name} ${e.matricule || ''} ${e.email_work || ''}`.toLowerCase().includes(q.toLowerCase())
-      )
-    : employees
 
   return (
     <Layout>
-      <div className="p-6 max-w-5xl mx-auto">
+      <div className="p-6 max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-6">
+          <h1 className="text-2xl font-bold text-slate-900">Employés</h1>
           <div className="flex items-center gap-2">
-            <Users size={22} className="text-indigo-600" />
-            <h1 className="text-2xl font-bold text-slate-900">Employés</h1>
-            {!loading && <span className="text-sm text-slate-400">· {employees.length}</span>}
+            <TableConfigModal table="employees" />
+            <button onClick={() => setShowNew(true)} className="btn-primary flex items-center gap-2">
+              <Plus size={15} /> Nouvel employé
+            </button>
           </div>
-          <button onClick={() => { setShowForm(true); setEditing(null) }} className="btn-primary flex items-center gap-2">
-            <Plus size={15} /> Nouvel employé
-          </button>
         </div>
 
-        {showForm && !editing && (
-          <div className="mb-4">
-            <EmployeeForm onSave={handleCreate} onCancel={() => setShowForm(false)} saving={saving} />
-          </div>
-        )}
+        <SyncPanel onSynced={load} />
 
-        <div className="mb-4">
-          <input
-            className="input text-sm max-w-xs"
-            placeholder="Rechercher…"
-            value={q}
-            onChange={e => setQ(e.target.value)}
-          />
-        </div>
-
-        {loading ? (
-          <div className="flex justify-center py-16"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" /></div>
-        ) : filtered.length === 0 ? (
-          <div className="card p-16 text-center">
-            <Users size={40} className="text-slate-300 mx-auto mb-3" />
-            <p className="text-slate-500 font-medium">{q ? 'Aucun résultat' : 'Aucun employé'}</p>
-            {!q && <p className="text-sm text-slate-400 mt-1">Cliquez sur «Nouvel employé» pour commencer.</p>}
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {filtered.map(emp => editing?.id === emp.id
-              ? <EmployeeForm key={emp.id} initial={{ ...emp, birth_date: emp.birth_date || '', hire_date: emp.hire_date || '' }} onSave={handleUpdate} onCancel={() => setEditing(null)} saving={saving} />
-              : <EmployeeRow key={emp.id} emp={emp} onEdit={setEditing} onDelete={handleDelete} />
-            )}
-          </div>
-        )}
+        <DataTable
+          table="employees"
+          columns={COLUMNS}
+          data={employees}
+          loading={loading}
+          onRowClick={row => navigate(`/employees/${row.id}`)}
+          searchFields={['first_name', 'last_name', 'matricule', 'email_work', 'email_personal']}
+        />
       </div>
+
+      <Modal isOpen={showNew} title="Nouvel employé" onClose={() => setShowNew(false)}>
+        <NewEmployeeModal onClose={() => setShowNew(false)} onCreated={handleCreated} />
+      </Modal>
     </Layout>
   )
 }

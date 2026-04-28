@@ -3,8 +3,8 @@ import { useNavigate } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
+import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { Layout } from '../components/Layout.jsx'
-import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
@@ -155,6 +155,7 @@ export default function Products() {
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [stockProduct, setStockProduct] = useState(null)
+  const undoableDelete = useUndoableDelete()
 
   const load = useCallback(async () => {
     await loadProgressive(
@@ -194,6 +195,15 @@ export default function Products() {
           loading={loading}
           onRowClick={row => navigate(`/products/${row.id}`)}
           searchFields={['name_fr', 'name_en', 'sku', 'supplier']}
+          onBulkDelete={async (ids) => {
+            await undoableDelete({
+              table: 'products',
+              ids,
+              deleteFn: () => Promise.all(ids.map(id => api.products.delete(id))),
+              label: `${ids.length} produit${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`,
+              onChange: load,
+            })
+          }}
         />
       </div>
 

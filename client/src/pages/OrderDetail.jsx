@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
-  ArrowLeft, Plus, Truck, Package, FileText, X, Download,
+  ArrowLeft, Plus, Truck, Package, FileText, X,
   GripVertical, Copy, Check, Trash2, ScanBarcode, Boxes,
   MapPin, Clock, ChevronDown, ChevronRight, AlertCircle
 } from 'lucide-react'
@@ -9,6 +9,8 @@ import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { fmtDate } from '../lib/formatDate.js'
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
 
@@ -26,13 +28,9 @@ function trackingUrl(carrier, trackingNumber) {
   return null
 }
 
-function fmtCad(n) {
+function _fmtCad(n) {
   if (!n && n !== 0) return '—'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
 const ITEM_TYPES = ['Facturable', 'Remplacement', 'Non facturable']
@@ -106,9 +104,10 @@ function AddItemModal({ orderId, onSave, onClose }) {
     api.products.list({ limit: 200, active: true }).then(r => setProducts(r.data)).catch(() => {})
   }, [])
 
-  function handleProductChange(e) {
-    const product = products.find(p => p.id === e.target.value)
-    setForm(f => ({ ...f, product_id: e.target.value, unit_cost: product?.unit_cost || '' }))
+  function handleProductChange(newId) {
+    const id = newId || ''
+    const product = products.find(p => p.id === id)
+    setForm(f => ({ ...f, product_id: id, unit_cost: product?.unit_cost || '' }))
   }
 
   async function handleSubmit(e) {
@@ -125,10 +124,15 @@ function AddItemModal({ orderId, onSave, onClose }) {
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
         <label className="label">Produit</label>
-        <select value={form.product_id} onChange={handleProductChange} className="select">
-          <option value="">— Sélectionner —</option>
-          {products.map(p => <option key={p.id} value={p.id}>{p.name_fr} {p.sku ? `(${p.sku})` : ''}</option>)}
-        </select>
+        <LinkedRecordField
+          name="product_id"
+          value={form.product_id}
+          options={products}
+          labelFn={p => `${p.name_fr}${p.sku ? ` (${p.sku})` : ''}`}
+          getHref={p => `/products/${p.id}`}
+          placeholder="Produit"
+          onChange={handleProductChange}
+        />
       </div>
       <div className="grid grid-cols-2 gap-4">
         <div>
@@ -629,6 +633,7 @@ export default function OrderDetail() {
     } finally { setLoading(false) }
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [id])
 
   async function handleDeleteItem(itemId) {
@@ -743,6 +748,7 @@ export default function OrderDetail() {
     } catch {
       setScanToast({ message: `Erreur lors du scan`, status: 'error' })
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, expeditionMode])
 
   useBarcodeScanner(handleScan)

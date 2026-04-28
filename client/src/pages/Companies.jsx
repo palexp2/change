@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus, Building2, X } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
+import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, phaseBadgeColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -121,17 +122,21 @@ export default function Companies() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const farmProvince = searchParams.get('farm_province') || ''
+  const shippingProvince = searchParams.get('shipping_province') || ''
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
+  const undoableDelete = useUndoableDelete()
 
   const load = useCallback(async () => {
-    const extraParams = farmProvince ? { farm_province: farmProvince } : {}
+    const extraParams = {}
+    if (farmProvince) extraParams.farm_province = farmProvince
+    if (shippingProvince) extraParams.shipping_province = shippingProvince
     await loadProgressive(
       (page, limit) => api.companies.list({ limit, page, ...extraParams }),
       setCompanies, setLoading
     )
-  }, [farmProvince])
+  }, [farmProvince, shippingProvince])
 
   useEffect(() => { load() }, [load])
 
@@ -156,6 +161,16 @@ export default function Companies() {
                 </span>
               </div>
             )}
+            {shippingProvince && (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-3 py-1">
+                  Client — livraison en {shippingProvince}
+                  <button onClick={() => setSearchParams({})} className="hover:text-blue-900">
+                    <X size={12} />
+                  </button>
+                </span>
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <TableConfigModal table="companies" />
@@ -172,6 +187,15 @@ export default function Companies() {
           loading={loading}
           onRowClick={row => navigate(`/companies/${row.id}`)}
           searchFields={['name', 'email', 'city', 'phone']}
+          onBulkDelete={async (ids) => {
+            await undoableDelete({
+              table: 'companies',
+              ids,
+              deleteFn: () => Promise.all(ids.map(id => api.companies.delete(id))),
+              label: `${ids.length} entreprise${ids.length > 1 ? 's' : ''} supprimée${ids.length > 1 ? 's' : ''}`,
+              onChange: load,
+            })
+          }}
         />
       </div>
 

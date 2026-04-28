@@ -156,7 +156,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
         receipt_date=?, company=?, address=?, receipt_number=?,
         subtotal=?, tps=?, tvq=?, other_taxes=?, total=?,
         payment_method=?, currency=?, items=?, raw_data=?,
-        updated_at=datetime('now')
+        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id=?
     `).run(
       extracted.receipt_date || null,
@@ -176,7 +176,7 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     )
   } catch (err) {
     console.error('Receipt extraction error:', err.message)
-    db.prepare(`UPDATE sale_receipts SET status='error', error_message=?, updated_at=datetime('now') WHERE id=?`)
+    db.prepare(`UPDATE sale_receipts SET status='error', error_message=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
       .run(err.message, id)
   }
 })

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -7,6 +7,7 @@ import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { fmtDate } from '../lib/formatDate.js'
 
 const STATUS_COLORS = { 'Commandé': 'blue', 'Reçu partiellement': 'yellow', 'Reçu': 'green', 'Annulé': 'red' }
 
@@ -15,18 +16,31 @@ function fmtCad(n) {
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
 }
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', year: 'numeric' })
-}
 
 const RENDERS = {
+  image: row => row.product_image
+    ? <img src={row.product_image} alt="" className="h-10 w-10 object-cover rounded border border-slate-200" loading="lazy" />
+    : <span className="text-slate-300">—</span>,
   product_name: row => (
     <div>
       <div className="font-medium text-slate-900">{row.product_name || '—'}</div>
       {row.sku && <div className="text-xs text-slate-400 font-mono">{row.sku}</div>}
     </div>
   ),
+  supplier: row => {
+    if (row.supplier_company_id && row.supplier_company_name) {
+      return (
+        <Link
+          to={`/companies/${row.supplier_company_id}`}
+          onClick={e => e.stopPropagation()}
+          className="text-indigo-600 hover:underline"
+        >
+          {row.supplier_company_name}
+        </Link>
+      )
+    }
+    return <span className="text-slate-500">{row.supplier || '—'}</span>
+  },
   status: row => <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>,
   unit_cost: row => <span className="text-slate-500">{row.unit_cost ? fmtCad(row.unit_cost) : '—'}</span>,
   order_date: row => <span className="text-slate-500">{fmtDate(row.order_date)}</span>,
@@ -64,8 +78,8 @@ export default function Purchases() {
           columns={COLUMNS}
           data={purchases}
           loading={loading}
-          onRowClick={row => row.product_id && navigate(`/products/${row.product_id}`)}
-          searchFields={['product_name', 'supplier', 'reference']}
+          onRowClick={row => navigate(`/purchases/${row.id}`)}
+          searchFields={['product_name', 'supplier', 'supplier_company_name', 'reference']}
         />
       </div>
     </Layout>

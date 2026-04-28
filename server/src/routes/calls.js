@@ -5,21 +5,10 @@ import { join, extname } from 'path'
 import { existsSync, mkdirSync } from 'fs'
 import { spawn } from 'child_process'
 import { requireAuth } from '../middleware/auth.js'
-import jwt from 'jsonwebtoken'
-
-function requireAuthOrQuery(req, res, next) {
-  const tokenStr = req.headers['authorization']?.slice(7) || req.query.token
-  if (!tokenStr) return res.status(401).json({ error: 'Authentication required' })
-  try {
-    req.user = jwt.verify(tokenStr, process.env.JWT_SECRET || 'change-this-secret-in-production')
-    next()
-  } catch {
-    return res.status(401).json({ error: 'Invalid or expired token' })
-  }
-}
 import db from '../db/database.js'
 import { enqueueTranscription } from '../services/whisper.js'
 import { getDriveClient } from '../connectors/google.js'
+import { normalizeToUtcIso } from '../utils/datetime.js'
 
 const router = Router()
 
@@ -115,7 +104,9 @@ router.post('/ftp-ingest', requireFtpSecret, upload.single('recording'), async (
 
   const interactionId = uuid()
   const callId = uuid()
-  const ts = timestamp || new Date().toISOString()
+  // FTP ingest from Cube ARC sends naive local timestamps parsed from filenames
+  // (device clock, Montreal local). Normalize to ISO UTC before storage.
+  const ts = normalizeToUtcIso(timestamp) || new Date().toISOString()
 
   db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
     .run(interactionId, resolvedContactId, resolvedCompanyId, user.id, 'call', direction || 'in', ts)
@@ -148,7 +139,7 @@ router.post('/upload', requireAuth, upload.single('recording'), async (req, res)
 
   const interactionId = uuid()
   const callId = uuid()
-  const ts = timestamp || new Date().toISOString()
+  const ts = normalizeToUtcIso(timestamp) || new Date().toISOString()
 
   db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
     .run(interactionId, resolvedContactId, resolvedCompanyId, req.user.id, 'call', direction || 'in', ts)
@@ -180,7 +171,7 @@ router.get('/:id/transcript', requireAuth, (req, res) => {
 })
 
 // GET /api/calls/:id/recording — stream audio from local disk or Google Drive
-router.get('/:id/recording', requireAuthOrQuery, async (req, res) => {
+router.get('/:id/recording', requireAuth, async (req, res) => {
   const row = db.prepare(`
     SELECT ca.* FROM calls ca
     JOIN interactions i ON ca.interaction_id = i.id

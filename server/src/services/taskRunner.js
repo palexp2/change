@@ -1,8 +1,9 @@
-import { spawn, execSync } from 'child_process'
+import { spawn } from 'child_process'
 import { readFileSync, writeFileSync, renameSync, existsSync, unlinkSync } from 'fs'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { broadcastAll } from './realtime.js'
+import { AGENT_INTERNAL_SECRET } from '../config/secrets.js'
 
 const TASKS_FILE = resolve(fileURLToPath(import.meta.url), '../../../../../agent-tasks.json')
 const TASKS_TMP  = TASKS_FILE + '.tmp'
@@ -12,7 +13,7 @@ const CWD = '/home/ec2-user/erp'
 
 let busy = false
 let currentTaskId = null
-let currentProc = null
+let _currentProc = null
 
 // In-memory stream buffer per task: taskId -> chunk[]
 const streamBuffers = new Map()
@@ -74,7 +75,7 @@ export function runNextTask() {
   const task = updateTask(next.id, { status: 'in_progress' })
   broadcastTask(task)
 
-  const internalSecret = process.env.AGENT_INTERNAL_SECRET || 'agent-internal-secret'
+  const internalSecret = AGENT_INTERNAL_SECRET || ''
   const userComment = next.user_comment ? `\n\nCommentaire humain: ${next.user_comment}` : ''
   const prompt = [
     'Tu es un agent ERP Orisha. Exécute UNIQUEMENT la tâche suivante — ne lis pas agent-tasks.json ni aucun autre fichier de gestion des tâches.\n\n',
@@ -89,7 +90,7 @@ export function runNextTask() {
     'Rapporte en détail ce que tu as accompli (ou pourquoi tu es bloqué).',
   ].join('')
 
-  const { CLAUDECODE, CLAUDE_CODE_ENTRYPOINT, ...cleanEnv } = process.env
+  const { CLAUDECODE: _CLAUDECODE, CLAUDE_CODE_ENTRYPOINT: _CLAUDE_CODE_ENTRYPOINT, ...cleanEnv } = process.env
 
   const proc = spawn(CLAUDE_BIN, [
     '-p', '--output-format', 'stream-json', '--verbose',
@@ -98,7 +99,7 @@ export function runNextTask() {
 
   // Detach so Claude survives pm2 restart (it may call pm2 restart itself)
   proc.unref()
-  currentProc = proc
+  _currentProc = proc
   writeFileSync(PID_FILE, `${proc.pid}\n${next.id}`, 'utf8')
 
   proc.stdin.write(prompt)
@@ -174,7 +175,7 @@ export function runNextTask() {
 
     busy = false
     currentTaskId = null
-    currentProc = null
+    _currentProc = null
     try { unlinkSync(PID_FILE) } catch {}
 
     // Keep stream buffer 2 minutes then discard

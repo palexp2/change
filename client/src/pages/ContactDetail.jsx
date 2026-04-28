@@ -1,19 +1,20 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Mail, MessageSquare, Edit2, Building2, PhoneCall, PhoneIncoming, PhoneOutgoing, Plus, Save, X, Zap, Eye, ChevronDown } from 'lucide-react'
+import { ArrowLeft, Plus, Save, X } from 'lucide-react'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useAuth } from '../lib/auth.jsx'
+import { fmtDateTime } from '../lib/formatDate.js'
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
 
-function fmtDuration(s) {
+function _fmtDuration(s) {
   if (!s) return null
   const m = Math.floor(s / 60), sec = s % 60
   return m > 0 ? `${m}m ${sec}s` : `${sec}s`
@@ -47,62 +48,6 @@ const CONTACT_FIELDS = [
   { key: 'notes',      label: 'Notes',       type: 'textarea', span2: true, defaultVisible: false },
 ]
 
-function CompanySelect({ value, companies, saving, onSave }) {
-  const [open, setOpen] = useState(false)
-  const [search, setSearch] = useState('')
-  const ref = useRef(null)
-  const selected = companies.find(c => c.id === value)
-  const filtered = useMemo(() => {
-    const q = search.toLowerCase()
-    return q ? companies.filter(c => c.name.toLowerCase().includes(q)).slice(0, 60) : companies.slice(0, 60)
-  }, [companies, search])
-
-  useEffect(() => { if (!open) setSearch('') }, [open])
-  useEffect(() => {
-    function handle(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    document.addEventListener('mousedown', handle)
-    return () => document.removeEventListener('mousedown', handle)
-  }, [])
-
-  return (
-    <div ref={ref} className="relative">
-      <button type="button" onClick={() => !saving && setOpen(o => !o)} disabled={saving}
-        className="input text-sm text-left w-full flex items-center justify-between gap-2">
-        <span className={selected ? 'text-slate-900 truncate' : 'text-slate-400'}>
-          {selected ? selected.name : '— Aucune entreprise —'}
-        </span>
-        <ChevronDown size={14} className="text-slate-400 flex-shrink-0" />
-      </button>
-      {open && (
-        <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg overflow-hidden">
-          <div className="p-2 border-b border-slate-100">
-            <input autoFocus type="text" value={search} onChange={e => setSearch(e.target.value)}
-              placeholder="Rechercher..." className="input text-sm py-1 w-full" />
-          </div>
-          <div className="max-h-52 overflow-y-auto">
-            <button type="button" onClick={() => { onSave(''); setOpen(false) }}
-              className="w-full text-left px-3 py-2 text-sm text-slate-400 hover:bg-slate-50">
-              — Aucune entreprise —
-            </button>
-            {filtered.map(c => (
-              <button key={c.id} type="button" onClick={() => { onSave(c.id); setOpen(false) }}
-                className={`w-full text-left px-3 py-2 text-sm hover:bg-indigo-50 hover:text-indigo-700 ${c.id === value ? 'bg-indigo-50 text-indigo-700 font-medium' : 'text-slate-900'}`}>
-                {c.name}
-              </button>
-            ))}
-            {filtered.length === 0 && <div className="px-3 py-2 text-sm text-slate-400">Aucun résultat</div>}
-            {!search && companies.length > 60 && (
-              <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-100">
-                {companies.length - 60} autres — affinez la recherche
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
 function InlineField({ field, value, saving, onSave, companies = [] }) {
   const [local, setLocal] = useState(String(value ?? ''))
   useEffect(() => { setLocal(String(value ?? '')) }, [value])
@@ -117,7 +62,18 @@ function InlineField({ field, value, saving, onSave, companies = [] }) {
     )
   }
   if (field.type === 'company') {
-    return <CompanySelect value={value} companies={companies} saving={saving} onSave={onSave} />
+    return (
+      <LinkedRecordField
+        name="company_id"
+        value={value}
+        options={companies}
+        labelFn={c => c.name}
+        getHref={c => `/companies/${c.id}`}
+        placeholder="Entreprise"
+        saving={saving}
+        onChange={onSave}
+      />
+    )
   }
   if (field.type === 'textarea') {
     return (
@@ -136,10 +92,155 @@ function InlineField({ field, value, saving, onSave, companies = [] }) {
   )
 }
 
+function TaskModalContent({ contactId, editingTask, users, taskForm, setTaskForm, savingTask, setSavingTask, onClose, onRefresh }) {
+  const isEdit = !!editingTask
+  const [fieldSaving, setFieldSaving] = useState({})
+  const confirm = useConfirm()
+  const { addToast } = useToast()
+  const undoableDelete = useUndoableDelete()
+
+  const saveField = async (key, value) => {
+    setTaskForm(f => ({ ...f, [key]: value }))
+    if (!isEdit) return
+    setFieldSaving(s => ({ ...s, [key]: true }))
+    try {
+      await api.tasks.update(editingTask.id, { [key]: value })
+      onRefresh()
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally {
+      setFieldSaving(s => ({ ...s, [key]: false }))
+    }
+  }
+
+  async function handleSubmitCreate(e) {
+    e.preventDefault()
+    setSavingTask(true)
+    try {
+      await api.tasks.create({ ...taskForm, contact_id: contactId })
+      await onRefresh()
+      onClose()
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally {
+      setSavingTask(false)
+    }
+  }
+
+  async function handleDelete() {
+    if (!(await confirm('Supprimer cette tâche ?'))) return
+    onClose()
+    await undoableDelete({
+      table: 'tasks',
+      id: editingTask.id,
+      deleteFn: () => api.tasks.delete(editingTask.id),
+      label: 'Tâche supprimée',
+      onChange: onRefresh,
+    })
+  }
+
+  const anySaving = Object.values(fieldSaving).some(Boolean)
+
+  const fields = (
+    <>
+      <div>
+        <label className="label">Titre *</label>
+        <input
+          value={taskForm.title}
+          onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))}
+          onBlur={isEdit ? e => saveField('title', e.target.value) : undefined}
+          className="input"
+          required
+          autoFocus
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-4">
+        <div>
+          <label className="label">Statut</label>
+          <select
+            value={taskForm.status}
+            onChange={e => isEdit ? saveField('status', e.target.value) : setTaskForm(f => ({ ...f, status: e.target.value }))}
+            className="select"
+          >
+            {['À faire','En cours','Terminé','Annulé'].map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="label">Priorité</label>
+          <select
+            value={taskForm.priority}
+            onChange={e => isEdit ? saveField('priority', e.target.value) : setTaskForm(f => ({ ...f, priority: e.target.value }))}
+            className="select"
+          >
+            {['Basse','Normal','Haute','Urgente'].map(p => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+      </div>
+      <div>
+        <label className="label">Échéance</label>
+        <input
+          type="date"
+          value={taskForm.due_date || ''}
+          onChange={e => isEdit ? saveField('due_date', e.target.value) : setTaskForm(f => ({ ...f, due_date: e.target.value }))}
+          className="input"
+        />
+      </div>
+      <div>
+        <label className="label">Responsable</label>
+        <LinkedRecordField
+          name="task_assigned_to"
+          value={taskForm.assigned_to || ''}
+          options={users}
+          labelFn={u => u.name}
+          placeholder="Responsable"
+          saving={!!fieldSaving.assigned_to}
+          onChange={v => isEdit ? saveField('assigned_to', v) : setTaskForm(f => ({ ...f, assigned_to: v }))}
+        />
+      </div>
+      <div>
+        <label className="label">Notes</label>
+        <textarea
+          value={taskForm.notes || ''}
+          onChange={e => setTaskForm(f => ({ ...f, notes: e.target.value }))}
+          onBlur={isEdit ? e => saveField('notes', e.target.value) : undefined}
+          className="input"
+          rows={2}
+        />
+      </div>
+    </>
+  )
+
+  return (
+    <Modal title={isEdit ? 'Modifier la tâche' : 'Nouvelle tâche'} onClose={onClose}>
+      {isEdit ? (
+        <div className="space-y-4">
+          {fields}
+          <div className="flex items-center justify-between pt-2">
+            <button type="button" onClick={handleDelete} className="text-sm text-red-500 hover:text-red-700 hover:underline">Supprimer</button>
+            <div className="flex items-center gap-3 ml-auto">
+              {anySaving && <span className="text-xs text-slate-400">Sauvegarde…</span>}
+              <button type="button" onClick={onClose} className="btn-secondary"><X size={14} /> Fermer</button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <form onSubmit={handleSubmitCreate} className="space-y-4">
+          {fields}
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={onClose} className="btn-secondary"><X size={14} /> Annuler</button>
+            <button type="submit" disabled={savingTask} className="btn-primary"><Save size={14} /> {savingTask ? 'Enregistrement...' : 'Enregistrer'}</button>
+          </div>
+        </form>
+      )}
+    </Modal>
+  )
+}
+
 export default function ContactDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { user } = useAuth()
+  const { user: _user } = useAuth()
+  const { addToast } = useToast()
   const [contact, setContact] = useState(null)
   const [interactions, setInteractions] = useState([])
   const [companies, setCompanies] = useState([])
@@ -161,14 +262,14 @@ export default function ContactDetail() {
     try {
       const [c, inter, comps] = await Promise.all([
         api.contacts.get(id),
-        api.interactions.list({ contact_id: id, limit: LIMIT, offset: 0 }),
-        api.companies.list({ limit: 'all' }),
+        api.interactions.list({ contact_id: id, limit: LIMIT, offset: 0, include: 'heavy' }),
+        api.companies.lookup(),
       ])
       setContact(c)
       setInteractions(inter.interactions || [])
       setTotal(inter.total || 0)
       setOffset(LIMIT)
-      setCompanies(comps.data || [])
+      setCompanies(comps)
     } finally {
       setLoading(false)
     }
@@ -179,7 +280,7 @@ export default function ContactDetail() {
   async function loadMore() {
     setLoadingMore(true)
     try {
-      const res = await api.interactions.list({ contact_id: id, limit: LIMIT, offset })
+      const res = await api.interactions.list({ contact_id: id, limit: LIMIT, offset, include: 'heavy' })
       setInteractions(prev => [...prev, ...(res.interactions || [])])
       setOffset(o => o + LIMIT)
     } finally {
@@ -191,6 +292,7 @@ export default function ContactDetail() {
     load()
     api.tasks.list({ contact_id: id, limit: 'all' }).then(r => setTasks(r.data || [])).catch(() => {})
     api.auth.users().then(setUsers).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
   async function saveField(key, value) {
@@ -200,7 +302,7 @@ export default function ContactDetail() {
       setContact(c => ({ ...c, [key]: value || null }))
       if (key === 'company_id') load()
     } catch (err) {
-      alert(err.message)
+      addToast({ message: err.message, type: 'error' })
     } finally {
       setFieldSaving(s => ({ ...s, [key]: false }))
     }
@@ -293,7 +395,7 @@ export default function ContactDetail() {
                           <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full ${t.status === 'Terminé' ? 'bg-green-100 text-green-700' : t.status === 'En cours' ? 'bg-blue-100 text-blue-700' : t.status === 'Annulé' ? 'bg-slate-100 text-slate-500' : 'bg-amber-100 text-amber-700'}`}>{t.status}</span>
                         </td>
                         <td className="px-4 py-2.5 hidden sm:table-cell">
-                          {t.due_date ? <span className={overdue ? 'text-red-600 font-medium' : 'text-slate-500'}>{fmtDate(t.due_date)}</span> : <span className="text-slate-400">—</span>}
+                          {t.due_date ? <span className={overdue ? 'text-red-600 font-medium' : 'text-slate-500'}>{fmtDateTime(t.due_date)}</span> : <span className="text-slate-400">—</span>}
                         </td>
                       </tr>
                     )
@@ -320,75 +422,20 @@ export default function ContactDetail() {
       </div>
 
       {showTaskModal && (
-        <Modal title={editingTask ? 'Modifier la tâche' : 'Nouvelle tâche'} onClose={() => setShowTaskModal(false)}>
-          <form onSubmit={async e => {
-            e.preventDefault()
-            setSavingTask(true)
-            try {
-              if (editingTask) {
-                await api.tasks.update(editingTask.id, { ...taskForm, contact_id: id })
-              } else {
-                await api.tasks.create({ ...taskForm, contact_id: id })
-              }
-              const r = await api.tasks.list({ contact_id: id, limit: 'all' })
-              setTasks(r.data || [])
-              setShowTaskModal(false)
-            } catch(err) {
-              alert(err.message)
-            } finally {
-              setSavingTask(false)
-            }
-          }} className="space-y-4">
-            <div>
-              <label className="label">Titre *</label>
-              <input value={taskForm.title} onChange={e => setTaskForm(f => ({ ...f, title: e.target.value }))} className="input" required autoFocus />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="label">Statut</label>
-                <select value={taskForm.status} onChange={e => setTaskForm(f => ({ ...f, status: e.target.value }))} className="select">
-                  {['À faire','En cours','Terminé','Annulé'].map(s => <option key={s} value={s}>{s}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="label">Priorité</label>
-                <select value={taskForm.priority} onChange={e => setTaskForm(f => ({ ...f, priority: e.target.value }))} className="select">
-                  {['Basse','Normal','Haute','Urgente'].map(p => <option key={p} value={p}>{p}</option>)}
-                </select>
-              </div>
-            </div>
-            <div>
-              <label className="label">Échéance</label>
-              <input type="date" value={taskForm.due_date || ''} onChange={e => setTaskForm(f => ({ ...f, due_date: e.target.value }))} className="input" />
-            </div>
-            <div>
-              <label className="label">Responsable</label>
-              <select value={taskForm.assigned_to || ''} onChange={e => setTaskForm(f => ({ ...f, assigned_to: e.target.value }))} className="select">
-                <option value="">—</option>
-                {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="label">Notes</label>
-              <textarea value={taskForm.notes || ''} onChange={e => setTaskForm(f => ({ ...f, notes: e.target.value }))} className="input" rows={2} />
-            </div>
-            <div className="flex items-center justify-between pt-2">
-              {editingTask && (
-                <button type="button" onClick={async () => {
-                  if (!confirm('Supprimer cette tâche ?')) return
-                  await api.tasks.delete(editingTask.id)
-                  const r = await api.tasks.list({ contact_id: id, limit: 'all' })
-                  setTasks(r.data || [])
-                  setShowTaskModal(false)
-                }} className="text-sm text-red-500 hover:text-red-700 hover:underline">Supprimer</button>
-              )}
-              <div className="flex gap-3 ml-auto">
-                <button type="button" onClick={() => setShowTaskModal(false)} className="btn-secondary"><X size={14} /> Annuler</button>
-                <button type="submit" disabled={savingTask} className="btn-primary"><Save size={14} /> {savingTask ? 'Enregistrement...' : 'Enregistrer'}</button>
-              </div>
-            </div>
-          </form>
-        </Modal>
+        <TaskModalContent
+          contactId={id}
+          editingTask={editingTask}
+          users={users}
+          taskForm={taskForm}
+          setTaskForm={setTaskForm}
+          savingTask={savingTask}
+          setSavingTask={setSavingTask}
+          onClose={() => setShowTaskModal(false)}
+          onRefresh={async () => {
+            const r = await api.tasks.list({ contact_id: id, limit: 'all' })
+            setTasks(r.data || [])
+          }}
+        />
       )}
     </Layout>
   )

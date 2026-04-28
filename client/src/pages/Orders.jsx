@@ -8,12 +8,10 @@ import { Badge, orderStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { fmtDate } from '../lib/formatDate.js'
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', year: 'numeric' })
-}
 
 const RENDERS = {
   order_number: row => <span className="font-bold text-slate-900">#{row.order_number}</span>,
@@ -47,17 +45,25 @@ function NewOrderModal({ companies, users, onSave, onClose }) {
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
         <label className="label">Entreprise</label>
-        <select value={form.company_id} onChange={e => setForm(f => ({ ...f, company_id: e.target.value }))} className="select">
-          <option value="">— Sélectionner —</option>
-          {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+        <LinkedRecordField
+          name="order_company_id"
+          value={form.company_id}
+          options={companies}
+          labelFn={c => c.name}
+          placeholder="Entreprise"
+          onChange={v => setForm(f => ({ ...f, company_id: v }))}
+        />
       </div>
       <div>
         <label className="label">Assigné à</label>
-        <select value={form.assigned_to} onChange={e => setForm(f => ({ ...f, assigned_to: e.target.value }))} className="select">
-          <option value="">— Non assigné —</option>
-          {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-        </select>
+        <LinkedRecordField
+          name="order_assigned_to"
+          value={form.assigned_to}
+          options={users}
+          labelFn={u => u.name}
+          placeholder="Assigner"
+          onChange={v => setForm(f => ({ ...f, assigned_to: v }))}
+        />
       </div>
       <div>
         <label className="label">Priorité</label>
@@ -102,7 +108,7 @@ export default function Orders() {
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
-    api.companies.list({ limit: 'all' }).then(r => setCompanies(r.data)).catch(() => {})
+    api.companies.lookup().then(setCompanies).catch(() => {})
     api.admin.listUsers().then(setUsers).catch(() => {})
   }, [])
 

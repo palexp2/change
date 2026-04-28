@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Upload, FileText, Trash2, RefreshCw, AlertCircle, CheckCircle, Clock, X, ReceiptText, BookOpen } from 'lucide-react'
+import { Upload, FileText, Trash2, RefreshCw, AlertCircle, CheckCircle, Clock, ReceiptText, BookOpen } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { fmtDate } from '../lib/formatDate.js'
 
 function fmtCad(n) {
   if (n == null || n === 0 && n !== 0) return '—'
@@ -10,10 +12,6 @@ function fmtCad(n) {
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
 }
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d + 'T12:00:00').toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric' })
-}
 
 function StatusBadge({ status }) {
   if (status === 'done')       return <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full"><CheckCircle size={10} /> Complété</span>
@@ -23,6 +21,7 @@ function StatusBadge({ status }) {
 }
 
 function UploadZone({ onUpload, uploading }) {
+  const { addToast } = useToast()
   const [dragOver, setDragOver] = useState(false)
   const inputRef = useRef()
 
@@ -32,7 +31,7 @@ function UploadZone({ onUpload, uploading }) {
     const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf']
     const ext = file.name.split('.').pop().toLowerCase()
     if (!allowed.includes(file.type) && !['jpg','jpeg','png','gif','webp','pdf'].includes(ext)) {
-      alert('Formats acceptés : JPG, PNG, GIF, WEBP, PDF')
+      addToast({ message: 'Formats acceptés : JPG, PNG, GIF, WEBP, PDF', type: 'error' })
       return
     }
     const fd = new FormData()
@@ -139,6 +138,7 @@ function QBPublishForm({ receipt, onSuccess }) {
       })
       .catch(() => setError('Impossible de charger les données QuickBooks'))
       .finally(() => setLoading(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const expenseAccounts = accounts.filter(a => ['Expense', 'Other Expense'].includes(a.AccountType))
@@ -401,6 +401,7 @@ function TotalRow({ label, value, bold }) {
 }
 
 export default function SaleReceipts() {
+  const { addToast } = useToast()
   const [receipts, setReceipts]       = useState([])
   const [loading, setLoading]         = useState(true)
   const [selected, setSelected]       = useState(null)
@@ -449,7 +450,7 @@ export default function SaleReceipts() {
       const receipt = (await api.saleReceipts.get(id))
       setSelected(receipt)
     } catch (err) {
-      alert('Erreur: ' + err.message)
+      addToast({ message: 'Erreur: ' + err.message, type: 'error' })
     } finally {
       setUploading(false)
     }
@@ -461,7 +462,7 @@ export default function SaleReceipts() {
       if (selected?.id === id) setSelected(null)
       await load()
     } catch (err) {
-      alert('Erreur: ' + err.message)
+      addToast({ message: 'Erreur: ' + err.message, type: 'error' })
     }
     setToDelete(null)
   }
@@ -476,7 +477,7 @@ export default function SaleReceipts() {
         {/* Left sidebar */}
         <div className="w-72 flex-shrink-0 bg-white border-r border-slate-200 flex flex-col overflow-hidden">
           <div className="px-4 pt-5 pb-4 border-b border-slate-100">
-            <h1 className="text-base font-bold text-slate-900">Reçus de vente</h1>
+            <h1 className="text-base font-bold text-slate-900">Extraction de données</h1>
             <p className="text-xs text-slate-400 mt-0.5">Extraction automatique par IA</p>
           </div>
 

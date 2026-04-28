@@ -2,70 +2,6 @@ import { useState, useEffect } from 'react'
 import { RefreshCw } from 'lucide-react'
 import api from '../lib/api.js'
 
-const AT_TYPE_LABELS = {
-  singleLineText: 'Texte', multilineText: 'Texte long', richText: 'Texte riche',
-  number: 'Nombre', currency: 'Devise', percent: '%', count: 'Compteur', autoNumber: 'Auto #',
-  rating: 'Évaluation',
-  singleSelect: 'Sélection', multipleSelects: 'Multi-sélection',
-  checkbox: 'Case à cocher',
-  date: 'Date', dateTime: 'Date/heure', createdTime: 'Créé le', lastModifiedTime: 'Modifié le',
-  email: 'Courriel', url: 'URL', phoneNumber: 'Téléphone',
-  multipleRecordLinks: 'Lien', lookup: 'Lookup', rollup: 'Rollup', formula: 'Formule',
-  multipleAttachments: 'Pièces jointes', barcode: 'Code-barres',
-}
-
-function FieldList({ fields, erpTable }) {
-  const [deletedFields, setDeletedFields] = useState([])
-
-  useEffect(() => {
-    if (!erpTable || !fields?.length) { setDeletedFields([]); return }
-    api.airtable.fieldDefs(erpTable).then(defs => {
-      const liveNames = new Set(fields.map(f => f.name))
-      setDeletedFields(defs.filter(d => !liveNames.has(d.airtable_field_name)))
-    }).catch(() => setDeletedFields([]))
-  }, [erpTable, fields])
-
-  if (!fields?.length && !deletedFields.length) return null
-
-  // Group live fields by type label
-  const groups = {}
-  for (const f of (fields || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'fr'))) {
-    const label = AT_TYPE_LABELS[f.type] || f.type
-    if (!groups[label]) groups[label] = []
-    groups[label].push(f)
-  }
-  const sortedGroups = Object.entries(groups).sort((a, b) => a[0].localeCompare(b[0], 'fr'))
-
-  return (
-    <div className="border border-slate-200 rounded-lg p-3 space-y-2">
-      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{(fields?.length || 0)} champs</p>
-      {sortedGroups.map(([label, items]) => (
-        <div key={label}>
-          <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-0.5">{label}</p>
-          <div className="space-y-0">
-            {items.map(f => (
-              <div key={f.name} className="text-xs text-slate-600 py-0.5 px-1 hover:bg-slate-50 rounded">{f.name}</div>
-            ))}
-          </div>
-        </div>
-      ))}
-      {deletedFields.length > 0 && (
-        <div>
-          <p className="text-[10px] font-semibold text-red-400 uppercase tracking-wide mb-0.5">Supprimés dans Airtable</p>
-          <div className="space-y-0">
-            {deletedFields.sort((a, b) => a.airtable_field_name.localeCompare(b.airtable_field_name, 'fr')).map(d => (
-              <div key={d.airtable_field_name} className="text-xs text-red-400 py-0.5 px-1 flex items-center gap-1.5">
-                <span className="line-through">{d.airtable_field_name}</span>
-                <span className="text-[9px] bg-red-50 border border-red-200 text-red-500 px-1 rounded">supprimé</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
 function SyncBtn({ label, syncKey, syncStatus, onSync }) {
   const [localRunning, setLocalRunning] = useState(false)
   const serverRunning = syncStatus?.[syncKey]?.running
@@ -75,6 +11,7 @@ function SyncBtn({ label, syncKey, syncStatus, onSync }) {
   // Réinitialise localRunning dès que le poll confirme la fin
   useEffect(() => {
     if (localRunning && !serverRunning) setLocalRunning(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverRunning])
 
   function handleClick() {
@@ -97,7 +34,6 @@ const TABS = [
   ['contacts',      'Contacts'],
   ['companies',     'Entreprises'],
   ['adresses',      'Adresses'],
-  ['projets',       'Projets'],
   ['soumissions',   'Soumissions'],
   ['pieces',        'Pièces'],
   ['serials',       'N° de série'],
@@ -108,7 +44,6 @@ const TABS = [
   ['achats',        'Achats'],
   ['envois',        'Envois'],
   ['abonnements',   'Abonnements'],
-  ['factures',      'Factures'],
   ['billets',       'Billets'],
   ['retours',       'Retours'],
   ['retour_items',  'Items de retour'],
@@ -118,7 +53,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   const {
     contacts: contactsSync,
     companies: companiesSync,
-    projets: projetsSync,
     pieces: piecesSync,
     orders: ordersSync,
     achats: achatsSync,
@@ -130,7 +64,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
     bom: bomSync,
     serial_changes: serialChangesSync,
     assemblages: assemblagesSync,
-    factures: facturesSync,
     retours: retoursSync,
     retour_items: retourItemsSync,
     abonnements: abonnementsSync,
@@ -139,18 +72,18 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   const [tab, setTab] = useState('contacts')
   const [syncingAll, setSyncingAll] = useState(false)
 
-  const AIRTABLE_KEYS = ['airtable','projets','pieces','orders','achats','billets','serials','envois','soumissions','retours','retour_items','adresses','bom','serial_changes','abonnements','assemblages','factures']
+  const AIRTABLE_KEYS = ['airtable','projets','pieces','orders','achats','billets','serials','envois','soumissions','retours','retour_items','adresses','bom','serial_changes','abonnements','assemblages']
 
   // Réinitialise syncingAll quand le poll confirme que tous les modules sont arrêtés
   useEffect(() => {
     if (!syncingAll) return
     const anyStillRunning = AIRTABLE_KEYS.some(k => syncStatus?.[k]?.running)
     if (!anyStillRunning) setSyncingAll(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [syncStatus])
   const [bases, setBases] = useState([])
   const [basesError, setBasesError] = useState('')
   const [tables, setTables] = useState([])
-  const [projetsTables, setProjetsTables] = useState([])
   const [piecesTables, setPiecesTables] = useState([])
   const [ordersTables, setOrdersTables] = useState([])
   const [itemsTables, setItemsTables] = useState([])
@@ -163,7 +96,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   const [bomTables, setBomTables] = useState([])
   const [serialChangesTables, setSerialChangesTables] = useState([])
   const [assemblagesTables, setAssemblagesTables] = useState([])
-  const [facturesTables, setFacturesTables] = useState([])
   const [retoursTables, setRetoursTables] = useState([])
   const [retourItemsTables, setRetourItemsTables] = useState([])
   const [abonnementsTables, setAbonnementsTables] = useState([])
@@ -188,15 +120,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   })
 
   const [companiesTables, setCompaniesTables] = useState([])
-
-  // Inventaire form
-  const [projetsForm, setProjetsForm] = useState({
-    base_id: projetsSync?.base_id || '',
-    projects_table_id: projetsSync?.projects_table_id || '',
-    field_map_projects: projetsSync?.field_map_projects
-      ? (typeof projetsSync.field_map_projects === 'string' ? JSON.parse(projetsSync.field_map_projects) : projetsSync.field_map_projects)
-      : {},
-  })
 
   // Orders form
   const [ordersForm, setOrdersForm] = useState({
@@ -266,7 +189,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   const [bomForm, setBomForm] = useState({ base_id: bomSync?.base_id || '', table_id: bomSync?.table_id || '', field_map: parseMap(bomSync) })
   const [serialChangesForm, setSerialChangesForm] = useState({ base_id: serialChangesSync?.base_id || '', table_id: serialChangesSync?.table_id || '', field_map: parseMap(serialChangesSync) })
   const [assemblagesForm, setAssemblagesForm] = useState({ base_id: assemblagesSync?.base_id || '', table_id: assemblagesSync?.table_id || '', field_map: parseMap(assemblagesSync) })
-  const [facturesForm, setFacturesForm] = useState({ base_id: facturesSync?.base_id || '', table_id: facturesSync?.table_id || '', field_map: parseMap(facturesSync) })
   const [retoursForm, setRetoursForm] = useState({ base_id: retoursSync?.base_id || '', table_id: retoursSync?.table_id || '', field_map: parseMap(retoursSync) })
   const [retourItemsForm, setRetourItemsForm] = useState({ base_id: retourItemsSync?.base_id || '', table_id: retourItemsSync?.table_id || '', field_map: parseMap(retourItemsSync) })
   const [abonnementsForm, setAbonnementsForm] = useState({ base_id: abonnementsSync?.base_id || '', table_id: abonnementsSync?.table_id || '', field_map: parseMap(abonnementsSync) })
@@ -292,11 +214,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
 
   async function saveCompanies() {
     await api.airtable.saveConfig('companies', companiesForm)
-    onRefresh()
-  }
-
-  async function saveProjets() {
-    await api.airtable.saveConfig('projets', projetsForm)
     onRefresh()
   }
 
@@ -335,7 +252,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   async function saveBom() { await api.airtable.saveModuleConfig('bom', bomForm); onRefresh() }
   async function saveSerialChanges() { await api.airtable.saveModuleConfig('serial_changes', serialChangesForm); onRefresh() }
   async function saveAssemblages() { await api.airtable.saveModuleConfig('assemblages', assemblagesForm); onRefresh() }
-  async function saveFactures() { await api.airtable.saveModuleConfig('factures', facturesForm); onRefresh() }
   async function saveRetours() { await api.airtable.saveModuleConfig('retours', retoursForm); onRefresh() }
   async function saveRetourItems() { await api.airtable.saveModuleConfig('retour_items', retourItemsForm); onRefresh() }
   async function saveAbonnements() { await api.airtable.saveModuleConfig('abonnements', abonnementsForm); onRefresh() }
@@ -343,7 +259,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   useEffect(() => { loadBases() }, [])
   useEffect(() => { if (contactsForm.base_id) loadTables(contactsForm.base_id, setTables) }, [contactsForm.base_id])
   useEffect(() => { if (companiesForm.base_id) loadTables(companiesForm.base_id, setCompaniesTables) }, [companiesForm.base_id])
-  useEffect(() => { if (projetsForm.base_id) loadTables(projetsForm.base_id, setProjetsTables) }, [projetsForm.base_id])
   useEffect(() => { if (piecesForm.base_id) loadTables(piecesForm.base_id, setPiecesTables) }, [piecesForm.base_id])
   useEffect(() => { if (ordersForm.base_id) loadTables(ordersForm.base_id, setOrdersTables) }, [ordersForm.base_id])
   useEffect(() => { if (ordersForm.base_id) loadTables(ordersForm.base_id, setItemsTables) }, [ordersForm.base_id])
@@ -356,7 +271,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   useEffect(() => { if (bomForm.base_id) loadTables(bomForm.base_id, setBomTables) }, [bomForm.base_id])
   useEffect(() => { if (serialChangesForm.base_id) loadTables(serialChangesForm.base_id, setSerialChangesTables) }, [serialChangesForm.base_id])
   useEffect(() => { if (assemblagesForm.base_id) loadTables(assemblagesForm.base_id, setAssemblagesTables) }, [assemblagesForm.base_id])
-  useEffect(() => { if (facturesForm.base_id) loadTables(facturesForm.base_id, setFacturesTables) }, [facturesForm.base_id])
   useEffect(() => { if (retoursForm.base_id) loadTables(retoursForm.base_id, setRetoursTables) }, [retoursForm.base_id])
   useEffect(() => { if (retourItemsForm.base_id) loadTables(retourItemsForm.base_id, setRetourItemsTables) }, [retourItemsForm.base_id])
   useEffect(() => { if (abonnementsForm.base_id) loadTables(abonnementsForm.base_id, setAbonnementsTables) }, [abonnementsForm.base_id])
@@ -429,7 +343,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           )}
-          {contactsForm.contacts_table_id && <FieldList fields={tables.find(t => t.id === contactsForm.contacts_table_id)?.fields} erpTable="contacts" />}
           <div className="flex gap-2">
             <button onClick={saveContacts} className="btn-primary btn-sm">Enregistrer</button>
             {contactsSync?.base_id && (
@@ -458,7 +371,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           )}
-          {companiesForm.companies_table_id && <FieldList fields={companiesTables.find(t => t.id === companiesForm.companies_table_id)?.fields} erpTable="companies" />}
           <div className="flex gap-2">
             <button onClick={saveCompanies} className="btn-primary btn-sm">Enregistrer</button>
             {companiesSync?.base_id && (
@@ -466,35 +378,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
             )}
           </div>
           {companiesSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(companiesSync.last_synced_at).toLocaleString('fr-CA')}</p>}
-        </div>
-      )}
-
-      {tab === 'projets' && (
-        <div className="space-y-3">
-          <div>
-            <label className="label">Base Airtable</label>
-            <select value={projetsForm.base_id} onChange={e => setProjetsForm(f => ({ ...f, base_id: e.target.value, projects_table_id: '', field_map_projects: {}, extra_tables: [] }))} className="select">
-              <option value="">—</option>
-              {loadingBases ? <option disabled>Chargement…</option> : bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
-          </div>
-          {projetsTables.length > 0 && (
-            <div>
-              <label className="label">Table projets (principale)</label>
-              <select value={projetsForm.projects_table_id} onChange={e => setProjetsForm(f => ({ ...f, projects_table_id: e.target.value, field_map_projects: {} }))} className="select">
-                <option value="">—</option>
-                {projetsTables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
-            </div>
-          )}
-          {projetsForm.projects_table_id && <FieldList fields={projetsTables.find(t => t.id === projetsForm.projects_table_id)?.fields} erpTable="projects" />}
-          <div className="flex gap-2">
-            <button onClick={saveProjets} className="btn-primary btn-sm">Enregistrer</button>
-            {projetsSync?.base_id && (
-              <SyncBtn label="Synchroniser" syncKey="inventaire" syncStatus={syncStatus} onSync={() => api.airtable.sync('projets')} />
-            )}
-          </div>
-          {projetsSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(projetsSync.last_synced_at).toLocaleString('fr-CA')}</p>}
         </div>
       )}
 
@@ -516,7 +399,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           )}
-          {piecesForm.table_id && <FieldList fields={piecesTables.find(t => t.id === piecesForm.table_id)?.fields} erpTable="products" />}
           <div className="flex gap-2">
             <button onClick={savePieces} className="btn-primary btn-sm">Enregistrer</button>
             {piecesSync?.base_id && (
@@ -552,8 +434,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           </>)}
-          {ordersForm.orders_table_id && <FieldList fields={ordersTables.find(t => t.id === ordersForm.orders_table_id)?.fields} erpTable="orders" />}
-          {ordersForm.items_table_id && <FieldList fields={itemsTables.find(t => t.id === ordersForm.items_table_id)?.fields} erpTable="order_items" />}
           <div className="flex gap-2">
             <button onClick={saveOrders} className="btn-primary btn-sm">Enregistrer</button>
             {ordersSync?.base_id && (
@@ -582,7 +462,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           )}
-          {achatsForm.table_id && <FieldList fields={achatsTables.find(t => t.id === achatsForm.table_id)?.fields} erpTable="purchases" />}
           <div className="flex gap-2">
             <button onClick={saveAchats} className="btn-primary btn-sm">Enregistrer</button>
             {achatsSync?.base_id && (
@@ -611,7 +490,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           )}
-          {billetsForm.table_id && <FieldList fields={billetsTables.find(t => t.id === billetsForm.table_id)?.fields} erpTable="tickets" />}
           <div className="flex gap-2">
             <button onClick={saveBillets} className="btn-primary btn-sm">Enregistrer</button>
             {billetsSync?.base_id && (
@@ -640,7 +518,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           )}
-          {serialsForm.table_id && <FieldList fields={serialsTables.find(t => t.id === serialsForm.table_id)?.fields} erpTable="serial_numbers" />}
           <div className="flex gap-2">
             <button onClick={saveSerials} className="btn-primary btn-sm">Enregistrer</button>
             {serialsSync?.base_id && (
@@ -669,7 +546,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               </select>
             </div>
           )}
-          {envoisForm.table_id && <FieldList fields={envoisTables.find(t => t.id === envoisForm.table_id)?.fields} erpTable="shipments" />}
           <div className="flex gap-2">
             <button onClick={saveEnvois} className="btn-primary btn-sm">Enregistrer</button>
             {envoisSync?.base_id && (
@@ -685,7 +561,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={soumissionsForm} setForm={setSoumissionsForm}
           tables={soumissionsTables} bases={bases} loadingBases={loadingBases}
           onSave={saveSoumissions} syncKey="soumissions" syncStatus={syncStatus} syncConfig={soumissionsSync}
-          tableLabel="Table soumissions" erpTable="soumissions"
+          tableLabel="Table soumissions"
         />
       )}
 
@@ -694,7 +570,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={adressesForm} setForm={setAdressesForm}
           tables={adressesTables} bases={bases} loadingBases={loadingBases}
           onSave={saveAdresses} syncKey="adresses" syncStatus={syncStatus} syncConfig={adressesSync}
-          tableLabel="Table adresses" erpTable="adresses"
+          tableLabel="Table adresses"
         />
       )}
 
@@ -703,7 +579,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={bomForm} setForm={setBomForm}
           tables={bomTables} bases={bases} loadingBases={loadingBases}
           onSave={saveBom} syncKey="bom" syncStatus={syncStatus} syncConfig={bomSync}
-          tableLabel="Table BOM" erpTable="bom_items"
+          tableLabel="Table BOM"
         />
       )}
 
@@ -712,7 +588,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={assemblagesForm} setForm={setAssemblagesForm}
           tables={assemblagesTables} bases={bases} loadingBases={loadingBases}
           onSave={saveAssemblages} syncKey="assemblages" syncStatus={syncStatus} syncConfig={assemblagesSync}
-          tableLabel="Table assemblages" erpTable="assemblages"
+          tableLabel="Table assemblages"
         />
       )}
 
@@ -721,7 +597,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={serialChangesForm} setForm={setSerialChangesForm}
           tables={serialChangesTables} bases={bases} loadingBases={loadingBases}
           onSave={saveSerialChanges} syncKey="serial_changes" syncStatus={syncStatus} syncConfig={serialChangesSync}
-          tableLabel="Table changements d'état" erpTable="serial_state_changes"
+          tableLabel="Table changements d'état"
         />
       )}
 
@@ -730,16 +606,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={abonnementsForm} setForm={setAbonnementsForm}
           tables={abonnementsTables} bases={bases} loadingBases={loadingBases}
           onSave={saveAbonnements} syncKey="abonnements" syncStatus={syncStatus} syncConfig={abonnementsSync}
-          tableLabel="Table abonnements" erpTable="subscriptions"
-        />
-      )}
-
-      {tab === 'factures' && (
-        <SimpleModuleTab
-          form={facturesForm} setForm={setFacturesForm}
-          tables={facturesTables} bases={bases} loadingBases={loadingBases}
-          onSave={saveFactures} syncKey="factures" syncStatus={syncStatus} syncConfig={facturesSync}
-          tableLabel="Table factures" erpTable="factures"
+          tableLabel="Table abonnements"
         />
       )}
 
@@ -748,7 +615,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={retoursForm} setForm={setRetoursForm}
           tables={retoursTables} bases={bases} loadingBases={loadingBases}
           onSave={saveRetours} syncKey="retours" syncStatus={syncStatus} syncConfig={retoursSync}
-          tableLabel="Table retours" erpTable="retours"
+          tableLabel="Table retours"
         />
       )}
 
@@ -757,14 +624,14 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           form={retourItemsForm} setForm={setRetourItemsForm}
           tables={retourItemsTables} bases={bases} loadingBases={loadingBases}
           onSave={saveRetourItems} syncKey="retour_items" syncStatus={syncStatus} syncConfig={retourItemsSync}
-          tableLabel="Table items de retour" erpTable="retour_items"
+          tableLabel="Table items de retour"
         />
       )}
     </div>
   )
 }
 
-function SimpleModuleTab({ form, setForm, tables, bases, loadingBases, onSave, syncKey, syncStatus, syncConfig, tableLabel, erpTable }) {
+function SimpleModuleTab({ form, setForm, tables, bases, loadingBases, onSave, syncKey, syncStatus, syncConfig, tableLabel }) {
   return (
     <div className="space-y-3">
       <div>
@@ -783,7 +650,6 @@ function SimpleModuleTab({ form, setForm, tables, bases, loadingBases, onSave, s
           </select>
         </div>
       )}
-      {form.table_id && <FieldList fields={tables.find(t => t.id === form.table_id)?.fields} erpTable={erpTable} />}
       <div className="flex gap-2">
         <button onClick={onSave} className="btn-primary btn-sm">Enregistrer</button>
         {syncConfig?.base_id && (

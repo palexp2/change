@@ -3,11 +3,12 @@ import db from '../db/database.js'
 import { getAccessToken, airtableFetch, airtablePost } from '../connectors/airtable.js'
 import { tracked } from './syncState.js'
 import { logSync } from './syncLog.js'
+import { logSystemRun } from './systemAutomations.js'
 import {
   syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats,
   syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours,
   syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges,
-  syncAssemblages, syncFactures,
+  syncAssemblages, syncStockMovements,
 } from './airtable.js'
 
 const APP_URL = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
@@ -29,7 +30,60 @@ const SYNC_FNS = {
   bom: syncBomItems,
   serial_changes: syncSerialStateChanges,
   assemblages: syncAssemblages,
-  factures: syncFactures,
+  stock_movements: syncStockMovements,
+}
+
+// Per-module local tables used to snapshot records before/after sync for diff display.
+// Only modules whose records map to a UI-addressable entity are listed.
+const MODULE_DIFF_TARGETS = {
+  billets:  [{ table: 'tickets',   path: 'tickets',   label: 'Billet' }],
+  envois:   [{ table: 'shipments', path: 'envois',    label: 'Envoi' }],
+  airtable: [
+    { table: 'contacts',  path: 'contacts',  label: 'Contact' },
+    { table: 'companies', path: 'companies', label: 'Entreprise' },
+  ],
+}
+
+const DIFF_SKIP_FIELDS = new Set(['updated_at', 'created_at', 'last_hubspot_uptade'])
+
+function snapshotModule(module, airtableIds) {
+  const targets = MODULE_DIFF_TARGETS[module]
+  if (!targets || !airtableIds.length) return new Map()
+  const snap = new Map()
+  const placeholders = airtableIds.map(() => '?').join(',')
+  for (const t of targets) {
+    try {
+      const rows = db.prepare(
+        `SELECT * FROM ${t.table} WHERE airtable_id IN (${placeholders})`
+      ).all(...airtableIds)
+      for (const row of rows) snap.set(row.airtable_id, { target: t, row })
+    } catch {}
+  }
+  return snap
+}
+
+function diffRows(before, after) {
+  const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})])
+  const changed = []
+  for (const k of keys) {
+    if (DIFF_SKIP_FIELDS.has(k)) continue
+    const bv = before?.[k]
+    const av = after?.[k]
+    if (bv === av) continue
+    if (bv == null && av == null) continue
+    changed.push({ field: k, before: bv, after: av })
+  }
+  return changed
+}
+
+function fmtDiffValue(v) {
+  if (v == null || v === '') return '∅'
+  const s = typeof v === 'string' ? v : String(v)
+  return s.length > 80 ? s.slice(0, 80) + '…' : s
+}
+
+function recordLabel(row) {
+  return row?.title || row?.name || row?.document_number || row?.order_number || row?.airtable_id || '?'
 }
 
 // Build map: airtable tableId → Set of module names
@@ -125,7 +179,7 @@ function queueRetry(module, changes, error) {
   const id = uuid()
   db.prepare(`
     INSERT INTO webhook_sync_retry (id, module, changes, attempts, last_error, next_retry_at)
-    VALUES (?, ?, ?, 1, ?, datetime('now', '+5 minutes'))
+    VALUES (?, ?, ?, 1, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+5 minutes'))
   `).run(id, module, JSON.stringify(changes), error)
   console.log(`🔄 ${module}: queued for retry (${error})`)
 }
@@ -133,7 +187,7 @@ function queueRetry(module, changes, error) {
 // Process retry queue — called periodically
 export async function processRetryQueue() {
   const rows = db.prepare(
-    "SELECT * FROM webhook_sync_retry WHERE next_retry_at <= datetime('now') ORDER BY created_at LIMIT 20"
+    "SELECT * FROM webhook_sync_retry WHERE next_retry_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ORDER BY created_at LIMIT 20"
   ).all()
   if (rows.length === 0) return
 
@@ -159,7 +213,7 @@ export async function processRetryQueue() {
         // Exponential backoff: 5min, 15min, 45min, 2h
         const delayMinutes = 5 * Math.pow(3, attempts - 1)
         db.prepare(
-          "UPDATE webhook_sync_retry SET attempts=?, last_error=?, next_retry_at=datetime('now', ? || ' minutes') WHERE id=?"
+          "UPDATE webhook_sync_retry SET attempts=?, last_error=?, next_retry_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ? || ' minutes') WHERE id=?"
         ).run(attempts, e.message, `+${delayMinutes}`, row.id)
         console.warn(`⚠️  Retry ${row.module}: attempt ${attempts} failed, next in ${delayMinutes}min (${e.message})`)
       }
@@ -171,9 +225,15 @@ export async function processRetryQueue() {
 // modules changed, and triggers the appropriate sync functions.
 // On failure, changes are queued for retry instead of being lost.
 export async function processWebhookPing(webhookId) {
+  const started = Date.now()
   const webhook = db.prepare('SELECT * FROM airtable_webhooks WHERE webhook_id=?').get(webhookId)
   if (!webhook) {
     console.warn(`⚠️  Ping reçu pour webhook inconnu: ${webhookId}`)
+    logSystemRun('sys_airtable_webhook_router', {
+      status: 'error',
+      error: `Ping reçu pour webhook inconnu: ${webhookId}`,
+      duration_ms: Date.now() - started,
+    })
     return
   }
 
@@ -185,9 +245,16 @@ export async function processWebhookPing(webhookId) {
 
     // Accumulate changes per tableId across all payloads
     const tableChanges = new Map()
-    const addChange = (tableId, type, id) => {
-      if (!tableChanges.has(tableId)) tableChanges.set(tableId, { recordIds: new Set(), destroyedIds: new Set() })
-      tableChanges.get(tableId)[type].add(id)
+    const tableEntry = (tableId) => {
+      if (!tableChanges.has(tableId)) {
+        tableChanges.set(tableId, {
+          recordIds: new Set(),
+          destroyedIds: new Set(),
+          changedFieldIds: new Set(),
+          hasCreates: false,
+        })
+      }
+      return tableChanges.get(tableId)
     }
 
     let mightHaveMore = true
@@ -199,9 +266,19 @@ export async function processWebhookPing(webhookId) {
 
       for (const payload of data.payloads || []) {
         for (const [tableId, tableData] of Object.entries(payload.changedTablesById || {})) {
-          for (const id of Object.keys(tableData.createdRecordsById || {})) addChange(tableId, 'recordIds', id)
-          for (const id of Object.keys(tableData.changedRecordsById || {})) addChange(tableId, 'recordIds', id)
-          for (const id of (tableData.destroyedRecordIds || [])) addChange(tableId, 'destroyedIds', id)
+          const entry = tableEntry(tableId)
+          for (const [id, rec] of Object.entries(tableData.createdRecordsById || {})) {
+            entry.recordIds.add(id)
+            entry.hasCreates = true
+            const cells = rec?.cellValuesByFieldId || {}
+            for (const fid of Object.keys(cells)) entry.changedFieldIds.add(fid)
+          }
+          for (const [id, rec] of Object.entries(tableData.changedRecordsById || {})) {
+            entry.recordIds.add(id)
+            const cells = rec?.current?.cellValuesByFieldId || {}
+            for (const fid of Object.keys(cells)) entry.changedFieldIds.add(fid)
+          }
+          for (const id of (tableData.destroyedRecordIds || [])) entry.destroyedIds.add(id)
         }
       }
 
@@ -212,15 +289,28 @@ export async function processWebhookPing(webhookId) {
     // Advance cursor immediately — failed syncs go to retry queue
     db.prepare('UPDATE airtable_webhooks SET cursor=? WHERE webhook_id=?').run(cursor, webhookId)
 
-    if (tableChanges.size === 0) return
+    if (tableChanges.size === 0) {
+      logSystemRun('sys_airtable_webhook_router', {
+        status: 'skipped',
+        result: 'Ping reçu, aucun changement de table à dispatcher.',
+        duration_ms: Date.now() - started,
+        triggerData: { webhookId, baseId },
+      })
+      return
+    }
 
     // Convert Sets to arrays and group by module
     const moduleChanges = new Map()
     const tableMap = buildTableMap()
-    for (const [tableId, { recordIds, destroyedIds }] of tableChanges) {
+    for (const [tableId, { recordIds, destroyedIds, changedFieldIds, hasCreates }] of tableChanges) {
       const modules = tableMap.get(tableId)
       if (!modules) continue
-      const change = { recordIds: [...recordIds], destroyedIds: [...destroyedIds] }
+      const change = {
+        recordIds: [...recordIds],
+        destroyedIds: [...destroyedIds],
+        changedFieldIds: [...changedFieldIds],
+        hasCreates,
+      }
       for (const m of modules) {
         if (!moduleChanges.has(m)) moduleChanges.set(m, {})
         moduleChanges.get(m)[tableId] = change
@@ -234,23 +324,74 @@ export async function processWebhookPing(webhookId) {
     console.log(`🔔 Webhook Airtable → [${[...moduleChanges.keys()].join(', ')}] +${totalRecords} modifiés, -${totalDestroyed} supprimés`)
 
     // Await each sync — queue failures for retry, log results
+    const moduleResults = []
     for (const [module, changes] of moduleChanges) {
       const fn = SYNC_FNS[module]
       if (!fn) continue
       const modifiedCount = Object.values(changes).reduce((s, c) => s + (c.recordIds?.length || 0), 0)
       const destroyedCount = Object.values(changes).reduce((s, c) => s + (c.destroyedIds?.length || 0), 0)
+      const allRecordIds = [...new Set(Object.values(changes).flatMap(c => c.recordIds || []))]
+      const before = snapshotModule(module, allRecordIds)
       const t0 = Date.now()
       try {
         await tracked(module, () => fn(changes))
+        const after = snapshotModule(module, allRecordIds)
+        const diffs = []
+        for (const id of allRecordIds) {
+          const b = before.get(id)
+          const a = after.get(id)
+          const target = a?.target || b?.target
+          if (!target) continue
+          const row = a?.row || b?.row
+          const changed = diffRows(b?.row, a?.row)
+          const action = !b && a ? 'créé' : (!a && b ? 'supprimé' : 'modifié')
+          if (action === 'modifié' && changed.length === 0) continue
+          diffs.push({ target, action, localId: row?.id, label: recordLabel(row), changes: changed })
+        }
         logSync(module, 'webhook', { status: 'success', modified: modifiedCount, destroyed: destroyedCount, durationMs: Date.now() - t0 })
+        moduleResults.push({ module, ok: true, modified: modifiedCount, destroyed: destroyedCount, diffs })
       } catch (e) {
         console.error(`Sync webhook error (${module}):`, e.message)
         logSync(module, 'webhook', { status: 'error', modified: modifiedCount, destroyed: destroyedCount, error: e.message, durationMs: Date.now() - t0 })
         queueRetry(module, changes, e.message)
+        moduleResults.push({ module, ok: false, modified: modifiedCount, destroyed: destroyedCount, error: e.message, diffs: [] })
       }
     }
+
+    const failed = moduleResults.filter(r => !r.ok)
+    const lines = [`${moduleResults.length} module(s) dispatché(s)`]
+    for (const r of moduleResults) {
+      lines.push(`  • ${r.module} : ${r.ok ? 'OK' : 'ERR'} — ${r.modified} modifiés, ${r.destroyed} supprimés${r.error ? ' — ' + r.error : ''}`)
+      const shown = (r.diffs || []).slice(0, 20)
+      for (const d of shown) {
+        lines.push('')
+        lines.push(`    ${d.label} (${d.action})`)
+        if (d.localId) lines.push(`    ${APP_URL}/erp/${d.target.path}/${d.localId}`)
+        for (const c of d.changes) {
+          lines.push(`    - ${c.field}: ${fmtDiffValue(c.before)}`)
+          lines.push(`    + ${c.field}: ${fmtDiffValue(c.after)}`)
+        }
+      }
+      if ((r.diffs?.length || 0) > shown.length) {
+        lines.push(`    … et ${r.diffs.length - shown.length} autre(s) record(s)`)
+      }
+    }
+
+    logSystemRun('sys_airtable_webhook_router', {
+      status: failed.length > 0 ? 'error' : 'success',
+      result: lines.join('\n'),
+      error: failed.length > 0 ? `${failed.length} module(s) en échec (retry queue)` : null,
+      duration_ms: Date.now() - started,
+      triggerData: { webhookId, baseId, modules: [...moduleChanges.keys()] },
+    })
   } catch (e) {
     console.error(`❌ Erreur traitement webhook ${webhookId}:`, e.message)
+    logSystemRun('sys_airtable_webhook_router', {
+      status: 'error',
+      error: e.message,
+      duration_ms: Date.now() - started,
+      triggerData: { webhookId, baseId },
+    })
   }
 }
 

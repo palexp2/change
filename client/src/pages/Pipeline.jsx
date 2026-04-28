@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Plus, X } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { Plus, X, RefreshCw, Database } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
@@ -8,23 +8,21 @@ import { Badge, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { fmtDate } from '../lib/formatDate.js'
+import { useSyncStatus } from '../lib/useSyncStatus.js'
 
 function fmtCad(n) {
   if (!n && n !== 0) return '—'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
 }
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d + 'T00:00:00').toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric' })
-}
-
 const PROJECT_TYPES = ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange']
 
-function ProjectForm({ initial = {}, companies = [], users = [], onSave, onClose }) {
+function ProjectForm({ initial = {}, companies = [], onSave, onClose }) {
   const [form, setForm] = useState({
-    name: '', company_id: '', contact_id: '', assigned_to: '',
+    name: '', company_id: '', contact_id: '',
     type: '', status: 'Ouvert', probability: 50, value_cad: '',
     monthly_cad: '', nb_greenhouses: 0, close_date: '', notes: '',
     refusal_reason: '', ...initial
@@ -50,10 +48,14 @@ function ProjectForm({ initial = {}, companies = [], users = [], onSave, onClose
         </div>
         <div>
           <label className="label">Entreprise</label>
-          <select value={form.company_id} onChange={e => setForm(f => ({ ...f, company_id: e.target.value }))} className="select">
-            <option value="">— Sélectionner —</option>
-            {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
+          <LinkedRecordField
+            name="pipeline_company_id"
+            value={form.company_id}
+            options={companies}
+            labelFn={c => c.name}
+            placeholder="Entreprise"
+            onChange={v => setForm(f => ({ ...f, company_id: v }))}
+          />
         </div>
         <div>
           <label className="label">Type</label>
@@ -68,13 +70,6 @@ function ProjectForm({ initial = {}, companies = [], users = [], onSave, onClose
             <option value="Ouvert">Ouvert</option>
             <option value="Gagné">Gagné</option>
             <option value="Perdu">Perdu</option>
-          </select>
-        </div>
-        <div>
-          <label className="label">Responsable</label>
-          <select value={form.assigned_to} onChange={e => setForm(f => ({ ...f, assigned_to: e.target.value }))} className="select">
-            <option value="">— Non assigné —</option>
-            {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
           </select>
         </div>
         <div>
@@ -109,13 +104,242 @@ function ProjectForm({ initial = {}, companies = [], users = [], onSave, onClose
   )
 }
 
+function AirtableSyncButton({ onSynced }) {
+  const [open, setOpen] = useState(false)
+  const [config, setConfig] = useState(null)
+  const [bases, setBases] = useState([])
+  const [tables, setTables] = useState([])
+  const [baseId, setBaseId] = useState('')
+  const [tableId, setTableId] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+  const [erpColumns, setErpColumns] = useState(null) // null = not loaded; [] = loaded
+  const [frozenCols, setFrozenCols] = useState(null) // null = not loaded
+  const [columnFilter, setColumnFilter] = useState('')
+  const { status: syncStatus } = useSyncStatus(3000)
+  const syncing = !!syncStatus?.projets?.running
+
+  useEffect(() => {
+    api.connectors.list().then(d => {
+      const cfg = d.projets_sync || {}
+      setConfig(cfg)
+      if (cfg.base_id) setBaseId(cfg.base_id)
+      if (cfg.projects_table_id) setTableId(cfg.projects_table_id)
+    }).catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    if (bases.length === 0) {
+      setLoading(true)
+      setError(null)
+      api.airtable.bases()
+        .then(b => setBases(b || []))
+        .catch(e => setError(e.message || 'Erreur de chargement'))
+        .finally(() => setLoading(false))
+    }
+    if (erpColumns === null) {
+      api.airtable.erpTableColumns('projects')
+        .then(cols => setErpColumns((cols || []).slice().sort((a, b) => a.name.localeCompare(b.name))))
+        .catch(() => setErpColumns([]))
+    }
+    if (frozenCols === null) {
+      api.airtable.frozenColumns('projects')
+        .then(rows => setFrozenCols(new Set((rows || []).map(r => r.column_name))))
+        .catch(() => setFrozenCols(new Set()))
+    }
+  }, [open, bases.length, erpColumns, frozenCols])
+
+  async function toggleFrozen(columnName) {
+    const next = new Set(frozenCols || [])
+    const willFreeze = !next.has(columnName)
+    // optimistic update
+    if (willFreeze) next.add(columnName); else next.delete(columnName)
+    setFrozenCols(next)
+    try {
+      await api.airtable.setFrozenColumn('projects', columnName, willFreeze)
+    } catch {
+      // revert on failure
+      const revert = new Set(frozenCols || [])
+      setFrozenCols(revert)
+    }
+  }
+
+  useEffect(() => {
+    if (!baseId) { setTables([]); return }
+    api.airtable.tables(baseId).then(t => setTables(t || [])).catch(() => setTables([]))
+  }, [baseId])
+
+  // When sync transitions from running -> done, refresh config + parent data
+  const wasSyncing = useRef(false)
+  useEffect(() => {
+    if (syncing) { wasSyncing.current = true; return }
+    if (wasSyncing.current) {
+      wasSyncing.current = false
+      api.connectors.list().then(d => setConfig(d.projets_sync || {})).catch(() => {})
+      onSynced?.()
+    }
+  }, [syncing, onSynced])
+
+  async function handleSave() {
+    setSaving(true)
+    setError(null)
+    try {
+      await api.airtable.saveConfig('projets', {
+        base_id: baseId,
+        projects_table_id: tableId,
+        field_map_projects: {},
+      })
+      const d = await api.connectors.list()
+      setConfig(d.projets_sync || {})
+    } catch (e) { setError(e.message || 'Erreur enregistrement') }
+    finally { setSaving(false) }
+  }
+
+  async function handleSync() {
+    if (!baseId || !tableId) return
+    setError(null)
+    try { await api.airtable.sync('projets') }
+    catch (e) { setError(e.message || 'Erreur sync') }
+  }
+
+  const configured = !!(config?.base_id && config?.projects_table_id)
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="btn-secondary flex items-center gap-2"
+        title={configured
+          ? (config.last_synced_at ? `Dernière sync : ${fmtDate(config.last_synced_at)}` : 'Configurée')
+          : 'Synchronisation Airtable non configurée'}
+      >
+        <Database size={15} className="text-indigo-500" />
+        <span>Sync Airtable</span>
+        {syncing
+          ? <RefreshCw size={13} className="animate-spin text-amber-500" />
+          : !configured && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />}
+      </button>
+
+      <Modal isOpen={open} onClose={() => setOpen(false)} title="Synchronisation Airtable" size="lg">
+        <div className="space-y-4">
+          <div className="text-xs text-slate-500 flex items-center gap-2">
+            {configured ? (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                <span>{config.last_synced_at ? `Dernière sync : ${fmtDate(config.last_synced_at)}` : 'Configurée'}</span>
+              </>
+            ) : (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                <span className="text-amber-600">Non configurée</span>
+              </>
+            )}
+            {syncing && <span className="text-amber-600 font-medium animate-pulse ml-2">Synchronisation en cours…</span>}
+          </div>
+
+          {loading ? (
+            <p className="text-xs text-slate-400">Chargement…</p>
+          ) : (
+            <>
+              <div className="grid grid-cols-1 gap-3">
+                <div>
+                  <label className="label text-xs">Base Airtable</label>
+                  <select className="input text-sm" value={baseId} onChange={e => { setBaseId(e.target.value); setTableId('') }}>
+                    <option value="">— Sélectionner —</option>
+                    {bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="label text-xs">Table projets</label>
+                  <select className="input text-sm" value={tableId} onChange={e => setTableId(e.target.value)} disabled={!baseId}>
+                    <option value="">— Sélectionner —</option>
+                    {tables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                  </select>
+                </div>
+              </div>
+              {error && <p className="text-xs text-red-600">{error}</p>}
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button onClick={handleSave} disabled={saving || !baseId || !tableId} className="btn-secondary btn-sm">
+                  {saving ? 'Enregistrement…' : 'Enregistrer'}
+                </button>
+                <button onClick={handleSync} disabled={syncing || !configured} className="btn-primary btn-sm flex items-center gap-1.5">
+                  <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
+                  {syncing ? 'Synchronisation…' : 'Synchroniser maintenant'}
+                </button>
+              </div>
+            </>
+          )}
+
+          <div className="pt-3 border-t border-slate-100">
+            <div className="flex items-baseline justify-between mb-1">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                Champs de la table <code className="font-mono text-slate-700">projects</code> (DB ERP)
+              </p>
+              {erpColumns && (
+                <span className="text-[11px] text-slate-400">
+                  {erpColumns.length} champs
+                  {frozenCols?.size > 0 && <> · <span className="text-amber-600 font-medium">{frozenCols.size} gelés</span></>}
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-400 mb-2">
+              Décoche un champ pour qu'il ne soit plus mis à jour par Airtable — sa valeur vivra uniquement dans la DB.
+            </p>
+            {erpColumns && erpColumns.length > 10 && (
+              <input
+                type="text"
+                value={columnFilter}
+                onChange={e => setColumnFilter(e.target.value)}
+                placeholder="Rechercher un champ…"
+                className="input text-xs mb-2"
+              />
+            )}
+            {erpColumns === null ? (
+              <p className="text-xs text-slate-400">Chargement…</p>
+            ) : erpColumns.length === 0 ? (
+              <p className="text-xs text-slate-400">Aucun champ trouvé.</p>
+            ) : (
+              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 max-h-64 overflow-y-auto">
+                {erpColumns
+                  .filter(c => !columnFilter || c.name.toLowerCase().includes(columnFilter.toLowerCase()))
+                  .map(c => {
+                    const frozen = frozenCols?.has(c.name)
+                    const synced = !frozen
+                    return (
+                      <label
+                        key={c.name}
+                        className={`flex items-center gap-2 text-xs py-1 px-1 rounded cursor-pointer hover:bg-slate-100 ${frozen ? 'opacity-60' : ''}`}
+                        title={frozen ? 'Gelé — non mis à jour par Airtable' : 'Mis à jour par Airtable'}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={synced}
+                          disabled={frozenCols === null}
+                          onChange={() => toggleFrozen(c.name)}
+                          className="accent-indigo-500"
+                        />
+                        <span className={`font-mono flex-1 truncate ${frozen ? 'line-through text-slate-400' : 'text-slate-700'}`}>{c.name}</span>
+                        <span className="text-[10px] text-slate-400">{c.type}</span>
+                      </label>
+                    )
+                  })}
+              </div>
+            )}
+          </div>
+        </div>
+      </Modal>
+    </>
+  )
+}
+
 export default function Pipeline() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const monthFilter = searchParams.get('month') // e.g. "2026-03"
   const [projects, setProjects] = useState([])
   const [companies, setCompanies] = useState([])
-  const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editProject, setEditProject] = useState(null)
@@ -129,8 +353,7 @@ export default function Pipeline() {
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
-    api.companies.list({ limit: 'all' }).then(r => setCompanies(r.data)).catch(() => {})
-    api.admin.listUsers().then(setUsers).catch(() => {})
+    api.companies.lookup().then(setCompanies).catch(() => {})
   }, [])
 
   // Filtre par mois si présent dans l'URL
@@ -175,6 +398,19 @@ export default function Pipeline() {
       meta.id === 'close_date' ? row => (
         <span className="text-slate-500">{fmtDate(row.close_date)}</span>
       ) :
+      meta.id === 'orders' ? row => {
+        if (!row.orders?.length) return <span className="text-slate-400">—</span>
+        return (
+          <div className="flex flex-wrap gap-1" onClick={e => e.stopPropagation()}>
+            {row.orders.map(o => (
+              <Link key={o.id} to={`/orders/${o.id}`}
+                className="font-mono text-xs text-indigo-600 hover:underline bg-indigo-50 px-1.5 py-0.5 rounded">
+                #{o.order_number}
+              </Link>
+            ))}
+          </div>
+        )
+      } :
       undefined
   })), [])
 
@@ -190,6 +426,7 @@ export default function Pipeline() {
             <h1 className="text-2xl font-bold text-slate-900">Projets</h1>
           </div>
           <div className="flex items-center gap-2">
+            <AirtableSyncButton onSynced={load} />
             <TableConfigModal table="projects" />
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouveau projet
@@ -230,19 +467,19 @@ export default function Pipeline() {
           data={displayedProjects}
           loading={loading}
           onRowClick={row => navigate(`/projects/${row.id}`)}
-          searchFields={['name', 'company_name', 'type', 'assigned_name']}
+          searchFields={['name', 'company_name', 'type']}
           initialGroupBy={monthFilter ? 'status' : null}
           forceAllView={!!monthFilter}
         />
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau projet" size="lg">
-        <ProjectForm companies={companies} users={users} onSave={handleCreate} onClose={() => setShowModal(false)} />
+        <ProjectForm companies={companies} onSave={handleCreate} onClose={() => setShowModal(false)} />
       </Modal>
 
       <Modal isOpen={!!editProject} onClose={() => setEditProject(null)} title="Modifier le projet" size="lg">
         {editProject && (
-          <ProjectForm initial={editProject} companies={companies} users={users} onSave={handleUpdate} onClose={() => setEditProject(null)} />
+          <ProjectForm initial={editProject} companies={companies} onSave={handleUpdate} onClose={() => setEditProject(null)} />
         )}
       </Modal>
     </Layout>

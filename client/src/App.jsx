@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth.jsx'
 import { ToastProvider } from './contexts/ToastContext.jsx'
+import { ConfirmProvider } from './components/ConfirmProvider.jsx'
 
 import Login from './pages/Login.jsx'
 import Setup from './pages/Setup.jsx'
@@ -16,8 +17,10 @@ import Admin from './pages/Admin.jsx'
 import Interactions from './pages/Interactions.jsx'
 import Connectors from './pages/Connectors.jsx'
 import Purchases from './pages/Purchases.jsx'
+import PurchaseDetail from './pages/PurchaseDetail.jsx'
 import SerialNumbers from './pages/SerialNumbers.jsx'
 import SerialDetail from './pages/SerialDetail.jsx'
+import SerialAccountingRules from './pages/SerialAccountingRules.jsx'
 import Retours from './pages/Retours.jsx'
 import RetourDetail from './pages/RetourDetail.jsx'
 import Factures from './pages/Factures.jsx'
@@ -32,15 +35,23 @@ import Automations from './pages/Automations.jsx'
 import AutomationDetail from './pages/AutomationDetail.jsx'
 import Tasks from './pages/Tasks.jsx'
 import Agent from './pages/Agent.jsx'
-import Depenses from './pages/Depenses.jsx'
-import FacturesFournisseurs from './pages/FacturesFournisseurs.jsx'
+import AchatsFournisseurs from './pages/AchatsFournisseurs.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
-import StripeQueue from './pages/StripeQueue.jsx'
+import JournalEntries from './pages/JournalEntries.jsx'
+import StockMovements from './pages/StockMovements.jsx'
 import Employees from './pages/Employees.jsx'
+import EmployeeDetail from './pages/EmployeeDetail.jsx'
+import FeuilleDeTemps from './pages/FeuilleDeTemps.jsx'
+import CodesActivite from './pages/CodesActivite.jsx'
+import BanqueHeures from './pages/BanqueHeures.jsx'
+import Paies from './pages/Paies.jsx'
 import Contacts from './pages/Contacts.jsx'
 import ContactDetail from './pages/ContactDetail.jsx'
 import Companies from './pages/Companies.jsx'
 import CompanyDetail from './pages/CompanyDetail.jsx'
+import StripePayouts from './pages/StripePayouts.jsx'
+import StripePayoutDetail from './pages/StripePayoutDetail.jsx'
+import CustomerPostPayment from './pages/CustomerPostPayment.jsx'
 
 function ProtectedRoute({ children, adminOnly = false }) {
   const { user } = useAuth()
@@ -57,6 +68,7 @@ function AppRoutes() {
       <Route path="/" element={<Navigate to={user ? '/dashboard' : '/login'} replace />} />
       <Route path="/login" element={user ? <Navigate to="/dashboard" replace /> : <Login />} />
       <Route path="/setup" element={<Setup />} />
+      <Route path="/customer/post-payment" element={<CustomerPostPayment />} />
 
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/pipeline" element={<ProtectedRoute><Pipeline /></ProtectedRoute>} />
@@ -70,8 +82,10 @@ function AppRoutes() {
       <Route path="/interactions" element={<ProtectedRoute><Interactions /></ProtectedRoute>} />
       <Route path="/connectors" element={<ProtectedRoute><Connectors /></ProtectedRoute>} />
       <Route path="/purchases" element={<ProtectedRoute><Purchases /></ProtectedRoute>} />
+      <Route path="/purchases/:id" element={<ProtectedRoute><PurchaseDetail /></ProtectedRoute>} />
       <Route path="/serials" element={<ProtectedRoute><SerialNumbers /></ProtectedRoute>} />
       <Route path="/serials/:id" element={<ProtectedRoute><SerialDetail /></ProtectedRoute>} />
+      <Route path="/comptabilite/regles-serials" element={<ProtectedRoute adminOnly><SerialAccountingRules /></ProtectedRoute>} />
       <Route path="/projects/:id" element={<ProtectedRoute><ProjectDetail /></ProtectedRoute>} />
       <Route path="/retours" element={<ProtectedRoute><Retours /></ProtectedRoute>} />
       <Route path="/retours/:id" element={<ProtectedRoute><RetourDetail /></ProtectedRoute>} />
@@ -82,11 +96,20 @@ function AppRoutes() {
       <Route path="/soumissions/:id" element={<ProtectedRoute><SoumissionDetail /></ProtectedRoute>} />
       <Route path="/envois" element={<ProtectedRoute><Envois /></ProtectedRoute>} />
       <Route path="/envois/:id" element={<ProtectedRoute><EnvoisDetail /></ProtectedRoute>} />
-      <Route path="/depenses" element={<ProtectedRoute><Depenses /></ProtectedRoute>} />
-      <Route path="/factures-fournisseurs" element={<ProtectedRoute><FacturesFournisseurs /></ProtectedRoute>} />
+      <Route path="/achats-fournisseurs" element={<ProtectedRoute><AchatsFournisseurs /></ProtectedRoute>} />
+      <Route path="/depenses" element={<Navigate to="/achats-fournisseurs" replace />} />
+      <Route path="/factures-fournisseurs" element={<Navigate to="/achats-fournisseurs" replace />} />
       <Route path="/sale-receipts" element={<ProtectedRoute><SaleReceipts /></ProtectedRoute>} />
-      <Route path="/stripe-queue" element={<ProtectedRoute><StripeQueue /></ProtectedRoute>} />
+      <Route path="/stripe-payouts" element={<ProtectedRoute><StripePayouts /></ProtectedRoute>} />
+      <Route path="/stripe-payouts/:stripeId" element={<ProtectedRoute><StripePayoutDetail /></ProtectedRoute>} />
+      <Route path="/journal-entries" element={<ProtectedRoute><JournalEntries /></ProtectedRoute>} />
+      <Route path="/stock-movement" element={<ProtectedRoute><StockMovements /></ProtectedRoute>} />
       <Route path="/employees" element={<ProtectedRoute><Employees /></ProtectedRoute>} />
+      <Route path="/employees/:id" element={<ProtectedRoute><EmployeeDetail /></ProtectedRoute>} />
+      <Route path="/feuille-de-temps" element={<ProtectedRoute><FeuilleDeTemps /></ProtectedRoute>} />
+      <Route path="/codes-activite" element={<ProtectedRoute><CodesActivite /></ProtectedRoute>} />
+      <Route path="/banque-heures" element={<ProtectedRoute><BanqueHeures /></ProtectedRoute>} />
+      <Route path="/paies" element={<ProtectedRoute><Paies /></ProtectedRoute>} />
       <Route path="/contacts" element={<ProtectedRoute><Contacts /></ProtectedRoute>} />
       <Route path="/contacts/:id" element={<ProtectedRoute><ContactDetail /></ProtectedRoute>} />
       <Route path="/companies" element={<ProtectedRoute><Companies /></ProtectedRoute>} />
@@ -107,7 +130,9 @@ export default function App() {
   return (
     <AuthProvider>
       <ToastProvider>
-        <AppRoutes />
+        <ConfirmProvider>
+          <AppRoutes />
+        </ConfirmProvider>
       </ToastProvider>
     </AuthProvider>
   )

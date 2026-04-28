@@ -1,17 +1,17 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, FileDown, Copy, Trash2, Pencil, Check, X, Plus, ChevronUp, ChevronDown, ExternalLink } from 'lucide-react'
+import { ArrowLeft, FileDown, Copy, Trash2, Pencil, Check, Plus, ChevronUp, ChevronDown, ExternalLink } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { fmtDate } from '../lib/formatDate.js'
 
 function fmtPrice(n, currency = 'CAD') {
   if (!n && n !== 0) return '—'
   return new Intl.NumberFormat(currency === 'USD' ? 'en-US' : 'fr-CA', { style: 'currency', currency }).format(n)
-}
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d + (d.length === 10 ? 'T00:00:00' : '')).toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
 const STATUS_COLORS = {
@@ -51,10 +51,15 @@ export default function SoumissionDetail() {
   const [duplicating, setDuplicating] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
+  const saveTimerRef = useRef(null)
+  const skipSaveRef = useRef(true)
+  const confirm = useConfirm()
+  const { addToast } = useToast()
 
   const load = async () => {
     try {
       const data = await api.documents.soumissions.get(id)
+      skipSaveRef.current = true
       setSoumission(data)
       setForm({
         language: data.language || 'French',
@@ -73,6 +78,7 @@ export default function SoumissionDetail() {
     }
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [id])
   useEffect(() => { if (editing) api.catalog.list().then(setCatalog).catch(console.error) }, [editing])
 
@@ -94,31 +100,34 @@ export default function SoumissionDetail() {
     }))
   }
 
-  const save = async () => {
+  const doSave = async (nextForm, nextItems) => {
     setSaving(true)
     try {
-      await api.documents.soumissions.update(id, { ...form, items })
-      setEditing(false)
-      load()
+      await api.documents.soumissions.update(id, { ...nextForm, items: nextItems })
     } catch (e) {
-      alert(e.message)
+      addToast({ message: e.message, type: 'error' })
     } finally {
       setSaving(false)
     }
   }
 
-  const cancelEdit = () => {
-    setForm({
-      language: soumission.language || 'French',
-      currency: soumission.currency || 'CAD',
-      status: soumission.status || 'Brouillon',
-      notes: soumission.notes || '',
-      discount_pct: soumission.discount_pct || 0,
-      discount_amount: soumission.discount_amount || 0,
-      discount_valid_until: soumission.discount_valid_until || '',
-    })
-    setItems((soumission.items || []).map(it => ({ ...it })))
+  // Autosave debounce — fires 500ms after last edit while editing mode is on
+  useEffect(() => {
+    if (!editing || skipSaveRef.current) {
+      skipSaveRef.current = false
+      return
+    }
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
+    saveTimerRef.current = setTimeout(() => doSave(form, items), 500)
+    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form, items])
+
+  const closeEdit = async () => {
+    if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null }
+    await doSave(form, items)
     setEditing(false)
+    load()
   }
 
   const duplicate = async () => {
@@ -127,21 +136,21 @@ export default function SoumissionDetail() {
       const copy = await api.documents.soumissions.duplicate(id)
       navigate(`/soumissions/${copy.id}`)
     } catch (e) {
-      alert(e.message)
+      addToast({ message: e.message, type: 'error' })
     } finally {
       setDuplicating(false)
     }
   }
 
   const handleDelete = async () => {
-    if (!confirm('Supprimer cette soumission ?')) return
+    if (!(await confirm('Supprimer cette soumission ?'))) return
     setDeleting(true)
     try {
       await api.documents.soumissions.delete(id)
       if (soumission.project_id) navigate(`/projects/${soumission.project_id}`, { state: { tab: 'soumissions' } })
       else navigate(-1)
     } catch (e) {
-      alert(e.message)
+      addToast({ message: e.message, type: 'error' })
       setDeleting(false)
     }
   }
@@ -154,7 +163,7 @@ export default function SoumissionDetail() {
         : `Soumission-${soumission.id.slice(0, 8).toUpperCase()}`
       await downloadPdf(id, title)
     } catch (e) {
-      alert(e.message)
+      addToast({ message: e.message, type: 'error' })
     } finally {
       setPdfLoading(false)
     }
@@ -220,20 +229,17 @@ export default function SoumissionDetail() {
 
           <div className="flex items-center gap-2">
             {!editing && isDraft && (
-              <button onClick={() => setEditing(true)}
+              <button onClick={() => { skipSaveRef.current = true; setEditing(true) }}
                 className="flex items-center gap-1.5 border border-slate-200 text-slate-600 px-3 py-2 rounded-lg text-sm hover:bg-slate-50">
                 <Pencil size={14} /> Éditer
               </button>
             )}
             {editing && (
               <>
-                <button onClick={cancelEdit}
-                  className="flex items-center gap-1.5 border border-slate-200 text-slate-600 px-3 py-2 rounded-lg text-sm hover:bg-slate-50">
-                  <X size={14} /> Annuler
-                </button>
-                <button onClick={save} disabled={saving}
-                  className="flex items-center gap-1.5 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50">
-                  <Check size={14} /> {saving ? 'Sauvegarde…' : 'Sauvegarder et regénérer PDF'}
+                <span className="text-xs text-slate-400">{saving ? 'Sauvegarde…' : 'Sauvegardé'}</span>
+                <button onClick={closeEdit}
+                  className="flex items-center gap-1.5 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700">
+                  <Check size={14} /> Fermer
                 </button>
               </>
             )}
@@ -355,21 +361,15 @@ export default function SoumissionDetail() {
                   {items.map((it, idx) => (
                     <tr key={idx} className="border-b last:border-0 hover:bg-slate-50/50">
                       <td className="px-3 py-2">
-                        <div className="flex items-center gap-1">
-                          <select className={`${inp} flex-1 min-w-0`} value={it.catalog_product_id || ''}
-                            onChange={e => selectProduct(idx, e.target.value)}>
-                            <option value="">— Personnalisé —</option>
-                            {catalog.map(p => (
-                              <option key={p.id} value={p.id}>{isFr ? p.name_fr : (p.name_en || p.name_fr)}</option>
-                            ))}
-                          </select>
-                          {it.catalog_product_id && (
-                            <Link to={`/products/${it.catalog_product_id}`} target="_blank"
-                              className="flex-shrink-0 text-slate-400 hover:text-indigo-600 p-0.5">
-                              <ExternalLink size={13} />
-                            </Link>
-                          )}
-                        </div>
+                        <LinkedRecordField
+                          name={`soumission_item_${idx}`}
+                          value={it.catalog_product_id || ''}
+                          options={catalog}
+                          labelFn={p => isFr ? p.name_fr : (p.name_en || p.name_fr)}
+                          getHref={p => `/products/${p.id}`}
+                          placeholder="Personnalisé"
+                          onChange={v => selectProduct(idx, v)}
+                        />
                       </td>
                       <td className="px-3 py-2">
                         <input type="number" min="1" className={`${inp} w-14 text-center`}

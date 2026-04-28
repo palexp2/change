@@ -5,11 +5,11 @@ import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { fmtDate } from '../lib/formatDate.js'
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric' })
-}
 
 function fmtCurrency(v) {
   if (v == null) return '—'
@@ -80,7 +80,7 @@ function CreateLabelModal({ envoi, orderItemsTotalWeight, onClose, onDone }) {
     orderItemsTotalWeight > 0 ? orderItemsTotalWeight.toFixed(2) : ''
   )
   const [custom, setCustom] = useState({ length: '', width: '', depth: '' })
-  const [declaredValue, setDeclaredValue] = useState('1')
+  const [declaredValue, _setDeclaredValue] = useState('1')
   const [rates, setRates] = useState([])
   const [requestId, setRequestId] = useState(null)
   const [selectedRate, setSelectedRate] = useState(null)
@@ -528,37 +528,31 @@ function EditEnvoiModal({ envoi, adresses, onSave, onClose }) {
     notes: envoi.notes || '',
     address_id: envoi.address_id || '',
   })
-  const [saving, setSaving] = useState(false)
+  const [fieldSaving, setFieldSaving] = useState({})
   const [error, setError] = useState('')
 
-  async function handleSubmit(e) {
-    e.preventDefault()
+  async function saveField(key, value) {
+    setForm(f => ({ ...f, [key]: value }))
     setError('')
-    setSaving(true)
+    setFieldSaving(s => ({ ...s, [key]: true }))
     try {
-      await onSave({
-        ...form,
-        shipped_at: form.shipped_at || null,
-        tracking_number: form.tracking_number || null,
-        carrier: form.carrier || null,
-        notes: form.notes || null,
-        address_id: form.address_id || null,
-      })
-      onClose()
+      await onSave({ [key]: value === '' ? null : value })
     } catch (err) {
       setError(err.message)
     } finally {
-      setSaving(false)
+      setFieldSaving(s => ({ ...s, [key]: false }))
     }
   }
 
+  const savingLabel = (k) => fieldSaving[k] ? ' (sauvegarde...)' : ''
+
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
+    <div className="space-y-4">
       <div>
-        <label className="label">Statut</label>
+        <label className="label">Statut{savingLabel('status')}</label>
         <select
           value={form.status}
-          onChange={e => setForm(f => ({ ...f, status: e.target.value }))}
+          onChange={e => saveField('status', e.target.value)}
           className="select"
         >
           <option value="À envoyer">À envoyer</option>
@@ -566,63 +560,61 @@ function EditEnvoiModal({ envoi, adresses, onSave, onClose }) {
         </select>
       </div>
       <div>
-        <label className="label">Transporteur</label>
+        <label className="label">Transporteur{savingLabel('carrier')}</label>
         <input
           type="text"
           value={form.carrier}
           onChange={e => setForm(f => ({ ...f, carrier: e.target.value }))}
+          onBlur={e => saveField('carrier', e.target.value)}
           className="input"
           placeholder="ex. Purolator, FedEx, UPS…"
         />
       </div>
       <div>
-        <label className="label">N° de suivi</label>
+        <label className="label">N° de suivi{savingLabel('tracking_number')}</label>
         <input
           type="text"
           value={form.tracking_number}
           onChange={e => setForm(f => ({ ...f, tracking_number: e.target.value }))}
+          onBlur={e => saveField('tracking_number', e.target.value)}
           className="input"
         />
       </div>
       <div>
-        <label className="label">Envoyé le</label>
+        <label className="label">Envoyé le{savingLabel('shipped_at')}</label>
         <input
           type="date"
           value={form.shipped_at}
-          onChange={e => setForm(f => ({ ...f, shipped_at: e.target.value }))}
+          onChange={e => saveField('shipped_at', e.target.value)}
           className="input"
         />
       </div>
       <div>
-        <label className="label">Adresse de livraison</label>
-        <select
+        <label className="label">Adresse de livraison{savingLabel('address_id')}</label>
+        <LinkedRecordField
+          name="address_id"
           value={form.address_id}
-          onChange={e => setForm(f => ({ ...f, address_id: e.target.value }))}
-          className="select"
-        >
-          <option value="">— Aucune —</option>
-          {adresses.map(a => (
-            <option key={a.id} value={a.id}>{fmtAdresse(a)}</option>
-          ))}
-        </select>
+          options={adresses}
+          labelFn={fmtAdresse}
+          placeholder="Adresse"
+          onChange={v => saveField('address_id', v)}
+        />
       </div>
       <div>
-        <label className="label">Notes</label>
+        <label className="label">Notes{savingLabel('notes')}</label>
         <textarea
           value={form.notes}
           onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+          onBlur={e => saveField('notes', e.target.value)}
           className="input"
           rows={3}
         />
       </div>
       {error && <p className="text-red-600 text-sm">{error}</p>}
       <div className="flex justify-end gap-3 pt-2">
-        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary">
-          {saving ? 'Enregistrement...' : 'Enregistrer'}
-        </button>
+        <button type="button" onClick={onClose} className="btn-primary">Fermer</button>
       </div>
-    </form>
+    </div>
   )
 }
 
@@ -639,9 +631,11 @@ export default function EnvoisDetail() {
   const [novoxConfigured, setNovoxConfigured] = useState(false)
   const [generatingPdf, setGeneratingPdf] = useState(false)
   const [showPdf, setShowPdf] = useState(false)
+  const confirm = useConfirm()
+  const { addToast } = useToast()
 
   useEffect(() => {
-    api.adresses.list({ limit: 'all' }).then(r => setAdresses(r.data)).catch(() => {})
+    api.adresses.lookup().then(setAdresses).catch(() => {})
     api.novoxpress.status().then(r => setNovoxConfigured(!!r.configured)).catch(() => {})
   }, [])
 
@@ -653,16 +647,17 @@ export default function EnvoisDetail() {
       .finally(() => setLoading(false))
   }
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [id])
 
   async function handleCancelPickup() {
-    if (!confirm('Annuler le ramassage planifié ?')) return
+    if (!(await confirm('Annuler le ramassage planifié ?'))) return
     setCancellingPickup(true)
     try {
       await api.novoxpress.cancelPickup(id)
       load()
     } catch (e) {
-      alert(e.message)
+      addToast({ message: e.message, type: 'error' })
     } finally {
       setCancellingPickup(false)
     }

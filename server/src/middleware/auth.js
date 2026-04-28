@@ -1,9 +1,5 @@
 import jwt from 'jsonwebtoken';
-import dotenv from 'dotenv';
-
-dotenv.config();
-
-const JWT_SECRET = process.env.JWT_SECRET || 'change-this-secret-in-production';
+import { JWT_SECRET } from '../config/secrets.js';
 
 export function requireAuth(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -18,14 +14,14 @@ export function requireAuth(req, res, next) {
 
   const token = queryToken || authHeader.slice(7);
   try {
-    const payload = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     req.user = {
       id: payload.id,
       role: payload.role,
       name: payload.name,
     };
     next();
-  } catch (err) {
+  } catch {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }
 }

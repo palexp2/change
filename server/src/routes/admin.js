@@ -12,9 +12,13 @@ router.use(requireAdmin);
 
 // GET /api/admin/users
 router.get('/users', (req, res) => {
-  const users = db.prepare(
-    'SELECT id, email, name, role, active, created_at FROM users ORDER BY name'
-  ).all();
+  const users = db.prepare(`
+    SELECT u.id, u.email, u.name, u.role, u.active, u.created_at, u.employee_id,
+           TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,'')) as employee_name
+    FROM users u
+    LEFT JOIN employees e ON u.employee_id = e.id
+    ORDER BY u.name
+  `).all();
   res.json(users);
 });
 
@@ -48,7 +52,7 @@ router.put('/users/:id', async (req, res) => {
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const { name, email, role, active, password } = req.body;
+  const { name, email, role, active, password, employee_id } = req.body;
   const validRoles = ['admin', 'sales', 'support', 'ops'];
   if (role && !validRoles.includes(role)) {
     return res.status(400).json({ error: 'Invalid role' });
@@ -59,16 +63,30 @@ router.put('/users/:id', async (req, res) => {
     if (conflict) return res.status(409).json({ error: 'Ce courriel est déjà utilisé' });
   }
 
+  if (employee_id) {
+    const exists = db.prepare('SELECT id FROM employees WHERE id = ?').get(employee_id);
+    if (!exists) return res.status(400).json({ error: 'Employé introuvable' });
+    const claimed = db.prepare('SELECT id FROM users WHERE employee_id = ? AND id != ?').get(employee_id, req.params.id);
+    if (claimed) return res.status(409).json({ error: 'Cet employé est déjà lié à un autre utilisateur' });
+  }
+
   if (password) {
     const hash = await bcrypt.hash(password, 10);
     db.prepare('UPDATE users SET password_hash=? WHERE id = ?').run(hash, req.params.id);
   }
 
-  const current = db.prepare('SELECT name, email, role FROM users WHERE id = ?').get(req.params.id);
-  db.prepare('UPDATE users SET name=?, email=?, role=?, active=? WHERE id = ?')
-    .run(name ?? current.name, email ? email.toLowerCase().trim() : current.email, role ?? current.role, active !== undefined ? (active ? 1 : 0) : 1, req.params.id);
+  const current = db.prepare('SELECT name, email, role, employee_id FROM users WHERE id = ?').get(req.params.id);
+  db.prepare('UPDATE users SET name=?, email=?, role=?, active=?, employee_id=? WHERE id = ?')
+    .run(
+      name ?? current.name,
+      email ? email.toLowerCase().trim() : current.email,
+      role ?? current.role,
+      active !== undefined ? (active ? 1 : 0) : 1,
+      employee_id !== undefined ? (employee_id || null) : current.employee_id,
+      req.params.id,
+    );
 
-  res.json(db.prepare('SELECT id, email, name, role, active, created_at FROM users WHERE id = ?').get(req.params.id));
+  res.json(db.prepare('SELECT id, email, name, role, active, employee_id, created_at FROM users WHERE id = ?').get(req.params.id));
 });
 
 // POST /api/admin/users/:id/reset-password

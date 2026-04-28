@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
+import { getCentralControllers } from '../utils/centralController.js';
+import { buildPartialUpdate } from '../utils/partialUpdate.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -75,39 +77,47 @@ router.get('/:id', (req, res) => {
      WHERE t.id = ?`
   ).get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+  ticket.central_controllers = getCentralControllers(ticket.company_id);
   res.json(ticket);
 });
 
 // POST /api/tickets
 router.post('/', (req, res) => {
-  const { company_id, contact_id, assigned_to, title, description, type, status, duration_minutes } = req.body;
+  const { company_id, contact_id, assigned_to, title, description, response, type, status, duration_minutes } = req.body;
   const id = uuidv4();
   db.prepare(
-    `INSERT INTO tickets (id, company_id, contact_id, assigned_to, title, description, type, status, duration_minutes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO tickets (id, company_id, contact_id, assigned_to, title, description, response, type, status, duration_minutes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(id, company_id || null, contact_id || null, assigned_to || null,
-    title, description || null, type || null, status || 'Waiting on us', duration_minutes || 0);
+    title, description || null, response || null, type || null, status || 'Waiting on us', duration_minutes || 0);
 
-  res.status(201).json(db.prepare(
+  const created = db.prepare(
     `SELECT t.*, c.name as company_name, u.name as assigned_name FROM tickets t LEFT JOIN companies c ON t.company_id = c.id LEFT JOIN users u ON t.assigned_to = u.id WHERE t.id = ?`
-  ).get(id));
+  ).get(id);
+  created.central_controllers = getCentralControllers(created.company_id);
+  res.status(201).json(created);
 });
 
-// PUT /api/tickets/:id
+// PUT /api/tickets/:id — partial update
 router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM tickets WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Ticket not found' });
 
-  const { company_id, contact_id, assigned_to, title, description, type, status, duration_minutes } = req.body;
-  db.prepare(
-    `UPDATE tickets SET company_id=?, contact_id=?, assigned_to=?, title=?, description=?, type=?, status=?, duration_minutes=?, updated_at=datetime('now')
-     WHERE id = ?`
-  ).run(company_id || null, contact_id || null, assigned_to || null, title, description || null,
-    type || null, status, duration_minutes || 0, req.params.id);
+  const { setClause, values, error } = buildPartialUpdate(req.body, {
+    allowed: ['company_id', 'contact_id', 'assigned_to', 'title', 'description',
+      'response', 'type', 'status', 'duration_minutes'],
+  });
+  if (error) return res.status(400).json({ error });
+  if (setClause) {
+    db.prepare(`UPDATE tickets SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+      .run(...values, req.params.id);
+  }
 
-  res.json(db.prepare(
+  const updated = db.prepare(
     `SELECT t.*, c.name as company_name, u.name as assigned_name FROM tickets t LEFT JOIN companies c ON t.company_id = c.id LEFT JOIN users u ON t.assigned_to = u.id WHERE t.id = ?`
-  ).get(req.params.id));
+  ).get(req.params.id);
+  updated.central_controllers = getCentralControllers(updated.company_id);
+  res.json(updated);
 });
 
 // PATCH /api/tickets/:id/status
@@ -117,7 +127,7 @@ router.patch('/:id/status', (req, res) => {
 
   const { status } = req.body;
   if (!status) return res.status(400).json({ error: 'Status is required' });
-  db.prepare(`UPDATE tickets SET status=?, updated_at=datetime('now') WHERE id = ?`)
+  db.prepare(`UPDATE tickets SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
     .run(status, req.params.id);
   res.json({ message: 'Status updated' });
 });

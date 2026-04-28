@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Trash2, Plug, Database, Check, Zap, Bot, Users } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
+import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Trash2, Plug, Zap, Bot, Users } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
@@ -10,6 +10,8 @@ import { CorbeilleContent } from './Corbeille.jsx'
 import { ConnectorsContent } from './Connectors.jsx'
 import { AutomationsContent } from './Automations.jsx'
 import { AgentContent } from './Agent.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 function fmt(bytes) {
   if (bytes == null) return '—'
@@ -222,9 +224,105 @@ const ROLES = ['admin', 'sales', 'support', 'ops']
 const roleLabels = { admin: 'Admin', sales: 'Ventes', support: 'Support', ops: 'Opérations' }
 const roleColors = { admin: 'indigo', sales: 'blue', support: 'green', ops: 'orange' }
 
+function EmployeePicker({ value, onChange, disabled }) {
+  const [employees, setEmployees] = useState([])
+  const [query, setQuery] = useState('')
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef(null)
+
+  useEffect(() => {
+    api.employees.list({ limit: 'all' })
+      .then(r => setEmployees(r.data || r))
+      .catch(() => setEmployees([]))
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => { if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open])
+
+  const selected = employees.find(e => e.id === value)
+  const q = query.trim().toLowerCase()
+  const filtered = (q
+    ? employees.filter(e =>
+        (e.first_name || '').toLowerCase().includes(q) ||
+        (e.last_name || '').toLowerCase().includes(q) ||
+        (e.email_work || '').toLowerCase().includes(q) ||
+        (e.email_personal || '').toLowerCase().includes(q)
+      )
+    : employees
+  ).slice(0, 50)
+
+  const label = (e) => [e.first_name, e.last_name].filter(Boolean).join(' ').trim() || e.email_work || e.email_personal || '(sans nom)'
+
+  return (
+    <div className="relative" ref={rootRef}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        disabled={disabled}
+        className="w-full input text-left flex items-center justify-between"
+      >
+        <span className={selected ? 'text-slate-900' : 'text-slate-400'}>
+          {selected ? label(selected) : 'Aucun employé lié'}
+        </span>
+        <span className="text-slate-400 text-xs">▾</span>
+      </button>
+      {open && (
+        <div className="absolute left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-20">
+          <div className="p-2 border-b border-slate-100">
+            <input
+              autoFocus
+              className="w-full text-sm focus:outline-none"
+              placeholder="Rechercher un employé…"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+            />
+          </div>
+          <div className="max-h-64 overflow-y-auto py-1">
+            <button
+              type="button"
+              onClick={() => { onChange(null); setOpen(false); setQuery('') }}
+              className="w-full text-left px-3 py-1.5 text-sm text-slate-500 hover:bg-slate-50 italic"
+            >
+              — aucun employé —
+            </button>
+            {filtered.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-slate-500">Aucun résultat</div>
+            ) : filtered.map(e => (
+              <button
+                key={e.id}
+                type="button"
+                onClick={() => { onChange(e.id); setOpen(false); setQuery('') }}
+                className={`w-full text-left px-3 py-1.5 text-sm hover:bg-slate-50 ${value === e.id ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
+              >
+                {label(e)}
+                {e.matricule && <span className="ml-2 text-xs text-slate-400 font-mono">#{e.matricule}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {selected && (
+        <div className="mt-1 text-xs">
+          <Link
+            to="/employees"
+            onClick={e => e.stopPropagation()}
+            className="text-indigo-600 hover:underline"
+          >
+            Voir la liste des employés →
+          </Link>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function UserForm({ initial = {}, onSave, onClose, isNew, isSelf }) {
   const [form, setForm] = useState({
-    name: '', email: '', password: '', role: 'sales', active: true, ...initial
+    name: '', email: '', password: '', role: 'sales', active: true, employee_id: null, ...initial
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -266,6 +364,13 @@ function UserForm({ initial = {}, onSave, onClose, isNew, isSelf }) {
           {ROLES.map(r => <option key={r} value={r}>{roleLabels[r]}</option>)}
         </select>
       </div>
+      {!isNew && (
+        <div>
+          <label className="label">Employé lié</label>
+          <EmployeePicker value={form.employee_id} onChange={id => setForm(f => ({ ...f, employee_id: id }))} disabled={saving} />
+          <p className="text-xs text-slate-500 mt-1">Utilisé pour rattacher les feuilles de temps et la paie.</p>
+        </div>
+      )}
       {!isNew && (
         <div className="flex items-center gap-2">
           <input type="checkbox" id="user-active" checked={form.active} onChange={e => setForm(f => ({ ...f, active: e.target.checked }))} className="rounded" disabled={isSelf} />
@@ -347,11 +452,42 @@ function UsersSection({ currentUser }) {
 
   async function handleCreate(form) { await api.admin.createUser(form); load() }
   async function handleUpdate(form) {
-    const payload = { name: form.name, email: form.email, role: form.role, active: form.active }
+    const payload = {
+      name: form.name,
+      email: form.email,
+      role: form.role,
+      active: form.active,
+      employee_id: form.employee_id || null,
+    }
     if (form.password) payload.password = form.password
     await api.admin.updateUser(editUser.id, payload)
     setEditUser(null); load()
   }
+
+  const columns = TABLE_COLUMN_META.users.map(meta => {
+    const renders = {
+      name: u => (
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center flex-shrink-0">
+            <span className="text-indigo-600 font-semibold text-sm">{u.name?.[0]?.toUpperCase()}</span>
+          </div>
+          <div className="font-medium text-slate-900">{u.name}
+            {u.id === currentUser.id && <span className="ml-1.5 text-xs text-slate-400">(vous)</span>}
+          </div>
+        </div>
+      ),
+      email: u => <span className="text-slate-500">{u.email}</span>,
+      role: u => <Badge color={roleColors[u.role]}>{roleLabels[u.role]}</Badge>,
+      active: u => <Badge color={u.active ? 'green' : 'red'}>{u.active ? 'Actif' : 'Inactif'}</Badge>,
+      reset: u => (
+        <button onClick={e => { e.stopPropagation(); setResetUser(u) }}
+          className="text-xs text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded transition-colors">
+          🔑 Reset
+        </button>
+      ),
+    }
+    return { ...meta, render: renders[meta.id] }
+  })
 
   return (
     <>
@@ -361,48 +497,15 @@ function UsersSection({ currentUser }) {
           <Plus size={14} /> Nouvel utilisateur
         </button>
       </div>
-      <div className="card overflow-hidden mb-6">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-slate-200 bg-slate-50">
-              <th className="text-left px-5 py-3 text-xs font-semibold text-slate-500 uppercase">Utilisateur</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase hidden sm:table-cell">Courriel</th>
-              <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Rôle</th>
-              <th className="text-center px-4 py-3 text-xs font-semibold text-slate-500 uppercase">Statut</th>
-              <th className="px-4 py-3"></th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={5} className="text-center py-10 text-slate-400">Chargement...</td></tr>
-            ) : users.map(u => (
-              <tr key={u.id} onClick={() => setEditUser(u)}
-                className="border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50 transition-colors">
-                <td className="px-5 py-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center flex-shrink-0">
-                      <span className="text-indigo-600 font-semibold text-sm">{u.name?.[0]?.toUpperCase()}</span>
-                    </div>
-                    <div className="font-medium text-slate-900">{u.name}
-                      {u.id === currentUser.id && <span className="ml-1.5 text-xs text-slate-400">(vous)</span>}
-                    </div>
-                  </div>
-                </td>
-                <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{u.email}</td>
-                <td className="px-4 py-3"><Badge color={roleColors[u.role]}>{roleLabels[u.role]}</Badge></td>
-                <td className="px-4 py-3 text-center">
-                  <Badge color={u.active ? 'green' : 'red'}>{u.active ? 'Actif' : 'Inactif'}</Badge>
-                </td>
-                <td className="px-4 py-3 text-right">
-                  <button onClick={e => { e.stopPropagation(); setResetUser(u) }}
-                    className="text-xs text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded transition-colors">
-                    🔑 Reset
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="mb-6">
+        <DataTable
+          table="users"
+          columns={columns}
+          data={users}
+          loading={loading}
+          onRowClick={u => setEditUser(u)}
+          searchFields={['name', 'email']}
+        />
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouvel utilisateur">
@@ -432,7 +535,7 @@ export default function Admin() {
 
   return (
     <Layout>
-      <div className="p-6 max-w-4xl mx-auto">
+      <div className="p-6 max-w-7xl mx-auto">
         <div className="flex items-center gap-3 mb-6">
           <div className="p-2 bg-indigo-50 rounded-lg">
             <Settings size={20} className="text-indigo-600" />

@@ -1,11 +1,13 @@
 import { v4 as uuid } from 'uuid'
-import { createWriteStream, existsSync } from 'fs'
+import { existsSync } from 'fs'
 import { mkdir } from 'fs/promises'
 import path from 'path'
 import db from '../db/database.js'
 import { getAccessToken, airtableFetch } from '../connectors/airtable.js'
 import { syncDynamicFields, updateDynamicFields } from './airtableAutoSync.js'
 import { broadcastAll } from './realtime.js'
+import { evaluateFieldRules } from './fieldRuleEngine.js'
+import { getFrozenColumns } from './airtableFrozenColumns.js'
 
 // Auto-create missing columns in SQLite table (all added as TEXT — safe default)
 const _ensuredTables = new Map() // table → Set<col>
@@ -38,7 +40,7 @@ function upsertRecord(table, airtableId, payload) {
   const existing = db.prepare(`SELECT id FROM ${table} WHERE airtable_id=?`).get(airtableId)
   if (existing) {
     const set = keys.map(k => `${k}=?`).join(', ')
-    db.prepare(`UPDATE ${table} SET ${set}, updated_at=datetime('now') WHERE id=?`)
+    db.prepare(`UPDATE ${table} SET ${set}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
       .run(...keys.map(k => payload[k] ?? null), existing.id)
     return 'updated'
   } else {
@@ -196,7 +198,7 @@ export async function syncAirtable(changes = null) {
 
           const existing = db.prepare('SELECT id FROM companies WHERE airtable_id=?').get(rec.id)
           if (existing) {
-            db.prepare(`UPDATE companies SET name=?, phone=COALESCE(?,phone), email=COALESCE(?,email), website=COALESCE(?,website), address=COALESCE(?,address), city=COALESCE(?,city), province=COALESCE(?,province), country=COALESCE(?,country), type=COALESCE(?,type), lifecycle_phase=COALESCE(?,lifecycle_phase), notes=COALESCE(?,notes), updated_at=datetime('now') WHERE id=?`)
+            db.prepare(`UPDATE companies SET name=?, phone=COALESCE(?,phone), email=COALESCE(?,email), website=COALESCE(?,website), address=COALESCE(?,address), city=COALESCE(?,city), province=COALESCE(?,province), country=COALESCE(?,country), type=COALESCE(?,type), lifecycle_phase=COALESCE(?,lifecycle_phase), notes=COALESCE(?,notes), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
               .run(name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), existing.id)
           } else {
             db.prepare('INSERT INTO companies (id, name, phone, email, website, address, city, province, country, type, lifecycle_phase, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
@@ -262,7 +264,7 @@ export async function syncAirtable(changes = null) {
             contactsImported++
           }
         }
-        db.prepare(`UPDATE airtable_sync_config SET last_synced_at=datetime('now')`).run()
+        db.prepare(`UPDATE airtable_sync_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`).run()
       })(records)
       if (contactsImported > 0) console.log(`👤 Airtable: ${contactsImported} contacts imported`)
     if (!changes) {
@@ -378,7 +380,7 @@ export async function syncOrders(changes = null) {
 
         const existing = db.prepare('SELECT id FROM orders WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE orders SET company_id=?, project_id=?, status=?, priority=?, notes=?, address_id=COALESCE(?,address_id), is_subscription=?, updated_at=datetime('now') WHERE id=?`)
+          db.prepare(`UPDATE orders SET company_id=?, project_id=?, status=?, priority=?, notes=?, address_id=COALESCE(?,address_id), is_subscription=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
             .run(companyId, projectId, status, priority, notes, addressId, isSubscription, existing.id)
           updated++
         } else {
@@ -397,6 +399,7 @@ export async function syncOrders(changes = null) {
     } else {
       updateDynamicFields('orders', fm, records)
     }
+    await evaluateFieldRules({ erpTable: 'orders', tableId: config.orders_table_id, changes })
   } catch (e) { console.error('❌ Orders sync:', e.message) }
   } // end if (!changes || _orderIds?.length)
 
@@ -470,7 +473,7 @@ export async function syncOrders(changes = null) {
           imported++
         }
       }
-      db.prepare(`UPDATE airtable_orders_config SET last_synced_at=datetime('now')`).run()
+      db.prepare(`UPDATE airtable_orders_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`).run()
     })(records)
     console.log(`🧾 Order items: ${imported} importées, ${updated} mises à jour`)
     if (!changes) {
@@ -569,8 +572,8 @@ export async function syncPieces(changes = null) {
         }
         function toInt(fieldKey) {
           const raw = fieldKey ? rec.fields[fieldKey] : null
-          const n = parseInt(String(raw ?? '').replace(/[^0-9]/g, ''))
-          return isNaN(n) ? null : n
+          const n = parseFloat(String(raw ?? '').replace(/[^0-9.-]/g, ''))
+          return isNaN(n) ? null : Math.round(n)
         }
 
         const validProcurement = ['Acheté', 'Fabriqué', 'Drop ship']
@@ -596,7 +599,7 @@ export async function syncPieces(changes = null) {
 
         const existing = db.prepare('SELECT id FROM products WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE products SET name_fr=?, name_en=?, sku=?, type=?, unit_cost=?, price_cad=?, stock_qty=?, min_stock=?, supplier=?, procurement_type=?, weight_lbs=?, image_url=COALESCE(?,image_url), updated_at=datetime('now') WHERE id=?`)
+          db.prepare(`UPDATE products SET name_fr=?, name_en=?, sku=?, type=?, unit_cost=?, price_cad=?, stock_qty=?, min_stock=?, supplier=?, procurement_type=?, weight_lbs=?, image_url=COALESCE(?,image_url), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
             .run(payload.name_fr, payload.name_en, payload.sku, payload.type, payload.unit_cost, payload.price_cad, payload.stock_qty, payload.min_stock, payload.supplier, payload.procurement_type, payload.weight_lbs, payload.image_url, existing.id)
           updated++
         } else {
@@ -606,7 +609,7 @@ export async function syncPieces(changes = null) {
           imported++
         }
       }
-      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='pieces'`).run()
+      db.prepare(`UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='pieces'`).run()
     })(records)
     console.log(`🔩 Pièces: ${imported} importées, ${updated} mises à jour`)
     if (!changes) {
@@ -615,6 +618,7 @@ export async function syncPieces(changes = null) {
     } else {
       updateDynamicFields('products', fieldMap, records)
     }
+    await evaluateFieldRules({ erpTable: 'products', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Pièces sync:', e.message) }
 }
 
@@ -642,15 +646,15 @@ export async function syncAchats(changes = null) {
       for (const rec of recs) {
         if (!fieldMap && rec.fields) {
           fieldMap = {
-            product:        autoMapField(rec.fields, 'produit', 'pièce', 'piece', 'product', 'item'),
-            supplier:       autoMapField(rec.fields, 'fournisseur', 'supplier', 'vendor'),
-            reference:      autoMapField(rec.fields, 'référence', 'reference', 'ref', 'po', 'numéro'),
-            order_date:     autoMapField(rec.fields, 'date commande', 'date achat', 'order date', 'date'),
+            product:        autoMapField(rec.fields, 'nom de la pièce', 'nom de la piece', 'produit', 'pièce', 'piece', 'product', 'item'),
+            supplier:       autoMapField(rec.fields, 'fournisseur - legacy', 'fournisseur legacy', 'fournisseur', 'supplier', 'vendor'),
+            reference:      autoMapField(rec.fields, 'numéro de commande', 'numero de commande', 'référence', 'reference', 'ref', 'po', 'numéro'),
+            order_date:     autoMapField(rec.fields, 'date de commande', 'date commande', 'date achat', 'order date', 'date'),
             expected_date:  autoMapField(rec.fields, 'date prévue', 'date prevue', 'expected', 'livraison prévue'),
-            received_date:  autoMapField(rec.fields, 'date réception', 'date reception', 'received date', 'reçu le'),
-            qty_ordered:    autoMapField(rec.fields, 'qté commandée', 'qty ordered', 'quantité commandée', 'qte commandee'),
+            received_date:  autoMapField(rec.fields, 'date de réception complète', 'date de réception', 'date réception', 'date reception', 'received date', 'reçu le'),
+            qty_ordered:    autoMapField(rec.fields, 'quantité commandé', 'quantite commande', 'qté commandée', 'qty ordered', 'quantité commandée', 'qte commandee'),
             qty_received:   autoMapField(rec.fields, 'qté reçue', 'qty received', 'quantité reçue', 'qte recue'),
-            unit_cost:      autoMapField(rec.fields, 'coût unitaire', 'cout unitaire', 'unit cost', 'prix unitaire'),
+            unit_cost:      autoMapField(rec.fields, 'prix unitaire ($ cad)', 'prix unitaire', 'coût unitaire', 'cout unitaire', 'unit cost'),
             status:         autoMapField(rec.fields, 'statut', 'status', 'état'),
             notes:          autoMapField(rec.fields, 'notes', 'commentaires', 'remarks'),
           }
@@ -663,8 +667,8 @@ export async function syncAchats(changes = null) {
         }
         function toInt(fieldKey) {
           const raw = fieldKey ? rec.fields[fieldKey] : null
-          const n = parseInt(String(raw ?? '').replace(/[^0-9]/g, ''))
-          return isNaN(n) ? null : n
+          const n = parseFloat(String(raw ?? '').replace(/[^0-9.-]/g, ''))
+          return isNaN(n) ? null : Math.round(n)
         }
 
         let productId = null
@@ -709,7 +713,7 @@ export async function syncAchats(changes = null) {
 
         const existing = db.prepare('SELECT id FROM purchases WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE purchases SET product_id=?, supplier=?, reference=?, order_date=?, expected_date=?, received_date=?, qty_ordered=?, qty_received=?, unit_cost=?, status=?, notes=?, updated_at=datetime('now') WHERE id=?`)
+          db.prepare(`UPDATE purchases SET product_id=?, supplier=?, reference=?, order_date=?, expected_date=?, received_date=?, qty_ordered=?, qty_received=?, unit_cost=?, status=?, notes=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
             .run(payload.product_id, payload.supplier, payload.reference, payload.order_date, payload.expected_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes, existing.id)
           updated++
         } else {
@@ -718,7 +722,7 @@ export async function syncAchats(changes = null) {
           imported++
         }
       }
-      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='achats'`).run()
+      db.prepare(`UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='achats'`).run()
     })(records)
     console.log(`🛒 Achats: ${imported} importés, ${updated} mis à jour`)
     if (!changes) {
@@ -727,6 +731,7 @@ export async function syncAchats(changes = null) {
     } else {
       updateDynamicFields('purchases', fieldMap, records)
     }
+    await evaluateFieldRules({ erpTable: 'purchases', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Achats sync:', e.message) }
 }
 
@@ -809,7 +814,7 @@ export async function syncSerials(changes = null) {
 
         const existing = db.prepare('SELECT id FROM serial_numbers WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE serial_numbers SET serial=?, product_id=?, company_id=?, order_item_id=?, address=?, manufacture_date=?, last_programmed_date=?, manufacture_value=?, status=?, notes=?, updated_at=datetime('now') WHERE id=?`)
+          db.prepare(`UPDATE serial_numbers SET serial=?, product_id=?, company_id=?, order_item_id=?, address=?, manufacture_date=?, last_programmed_date=?, manufacture_value=?, status=?, notes=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
             .run(serial, productId, companyId, orderItemId, address, manufacture_date, last_programmed_date, manufacture_value, status, notes, existing.id)
           updated++
         } else {
@@ -818,7 +823,7 @@ export async function syncSerials(changes = null) {
           imported++
         }
       }
-      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='serials'`).run()
+      db.prepare(`UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='serials'`).run()
     })(records)
     console.log(`🔢 Sériaux: ${imported} importés, ${updated} mis à jour`)
     if (!changes) {
@@ -827,6 +832,7 @@ export async function syncSerials(changes = null) {
     } else {
       updateDynamicFields('serial_numbers', fieldMap, records)
     }
+    await evaluateFieldRules({ erpTable: 'serial_numbers', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Serials sync:', e.message) }
 }
 
@@ -911,7 +917,7 @@ export async function syncEnvois(changes = null) {
           imported++
         }
       }
-      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='envois'`).run()
+      db.prepare(`UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='envois'`).run()
     })(records)
     console.log(`🚚 Envois: ${imported} importés, ${updated} mis à jour`)
     if (!changes) {
@@ -920,6 +926,7 @@ export async function syncEnvois(changes = null) {
     } else {
       updateDynamicFields('shipments', fieldMap, records)
     }
+    await evaluateFieldRules({ erpTable: 'shipments', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Envois sync:', e.message) }
 }
 
@@ -945,16 +952,21 @@ export async function syncBillets(changes = null) {
 
     db.transaction((recs) => {
       for (const rec of recs) {
-        if (!fieldMap && rec.fields) {
-          fieldMap = {
+        if (rec.fields) {
+          const autoMap = {
             title:            autoMapField(rec.fields, 'titre', 'title', 'sujet', 'subject', 'nom'),
             description:      autoMapField(rec.fields, 'description', 'détails', 'details'),
+            response:         autoMapField(rec.fields, 'réponse', 'reponse', 'response', 'answer'),
             type:             autoMapField(rec.fields, 'type', 'catégorie', 'categorie'),
             status:           autoMapField(rec.fields, 'statut', 'status', 'état'),
             company:          autoMapField(rec.fields, 'entreprise', 'company', 'client', 'compte'),
             contact:          autoMapField(rec.fields, 'contact', 'personne'),
             duration_minutes: autoMapField(rec.fields, 'durée', 'duree', 'duration', 'minutes', 'temps'),
             created_at:       autoMapField(rec.fields, 'date de création', 'date creation', 'created', 'créé le', 'cree le', 'date'),
+          }
+          if (!fieldMap) fieldMap = autoMap
+          else for (const k of Object.keys(autoMap)) {
+            if (!fieldMap[k] && autoMap[k]) fieldMap[k] = autoMap[k]
           }
         }
 
@@ -986,8 +998,8 @@ export async function syncBillets(changes = null) {
 
         function toInt(fieldKey) {
           const raw = fieldKey ? rec.fields[fieldKey] : null
-          const n = parseInt(String(raw ?? '').replace(/[^0-9]/g, ''))
-          return isNaN(n) ? null : n
+          const n = parseFloat(String(raw ?? '').replace(/[^0-9.-]/g, ''))
+          return isNaN(n) ? null : Math.round(n)
         }
 
         const companyId = lookupCompany(rec.fields, fieldMap?.company)
@@ -1017,6 +1029,7 @@ export async function syncBillets(changes = null) {
         const payload = {
           title, status, type,
           description:      getVal(rec.fields, fieldMap?.description),
+          response:         getVal(rec.fields, fieldMap?.response),
           duration_minutes: toInt(fieldMap?.duration_minutes) ?? 0,
           company_id:       companyId,
           contact_id:       contactId,
@@ -1027,7 +1040,7 @@ export async function syncBillets(changes = null) {
         if (result === 'updated') updated++
         else imported++
       }
-      db.prepare(`UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='billets'`).run()
+      db.prepare(`UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='billets'`).run()
     })(records)
     console.log(`🎫 Billets: ${imported} importés, ${updated} mis à jour`)
     if (!changes) purgeOrphans('tickets', records)
@@ -1039,41 +1052,8 @@ export async function syncBillets(changes = null) {
       updateDynamicFields('tickets', fieldMap, records)
     }
 
-    // Notify Slack when escalade = 'Hardware' (new only)
-    await notifyHardwareEscalades()
+    await evaluateFieldRules({ erpTable: 'tickets', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Billets sync:', e.message) }
-}
-
-async function notifyHardwareEscalades() {
-  const webhookUrl = process.env.SLACK_WEBHOOK_HARDWARE
-  if (!webhookUrl) return
-
-  const tickets = db.prepare(`
-    SELECT t.id, t.title, t.status, t.type, c.name as company_name
-    FROM tickets t
-    LEFT JOIN companies c ON t.company_id = c.id
-    WHERE t.escalade = 'Hardware' AND t.slack_notified_hardware = 0
-  `).all()
-
-  for (const ticket of tickets) {
-    const text = `🔧 *Escalade Hardware* — ${ticket.title}\n` +
-      `Entreprise : ${ticket.company_name || 'N/A'}\n` +
-      `Type : ${ticket.type || 'N/A'} | Statut : ${ticket.status || 'N/A'}\n` +
-      `<${process.env.APP_URL}/erp/tickets/${ticket.id}|Voir le billet>`
-    try {
-      const resp = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      })
-      if (resp.ok) {
-        db.prepare('UPDATE tickets SET slack_notified_hardware = 1 WHERE id = ?').run(ticket.id)
-        console.log(`📣 Slack: escalade Hardware notifiée pour ${ticket.title}`)
-      }
-    } catch (e) {
-      console.error(`❌ Slack notification failed for ${ticket.title}:`, e.message)
-    }
-  }
 }
 
 export async function syncProjets(changes = null) {
@@ -1117,6 +1097,8 @@ export async function syncProjets(changes = null) {
       extraTableData.push({ extra, extraRecords })
     }
 
+    const frozenProjects = getFrozenColumns('projects')
+
     db.transaction((recs) => {
       for (const rec of recs) {
         if (!fieldMap && rec.fields) {
@@ -1158,8 +1140,8 @@ export async function syncProjets(changes = null) {
         }
         function toInt(fieldKey) {
           const raw = fieldKey ? rec.fields[fieldKey] : null
-          const n = parseInt(String(raw ?? '').replace(/[^0-9]/g, ''))
-          return isNaN(n) ? null : n
+          const n = parseFloat(String(raw ?? '').replace(/[^0-9.-]/g, ''))
+          return isNaN(n) ? null : Math.round(n)
         }
 
         const valueCad      = toFloat(fieldMap?.value_cad)
@@ -1173,10 +1155,26 @@ export async function syncProjets(changes = null) {
         const notes         = getVal(rec.fields, fieldMap?.notes)
 
         const existing = db.prepare('SELECT id FROM projects WHERE airtable_id=?').get(rec.id)
+        const allPairs = [
+          ['name', name],
+          ['company_id', companyId],
+          ['status', status],
+          ['type', type],
+          ['value_cad', valueCad],
+          ['probability', probability],
+          ['monthly_cad', monthlyCad],
+          ['nb_greenhouses', nbGreenhouses],
+          ['close_date', closeDate],
+          ['notes', notes],
+        ]
         if (existing) {
-          db.prepare(`UPDATE projects SET name=?, company_id=?, status=?, type=?, value_cad=?, probability=?, monthly_cad=?, nb_greenhouses=?, close_date=?, notes=?, updated_at=datetime('now') WHERE id=?`)
-            .run(name, companyId, status, type, valueCad, probability, monthlyCad, nbGreenhouses, closeDate, notes, existing.id)
-          updated++
+          const writable = allPairs.filter(([c]) => !frozenProjects.has(c))
+          if (writable.length) {
+            const setClause = writable.map(([c]) => `${c}=?`).join(', ')
+            db.prepare(`UPDATE projects SET ${setClause}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
+              .run(...writable.map(([, v]) => v), existing.id)
+            updated++
+          }
         } else {
           db.prepare('INSERT INTO projects (id, name, company_id, status, type, value_cad, probability, monthly_cad, nb_greenhouses, close_date, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
             .run(uuid(), name, companyId, status, type, valueCad, probability, monthlyCad, nbGreenhouses, closeDate, notes, rec.id)
@@ -1205,9 +1203,25 @@ export async function syncProjets(changes = null) {
           const prob2 = isNaN(pf2) ? null : Math.round(pf2 > 1 ? pf2 : pf2 * 100)
           const existing2 = db.prepare('SELECT id FROM projects WHERE airtable_id=?').get(rec.id)
           if (existing2) {
-            db.prepare(`UPDATE projects SET name=?, company_id=?, status=?, type=?, value_cad=?, probability=?, monthly_cad=?, nb_greenhouses=?, close_date=?, notes=?, updated_at=datetime('now') WHERE id=?`)
-              .run(name, companyId2, status2, type2, toF(extraFieldMap.value_cad), prob2, toF(extraFieldMap.monthly_cad), toI(extraFieldMap.nb_greenhouses), getVal(rec.fields, extraFieldMap.close_date), getVal(rec.fields, extraFieldMap.notes), existing2.id)
-            updated++
+            const extraPairs = [
+              ['name', name],
+              ['company_id', companyId2],
+              ['status', status2],
+              ['type', type2],
+              ['value_cad', toF(extraFieldMap.value_cad)],
+              ['probability', prob2],
+              ['monthly_cad', toF(extraFieldMap.monthly_cad)],
+              ['nb_greenhouses', toI(extraFieldMap.nb_greenhouses)],
+              ['close_date', getVal(rec.fields, extraFieldMap.close_date)],
+              ['notes', getVal(rec.fields, extraFieldMap.notes)],
+            ]
+            const writable = extraPairs.filter(([c]) => !frozenProjects.has(c))
+            if (writable.length) {
+              const setClause = writable.map(([c]) => `${c}=?`).join(', ')
+              db.prepare(`UPDATE projects SET ${setClause}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
+                .run(...writable.map(([, v]) => v), existing2.id)
+              updated++
+            }
           } else {
             db.prepare('INSERT INTO projects (id, name, company_id, status, type, value_cad, probability, monthly_cad, nb_greenhouses, close_date, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
               .run(uuid(), name, companyId2, status2, type2, toF(extraFieldMap.value_cad), prob2, toF(extraFieldMap.monthly_cad), toI(extraFieldMap.nb_greenhouses), getVal(rec.fields, extraFieldMap.close_date), getVal(rec.fields, extraFieldMap.notes), rec.id)
@@ -1216,7 +1230,7 @@ export async function syncProjets(changes = null) {
         }
       }
 
-      db.prepare(`UPDATE airtable_projets_config SET last_synced_at=datetime('now')`).run()
+      db.prepare(`UPDATE airtable_projets_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`).run()
     })(records)
     console.log(`📋 Inventaire: ${imported} importés, ${updated} mis à jour`)
     if (!changes) {
@@ -1231,6 +1245,7 @@ export async function syncProjets(changes = null) {
     } else {
       updateDynamicFields('projects', fieldMap, records)
     }
+    await evaluateFieldRules({ erpTable: 'projects', tableId: config.projects_table_id, changes })
   } catch (e) { console.error('❌ Inventaire sync:', e.message) }
 }
 
@@ -1261,6 +1276,17 @@ function firstLinked(fields, fieldName) {
   return Array.isArray(v) ? (v[0] || null) : (typeof v === 'string' ? v : null)
 }
 
+// Derive customer currency from a country/region code (shipping address).
+// Defaults to CAD when unknown.
+export function currencyFromCountry(country) {
+  if (!country) return 'CAD'
+  const c = String(country).trim().toUpperCase()
+  if (c === 'US' || c === 'USA' || c === 'UNITED STATES' || c === 'ÉTATS-UNIS' || c === 'ETATS-UNIS') return 'USD'
+  if (c === 'FR' || c === 'FRANCE' || c === 'BE' || c === 'BELGIUM' || c === 'BELGIQUE' || c === 'DE' || c === 'GERMANY' || c === 'ALLEMAGNE') return 'EUR'
+  if (c === 'UK' || c === 'GB' || c === 'UNITED KINGDOM' || c === 'ROYAUME-UNI') return 'GBP'
+  return 'CAD'
+}
+
 export async function syncSoumissions(changes = null) {
   const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='soumissions'").get()
   if (!config?.base_id || !config?.table_id) return
@@ -1277,6 +1303,12 @@ export async function syncSoumissions(changes = null) {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'soumissions', _recordIds)
     const fm = config.field_map ? JSON.parse(config.field_map) : {}
     let imported = 0, updated = 0
+    const touchedProjects = new Set()
+    const getCurrencyStmt = db.prepare(`
+      SELECT co.pays_de_livraison AS pays
+      FROM projects p LEFT JOIN companies co ON co.id = p.company_id
+      WHERE p.id = ?
+    `)
     db.transaction((recs) => {
       for (const rec of recs) {
         const projectAirtableId = firstLinked(rec.fields, fm.project)
@@ -1291,26 +1323,40 @@ export async function syncSoumissions(changes = null) {
           const atts = rec.fields[fm.pdf]
           if (Array.isArray(atts) && atts.length > 0) pdfUrl = atts[0].url || null
         }
+        const pays = projectId ? (getCurrencyStmt.get(projectId)?.pays || null) : null
+        const currency = currencyFromCountry(pays)
         const existing = db.prepare('SELECT id FROM soumissions WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE soumissions SET project_id=?, quote_url=?, pdf_url=?, purchase_price_cad=?, subscription_price_cad=?, expiration_date=?, updated_at=datetime('now') WHERE id=?`)
-            .run(projectId, quoteUrl, pdfUrl, purchasePrice, subscriptionPrice, expirationDate, existing.id)
+          db.prepare(`UPDATE soumissions SET project_id=?, quote_url=?, pdf_url=?, purchase_price=?, subscription_price=?, currency=?, expiration_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
+            .run(projectId, quoteUrl, pdfUrl, purchasePrice, subscriptionPrice, currency, expirationDate, existing.id)
           updated++
         } else {
-          db.prepare('INSERT INTO soumissions (id, airtable_id, project_id, quote_url, pdf_url, purchase_price_cad, subscription_price_cad, expiration_date) VALUES (?,?,?,?,?,?,?,?)')
-            .run(uuid(), rec.id, projectId, quoteUrl, pdfUrl, purchasePrice, subscriptionPrice, expirationDate)
+          db.prepare('INSERT INTO soumissions (id, airtable_id, project_id, quote_url, pdf_url, purchase_price, subscription_price, currency, expiration_date) VALUES (?,?,?,?,?,?,?,?,?)')
+            .run(uuid(), rec.id, projectId, quoteUrl, pdfUrl, purchasePrice, subscriptionPrice, currency, expirationDate)
           imported++
         }
+        if (projectId) touchedProjects.add(projectId)
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='soumissions'").run()
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='soumissions'").run()
     })(records)
     console.log(`📝 Soumissions: ${imported} importées, ${updated} mises à jour`)
     if (!changes) {
       purgeOrphans('soumissions', records)
-      await syncDynamicFields('soumissions', 'soumissions', config.base_id, config.table_id, fieldMap, records)
+      await syncDynamicFields('soumissions', 'soumissions', config.base_id, config.table_id, fm, records)
     } else {
-      updateDynamicFields('soumissions', fieldMap, records)
+      updateDynamicFields('soumissions', fm, records)
     }
+    // Recompute projects.valeur_cad_calc for every project whose soumissions
+    // were touched by this sync (uses Bank of Canada FX for USD conversions).
+    if (touchedProjects.size > 0) {
+      const { recomputeProjectValeurCad } = await import('./projectValeur.js')
+      let ok = 0
+      for (const pid of touchedProjects) {
+        try { await recomputeProjectValeurCad(pid); ok++ } catch (e) { console.error('[valeur_cad_calc]', pid, e.message) }
+      }
+      console.log(`💱 valeur_cad_calc: ${ok}/${touchedProjects.size} projets recalculés`)
+    }
+    await evaluateFieldRules({ erpTable: 'soumissions', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Soumissions sync:', e.message) }
 }
 
@@ -1343,7 +1389,7 @@ export async function syncRetours(changes = null) {
         const billedAt = getVal(rec.fields, fm.billed_at)
         const existing = db.prepare('SELECT id FROM returns WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE returns SET company_id=?, contact_id=?, return_number=?, status=?, problem_status=?, processing_status=?, tracking_number=?, notes=?, billed_at=?, updated_at=datetime('now') WHERE id=?`)
+          db.prepare(`UPDATE returns SET company_id=?, contact_id=?, return_number=?, status=?, problem_status=?, processing_status=?, tracking_number=?, notes=?, billed_at=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
             .run(companyId, contactId, returnNumber, status, problemStatus, processingStatus, trackingNumber, notes, billedAt, existing.id)
           updated++
         } else {
@@ -1352,15 +1398,16 @@ export async function syncRetours(changes = null) {
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='retours'").run()
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='retours'").run()
     })(records)
     console.log(`↩️ Retours: ${imported} importés, ${updated} mis à jour`)
     if (!changes) {
       purgeOrphans('returns', records)
-      await syncDynamicFields('retours', 'retours', config.base_id, config.table_id, fieldMap, records)
+      await syncDynamicFields('retours', 'returns', config.base_id, config.table_id, fm, records)
     } else {
-      updateDynamicFields('retours', fieldMap, records)
+      updateDynamicFields('returns', fm, records)
     }
+    await evaluateFieldRules({ erpTable: 'returns', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Retours sync:', e.message) }
 }
 
@@ -1408,14 +1455,14 @@ export async function syncRetourItems(changes = null) {
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='retour_items'").run()
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='retour_items'").run()
     })(records)
     console.log(`📦 Retour items: ${imported} importés, ${updated} mis à jour`)
     if (!changes) {
       purgeOrphans('return_items', records)
-      await syncDynamicFields('retour_items', 'retour_items', config.base_id, config.table_id, fieldMap, records)
+      await syncDynamicFields('retour_items', 'return_items', config.base_id, config.table_id, fm, records)
     } else {
-      updateDynamicFields('retour_items', fieldMap, records)
+      updateDynamicFields('return_items', fm, records)
     }
   } catch (e) { console.error('❌ Retour items sync:', e.message) }
 }
@@ -1449,7 +1496,7 @@ export async function syncAdresses(changes = null) {
         const addressType = getVal(rec.fields, fm.address_type)
         const existing = db.prepare('SELECT id FROM adresses WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE adresses SET company_id=?, contact_id=?, line1=?, city=?, province=?, postal_code=?, country=?, language=?, address_type=?, updated_at=datetime('now') WHERE id=?`)
+          db.prepare(`UPDATE adresses SET company_id=?, contact_id=?, line1=?, city=?, province=?, postal_code=?, country=?, language=?, address_type=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
             .run(companyId, contactId, line1, city, province, postalCode, country, language, addressType, existing.id)
           updated++
         } else {
@@ -1458,15 +1505,16 @@ export async function syncAdresses(changes = null) {
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='adresses'").run()
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='adresses'").run()
     })(records)
     console.log(`📍 Adresses: ${imported} importées, ${updated} mises à jour`)
     if (!changes) {
       purgeOrphans('adresses', records)
-      await syncDynamicFields('adresses', 'adresses', config.base_id, config.table_id, fieldMap, records)
+      await syncDynamicFields('adresses', 'adresses', config.base_id, config.table_id, fm, records)
     } else {
-      updateDynamicFields('adresses', fieldMap, records)
+      updateDynamicFields('adresses', fm, records)
     }
+    await evaluateFieldRules({ erpTable: 'adresses', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Adresses sync:', e.message) }
 }
 
@@ -1495,7 +1543,7 @@ export async function syncBomItems(changes = null) {
         const refDes = getVal(rec.fields, fm.ref_des)
         const existing = db.prepare('SELECT id FROM bom_items WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE bom_items SET product_id=?, component_id=?, qty_required=?, ref_des=?, updated_at=datetime('now') WHERE id=?`)
+          db.prepare(`UPDATE bom_items SET product_id=?, component_id=?, qty_required=?, ref_des=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
             .run(productId, componentId, qtyRequired, refDes, existing.id)
           updated++
         } else {
@@ -1504,7 +1552,7 @@ export async function syncBomItems(changes = null) {
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='bom'").run()
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='bom'").run()
     })(records)
     console.log(`🔩 BOM items: ${imported} importés, ${updated} mis à jour`)
     if (!changes) purgeOrphans('bom_items', records)
@@ -1540,13 +1588,61 @@ export async function syncSerialStateChanges(changes = null) {
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='serial_changes'").run()
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='serial_changes'").run()
     })(records)
     console.log(`🔄 Serial state changes: ${imported} importés`)
     if (!changes) purgeOrphans('serial_state_changes', records)
   } catch (e) { console.error('❌ Serial changes sync:', e.message) }
 }
 
+
+export async function syncStockMovements(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='stock_movements'").get()
+  if (!config?.base_id || !config?.table_id) return
+  if (changes?.[config.table_id]?.destroyedIds?.length) {
+    for (const id of changes[config.table_id].destroyedIds)
+      db.prepare('DELETE FROM stock_movements WHERE airtable_id=?').run(id)
+  }
+  const _recordIds = changes?.[config.table_id]?.recordIds
+  if (changes && !_recordIds?.length) return
+  let accessToken
+  try { accessToken = await getAccessToken() }
+  catch (e) { console.error('❌ Airtable token:', e.message); return }
+  try {
+    const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'stock_movements', _recordIds)
+    const fm = config.field_map ? JSON.parse(config.field_map) : {}
+    let imported = 0, updated = 0, skipped = 0
+    db.transaction((recs) => {
+      for (const rec of recs) {
+        const productId = lookupProduct(firstLinked(rec.fields, fm.product))
+        if (!productId) { skipped++; continue }
+        const rawQty = parseFloat(String(rec.fields[fm.qty_change] ?? 0)) || 0
+        const atType = getVal(rec.fields, fm.type) || ''
+        let type
+        if (/ajustement/i.test(atType)) type = 'adjustment'
+        else if (rawQty >= 0) type = 'in'
+        else type = 'out'
+        const qty = Math.round(Math.abs(rawQty))
+        const unitCost = parseFloat(String(rec.fields[fm.unit_cost] ?? '')) || null
+        const movementValue = parseFloat(String(rec.fields[fm.movement_value] ?? '')) || null
+        const occurredAt = getVal(rec.fields, fm.occurred_at) || rec.createdTime || null
+        const existing = db.prepare('SELECT id FROM stock_movements WHERE airtable_id=?').get(rec.id)
+        if (existing) {
+          db.prepare(`UPDATE stock_movements SET product_id=?, type=?, qty=?, reason=?, unit_cost=?, movement_value=?, created_at=? WHERE id=?`)
+            .run(productId, type, qty, atType || null, unitCost, movementValue, occurredAt, existing.id)
+          updated++
+        } else {
+          db.prepare('INSERT INTO stock_movements (id, airtable_id, product_id, type, qty, reason, unit_cost, movement_value, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
+            .run(uuid(), rec.id, productId, type, qty, atType || null, unitCost, movementValue, occurredAt)
+          imported++
+        }
+      }
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='stock_movements'").run()
+    })(records)
+    console.log(`📦 Mouvements d'inventaire: ${imported} importés, ${updated} mis à jour, ${skipped} sautés (produit inconnu)`)
+    if (!changes) purgeOrphans('stock_movements', records)
+  } catch (e) { console.error('❌ Stock movements sync:', e.message) }
+}
 
 export async function syncAssemblages(changes = null) {
   const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='assemblages'").get()
@@ -1572,7 +1668,7 @@ export async function syncAssemblages(changes = null) {
         const assemblyPoints = parseInt(String(rec.fields[fm.assembly_points] ?? 0)) || 0
         const existing = db.prepare('SELECT id FROM assemblages WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE assemblages SET product_id=?, qty_produced=?, assembled_at=?, assembly_points=?, updated_at=datetime('now') WHERE id=?`)
+          db.prepare(`UPDATE assemblages SET product_id=?, qty_produced=?, assembled_at=?, assembly_points=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
             .run(productId, qtyProduced, assembledAt, assemblyPoints, existing.id)
           updated++
         } else {
@@ -1581,16 +1677,342 @@ export async function syncAssemblages(changes = null) {
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='assemblages'").run()
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='assemblages'").run()
     })(records)
     console.log(`🔨 Assemblages: ${imported} importés, ${updated} mis à jour`)
     if (!changes) {
       purgeOrphans('assemblages', records)
-      await syncDynamicFields('assemblages', 'assemblages', config.base_id, config.table_id, fieldMap, records)
+      await syncDynamicFields('assemblages', 'assemblages', config.base_id, config.table_id, fm, records)
     } else {
-      updateDynamicFields('assemblages', fieldMap, records)
+      updateDynamicFields('assemblages', fm, records)
     }
+    await evaluateFieldRules({ erpTable: 'assemblages', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Assemblages sync:', e.message) }
+}
+
+function empBool(fields, name) {
+  if (!name || !(name in fields)) return 0
+  const v = fields[name]
+  return v === true || v === 1 || v === '1' || v === 'true' ? 1 : 0
+}
+function empNum(fields, name) {
+  if (!name || !(name in fields)) return null
+  const v = fields[name]
+  if (v === null || v === undefined || v === '') return null
+  const n = Number(v)
+  return Number.isFinite(n) ? n : null
+}
+
+export async function syncEmployees(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='employees'").get()
+  if (!config?.base_id || !config?.table_id) return
+  if (changes?.[config.table_id]?.destroyedIds?.length) {
+    for (const id of changes[config.table_id].destroyedIds)
+      db.prepare('DELETE FROM employees WHERE airtable_id=?').run(id)
+  }
+  const _recordIds = changes?.[config.table_id]?.recordIds
+  if (changes && !_recordIds?.length) return
+  let accessToken
+  try { accessToken = await getAccessToken() }
+  catch (e) { console.error('❌ Airtable token:', e.message); return }
+  try {
+    const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'employees', _recordIds)
+    // Airtable omits unchecked checkboxes and empty cells per-record, so we must
+    // build the auto-map against the union of field names seen across ALL records.
+    const fieldUnion = {}
+    for (const rec of records) {
+      if (rec.fields) for (const k of Object.keys(rec.fields)) fieldUnion[k] = true
+    }
+    let fm = config.field_map ? JSON.parse(config.field_map) : null
+    if (!fm) {
+      fm = {
+        first_name:     autoMapField(fieldUnion, 'first name', 'prénom', 'prenom', 'firstname'),
+        last_name:      autoMapField(fieldUnion, 'last name', 'nom', 'nom de famille', 'lastname', 'surname'),
+        email_work:     autoMapField(fieldUnion, 'courriel professionnel', 'email travail', 'work email', 'email professionnel', 'courriel travail', 'courriel'),
+        email_personal: autoMapField(fieldUnion, 'courriel personnel', 'email personnel', 'personal email', 'email perso'),
+        phone_work:     autoMapField(fieldUnion, 'téléphone travail', 'telephone travail', 'phone work', 'work phone', 'phone', 'téléphone'),
+        phone_personal: autoMapField(fieldUnion, 'téléphone perso', 'telephone perso', 'téléphone personnel', 'phone personal', 'personal phone', 'mobile', 'cell'),
+        birth_date:     autoMapField(fieldUnion, 'date de naissance', 'birth date', 'naissance', 'birthday'),
+        hire_date:      autoMapField(fieldUnion, "date d'embauche", 'date embauche', 'hire date', 'embauche', 'start date'),
+        matricule:      autoMapField(fieldUnion, 'matricule nethris', 'matricule', 'employee id', 'employee number', 'id employé'),
+        active:         autoMapField(fieldUnion, 'actif', 'active'),
+        gender:         autoMapField(fieldUnion, 'genre', 'gender', 'sexe'),
+        address:        autoMapField(fieldUnion, 'adresse de résidence', 'adresse', 'address', 'residence'),
+        emergency_contact: autoMapField(fieldUnion, "contact en cas d'urgence", 'emergency contact', 'contact urgence'),
+        end_date:       autoMapField(fieldUnion, "date de fin d'emploi", 'end date', 'termination date', 'fin emploi'),
+        office_key:     autoMapField(fieldUnion, 'clef du bureau', 'office key', 'cle bureau'),
+        insurance_id:   autoMapField(fieldUnion, 'id assurances', 'insurance id', 'assurances id'),
+        nethris_username: autoMapField(fieldUnion, 'nethris username', 'username nethris'),
+        is_salesperson: autoMapField(fieldUnion, 'vendeur', 'salesperson', 'sales'),
+        is_consultant:  autoMapField(fieldUnion, 'consultant'),
+        accounting_department: autoMapField(fieldUnion, 'département pour comptabilité', 'departement pour comptabilite', 'department', 'département'),
+        hours_per_week: autoMapField(fieldUnion, 'heures par semaine', 'hours per week', 'weekly hours'),
+        last_raise_date: autoMapField(fieldUnion, 'dernière augmentation', 'derniere augmentation', 'last raise', 'last increase'),
+        group_insurance: autoMapField(fieldUnion, 'assurance collective', 'group insurance'),
+        address_verified: autoMapField(fieldUnion, 'validation adresse', 'address verified', 'address validation'),
+        banking_info:   autoMapField(fieldUnion, 'coordonnées bancaires', 'coordonnees bancaires', 'banking info', 'bank info'),
+        issues:         autoMapField(fieldUnion, 'problèmes', 'problemes', 'issues', 'problems'),
+        peer_reviews:   autoMapField(fieldUnion, 'évaluations par les pairs', 'evaluations par les pairs', 'peer reviews', 'peer evaluations'),
+      }
+      db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='employees'").run(JSON.stringify(fm))
+    }
+    let imported = 0, updated = 0
+    db.transaction((recs) => {
+      for (const rec of recs) {
+        const firstName = getVal(rec.fields, fm?.first_name)
+        const lastName = getVal(rec.fields, fm?.last_name)
+        if (!firstName && !lastName) continue
+        const row = {
+          first_name: firstName || '',
+          last_name: lastName || '',
+          email_work: getVal(rec.fields, fm?.email_work),
+          email_personal: getVal(rec.fields, fm?.email_personal),
+          phone_work: getVal(rec.fields, fm?.phone_work),
+          phone_personal: getVal(rec.fields, fm?.phone_personal),
+          birth_date: getVal(rec.fields, fm?.birth_date),
+          hire_date: getVal(rec.fields, fm?.hire_date),
+          matricule: getVal(rec.fields, fm?.matricule),
+          active: empBool(rec.fields, fm?.active),
+          gender: getVal(rec.fields, fm?.gender),
+          address: getVal(rec.fields, fm?.address),
+          emergency_contact: getVal(rec.fields, fm?.emergency_contact),
+          end_date: getVal(rec.fields, fm?.end_date),
+          office_key: empBool(rec.fields, fm?.office_key),
+          insurance_id: getVal(rec.fields, fm?.insurance_id),
+          nethris_username: getVal(rec.fields, fm?.nethris_username),
+          is_salesperson: empBool(rec.fields, fm?.is_salesperson),
+          is_consultant: empBool(rec.fields, fm?.is_consultant),
+          accounting_department: getVal(rec.fields, fm?.accounting_department),
+          hours_per_week: empNum(rec.fields, fm?.hours_per_week),
+          last_raise_date: getVal(rec.fields, fm?.last_raise_date),
+          group_insurance: empBool(rec.fields, fm?.group_insurance),
+          address_verified: empBool(rec.fields, fm?.address_verified),
+          banking_info: getVal(rec.fields, fm?.banking_info),
+          issues: getVal(rec.fields, fm?.issues),
+          peer_reviews: getVal(rec.fields, fm?.peer_reviews),
+        }
+        const existing = db.prepare('SELECT id FROM employees WHERE airtable_id=?').get(rec.id)
+        if (existing) {
+          db.prepare(`UPDATE employees SET
+            first_name=@first_name, last_name=@last_name, email_work=@email_work, email_personal=@email_personal,
+            phone_work=@phone_work, phone_personal=@phone_personal, birth_date=@birth_date, hire_date=@hire_date,
+            matricule=@matricule, active=@active, gender=@gender, address=@address, emergency_contact=@emergency_contact,
+            end_date=@end_date, office_key=@office_key, insurance_id=@insurance_id, nethris_username=@nethris_username,
+            is_salesperson=@is_salesperson, is_consultant=@is_consultant, accounting_department=@accounting_department,
+            hours_per_week=@hours_per_week, last_raise_date=@last_raise_date, group_insurance=@group_insurance,
+            address_verified=@address_verified, banking_info=@banking_info, issues=@issues, peer_reviews=@peer_reviews,
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=@id`).run({ ...row, id: existing.id })
+          updated++
+        } else {
+          db.prepare(`INSERT INTO employees (
+            id, airtable_id, first_name, last_name, email_work, email_personal, phone_work, phone_personal,
+            birth_date, hire_date, matricule, active, gender, address, emergency_contact, end_date, office_key,
+            insurance_id, nethris_username, is_salesperson, is_consultant, accounting_department, hours_per_week,
+            last_raise_date, group_insurance, address_verified, banking_info, issues, peer_reviews
+          ) VALUES (
+            @id, @airtable_id, @first_name, @last_name, @email_work, @email_personal, @phone_work, @phone_personal,
+            @birth_date, @hire_date, @matricule, @active, @gender, @address, @emergency_contact, @end_date, @office_key,
+            @insurance_id, @nethris_username, @is_salesperson, @is_consultant, @accounting_department, @hours_per_week,
+            @last_raise_date, @group_insurance, @address_verified, @banking_info, @issues, @peer_reviews
+          )`).run({ ...row, id: uuid(), airtable_id: rec.id })
+          imported++
+        }
+      }
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='employees'").run()
+    })(records)
+    console.log(`👥 Employés: ${imported} importés, ${updated} mis à jour`)
+    if (!changes) purgeOrphans('employees', records)
+    await evaluateFieldRules({ erpTable: 'employees', tableId: config.table_id, changes })
+  } catch (e) { console.error('❌ Employees sync:', e.message) }
+}
+
+export async function syncPaies(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='paies'").get()
+  if (!config?.base_id || !config?.table_id) return
+  if (changes?.[config.table_id]?.destroyedIds?.length) {
+    for (const id of changes[config.table_id].destroyedIds)
+      db.prepare('DELETE FROM paies WHERE airtable_id=?').run(id)
+  }
+  const _recordIds = changes?.[config.table_id]?.recordIds
+  if (changes && !_recordIds?.length) return
+  let accessToken
+  try { accessToken = await getAccessToken() }
+  catch (e) { console.error('❌ Airtable token:', e.message); return }
+  try {
+    const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'paies', _recordIds)
+    const fieldUnion = {}
+    for (const rec of records) {
+      if (rec.fields) for (const k of Object.keys(rec.fields)) fieldUnion[k] = true
+    }
+    let fm = config.field_map ? JSON.parse(config.field_map) : null
+    if (!fm) {
+      fm = {
+        number:                     autoMapField(fieldUnion, 'number', 'numéro', 'numero'),
+        period_end:                 autoMapField(fieldUnion, 'fin', 'end', 'date de fin'),
+        status:                     autoMapField(fieldUnion, 'statut des feuilles de temps', 'statut', 'status'),
+        csv:                        autoMapField(fieldUnion, 'csv'),
+        nb_holiday_days:            autoMapField(fieldUnion, 'nombre de congés fériés', 'nombre de conges feries', 'nb congés fériés'),
+        total_with_charges_and_reimb: autoMapField(fieldUnion, 'total de la paie incluant les remises aux organismes et les remboursements de dépenses', 'total paie', 'total'),
+        timesheets_deadline:        autoMapField(fieldUnion, 'date limite pour correction des feuille de temps', 'date limite correction', 'deadline feuilles de temps'),
+        includes_hourly:            autoMapField(fieldUnion, "heures pour employés payés à l'heure", 'heures payés heure', 'hourly hours'),
+        includes_mileage:           autoMapField(fieldUnion, 'kilométrage', 'kilometrage', 'mileage'),
+        includes_expense_reimb:     autoMapField(fieldUnion, 'remboursement de dépenses', 'remboursement de depenses', 'expense reimbursement'),
+        includes_paid_leave:        autoMapField(fieldUnion, 'congés payés', 'conges payes', 'paid leave'),
+        includes_holiday_hours:     autoMapField(fieldUnion, 'heures férié', 'heures ferie', 'holiday hours'),
+        includes_sales_commissions: autoMapField(fieldUnion, 'commissions vendeurs', 'sales commissions'),
+        timesheets_sent:            autoMapField(fieldUnion, 'envoi des feuilles de temps', 'timesheets sent'),
+      }
+      db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='paies'").run(JSON.stringify(fm))
+    }
+    let imported = 0, updated = 0
+    db.transaction((recs) => {
+      for (const rec of recs) {
+        const row = {
+          number: empNum(rec.fields, fm?.number),
+          period_end: getVal(rec.fields, fm?.period_end),
+          status: getVal(rec.fields, fm?.status),
+          csv: getVal(rec.fields, fm?.csv),
+          nb_holiday_days: empNum(rec.fields, fm?.nb_holiday_days),
+          total_with_charges_and_reimb: empNum(rec.fields, fm?.total_with_charges_and_reimb),
+          timesheets_deadline: getVal(rec.fields, fm?.timesheets_deadline),
+          includes_hourly: empBool(rec.fields, fm?.includes_hourly),
+          includes_mileage: empBool(rec.fields, fm?.includes_mileage),
+          includes_expense_reimb: empBool(rec.fields, fm?.includes_expense_reimb),
+          includes_paid_leave: empBool(rec.fields, fm?.includes_paid_leave),
+          includes_holiday_hours: empBool(rec.fields, fm?.includes_holiday_hours),
+          includes_sales_commissions: empBool(rec.fields, fm?.includes_sales_commissions),
+          timesheets_sent: empBool(rec.fields, fm?.timesheets_sent),
+        }
+        const existing = db.prepare('SELECT id FROM paies WHERE airtable_id=?').get(rec.id)
+        if (existing) {
+          db.prepare(`UPDATE paies SET
+            number=@number, period_end=@period_end, status=@status, csv=@csv,
+            nb_holiday_days=@nb_holiday_days, total_with_charges_and_reimb=@total_with_charges_and_reimb,
+            timesheets_deadline=@timesheets_deadline, includes_hourly=@includes_hourly,
+            includes_mileage=@includes_mileage, includes_expense_reimb=@includes_expense_reimb,
+            includes_paid_leave=@includes_paid_leave, includes_holiday_hours=@includes_holiday_hours,
+            includes_sales_commissions=@includes_sales_commissions, timesheets_sent=@timesheets_sent,
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=@id`).run({ ...row, id: existing.id })
+          updated++
+        } else {
+          db.prepare(`INSERT INTO paies (
+            id, airtable_id, number, period_end, status, csv, nb_holiday_days,
+            total_with_charges_and_reimb, timesheets_deadline, includes_hourly, includes_mileage,
+            includes_expense_reimb, includes_paid_leave, includes_holiday_hours,
+            includes_sales_commissions, timesheets_sent
+          ) VALUES (
+            @id, @airtable_id, @number, @period_end, @status, @csv, @nb_holiday_days,
+            @total_with_charges_and_reimb, @timesheets_deadline, @includes_hourly, @includes_mileage,
+            @includes_expense_reimb, @includes_paid_leave, @includes_holiday_hours,
+            @includes_sales_commissions, @timesheets_sent
+          )`).run({ ...row, id: uuid(), airtable_id: rec.id })
+          imported++
+        }
+      }
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='paies'").run()
+    })(records)
+    console.log(`💰 Paies: ${imported} importées, ${updated} mises à jour`)
+    if (!changes) purgeOrphans('paies', records)
+    await evaluateFieldRules({ erpTable: 'paies', tableId: config.table_id, changes })
+  } catch (e) { console.error('❌ Paies sync:', e.message) }
+}
+
+export async function syncPaieItems(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='paie_items'").get()
+  if (!config?.base_id || !config?.table_id) return
+  if (changes?.[config.table_id]?.destroyedIds?.length) {
+    for (const id of changes[config.table_id].destroyedIds)
+      db.prepare('DELETE FROM paie_items WHERE airtable_id=?').run(id)
+  }
+  const _recordIds = changes?.[config.table_id]?.recordIds
+  if (changes && !_recordIds?.length) return
+  let accessToken
+  try { accessToken = await getAccessToken() }
+  catch (e) { console.error('❌ Airtable token:', e.message); return }
+  try {
+    const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'paie_items', _recordIds)
+    const fieldUnion = {}
+    for (const rec of records) {
+      if (rec.fields) for (const k of Object.keys(rec.fields)) fieldUnion[k] = true
+    }
+    let fm = config.field_map ? JSON.parse(config.field_map) : null
+    if (!fm) {
+      fm = {
+        paie_link:       autoMapField(fieldUnion, 'évènement paie', 'evenement paie', 'paie', 'payroll event'),
+        employee_link:   autoMapField(fieldUnion, 'employé', 'employe', 'employee'),
+        start_date:      autoMapField(fieldUnion, 'début', 'debut', 'start', 'start date'),
+        hourly_rate:     autoMapField(fieldUnion, '$/h', 'taux horaire', 'hourly rate', 'rate'),
+        regular_hours:   autoMapField(fieldUnion, 'h régulières', 'h regulieres', 'regular hours'),
+        holiday_hours:   autoMapField(fieldUnion, 'h férié', 'h ferie', 'holiday hours'),
+        vacation:        autoMapField(fieldUnion, 'vacances', 'vacation'),
+        commission:      autoMapField(fieldUnion, 'commission', 'commissions'),
+        expense_reimb:   autoMapField(fieldUnion, 'remb. dépenses', 'remb depenses', 'remboursement dépenses', 'expense reimbursement'),
+        rsde_pct:        autoMapField(fieldUnion, 'rsde'),
+        insurance_gains: autoMapField(fieldUnion, 'gains assurances', 'insurance gains'),
+        holiday_1_20:    autoMapField(fieldUnion, 'férié 1/20', 'ferie 1/20', 'holiday 1/20'),
+        paid_leave:      autoMapField(fieldUnion, 'congés payés', 'conges payes', 'paid leave'),
+        notes:           autoMapField(fieldUnion, 'notes', 'note'),
+      }
+      db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='paie_items'").run(JSON.stringify(fm))
+    }
+    let imported = 0, updated = 0
+    db.transaction((recs) => {
+      for (const rec of recs) {
+        const paieAirtableId = firstLinked(rec.fields, fm?.paie_link)
+        const employeeAirtableId = firstLinked(rec.fields, fm?.employee_link)
+        const paieId = paieAirtableId
+          ? db.prepare('SELECT id FROM paies WHERE airtable_id=?').get(paieAirtableId)?.id || null
+          : null
+        const employeeId = employeeAirtableId
+          ? db.prepare('SELECT id FROM employees WHERE airtable_id=?').get(employeeAirtableId)?.id || null
+          : null
+        const row = {
+          paie_id: paieId,
+          paie_airtable_id: paieAirtableId,
+          employee_id: employeeId,
+          employee_airtable_id: employeeAirtableId,
+          start_date: getVal(rec.fields, fm?.start_date),
+          hourly_rate: empNum(rec.fields, fm?.hourly_rate),
+          regular_hours: empNum(rec.fields, fm?.regular_hours),
+          holiday_hours: empNum(rec.fields, fm?.holiday_hours),
+          vacation: empNum(rec.fields, fm?.vacation),
+          commission: empNum(rec.fields, fm?.commission),
+          expense_reimb: empNum(rec.fields, fm?.expense_reimb),
+          rsde_pct: empNum(rec.fields, fm?.rsde_pct),
+          insurance_gains: empNum(rec.fields, fm?.insurance_gains),
+          holiday_1_20: empNum(rec.fields, fm?.holiday_1_20),
+          paid_leave: getVal(rec.fields, fm?.paid_leave),
+          notes: getVal(rec.fields, fm?.notes),
+        }
+        const existing = db.prepare('SELECT id FROM paie_items WHERE airtable_id=?').get(rec.id)
+        if (existing) {
+          db.prepare(`UPDATE paie_items SET
+            paie_id=@paie_id, paie_airtable_id=@paie_airtable_id,
+            employee_id=@employee_id, employee_airtable_id=@employee_airtable_id,
+            start_date=@start_date, hourly_rate=@hourly_rate, regular_hours=@regular_hours,
+            holiday_hours=@holiday_hours, vacation=@vacation, commission=@commission,
+            expense_reimb=@expense_reimb, rsde_pct=@rsde_pct, insurance_gains=@insurance_gains,
+            holiday_1_20=@holiday_1_20, paid_leave=@paid_leave, notes=@notes,
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=@id`).run({ ...row, id: existing.id })
+          updated++
+        } else {
+          db.prepare(`INSERT INTO paie_items (
+            id, airtable_id, paie_id, paie_airtable_id, employee_id, employee_airtable_id,
+            start_date, hourly_rate, regular_hours, holiday_hours, vacation, commission,
+            expense_reimb, rsde_pct, insurance_gains, holiday_1_20, paid_leave, notes
+          ) VALUES (
+            @id, @airtable_id, @paie_id, @paie_airtable_id, @employee_id, @employee_airtable_id,
+            @start_date, @hourly_rate, @regular_hours, @holiday_hours, @vacation, @commission,
+            @expense_reimb, @rsde_pct, @insurance_gains, @holiday_1_20, @paid_leave, @notes
+          )`).run({ ...row, id: uuid(), airtable_id: rec.id })
+          imported++
+        }
+      }
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='paie_items'").run()
+    })(records)
+    console.log(`📋 Items paie: ${imported} importés, ${updated} mis à jour`)
+    if (!changes) purgeOrphans('paie_items', records)
+  } catch (e) { console.error('❌ Paie items sync:', e.message) }
 }
 
 export async function syncFactures(changes = null) {
@@ -1606,12 +2028,32 @@ export async function syncFactures(changes = null) {
   try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
   try {
-    const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'factures', _recordIds)
+    const rawRecords = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'factures', _recordIds)
+    // Ignore QuickBooks refund receipts — no Stripe counterpart, pollution only.
+    const skippedQbRefundIds = []
+    const records = []
+    for (const rec of rawRecords) {
+      if (rec.fields?.['Sync Source'] === 'Remboursements Quickbooks') skippedQbRefundIds.push(rec.id)
+      else records.push(rec)
+    }
+    if (skippedQbRefundIds.length) {
+      const ph = skippedQbRefundIds.map(() => '?').join(',')
+      const del = db.prepare(`DELETE FROM factures WHERE airtable_id IN (${ph})`).run(...skippedQbRefundIds)
+      if (del.changes) console.log(`🧾 Factures: ${del.changes} remboursement(s) QB supprimé(s) (ignorés à la sync)`)
+    }
     const fm = config.field_map ? JSON.parse(config.field_map) : {}
     let imported = 0, updated = 0
+    const findCompanyByStripeCustomerId = db.prepare(
+      'SELECT id FROM companies WHERE stripe_customer_id=? LIMIT 1'
+    )
     db.transaction((recs) => {
       for (const rec of recs) {
-        const companyId = lookupCompany(rec.fields, fm.company)
+        // Match strictement par stripe_customer_id (champ Airtable "Customer ID").
+        // Pas de fallback par nom/linked record : duplicate companies → mauvais lien.
+        const stripeCustomerId = rec.fields['Customer ID'] || null
+        const companyId = stripeCustomerId
+          ? findCompanyByStripeCustomerId.get(stripeCustomerId)?.id || null
+          : null
         const projectId = lookupProject(firstLinked(rec.fields, fm.project))
         const orderId = lookupOrder(firstLinked(rec.fields, fm.order))
         const invoiceId = getVal(rec.fields, fm.invoice_id)
@@ -1620,13 +2062,13 @@ export async function syncFactures(changes = null) {
         const dueDate = getVal(rec.fields, fm.due_date)
         const status = getVal(rec.fields, fm.status)
         const currency = getVal(rec.fields, fm.currency) || 'CAD'
-        const amountBeforeTaxCad = parseFloat(String(rec.fields[fm.amount_before_tax_cad] ?? 0).replace(/[^0-9.-]/g, '')) || 0
+        const amountBeforeTaxCad = parseFloat(String(rec.fields[fm.amount_before_tax] ?? 0).replace(/[^0-9.-]/g, '')) || 0
         const totalAmount = parseFloat(String(rec.fields[fm.total_amount] ?? 0).replace(/[^0-9.-]/g, '')) || 0
         const balanceDue = parseFloat(String(rec.fields[fm.balance_due] ?? 0).replace(/[^0-9.-]/g, '')) || 0
         const notes = getVal(rec.fields, fm.notes)
         const existing = db.prepare('SELECT id FROM factures WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE factures SET company_id=?, project_id=?, order_id=?, invoice_id=?, document_number=?, document_date=?, due_date=?, status=?, currency=?, amount_before_tax_cad=?, total_amount=?, balance_due=?, notes=?, updated_at=datetime('now') WHERE id=?`)
+          db.prepare(`UPDATE factures SET company_id=?, project_id=?, order_id=?, invoice_id=?, document_number=?, document_date=?, due_date=?, status=?, currency=?, amount_before_tax_cad=?, total_amount=?, balance_due=?, notes=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
             .run(companyId, projectId, orderId, invoiceId, documentNumber, documentDate, dueDate, status, currency, amountBeforeTaxCad, totalAmount, balanceDue, notes, existing.id)
           updated++
         } else {
@@ -1635,7 +2077,7 @@ export async function syncFactures(changes = null) {
           imported++
         }
       }
-      db.prepare("UPDATE airtable_module_config SET last_synced_at=datetime('now') WHERE module='factures'").run()
+      db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='factures'").run()
     })(records)
     console.log(`🧾 Factures: ${imported} importées, ${updated} mises à jour`)
     if (!changes) {
@@ -1648,6 +2090,7 @@ export async function syncFactures(changes = null) {
     await downloadFacturePdfs(records)
     // Link factures to subscriptions via Airtable linked record IDs
     await resolveFactureSubscriptions(accessToken)
+    await evaluateFieldRules({ erpTable: 'factures', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Factures sync:', e.message) }
 }
 

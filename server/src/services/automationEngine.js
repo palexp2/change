@@ -25,7 +25,7 @@ export async function runAutomation(automation, triggerData = {}) {
 
     logRun(automation.id, 'success', triggerData, output, null, duration)
     db.prepare(`
-      UPDATE automations SET last_run_at = datetime('now'), last_run_status = 'success', updated_at = datetime('now')
+      UPDATE automations SET last_run_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_run_status = 'success', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = ?
     `).run(automation.id)
 
@@ -37,7 +37,7 @@ export async function runAutomation(automation, triggerData = {}) {
 
     logRun(automation.id, 'error', triggerData, logs.join('\n') || null, errorMsg, duration)
     db.prepare(`
-      UPDATE automations SET last_run_at = datetime('now'), last_run_status = 'error', updated_at = datetime('now')
+      UPDATE automations SET last_run_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_run_status = 'error', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = ?
     `).run(automation.id)
 

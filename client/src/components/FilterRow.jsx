@@ -129,11 +129,22 @@ export const OPS_BY_TYPE = {
     { value: 'is_true',  label: 'Est vrai' },
     { value: 'is_false', label: 'Est faux' },
   ],
+  user: [
+    { value: 'is_me',        label: 'Est moi' },
+    { value: 'is_not_me',    label: "N'est pas moi" },
+    { value: 'equals',       label: 'Est' },
+    { value: 'not_equals',   label: "N'est pas" },
+    { value: 'is_any_of',    label: "Est l'un des" },
+    { value: 'is_none_of',   label: "N'est aucun des" },
+    { value: 'is_empty',     label: 'Est vide' },
+    { value: 'is_not_empty', label: "N'est pas vide" },
+  ],
 }
 
 export const VALUE_LESS_OPS = new Set([
   'is_empty', 'is_not_empty', 'is_true', 'is_false',
   'today', 'yesterday', 'this_week', 'this_month', 'last_month',
+  'is_me', 'is_not_me',
 ])
 export const MULTI_SELECT_OPS = new Set(['is_any_of', 'is_none_of'])
 export const DAYS_OPS = new Set(['last_n_days', 'next_n_days', 'more_than_n_days_ago', 'more_than_n_days_ahead'])
@@ -172,6 +183,7 @@ export function defaultOpForType(type) {
   if (type === 'date') return 'before'
   if (type === 'number') return 'equals'
   if (type === 'single_select') return 'equals'
+  if (type === 'user') return 'is_me'
   return 'contains'
 }
 
@@ -221,13 +233,13 @@ export function FilterRow({ columns, filter, onChange, onRemove, size = 'sm', da
         {ops.map(op => <option key={op.value} value={op.value}>{op.label}</option>)}
       </select>
 
-      {needsValue && fieldType === 'single_select' && !isMulti && (
+      {needsValue && (fieldType === 'single_select' || fieldType === 'user') && !isMulti && (
         <select value={filter.value} onChange={e => onChange({ ...filter, value: e.target.value })} className={`select ${cls} flex-1 min-w-0`}>
           <option value="">—</option>
           {fieldOptions.map(o => <option key={o} value={o}>{o}</option>)}
         </select>
       )}
-      {needsValue && fieldType === 'single_select' && isMulti && (
+      {needsValue && (fieldType === 'single_select' || fieldType === 'user') && isMulti && (
         <div className="flex-1 min-w-0 border border-slate-200 rounded-lg bg-white max-h-40 overflow-y-auto">
           {fieldOptions.map(o => (
             <label key={o} className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 cursor-pointer">
@@ -256,7 +268,7 @@ export function FilterRow({ columns, filter, onChange, onRemove, size = 'sm', da
       {needsValue && fieldType === 'number' && (
         <input type="number" value={filter.value} onChange={e => onChange({ ...filter, value: e.target.value })} className={`input ${cls} flex-1 min-w-0`} placeholder="Valeur" />
       )}
-      {needsValue && fieldType !== 'single_select' && fieldType !== 'date' && fieldType !== 'number' && fieldType !== 'boolean' && (
+      {needsValue && fieldType !== 'single_select' && fieldType !== 'user' && fieldType !== 'date' && fieldType !== 'number' && fieldType !== 'boolean' && (
         <input value={filter.value} onChange={e => onChange({ ...filter, value: e.target.value })} className={`input ${cls} flex-1 min-w-0`} placeholder="Valeur" />
       )}
 

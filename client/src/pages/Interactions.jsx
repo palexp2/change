@@ -9,6 +9,7 @@ import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { fmtDateTime } from '../lib/formatDate.js'
 
 const TYPE_ICONS = { call: Phone, email: Mail, sms: MessageSquare, meeting: Users, note: FileText }
 const TYPE_LABELS = { call: 'Appel', email: 'Courriel', sms: 'SMS', meeting: 'Réunion', note: 'Note' }
@@ -21,10 +22,6 @@ const TYPE_COLORS = {
 }
 const DIRECTION_COLORS = { in: 'green', out: 'blue' }
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
 
 function fmtDuration(s) {
   if (!s) return null
@@ -34,7 +31,23 @@ function fmtDuration(s) {
 
 // ─── Panneau de détail ────────────────────────────────────────────────────────
 
-function InteractionDetail({ item, onNavigate }) {
+function InteractionDetail({ item: stub, onNavigate }) {
+  // The list endpoint omits heavy fields (body_text, transcript_formatted,
+  // meeting_notes). Fetch the full record when the panel opens so the detail
+  // view has everything it needs.
+  const [item, setItem] = useState(stub)
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    let cancelled = false
+    setItem(stub)
+    setLoading(true)
+    api.interactions.get(stub.id)
+      .then(full => { if (!cancelled) setItem(full) })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [stub.id])
+
   const Icon = TYPE_ICONS[item.type] || FileText
 
   return (
@@ -53,7 +66,7 @@ function InteractionDetail({ item, onNavigate }) {
               </Badge>
             )}
           </div>
-          <div className="text-xs text-slate-400 mt-0.5">{fmtDate(item.timestamp)}</div>
+          <div className="text-xs text-slate-400 mt-0.5">{fmtDateTime(item.timestamp)}</div>
         </div>
       </div>
 
@@ -116,6 +129,22 @@ function InteractionDetail({ item, onNavigate }) {
             </Badge>
           )}
 
+          {item.call_summary && (
+            <div>
+              <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5">Résumé</div>
+              <div className="p-3 bg-slate-50 rounded-lg text-sm text-slate-700 whitespace-pre-wrap border border-slate-200">
+                {item.call_summary}
+              </div>
+            </div>
+          )}
+          {item.call_next_steps && (
+            <div>
+              <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5">Prochaines étapes</div>
+              <div className="p-3 bg-slate-50 rounded-lg text-sm text-slate-700 whitespace-pre-wrap border border-slate-200">
+                {item.call_next_steps}
+              </div>
+            </div>
+          )}
           {item.transcript_formatted && (
             <div>
               <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5">Transcription</div>
@@ -205,9 +234,10 @@ export default function Interactions() {
 
   const load = useCallback(async () => {
     await loadProgressive(
-      (page, limit) => api.interactions.list({ limit, offset: (page - 1) * limit })
+      (page, limit) => api.interactions.list({ limit, offset: limit === 'all' ? 0 : (page - 1) * limit })
         .then(r => ({ data: r.interactions || [], total: r.total || 0 })),
-      setItems, setLoading
+      setItems, setLoading,
+      { cacheKey: 'interactions' }
     )
   }, [])
 
@@ -240,7 +270,7 @@ export default function Interactions() {
         if ((row.type === 'meeting' || row.type === 'note') && row.meeting_title && row.meeting_title !== 'Note') return <span className="text-slate-600 truncate">{row.meeting_title}</span>
         return <span className="text-slate-300">—</span>
       } :
-      meta.id === 'timestamp' ? row => <span className="text-slate-500 text-xs">{fmtDate(row.timestamp)}</span> :
+      meta.id === 'timestamp' ? row => <span className="text-slate-500 text-xs">{fmtDateTime(row.timestamp)}</span> :
       meta.id === 'duration_seconds' ? row => <span className="text-slate-500">{fmtDuration(row.duration_seconds) || '—'}</span> :
       undefined
   })), [])

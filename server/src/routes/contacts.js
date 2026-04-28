@@ -3,9 +3,21 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { rematchCalls } from './calls.js';
+import { buildPartialUpdate } from '../utils/partialUpdate.js';
 
 const router = Router();
 router.use(requireAuth);
+
+// GET /api/contacts/lookup — minimal list for dropdowns
+router.get('/lookup', (req, res) => {
+  const rows = db.prepare(
+    `SELECT id, first_name, last_name, company_id
+     FROM contacts
+     WHERE deleted_at IS NULL
+     ORDER BY first_name COLLATE NOCASE, last_name COLLATE NOCASE`
+  ).all()
+  res.json(rows)
+})
 
 // GET /api/contacts
 router.get('/', (req, res) => {
@@ -74,21 +86,22 @@ router.post('/', (req, res) => {
   res.status(201).json(contact);
 });
 
-// PUT /api/contacts/:id
+// PUT /api/contacts/:id — partial update
 router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM contacts WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Contact not found' });
 
-  const { first_name, last_name, email, phone, mobile, company_id, language, notes } = req.body;
-  db.prepare(
-    `UPDATE contacts SET first_name=?, last_name=?, email=?, phone=?, mobile=?, company_id=?, language=?, notes=?
-     WHERE id = ?`
-  ).run(first_name, last_name, email || null, phone || null, mobile || null,
-    company_id || null, language || null, notes || null,
-    req.params.id);
+  const { setClause, values, cols, error } = buildPartialUpdate(req.body, {
+    allowed: ['first_name', 'last_name', 'email', 'phone', 'mobile', 'company_id', 'language', 'notes'],
+    nonNullable: new Set(['first_name', 'last_name']),
+  });
+  if (error) return res.status(400).json({ error });
+  if (setClause) {
+    db.prepare(`UPDATE contacts SET ${setClause} WHERE id = ?`).run(...values, req.params.id);
+  }
 
   const updated = db.prepare('SELECT ct.*, c.name as company_name FROM contacts ct LEFT JOIN companies c ON ct.company_id = c.id WHERE ct.id = ?').get(req.params.id);
-  if (phone || mobile) rematchCalls();
+  if (cols.includes('phone') || cols.includes('mobile')) rematchCalls();
   res.json(updated);
 });
 
@@ -96,7 +109,7 @@ router.put('/:id', (req, res) => {
 router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM contacts WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Contact not found' });
-  db.prepare("UPDATE contacts SET deleted_at = datetime('now') WHERE id = ?").run(req.params.id);
+  db.prepare("UPDATE contacts SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);
   res.json({ message: 'Deleted' });
 });
 

@@ -2,20 +2,20 @@ import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { ArrowRight, SlidersHorizontal, X, Check } from 'lucide-react'
 import api from '../lib/api.js'
-import { Badge, orderStatusColor, ticketStatusColor } from '../components/Badge.jsx'
 import { Layout } from '../components/Layout.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { GeoClientsMap } from '../components/GeoClientsMap.jsx'
+import { fmtDate } from '../lib/formatDate.js'
 
 const WIDGET_DEFS = [
   { id: 'section_profitability',    label: 'Rentabilité',              group: 'Graphiques' },
   { id: 'section_replacement_rate', label: 'Taux de remplacement',     group: 'Graphiques' },
   { id: 'section_closing',       label: 'Taux de closing',       group: 'Graphiques' },
   { id: 'section_shipments',     label: 'Livraisons par semaine', group: 'Graphiques' },
+  { id: 'section_shipping_costs', label: 'Coûts d\'expédition',    group: 'Graphiques' },
   { id: 'section_geo_map',       label: 'Carte des clients',     group: 'Graphiques' },
+  { id: 'section_inventory_valuation', label: 'Valeur de l\'inventaire', group: 'Inventaire' },
   { id: 'section_support_weekly', label: 'Amélioration du support', group: 'Support' },
-  { id: 'section_orders',        label: 'Commandes récentes',    group: 'Listes' },
-  { id: 'section_tickets',       label: 'Tickets récents',       group: 'Listes' },
 ]
 
 const DEFAULT_PREFS = Object.fromEntries(WIDGET_DEFS.map(w => [w.id, true]))
@@ -337,6 +337,127 @@ function ShipmentsWeeklyChart({ data }) {
   )
 }
 
+function ShippingCostChart({ data }) {
+  const [tooltip, setTooltip] = useState(null)
+
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex items-center justify-center h-40 text-slate-300 text-sm">
+        Pas encore de données d'expédition
+      </div>
+    )
+  }
+
+  // Build last 4 weeks grid (28 jours)
+  const weeks = []
+  for (let i = 3; i >= 0; i--) {
+    const d = new Date()
+    const day = d.getDay()
+    const monday = new Date(d)
+    monday.setDate(d.getDate() - ((day + 6) % 7) - i * 7)
+    monday.setHours(0, 0, 0, 0)
+    const key = monday.toISOString().slice(0, 10)
+    const found = data.find(r => r.week_start === key)
+    weeks.push({ key, date: monday, amount: found?.amount || 0 })
+  }
+
+  const maxVal = Math.max(...weeks.map(w => w.amount), 1)
+
+  const W = 700, H = 220
+  const padL = 50, padR = 16, padT = 16, padB = 36
+  const chartW = W - padL - padR
+  const chartH = H - padT - padB
+  const n = weeks.length
+  const barW = Math.max(Math.floor(chartW / n) - 24, 24)
+
+  function xCenter(i) { return padL + (i + 0.5) * (chartW / n) }
+  function yPos(v) { return padT + chartH - (v / maxVal) * chartH }
+
+  const fmtK = v => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)}`
+
+  // Grid lines
+  const gridStep = maxVal > 2000 ? 500 : maxVal > 1000 ? 250 : maxVal > 400 ? 100 : 50
+  const gridLines = []
+  for (let v = 0; v <= maxVal; v += gridStep) gridLines.push(v)
+
+  return (
+    <div>
+      <div className="relative">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 200 }}>
+          <defs>
+            <linearGradient id="shippingBarGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.85" />
+              <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.4" />
+            </linearGradient>
+            <linearGradient id="shippingBarGradHover" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#d97706" stopOpacity="1" />
+              <stop offset="100%" stopColor="#d97706" stopOpacity="0.6" />
+            </linearGradient>
+          </defs>
+
+          {/* Grid */}
+          {gridLines.map(v => {
+            const y = yPos(v)
+            return (
+              <g key={v}>
+                <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="#f1f5f9" strokeWidth={1} />
+                <text x={padL - 4} y={y + 3.5} textAnchor="end" fontSize="9" fill="#94a3b8">{fmtK(v)}$</text>
+              </g>
+            )
+          })}
+
+          {/* Bars */}
+          {weeks.map((w, i) => {
+            const bh = w.amount > 0 ? Math.max((w.amount / maxVal) * chartH, 2) : 0
+            const x = xCenter(i) - barW / 2
+            const y = padT + chartH - bh
+            const isHovered = tooltip?.i === i
+            const label = w.date.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })
+            return (
+              <g key={w.key}
+                onMouseEnter={() => setTooltip({ i, x: xCenter(i), y, w })}
+                onMouseLeave={() => setTooltip(null)}
+              >
+                <rect x={padL + i * (chartW / n)} y={0} width={chartW / n} height={H} fill="transparent" />
+                {bh > 0 && (
+                  <rect x={x} y={y} width={barW} height={bh} rx="3"
+                    fill={isHovered ? 'url(#shippingBarGradHover)' : 'url(#shippingBarGrad)'} />
+                )}
+                {bh > 0 && (
+                  <text x={xCenter(i)} y={y - 6} textAnchor="middle" fontSize="11" fontWeight="600" fill="#475569">
+                    {fmtCad(w.amount)}
+                  </text>
+                )}
+                <text x={xCenter(i)} y={H - 6} textAnchor="middle" fontSize="10" fill="#64748b">
+                  {label}
+                </text>
+              </g>
+            )
+          })}
+
+          {/* Tooltip */}
+          {tooltip && (() => {
+            const tx = Math.min(Math.max(tooltip.x, 70), W - 70)
+            const ty = Math.max(tooltip.y - 8, padT + 4)
+            const label = tooltip.w.date.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
+            return (
+              <g pointerEvents="none">
+                <rect x={tx - 56} y={ty - 14} width={112} height={34} rx="5" fill="#1e293b" opacity="0.93" />
+                <text x={tx} y={ty + 1} textAnchor="middle" fontSize="11" fontWeight="bold" fill="#fbbf24">
+                  {fmtCad(tooltip.w.amount)}
+                </text>
+                <text x={tx} y={ty + 14} textAnchor="middle" fontSize="9" fill="#94a3b8">
+                  28j au {label}
+                </text>
+              </g>
+            )
+          })()}
+        </svg>
+      </div>
+    </div>
+  )
+}
+
 function pct(num, total) {
   if (!total) return null
   return Math.round((num / total) * 100)
@@ -584,23 +705,27 @@ function ProfitabilityChart({ data, recentOrders }) {
             const tx = Math.min(Math.max(tooltip.x, 70), W - 70)
             const ty = Math.max(tooltip.y - 8, padT + 4)
             const w = tooltip.w
+            const label = w.date.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
             const hasBreakdown = activeFilter === 'Tous' && (w.subRevenue > 0 || w.achatRevenue > 0)
-            const tooltipH = hasBreakdown ? 68 : 52
+            const tooltipH = hasBreakdown ? 82 : 66
             return (
               <g pointerEvents="none">
                 <rect x={tx - 64} y={ty - 14} width={128} height={tooltipH} rx="5" fill="#1e293b" opacity="0.93" />
-                <text x={tx} y={ty + 2} textAnchor="middle" fontSize="10" fontWeight="bold"
+                <text x={tx} y={ty + 2} textAnchor="middle" fontSize="9" fill="#94a3b8">
+                  Sem. du {label}
+                </text>
+                <text x={tx} y={ty + 16} textAnchor="middle" fontSize="10" fontWeight="bold"
                   fill={tooltip.pct >= 40 ? '#6ee7b7' : tooltip.pct >= 20 ? '#fbbf24' : '#f87171'}>
                   Marge: {tooltip.pct}%
                 </text>
-                <text x={tx} y={ty + 16} textAnchor="middle" fontSize="10" fill="#6ee7b7">
+                <text x={tx} y={ty + 30} textAnchor="middle" fontSize="10" fill="#6ee7b7">
                   Rev: {fmtK(w.revenue)}$
                 </text>
-                <text x={tx} y={ty + 30} textAnchor="middle" fontSize="10" fill="#94a3b8">
+                <text x={tx} y={ty + 44} textAnchor="middle" fontSize="10" fill="#94a3b8">
                   Coûts: {fmtK(w.cogs)}$
                 </text>
                 {hasBreakdown && (
-                  <text x={tx} y={ty + 46} textAnchor="middle" fontSize="9" fill="#a78bfa">
+                  <text x={tx} y={ty + 60} textAnchor="middle" fontSize="9" fill="#a78bfa">
                     Abo {fmtK(w.subRevenue)}$ · Achat {fmtK(w.achatRevenue)}$
                   </text>
                 )}
@@ -658,7 +783,7 @@ function ProfitabilityChart({ data, recentOrders }) {
                             {order.is_subscription ? 'Abonnement' : 'Achat'}
                           </span>
                         </td>
-                        <td className="px-3 py-2.5 text-slate-500 whitespace-nowrap">{fmtDate(order.last_shipped_at)}</td>
+                        <td className="px-3 py-2.5 text-slate-500 whitespace-nowrap">{fmtDateShort(order.last_shipped_at)}</td>
                         <td className="px-3 py-2.5 text-right font-medium text-slate-700 tabular-nums">{fmtCad(order.revenue)}</td>
                         <td className="px-3 py-2.5 text-right text-slate-500 tabular-nums">{fmtCad(order.cogs)}</td>
                         <td className="px-3 py-2.5 text-right tabular-nums">
@@ -801,14 +926,17 @@ function ReplacementRateChart({ replacementRate }) {
             const ty = Math.max(tooltip.y - 8, padT + 4)
             return (
               <g pointerEvents="none">
-                <rect x={tx - 56} y={ty - 14} width={112} height={52} rx="5" fill="#1e293b" opacity="0.93" />
-                <text x={tx} y={ty + 2} textAnchor="middle" fontSize="10" fontWeight="bold" fill="#fbbf24">
+                <rect x={tx - 56} y={ty - 14} width={112} height={66} rx="5" fill="#1e293b" opacity="0.93" />
+                <text x={tx} y={ty + 2} textAnchor="middle" fontSize="9" fill="#94a3b8">
+                  {new Date(tooltip.m.key + '-01').toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })}
+                </text>
+                <text x={tx} y={ty + 16} textAnchor="middle" fontSize="10" fontWeight="bold" fill="#fbbf24">
                   {fmtPct(tooltip.m.rate)} du parc
                 </text>
-                <text x={tx} y={ty + 16} textAnchor="middle" fontSize="10" fill="#94a3b8">
+                <text x={tx} y={ty + 30} textAnchor="middle" fontSize="10" fill="#94a3b8">
                   {fmtCad(tooltip.m.cost)}
                 </text>
-                <text x={tx} y={ty + 30} textAnchor="middle" fontSize="9" fill="#94a3b8">
+                <text x={tx} y={ty + 44} textAnchor="middle" fontSize="9" fill="#94a3b8">
                   {tooltip.m.nb_orders} commande{tooltip.m.nb_orders > 1 ? 's' : ''}
                 </text>
               </g>
@@ -866,14 +994,84 @@ function ReplacementRateChart({ replacementRate }) {
   )
 }
 
+function InventoryValuationCard({ valuation }) {
+  const pieces = valuation?.pieces
+  const serialsByStatus = valuation?.serialsByStatus || []
+
+  const piecesTotal = pieces?.total_value || 0
+  const serialsTotal = serialsByStatus.reduce((s, r) => s + (r.total_value || 0), 0)
+  const grandTotal = piecesTotal + serialsTotal
+
+  if (!grandTotal) {
+    return (
+      <div className="flex items-center justify-center h-24 text-slate-300 text-sm">
+        Pas encore de données d'inventaire
+      </div>
+    )
+  }
+
+  const rows = [
+    {
+      key: 'pieces',
+      label: 'Pièces',
+      sub: `${pieces?.count || 0} produits · valeur unitaire × stock`,
+      value: piecesTotal,
+      color: 'bg-slate-500',
+    },
+    ...serialsByStatus.map(s => ({
+      key: s.status,
+      label: s.status,
+      sub: `${s.count} numéro${s.count > 1 ? 's' : ''} de série · valeur à la fabrication`,
+      value: s.total_value || 0,
+      color: 'bg-indigo-500',
+    })),
+  ]
+  const maxVal = Math.max(...rows.map(r => r.value), 1)
+
+  return (
+    <div>
+      <div className="mb-5 bg-slate-50 rounded-xl p-4">
+        <p className="text-xs text-slate-500 mb-1">Cumul total</p>
+        <p className="text-2xl font-bold text-slate-900">{fmtCad(grandTotal)}</p>
+        <div className="flex gap-3 mt-1 text-xs text-slate-400 flex-wrap">
+          <span><span className="inline-block w-2 h-2 rounded-full bg-slate-500 mr-1.5" />Pièces {fmtCad(piecesTotal)}</span>
+          <span><span className="inline-block w-2 h-2 rounded-full bg-indigo-500 mr-1.5" />Numéros de série {fmtCad(serialsTotal)}</span>
+        </div>
+      </div>
+      <div className="space-y-3">
+        {rows.map(r => {
+          const width = Math.max((r.value / maxVal) * 100, 0.5)
+          const pct = grandTotal ? Math.round((r.value / grandTotal) * 100) : 0
+          return (
+            <div key={r.key}>
+              <div className="flex items-baseline justify-between mb-1 gap-3">
+                <div className="min-w-0">
+                  <span className="text-sm font-medium text-slate-700">{r.label}</span>
+                  <span className="text-xs text-slate-400 ml-2">{r.sub}</span>
+                </div>
+                <div className="flex items-baseline gap-3 shrink-0">
+                  <span className="text-sm tabular-nums font-semibold text-slate-900">{fmtCad(r.value)}</span>
+                  <span className="text-xs text-slate-400 tabular-nums w-10 text-right">{pct}%</span>
+                </div>
+              </div>
+              <div className="h-2 bg-slate-100 rounded overflow-hidden">
+                <div className={`h-full ${r.color} rounded`} style={{ width: `${width}%` }} />
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 function fmtCad(n) {
   if (!n) return '$0'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
 }
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
+function fmtDateShort(d) {
+  return fmtDate(d, { year: undefined })
 }
 
 export default function Dashboard() {
@@ -947,6 +1145,17 @@ export default function Dashboard() {
           </div>
         )}
 
+        {/* Inventory valuation */}
+        {show('section_inventory_valuation') && (
+          <div className="card p-5 mb-6">
+            <div className="mb-4">
+              <h2 className="font-semibold text-slate-900">Valeur de l'inventaire</h2>
+              <p className="text-xs text-slate-400 mt-0.5">Pièces en stock (valeur unitaire) + numéros de série en inventaire (valeur de fabrication) par statut</p>
+            </div>
+            <InventoryValuationCard valuation={data?.inventory?.valuation} />
+          </div>
+        )}
+
         {/* Closing rate chart */}
         {show('section_closing') && (
           <div className="card p-5 mb-6">
@@ -974,16 +1183,27 @@ export default function Dashboard() {
           </div>
         )}
 
+        {/* Shipping costs */}
+        {show('section_shipping_costs') && (
+          <div className="card p-5 mb-6">
+            <div className="mb-4">
+              <h2 className="font-semibold text-slate-900">Coûts d'expédition</h2>
+              <p className="text-xs text-slate-400 mt-0.5">Compte 65000 « Expédition, livraison et poste » — somme des 28 jours précédant chaque lundi</p>
+            </div>
+            <ShippingCostChart data={data?.weeklyShippingCosts} />
+          </div>
+        )}
+
         {/* Geo clients map */}
         {show('section_geo_map') && (
           <div className="card p-5 mb-6">
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="font-semibold text-slate-900">Clients par région</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Basé sur l'adresse de ferme — cliquer pour filtrer</p>
+                <p className="text-xs text-slate-400 mt-0.5">Basé sur la première adresse de livraison — cliquer pour filtrer</p>
               </div>
             </div>
-            <GeoClientsMap geoData={data?.geoClients || []} />
+            <GeoClientsMap geoData={data?.geoClients || []} unplacedCount={data?.geoClientsUnplaced || 0} />
           </div>
         )}
 
@@ -1003,72 +1223,6 @@ export default function Dashboard() {
           </div>
         )}
 
-        {(show('section_orders') || show('section_tickets')) && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Recent orders */}
-            {show('section_orders') && (
-              <div className="card p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="font-semibold text-slate-900">Commandes récentes</h2>
-                  <Link to="/orders" className="text-indigo-600 text-sm flex items-center gap-1 hover:underline">
-                    Voir toutes <ArrowRight size={14} />
-                  </Link>
-                </div>
-                {data?.recentOrders?.length === 0 ? (
-                  <p className="text-slate-400 text-sm py-4 text-center">Aucune commande</p>
-                ) : (
-                  <div className="space-y-2">
-                    {data?.recentOrders?.map(order => (
-                      <Link key={order.id} to={`/orders/${order.id}`}
-                        className="flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 transition-colors group">
-                        <div>
-                          <div className="text-sm font-medium text-slate-900 group-hover:text-indigo-600">
-                            #{order.order_number} — {order.company_name || 'Sans entreprise'}
-                          </div>
-                          <div className="text-xs text-slate-400">{fmtDate(order.created_at)}</div>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          {order.total_value > 0 && <span className="text-xs text-slate-500">{fmtCad(order.total_value)}</span>}
-                          <Badge color={orderStatusColor(order.status)}>{order.status}</Badge>
-                        </div>
-                      </Link>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Recent tickets */}
-            {show('section_tickets') && (
-              <div className="card p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="font-semibold text-slate-900">Tickets récents</h2>
-                  <Link to="/tickets" className="text-indigo-600 text-sm flex items-center gap-1 hover:underline">
-                    Voir tous <ArrowRight size={14} />
-                  </Link>
-                </div>
-                {data?.recentTickets?.length === 0 ? (
-                  <p className="text-slate-400 text-sm py-4 text-center">Aucun ticket</p>
-                ) : (
-                  <div className="space-y-2">
-                    {data?.recentTickets?.map(ticket => (
-                      <Link key={ticket.id} to="/tickets"
-                        className="flex items-center justify-between p-3 rounded-lg hover:bg-slate-50 transition-colors group">
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium text-slate-900 truncate group-hover:text-indigo-600">
-                            {ticket.title}
-                          </div>
-                          <div className="text-xs text-slate-400">{ticket.company_name} · {fmtDate(ticket.created_at)}</div>
-                        </div>
-                        <Badge color={ticketStatusColor(ticket.status)}>{ticket.status}</Badge>
-                      </Link>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
       </div>
     </Layout>
   )

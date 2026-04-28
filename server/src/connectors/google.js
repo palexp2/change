@@ -15,7 +15,7 @@ export function getAuthUrl(state) {
   const oauth2 = makeOAuth2Client()
   return oauth2.generateAuthUrl({
     access_type: 'offline',
-    prompt: 'consent',
+    prompt: 'select_account consent',
     scope: [
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.send',
@@ -47,7 +47,7 @@ export async function getOAuthClientForAccount(connectorOAuthId) {
   oauth2.on('tokens', (tokens) => {
     db.prepare(`
       UPDATE connector_oauth SET access_token=?, refresh_token=COALESCE(?,refresh_token),
-      expiry_date=?, updated_at=datetime('now') WHERE id=?
+      expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?
     `).run(tokens.access_token, tokens.refresh_token || null, tokens.expiry_date || null, row.id)
   })
   return oauth2

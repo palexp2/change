@@ -1,31 +1,49 @@
+import { cacheGet, cacheSet, invalidate } from './prefetch.js'
+import { invalidateStale } from './swr.js'
+
 const BASE = '/erp/api'
 
 function getToken() {
   return localStorage.getItem('erp_token')
 }
 
-async function request(method, path, body) {
+function rawRequest(method, path, body) {
   const token = getToken()
   const headers = { 'Content-Type': 'application/json' }
   if (token) headers['Authorization'] = `Bearer ${token}`
 
-  const res = await fetch(`${BASE}${path}`, {
+  return fetch(`${BASE}${path}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+  }).then(async (res) => {
+    if (res.status === 401) {
+      localStorage.removeItem('erp_token')
+      window.location.href = '/erp/login'
+      return
+    }
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    return data
   })
+}
 
-  if (res.status === 401) {
-    localStorage.removeItem('erp_token')
-    window.location.href = '/erp/login'
-    return
+// GETs consult the prefetch cache (populated by nav hover). Mutations
+// invalidate the resource-path prefix so subsequent GETs see fresh data.
+function request(method, path, body) {
+  if (method === 'GET') {
+    const hit = cacheGet(path)
+    if (hit) return hit
+    const promise = rawRequest('GET', path)
+    cacheSet(path, promise)
+    return promise
   }
-
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) {
-    throw new Error(data.error || `HTTP ${res.status}`)
+  const resource = path.split('?')[0].split('/').filter(Boolean)[0]
+  if (resource) {
+    invalidate('/' + resource)
+    invalidateStale(resource)
   }
-  return data
+  return rawRequest(method, path, body)
 }
 
 const get = (path) => request('GET', path)
@@ -47,6 +65,7 @@ export const api = {
   // Companies
   companies: {
     list: (params = {}) => get('/companies?' + new URLSearchParams(params)),
+    lookup: () => get('/companies/lookup'),
     get: (id) => get(`/companies/${id}`),
     create: (data) => post('/companies', data),
     update: (id, data) => put(`/companies/${id}`, data),
@@ -56,6 +75,7 @@ export const api = {
   // Contacts
   contacts: {
     list: (params = {}) => get('/contacts?' + new URLSearchParams(params)),
+    lookup: () => get('/contacts/lookup'),
     get: (id) => get(`/contacts/${id}`),
     create: (data) => post('/contacts', data),
     update: (id, data) => put(`/contacts/${id}`, data),
@@ -80,11 +100,24 @@ export const api = {
     update: (id, data) => put(`/products/${id}`, data),
     adjustStock: (id, data) => post(`/products/${id}/stock`, data),
     delete: (id) => del(`/products/${id}`),
+    poPrefill: (id) => get(`/products/${id}/purchase-order/prefill`),
+    poSendEmail: (id, data) => post(`/products/${id}/purchase-order/send-email`, data),
+    poPdfBlob: async (id, po) => {
+      const token = localStorage.getItem('erp_token')
+      const headers = { 'Content-Type': 'application/json' }
+      if (token) headers['Authorization'] = `Bearer ${token}`
+      const res = await fetch(`${BASE}/products/${id}/purchase-order/pdf`, {
+        method: 'POST', headers, body: JSON.stringify(po),
+      })
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`)
+      return await res.blob()
+    },
   },
 
   // Orders
   orders: {
     list: (params = {}) => get('/orders?' + new URLSearchParams(params)),
+    lookup: () => get('/orders/lookup'),
     get: (id) => get(`/orders/${id}`),
     create: (data) => post('/orders', data),
     update: (id, data) => put(`/orders/${id}`, data),
@@ -108,6 +141,11 @@ export const api = {
     update: (id, data) => put(`/tasks/${id}`, data),
     updateStatus: (id, status) => patch(`/tasks/${id}/status`, { status }),
     delete: (id) => del(`/tasks/${id}`),
+    keywords: {
+      list: () => get('/tasks/keywords/list'),
+      create: (data) => post('/tasks/keywords', data),
+      delete: (id) => del(`/tasks/keywords/${id}`),
+    },
   },
 
   // Tickets
@@ -142,6 +180,7 @@ export const api = {
   // Interactions
   interactions: {
     list: (params = {}) => get('/interactions?' + new URLSearchParams(params)),
+    get: (id) => get(`/interactions/${id}`),
     create: (data) => post('/interactions', data),
     emailBody: (id) => get(`/interactions/${id}/email-body`),
     delete: (id) => del(`/interactions/${id}`),
@@ -160,6 +199,9 @@ export const api = {
     disconnect: (id) => del(`/connectors/accounts/${id}`),
     saveConfig: (connector, data) => put(`/connectors/config/${connector}`, data),
     syncGmail: () => post('/connectors/sync/gmail'),
+    gmailAccounts: () => get('/connectors/gmail/accounts'),
+    postmarkInfo: () => get('/connectors/postmark'),
+    postmarkSetDefault: (default_from) => put('/connectors/postmark/default', { default_from }),
     syncDrive: () => post('/connectors/sync/drive'),
     fixFtpTimestamps: () => post('/connectors/fix-ftp-timestamps'),
     deduplicateFtpCalls: () => post('/connectors/deduplicate-ftp-calls'),
@@ -185,6 +227,15 @@ export const api = {
     sync: () => post('/connectors/sync/stripe'),
   },
 
+  // HubSpot
+  hubspot: {
+    info: () => get('/connectors/hubspot'),
+    saveToken: (access_token) => put('/connectors/hubspot', { access_token }),
+    deleteToken: () => del('/connectors/hubspot'),
+    sync: (full = false) => post('/connectors/sync/hubspot', { full }),
+    setMapping: (user_id, hubspot_owner_id) => put('/connectors/hubspot/mapping', { user_id, hubspot_owner_id }),
+  },
+
   // Novoxpress shipping labels
   novoxpress: {
     status: () => get('/novoxpress/status'),
@@ -198,10 +249,10 @@ export const api = {
 
   // QuickBooks
   quickbooks: {
-    accounts: () => get('/connectors/quickbooks/accounts'),
+    accounts: (params = {}) => get('/connectors/quickbooks/accounts?' + new URLSearchParams(params)),
     vendors: () => get('/connectors/quickbooks/vendors'),
-    syncDepenses: () => post('/connectors/sync/qb-depenses'),
-    syncFactures: () => post('/connectors/sync/qb-factures'),
+    taxCodes: () => get('/connectors/quickbooks/tax-codes'),
+    syncAchats: () => post('/connectors/sync/qb-achats'),
   },
 
   // Airtable
@@ -209,6 +260,9 @@ export const api = {
     bases: () => get('/connectors/airtable/bases'),
     tables: (baseId) => get(`/connectors/airtable/bases/${baseId}/tables`),
     fieldDefs: (erpTable) => get(`/connectors/airtable/field-defs/${erpTable}`),
+    erpTableColumns: (erpTable) => get(`/connectors/erp-table-columns/${erpTable}`),
+    frozenColumns: (erpTable) => get(`/connectors/frozen-columns/${erpTable}`),
+    setFrozenColumn: (erpTable, column_name, frozen) => put(`/connectors/frozen-columns/${erpTable}`, { column_name, frozen }),
     saveConfig: (type, data) => put(`/connectors/airtable/${type}-config`, data),
     saveModuleConfig: (module, data) => put(`/connectors/airtable/module-config/${module}`, data),
     sync: (module) => post(`/connectors/sync/${module}`),
@@ -224,6 +278,7 @@ export const api = {
     deletePill: (table, id) => del(`/views/${table}/pills/${id}`),
     reorderPills: (table, order, all_view_sort_order) => patch(`/views/${table}/pills/reorder`, { order, all_view_sort_order }),
     saveColumnWidths: (table, column_widths) => patch(`/views/${table}/column-widths`, { column_widths }),
+    setBulkDeleteEnabled: (table, enabled) => patch(`/views/${table}/bulk-delete-enabled`, { enabled }),
     getDetailLayout: (entityType) => get(`/views/detail/${entityType}`),
     saveDetailLayout: (entityType, field_order) => put(`/views/detail/${entityType}`, { field_order }),
   },
@@ -232,12 +287,23 @@ export const api = {
   purchases: {
     list: (params = {}) => get('/purchases?' + new URLSearchParams(params)),
     get: (id) => get(`/purchases/${id}`),
+    update: (id, data) => patch(`/purchases/${id}`, data),
+    delete: (id) => del(`/purchases/${id}`),
   },
 
   // Serials
   serials: {
     list: (params = {}) => get('/serials?' + new URLSearchParams(params)),
     get: (id) => get(`/serials/${id}`),
+    history: (id) => get(`/serials/${id}/history`),
+    accounting: {
+      transitions: (params = {}) => get('/serials/accounting/transitions?' + new URLSearchParams(params)),
+      missingValuations: (params = {}) => get('/serials/accounting/missing-valuations?' + new URLSearchParams(params)),
+      listRules: () => get('/serials/accounting/rules'),
+      createRule: (data) => post('/serials/accounting/rules', data),
+      updateRule: (id, data) => put(`/serials/accounting/rules/${id}`, data),
+      deleteRule: (id) => del(`/serials/accounting/rules/${id}`),
+    },
   },
 
   // Soumissions
@@ -249,6 +315,7 @@ export const api = {
   // Adresses
   adresses: {
     list: (params = {}) => get('/projets/adresses?' + new URLSearchParams(params)),
+    lookup: () => get('/projets/adresses/lookup'),
     get: (id) => get(`/projets/adresses/${id}`),
     create: (data) => post('/projets/adresses', data),
     update: (id, data) => put(`/projets/adresses/${id}`, data),
@@ -272,11 +339,17 @@ export const api = {
     get: (id) => get(`/projets/assemblages/${id}`),
   },
 
+  // Undo (restore soft-deleted records)
+  undo: {
+    restore: (table, id) => post(`/undo/${table}/${id}`, {}),
+  },
+
   // Factures
   factures: {
     list: (params = {}) => get('/projets/factures?' + new URLSearchParams(params)),
     get: (id) => get(`/projets/factures/${id}`),
     update: (id, data) => patch(`/projets/factures/${id}`, data),
+    recognizeRevenue: (id) => post(`/projets/factures/${id}/recognize-revenue`, {}),
   },
 
   // Retours
@@ -307,6 +380,64 @@ export const api = {
     create: (data) => post('/employees', data),
     update: (id, data) => patch(`/employees/${id}`, data),
     delete: (id) => del(`/employees/${id}`),
+    syncConfig: () => get('/employees/sync-config'),
+    saveSyncConfig: (data) => put('/connectors/airtable/module-config/employees', data),
+    sync: () => post('/connectors/sync/employees'),
+  },
+
+  vacations: {
+    list: (params = {}) => get('/vacations?' + new URLSearchParams(params)),
+    create: (data) => post('/vacations', data),
+    update: (id, data) => patch(`/vacations/${id}`, data),
+    delete: (id) => del(`/vacations/${id}`),
+  },
+
+  timesheets: {
+    list: (params = {}) => get('/timesheets?' + new URLSearchParams(params)),
+    getDay: (params = {}) => get('/timesheets/day?' + new URLSearchParams(params)),
+    createDay: (data) => post('/timesheets/day', data),
+    updateDay: (id, data) => patch(`/timesheets/day/${id}`, data),
+    deleteDay: (id) => del(`/timesheets/day/${id}`),
+    addEntry: (dayId, data) => post(`/timesheets/day/${dayId}/entries`, data),
+    updateEntry: (id, data) => patch(`/timesheets/entries/${id}`, data),
+    deleteEntry: (id) => del(`/timesheets/entries/${id}`),
+    getPreferences: () => get('/timesheets/preferences'),
+    updatePreferences: (data) => patch('/timesheets/preferences', data),
+  },
+
+  activityCodes: {
+    list: (params = {}) => get('/activity-codes?' + new URLSearchParams(params)),
+    get: (id) => get(`/activity-codes/${id}`),
+    create: (data) => post('/activity-codes', data),
+    update: (id, data) => patch(`/activity-codes/${id}`, data),
+    delete: (id) => del(`/activity-codes/${id}`),
+  },
+
+  paies: {
+    list: (params = {}) => get('/paies?' + new URLSearchParams(params)),
+    get: (id) => get(`/paies/${id}`),
+    create: (data) => post('/paies', data),
+    update: (id, data) => patch(`/paies/${id}`, data),
+    delete: (id) => del(`/paies/${id}`),
+    items: (params = {}) => get('/paies/items/list?' + new URLSearchParams(params)),
+    syncConfig: () => get('/paies/sync-config'),
+    saveSyncConfig: (data) => put('/connectors/airtable/module-config/paies', data),
+    sync: () => post('/connectors/sync/paies'),
+    syncItems: () => post('/connectors/sync/paie_items'),
+    importTimesheets: (id) => post(`/paies/${id}/import-timesheets`, {}),
+  },
+
+  hourBank: {
+    list: () => get('/hour-bank'),
+    forEmployee: (employeeId) => get(`/hour-bank/${employeeId}`),
+    create: (data) => post('/hour-bank', data),
+    updateEntry: (id, data) => patch(`/hour-bank/entry/${id}`, data),
+    deleteEntry: (id) => del(`/hour-bank/entry/${id}`),
+  },
+
+  // Stock movements (mouvements d'inventaire)
+  stockMovements: {
+    list: (params = {}) => get('/stock-movements?' + new URLSearchParams(params)),
   },
 
   // Returns (RMA)
@@ -326,24 +457,31 @@ export const api = {
     generateBonLivraison: (id) => post(`/shipments/${id}/bon-livraison`, {}),
   },
 
-  // Dépenses
-  depenses: {
-    list: (params = {}) => get('/depenses?' + new URLSearchParams(params)),
-    get: (id) => get(`/depenses/${id}`),
-    create: (data) => post('/depenses', data),
-    update: (id, data) => put(`/depenses/${id}`, data),
-    updateStatus: (id, status) => patch(`/depenses/${id}/status`, { status }),
-    delete: (id) => del(`/depenses/${id}`),
-  },
-
-  // Factures fournisseurs
-  facturesFournisseurs: {
-    list: (params = {}) => get('/factures-fournisseurs?' + new URLSearchParams(params)),
-    get: (id) => get(`/factures-fournisseurs/${id}`),
-    create: (data) => post('/factures-fournisseurs', data),
-    update: (id, data) => put(`/factures-fournisseurs/${id}`, data),
-    updateStatus: (id, status) => patch(`/factures-fournisseurs/${id}/status`, { status }),
-    delete: (id) => del(`/factures-fournisseurs/${id}`),
+  // Achats fournisseurs (dépenses + factures)
+  achatsFournisseurs: {
+    list: (params = {}) => get('/achats-fournisseurs?' + new URLSearchParams(params)),
+    get: (id) => get(`/achats-fournisseurs/${id}`),
+    create: (data) => post('/achats-fournisseurs', data),
+    update: (id, data) => put(`/achats-fournisseurs/${id}`, data),
+    updateStatus: (id, status) => patch(`/achats-fournisseurs/${id}/status`, { status }),
+    delete: (id) => del(`/achats-fournisseurs/${id}`),
+    attachments: {
+      list: (id) => get(`/achats-fournisseurs/${id}/attachments`),
+      fetchFromQB: (id) => post(`/achats-fournisseurs/${id}/fetch-qb-attachments`, {}),
+      download: async (id, attId) => {
+        const token = getToken()
+        const res = await fetch(`${BASE}/achats-fournisseurs/${id}/attachments/${attId}/download`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const cd = res.headers.get('content-disposition') || ''
+        const m = cd.match(/filename="?([^";]+)"?/i)
+        const filename = m ? m[1] : 'piece-jointe'
+        const blob = await res.blob()
+        return { blob, filename }
+      },
+      delete: (id, attId) => del(`/achats-fournisseurs/${id}/attachments/${attId}`),
+    },
   },
 
   // Global search
@@ -360,7 +498,14 @@ export const api = {
     update: (id, data) => patch(`/automations/${id}`, data),
     delete: (id) => del(`/automations/${id}`),
     logs: (id) => get(`/automations/${id}/logs`),
-    run: (id) => post(`/automations/${id}/run`),
+    run: (id, body = {}) => post(`/automations/${id}/run`, body),
+    testEmail: (id, body) => post(`/automations/${id}/test-email`, body),
+    emailPreview: (id, language) => get(`/automations/${id}/email-preview${language ? `?language=${encodeURIComponent(language)}` : ''}`),
+    fires: (id, limit = 100) => get(`/automations/${id}/fires?limit=${limit}`),
+    resetFires: (id) => post(`/automations/${id}/reset-fires`, {}),
+    test: (id) => post(`/automations/${id}/test`, {}),
+    fieldRuleTables: () => get('/automations/field-rule/tables'),
+    ruleFieldDefs: (erpTable) => get(`/automations/field-defs?erp_table=${encodeURIComponent(erpTable)}`),
   },
 
   interfaces: {
@@ -406,6 +551,14 @@ export const api = {
     saveMemory:   (content)  => put('/agent/memory', { content }),
   },
 
+  // QuickBooks journal entries (proxy — no local copy)
+  journalEntries: {
+    list: (params = {}) => get('/journal-entries?' + new URLSearchParams(params)),
+    get: (id) => get(`/journal-entries/${id}`),
+    create: (data) => post('/journal-entries', data),
+    pendingOperations: (params = {}) => get('/journal-entries/pending-operations?' + new URLSearchParams(params)),
+  },
+
   // Sale receipts (OCR/AI extraction)
   saleReceipts: {
     list: (params = {}) => get('/sale-receipts?' + new URLSearchParams(params)),
@@ -430,19 +583,30 @@ export const api = {
     list: (params = {}) => get('/connectors/sync-log?' + new URLSearchParams(params)),
   },
 
+  stripePayouts: {
+    list: (params = {}) => get('/stripe-payouts?' + new URLSearchParams(params)),
+    get: (stripeId) => get(`/stripe-payouts/${stripeId}`),
+    sync: (fullHistory = false) => post('/stripe-payouts/sync', { fullHistory }),
+    syncTransactions: (stripeId) => post(`/stripe-payouts/${stripeId}/sync-transactions`),
+    previewDeposit: (stripeId) => get(`/stripe-payouts/${stripeId}/preview-deposit`),
+    pushDeposit: (stripeId) => post(`/stripe-payouts/${stripeId}/push-deposit`, { confirm: true }),
+    unlinkDeposit: (stripeId, { force = false } = {}) => post(`/stripe-payouts/${stripeId}/unlink-deposit`, { force }),
+  },
+
   stripeQueue: {
-    list: (params = {}) => get('/stripe-queue?' + new URLSearchParams(params)),
-    get: (id) => get(`/stripe-queue/${id}`),
-    update: (id, data) => patch(`/stripe-queue/${id}`, data),
-    approve: (id, data = {}) => post(`/stripe-queue/${id}/approve`, data),
-    reject: (id) => post(`/stripe-queue/${id}/reject`),
-    reset: (id) => post(`/stripe-queue/${id}/reset`),
     taxMappings: () => get('/stripe-queue/tax-mappings/list'),
     saveTaxMapping: (data) => post('/stripe-queue/tax-mappings', data),
     deleteTaxMapping: (id) => del(`/stripe-queue/tax-mappings/${id}`),
-    uniqueTaxRates: () => get('/stripe-queue/tax-rates/unique'),
     batchEnrich: () => post('/stripe-queue/batch-enrich'),
     batchStatus: () => get('/stripe-queue/batch-enrich/status'),
+  },
+
+  stripeInvoices: {
+    create: (data) => post('/stripe-invoices', data),
+    send: (stripeInvoiceId) => post(`/stripe-invoices/${stripeInvoiceId}/send`),
+    convertibleSoumissions: (companyId) => get(`/stripe-invoices/companies/${companyId}/convertible-soumissions`),
+    soumissionItems: (id) => get(`/stripe-invoices/soumissions/${id}/items`),
+    shippingProvince: (companyId) => get(`/stripe-invoices/companies/${companyId}/shipping-province`),
   },
 
 }

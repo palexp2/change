@@ -15,7 +15,7 @@ export default function Login() {
     try {
       await login(email, password)
       navigate('/dashboard')
-    } catch (err) {
+    } catch {
       setError('Courriel ou mot de passe invalide.')
     }
   }

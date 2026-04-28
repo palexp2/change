@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, Building2, Users, TrendingUp, ShoppingCart, Package, LifeBuoy, MessageSquare, X, Barcode } from 'lucide-react'
+import { Search, Building2, Users, TrendingUp, ShoppingCart, Package, LifeBuoy, MessageSquare, X, Barcode, FileText, Receipt } from 'lucide-react'
 import api from '../lib/api.js'
 
 const TYPE_ICON = {
@@ -12,6 +12,8 @@ const TYPE_ICON = {
   serial: Barcode,
   ticket: LifeBuoy,
   interaction: MessageSquare,
+  bill: FileText,
+  expense: Receipt,
 }
 
 const TYPE_LABEL = {
@@ -23,6 +25,8 @@ const TYPE_LABEL = {
   serial: 'N° de série',
   ticket: 'Ticket',
   interaction: 'Interaction',
+  bill: 'Facture fourn.',
+  expense: 'Dépense',
 }
 
 export function GlobalSearch({ open, onClose }) {

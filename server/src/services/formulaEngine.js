@@ -28,7 +28,7 @@ const SANDBOX_BASE = {
  * @param {object[]} fields - Field definitions array
  * @returns {any} Computed value, or null on error
  */
-export function evaluateFormula(formula, recordData, fields) {
+export function evaluateFormula(formula, recordData, _fields) {
   if (!formula) return null
 
   try {

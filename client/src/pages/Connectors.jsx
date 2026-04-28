@@ -1,22 +1,26 @@
 import { useState, useEffect } from 'react'
-import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck } from 'lucide-react'
+import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent } from 'lucide-react'
 import api from '../lib/api.js'
 import AirtableConfig from './AirtableConfig.jsx'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { TaxMappingModal } from '../components/TaxMappingModal.jsx'
 
 function WhisperConfig() {
+  const { addToast } = useToast()
   const [data, setData] = useState(null)
   const [apiKey, setApiKey] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [saving, setSaving] = useState(false)
-  const [retrying, setRetrying] = useState(false)
-  const [retryResult, setRetryResult] = useState(null)
-  const [fixingTs, setFixingTs] = useState(false)
-  const [fixTsResult, setFixTsResult] = useState(null)
-  const [deduping, setDeduping] = useState(false)
-  const [dedupResult, setDedupResult] = useState(null)
+  const [_retrying, setRetrying] = useState(false)
+  const [_retryResult, setRetryResult] = useState(null)
+  const [_fixingTs, _setFixingTs] = useState(false)
+  const [_fixTsResult, _setFixTsResult] = useState(null)
+  const [_deduping, _setDeduping] = useState(false)
+  const [_dedupResult, _setDedupResult] = useState(null)
   const [driveStatus, setDriveStatus] = useState(null)
   const [downloadProgress, setDownloadProgress] = useState(null)
 
@@ -46,7 +50,7 @@ function WhisperConfig() {
       await api.connectors.whisperSaveKey(apiKey)
       setApiKey('')
       await load()
-    } catch (e) { alert(e.message) }
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
     finally { setSaving(false) }
   }
 
@@ -55,14 +59,14 @@ function WhisperConfig() {
     setDownloadProgress({ running: true, done: 0, total: r.total, errors: 0 })
   }
 
-  const retry = async () => {
+  const _retry = async () => {
     setRetrying(true)
     setRetryResult(null)
     try {
       const r = await api.connectors.whisperRetry()
       setRetryResult(r)
       setTimeout(load, 2000)
-    } catch (e) { alert(e.message) }
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
     finally { setRetrying(false) }
   }
 
@@ -72,7 +76,7 @@ function WhisperConfig() {
   const done    = statMap.done    || 0
   const pending = statMap.pending || 0
   const error   = statMap.error   || 0
-  const total   = done + pending + error + (statMap.processing || 0)
+  const _total  = done + pending + error + (statMap.processing || 0)
 
   return (
     <div className="mt-4 space-y-4">
@@ -148,12 +152,14 @@ function WhisperConfig() {
 }
 
 function CubeAcrConfig({ onRefresh }) {
+  const { addToast } = useToast()
   const [data, setData] = useState(null)
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState({ ftpUser: '', ftpPass: '', nom: '', erpUserId: '' })
   const [saving, setSaving] = useState(false)
   const [visiblePass, setVisiblePass] = useState({})
   const [copied, setCopied] = useState(null)
+  const confirm = useConfirm()
 
   const load = async () => {
     try { setData(await api.connectors.ftpInfo()) } catch {}
@@ -176,12 +182,12 @@ function CubeAcrConfig({ onRefresh }) {
       await load()
       onRefresh()
     } catch (e) {
-      alert(e.message)
+      addToast({ message: e.message, type: 'error' })
     } finally { setSaving(false) }
   }
 
   const deletePhone = async (ftpUser) => {
-    if (!confirm(`Supprimer le téléphone "${ftpUser}" ?`)) return
+    if (!(await confirm(`Supprimer le téléphone "${ftpUser}" ?`))) return
     await api.connectors.ftpDeletePhone(ftpUser)
     await load()
     onRefresh()
@@ -303,11 +309,13 @@ function CubeAcrConfig({ onRefresh }) {
 
 const CONNECTORS = [
   { id: 'google',     name: 'Gmail',       icon: Mail,       color: 'bg-red-50 text-red-600' },
+  { id: 'postmark',   name: 'Postmark',    icon: Send,       color: 'bg-sky-50 text-sky-600',      alwaysConnected: true },
   { id: 'airtable',   name: 'Airtable',    icon: Database,   color: 'bg-amber-50 text-amber-600' },
   { id: 'calls',      name: 'Appels',      icon: Phone,      color: 'bg-green-50 text-green-600', alwaysConnected: true },
   { id: 'quickbooks', name: 'QuickBooks',  icon: BookOpen,   color: 'bg-green-50 text-green-700' },
   { id: 'stripe',     name: 'Stripe',      icon: CreditCard, color: 'bg-purple-50 text-purple-600', apiKeyManaged: true },
   { id: 'novoxpress', name: 'Novoxpress',  icon: Truck,      color: 'bg-orange-50 text-orange-600', apiKeyManaged: true },
+  { id: 'hubspot',    name: 'HubSpot',     icon: Users,      color: 'bg-rose-50 text-rose-600',     apiKeyManaged: true },
 ]
 
 function SyncBtn({ label, syncKey, syncStatus, onSync }) {
@@ -357,22 +365,22 @@ function parseDriveFolders(config) {
 
 function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
   const [folders, setFolders] = useState(() => parseDriveFolders(config))
-  const [users, setUsers] = useState([])
+  const [_users, setUsers] = useState([])
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     api.admin.listUsers().then(setUsers).catch(() => {})
   }, [])
 
-  function addFolder() {
+  function _addFolder() {
     setFolders(f => [...f, { folder_id: '', email: '', user_id: '', label: '' }])
   }
 
-  function updateFolder(i, field, value) {
+  function _updateFolder(i, field, value) {
     setFolders(f => f.map((entry, idx) => idx === i ? { ...entry, [field]: value } : entry))
   }
 
-  function removeFolder(i) {
+  function _removeFolder(i) {
     setFolders(f => f.filter((_, idx) => idx !== i))
   }
 
@@ -394,6 +402,16 @@ function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
               <span className="text-sm text-slate-700">{a.account_email}</span>
               <div className="flex gap-2">
                 <SyncBtn label="Gmail" syncKey="gmail" syncStatus={syncStatus} onSync={() => api.connectors.syncGmail()} />
+                <button
+                  onClick={() => {
+                    const token = localStorage.getItem('erp_token')
+                    window.location.href = `/erp/api/connectors/google/connect?token=${token}`
+                  }}
+                  className="btn-secondary btn-sm text-xs flex items-center gap-1"
+                  title="Relance le consentement Google pour rafraîchir les scopes (ex: gmail.send)"
+                >
+                  <Link2 size={12} /> Reconnecter
+                </button>
                 <button onClick={() => api.connectors.disconnect(a.id).then(onRefresh)} className="text-red-400 hover:text-red-600 p-1">
                   <Trash2 size={14} />
                 </button>
@@ -404,6 +422,15 @@ function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
       )}
 
       <div className="flex gap-2">
+        <button
+          onClick={() => {
+            const token = localStorage.getItem('erp_token')
+            window.location.href = `/erp/api/connectors/google/connect?token=${token}`
+          }}
+          className="btn-secondary btn-sm"
+        >
+          <Plus size={12} /> Connecter un autre compte
+        </button>
         <button onClick={save} disabled={saving} className="btn-primary btn-sm">{saving ? 'Enregistrement...' : 'Enregistrer'}</button>
       </div>
     </div>
@@ -411,8 +438,68 @@ function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
 }
 
 
+function PostmarkConfig() {
+  const { addToast } = useToast()
+  const [data, setData] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [value, setValue] = useState('')
+
+  const load = async () => {
+    try {
+      const d = await api.connectors.postmarkInfo()
+      setData(d)
+      setValue(d.default_from || '')
+    } catch {}
+  }
+  useEffect(() => { load() }, [])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await api.connectors.postmarkSetDefault(value || null)
+      await load()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setSaving(false) }
+  }
+
+  if (!data) return <div className="mt-4 text-sm text-slate-400">Chargement…</div>
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Adresse expéditeur par défaut</p>
+        <p className="text-xs text-slate-500">
+          Utilisée pour tous les courriels transactionnels (notifications d'expédition, suivi d'installation, field rules). Le domaine <code>orisha.io</code> est DKIM-verified chez Postmark — toute adresse <code>@orisha.io</code> est acceptée.
+        </p>
+        <select className="input" value={value} onChange={e => setValue(e.target.value)}>
+          <option value="">— Aucun —</option>
+          {data.addresses.map(a => (
+            <option key={a} value={a}>{a}</option>
+          ))}
+        </select>
+        <div className="flex gap-2">
+          <button onClick={save} disabled={saving || value === (data.default_from || '')} className="btn-primary btn-sm">
+            {saving ? 'Sauvegarde…' : 'Enregistrer'}
+          </button>
+          {data.default_from && (
+            <span className="text-xs text-slate-500 self-center">
+              Actuel : <code>{data.default_from}</code>
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function QuickBooksConfig({ accounts, onRefresh }) {
   const connectedAccounts = accounts.filter(a => a.connector === 'quickbooks')
+  const [taxModalOpen, setTaxModalOpen] = useState(false)
+
+  const reconnect = () => {
+    const token = localStorage.getItem('erp_token')
+    window.location.href = `/erp/api/connectors/quickbooks/connect?token=${token}`
+  }
 
   return (
     <div className="mt-4 space-y-3">
@@ -422,26 +509,45 @@ function QuickBooksConfig({ accounts, onRefresh }) {
             <CheckCircle size={14} className="text-green-500" />
             <span className="text-sm text-slate-700">QuickBooks connecté</span>
           </div>
-          <button onClick={() => api.connectors.disconnect(a.id).then(onRefresh)} className="text-red-400 hover:text-red-600 p-1" title="Déconnecter">
-            <Trash2 size={14} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button onClick={reconnect} className="btn-secondary btn-sm text-xs" title="Réautoriser QuickBooks (si le token a expiré)">
+              <Link2 size={12} /> Reconnecter
+            </button>
+            <button onClick={() => api.connectors.disconnect(a.id).then(onRefresh)} className="text-red-400 hover:text-red-600 p-1" title="Déconnecter">
+              <Trash2 size={14} />
+            </button>
+          </div>
         </div>
       ))}
       {connectedAccounts.length > 0 && (
-        <p className="text-xs text-slate-400">
-          Les comptes de dépense, de paiement et le fournisseur sont sélectionnés par l'opérateur au moment de publier chaque reçu depuis la page <strong>Reçus de vente</strong>.
-        </p>
+        <>
+          <p className="text-xs text-slate-400">
+            Les comptes de dépense, de paiement et le fournisseur sont sélectionnés par l'opérateur au moment de publier chaque reçu depuis la page <strong>Extraction de données</strong>.
+          </p>
+          <div className="pt-2 border-t border-slate-100">
+            <button
+              onClick={() => setTaxModalOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
+              title="Mapping des taxes Stripe → QuickBooks"
+            >
+              <Percent size={12} /> Taxes Stripe → QB
+            </button>
+          </div>
+          <TaxMappingModal isOpen={taxModalOpen} onClose={() => setTaxModalOpen(false)} />
+        </>
       )}
     </div>
   )
 }
 
 function NovoxpressConfig({ configured: initialConfigured, onRefresh }) {
+  const { addToast } = useToast()
   const [configured, setConfigured] = useState(initialConfigured)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPass, setShowPass] = useState(false)
   const [saving, setSaving] = useState(false)
+  const confirm = useConfirm()
 
   const save = async () => {
     setSaving(true)
@@ -450,17 +556,17 @@ function NovoxpressConfig({ configured: initialConfigured, onRefresh }) {
       setUsername(''); setPassword('')
       setConfigured(true)
       onRefresh()
-    } catch (e) { alert(e.message) }
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
     finally { setSaving(false) }
   }
 
   const remove = async () => {
-    if (!confirm('Supprimer les identifiants Novoxpress ?')) return
+    if (!(await confirm('Supprimer les identifiants Novoxpress ?'))) return
     try {
       await api.novoxpress.deleteConfig()
       setConfigured(false)
       onRefresh()
-    } catch (e) { alert(e.message) }
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
   }
 
   return (
@@ -510,10 +616,12 @@ function NovoxpressConfig({ configured: initialConfigured, onRefresh }) {
 }
 
 function StripeConfig({ configured: initialConfigured, syncStatus, onRefresh }) {
+  const { addToast } = useToast()
   const [configured, setConfigured] = useState(initialConfigured)
   const [secretKey, setSecretKey] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [saving, setSaving] = useState(false)
+  const confirm = useConfirm()
 
   const saveKey = async () => {
     setSaving(true)
@@ -522,17 +630,17 @@ function StripeConfig({ configured: initialConfigured, syncStatus, onRefresh }) 
       setSecretKey('')
       setConfigured(true)
       onRefresh()
-    } catch (e) { alert(e.message) }
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
     finally { setSaving(false) }
   }
 
   const removeKey = async () => {
-    if (!confirm('Supprimer la clé Stripe ?')) return
+    if (!(await confirm('Supprimer la clé Stripe ?'))) return
     try {
       await api.stripe.deleteKey()
       setConfigured(false)
       onRefresh()
-    } catch (e) { alert(e.message) }
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
   }
 
   return (
@@ -579,7 +687,179 @@ function StripeConfig({ configured: initialConfigured, syncStatus, onRefresh }) 
   )
 }
 
-function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured, novoxpressConfigured }) {
+function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh }) {
+  const { addToast } = useToast()
+  const [configured, setConfigured] = useState(initialConfigured)
+  const [token, setToken] = useState('')
+  const [showToken, setShowToken] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [info, setInfo] = useState(null)
+  const [loadingInfo, setLoadingInfo] = useState(false)
+  const confirm = useConfirm()
+
+  const loadInfo = async () => {
+    if (!configured) { setInfo(null); return }
+    setLoadingInfo(true)
+    try { setInfo(await api.hubspot.info()) } catch (e) { setInfo({ error: e.message }) }
+    finally { setLoadingInfo(false) }
+  }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { loadInfo() }, [configured])
+
+  const saveToken = async () => {
+    setSaving(true)
+    try {
+      await api.hubspot.saveToken(token)
+      setToken('')
+      setConfigured(true)
+      onRefresh()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setSaving(false) }
+  }
+
+  const removeToken = async () => {
+    if (!(await confirm('Supprimer le token HubSpot ? Le sync s\'arrêtera.'))) return
+    try {
+      await api.hubspot.deleteToken()
+      setConfigured(false)
+      onRefresh()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  const triggerFull = async () => {
+    if (!(await confirm({ title: 'Resync complète HubSpot', message: 'Lancer une resync complète ? Toutes les tâches HubSpot seront (ré)importées.', confirmLabel: 'Lancer', danger: false }))) return
+    try { await api.hubspot.sync(true); addToast({ message: 'Resync complète lancée — vérifiez les logs.', type: 'success' }) }
+    catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  const users = info?.users || []
+  const owners = info?.owners || []
+  const ownerById = Object.fromEntries(owners.map(o => [o.id, o]))
+  const mappedCount = users.filter(u => u.effective_owner_id).length
+
+  const setMapping = async (userId, ownerId) => {
+    try {
+      await api.hubspot.setMapping(userId, ownerId || null)
+      await loadInfo()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Token Private App HubSpot</p>
+        {configured
+          ? <p className="text-sm text-green-600 font-medium flex items-center gap-1.5"><CheckCircle size={14} /> Token configuré</p>
+          : <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5"><XCircle size={14} /> Aucun token configuré</p>
+        }
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <input
+              type={showToken ? 'text' : 'password'}
+              className="input pr-8 font-mono text-sm"
+              placeholder="pat-na1-..."
+              value={token}
+              onChange={e => setToken(e.target.value)}
+            />
+            <button onClick={() => setShowToken(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+              {showToken ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+          <button onClick={saveToken} disabled={saving || !token} className="btn-primary btn-sm">
+            {saving ? 'Sauvegarde…' : configured ? 'Mettre à jour' : 'Enregistrer'}
+          </button>
+          {configured && (
+            <button onClick={removeToken} className="btn-secondary btn-sm text-red-500 hover:text-red-600">
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-slate-400">
+          Scopes requis : <code>crm.objects.tasks.read/write</code> + <code>crm.objects.owners.read</code>.
+          Créez-la dans <a href="https://app.hubspot.com/settings/integrations/private-apps" target="_blank" rel="noopener noreferrer" className="underline hover:text-slate-600">HubSpot → Paramètres → Intégrations → Private Apps</a>.
+        </p>
+      </div>
+
+      {configured && (
+        <>
+          <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping utilisateurs ERP ↔ owners HubSpot</p>
+                {info && !info.error && (
+                  <p className="text-xs text-slate-500 mt-0.5">{mappedCount}/{users.length} mappés · auto par email avec override manuel possible</p>
+                )}
+              </div>
+              <button onClick={loadInfo} className="btn-secondary btn-sm py-1 text-xs" disabled={loadingInfo}>
+                <RefreshCw size={12} className={loadingInfo ? 'animate-spin' : ''} /> Rafraîchir
+              </button>
+            </div>
+            {info?.error && <p className="text-sm text-red-500">⚠ {info.error}</p>}
+            {info && !info.error && (
+              <div className="overflow-x-auto -mx-1">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
+                      <th className="py-1.5 px-2 font-medium">Utilisateur ERP</th>
+                      <th className="py-1.5 px-2 font-medium">Owner HubSpot</th>
+                      <th className="py-1.5 px-2 font-medium w-24">Source</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {users.map(u => {
+                      const isOverride = !!u.override_owner_id
+                      const isAuto = !isOverride && !!u.auto_owner_id
+                      const value = u.override_owner_id || ''
+                      return (
+                        <tr key={u.id} className="border-b border-slate-100 last:border-0">
+                          <td className="py-1.5 px-2">
+                            <div className="font-medium text-slate-700">{u.name}</div>
+                            <div className="text-xs text-slate-400">{u.email || '—'}</div>
+                          </td>
+                          <td className="py-1.5 px-2">
+                            <select
+                              value={value}
+                              onChange={e => setMapping(u.id, e.target.value || null)}
+                              className="input py-1 text-xs w-full max-w-xs"
+                            >
+                              <option value="">
+                                — {u.auto_owner_id ? `auto: ${ownerById[u.auto_owner_id]?.name || u.auto_owner_id}` : 'aucun'} —
+                              </option>
+                              {owners.map(o => (
+                                <option key={o.id} value={o.id}>
+                                  {o.name}{o.email && o.email !== o.name ? ` (${o.email})` : ''}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="py-1.5 px-2 text-xs">
+                            {isOverride && <span className="text-blue-600 font-medium">manuel</span>}
+                            {isAuto && <span className="text-green-600">auto</span>}
+                            {!isOverride && !isAuto && <span className="text-amber-600">non mappé</span>}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3">
+            <SyncBtn label="Pull delta" syncKey="hubspot_tasks" syncStatus={syncStatus} onSync={() => api.hubspot.sync(false)} />
+            <button onClick={triggerFull} className="btn-secondary btn-sm py-1 text-xs">
+              Resync complète
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured, novoxpressConfigured, hubspotConfigured }) {
   const [expanded, setExpanded] = useState(false)
   const { icon: Icon, color } = connector
   const connectorAccounts = accounts.filter(a => a.connector === connector.id)
@@ -587,6 +867,7 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
     : connector.apiKeyManaged ? (
         connector.id === 'stripe' ? stripeConfigured :
         connector.id === 'novoxpress' ? novoxpressConfigured :
+        connector.id === 'hubspot' ? hubspotConfigured :
         false
       )
     : connectorAccounts.length > 0
@@ -629,6 +910,9 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
           {connector.id === 'airtable' && (
             <AirtableConfig syncConfigs={syncConfigs} syncStatus={syncStatus} onRefresh={onRefresh} stripeConfigured={stripeConfigured} />
           )}
+          {connector.id === 'postmark' && (
+            <PostmarkConfig />
+          )}
           {connector.id === 'calls' && (
             <div className="space-y-4 mt-4">
               <WhisperConfig />
@@ -643,6 +927,9 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
           )}
           {connector.id === 'novoxpress' && (
             <NovoxpressConfig configured={novoxpressConfigured} onRefresh={onRefresh} />
+          )}
+          {connector.id === 'hubspot' && (
+            <HubSpotConfig configured={hubspotConfigured} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
         </div>
       )}
@@ -671,31 +958,35 @@ function SyncLogPanel() {
 
   const load = async () => {
     try {
-      const params = { limit: 200 }
+      const params = { limit: open ? 'all' : 50 }
       if (filter) params.module = filter
       const data = await api.syncLog.list(params)
       setLogs(data)
     } catch {} finally { setLoading(false) }
   }
 
-  useEffect(() => { load() }, [filter])
-  useEffect(() => { const id = setInterval(load, 15000); return () => clearInterval(id) }, [filter])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [filter, open])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { const id = setInterval(load, 15000); return () => clearInterval(id) }, [filter, open])
 
   const modules = [...new Set(logs.map(l => l.module))].sort()
 
   const fmtTime = (iso) => {
     if (!iso) return '—'
-    const d = new Date(iso + 'Z')
-    const now = new Date()
-    const diff = now - d
+    const d = new Date(iso)
+    const diff = Date.now() - d
     if (diff < 60000) return 'à l\'instant'
     if (diff < 3600000) return `il y a ${Math.floor(diff / 60000)}min`
     if (diff < 86400000) return d.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' })
     return d.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
   }
 
+  const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' }) : '—'
+  const fmtClock = (iso) => iso ? new Date(iso).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'
+
   // Stats summary
-  const last24h = logs.filter(l => new Date(l.created_at + 'Z') > new Date(Date.now() - 86400000))
+  const last24h = logs.filter(l => new Date(l.created_at) > new Date(Date.now() - 86400000))
   const successCount = last24h.filter(l => l.status === 'success').length
   const errorCount = last24h.filter(l => l.status === 'error').length
   const lastScheduled = logs.find(l => l.trigger === 'scheduled')
@@ -721,6 +1012,7 @@ function SyncLogPanel() {
         <div className="border-t border-slate-100">
           <div className="px-4 py-2 flex items-center justify-between bg-slate-50/50">
             <div className="flex gap-4 text-xs text-slate-500">
+              <span>{logs.length} entrée{logs.length > 1 ? 's' : ''} · 7 derniers jours</span>
               {lastScheduled && <span>Dernière planifiée : {fmtTime(lastScheduled.created_at)}</span>}
               {lastWebhook && <span>Dernier webhook : {fmtTime(lastWebhook.created_at)}</span>}
             </div>
@@ -741,10 +1033,11 @@ function SyncLogPanel() {
           ) : logs.length === 0 ? (
             <div className="px-5 py-6 text-center text-sm text-slate-400">Aucun log</div>
           ) : (
-            <div className="max-h-72 overflow-y-auto">
+            <div className="max-h-[70vh] overflow-y-auto">
               <table className="w-full text-xs">
                 <thead className="bg-slate-50 sticky top-0">
                   <tr>
+                    <th className="text-left px-4 py-2 font-medium text-slate-500">Date</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-500">Heure</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-500">Module</th>
                     <th className="text-left px-4 py-2 font-medium text-slate-500">Source</th>
@@ -757,7 +1050,8 @@ function SyncLogPanel() {
                 <tbody className="divide-y divide-slate-50">
                   {logs.map(l => (
                     <tr key={l.id} className={l.status === 'error' ? 'bg-red-50/50' : ''}>
-                      <td className="px-4 py-1.5 text-slate-500 whitespace-nowrap">{fmtTime(l.created_at)}</td>
+                      <td className="px-4 py-1.5 text-slate-500 whitespace-nowrap">{fmtDate(l.created_at)}</td>
+                      <td className="px-4 py-1.5 text-slate-500 whitespace-nowrap tabular-nums">{fmtClock(l.created_at)}</td>
                       <td className="px-4 py-1.5 font-medium text-slate-700">{MODULE_LABELS[l.module] || l.module}</td>
                       <td className="px-4 py-1.5">
                         <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${TRIGGER_COLORS[l.trigger] || 'bg-slate-100 text-slate-600'}`}>
@@ -792,11 +1086,11 @@ const SYNC_LABELS = {
   gmail: 'Gmail', drive: 'Drive', airtable: 'CRM Airtable',
   projets: 'Projets', pieces: 'Pièces', orders: 'Commandes',
   achats: 'Achats', billets: 'Billets', serials: 'N° de série', envois: 'Envois',
-  stripe: 'Stripe', 'qb-depenses': 'QB Dépenses', 'qb-factures': 'QB Factures',
+  stripe: 'Stripe', 'qb-achats': 'QB Achats', hubspot_tasks: 'HubSpot Tasks',
 }
 
 export function ConnectorsContent() {
-  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, projets_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false, novoxpress_configured: false })
+  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, projets_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false, novoxpress_configured: false, hubspot_configured: false })
   const [loading, setLoading] = useState(true)
   const { status: syncStatus, anyRunning } = useSyncStatus(3000)
 
@@ -854,6 +1148,7 @@ export function ConnectorsContent() {
                   config={data.config || {}}
                   stripeConfigured={!!data.stripe_configured}
                   novoxpressConfigured={!!data.novoxpress_configured}
+                  hubspotConfigured={!!data.hubspot_configured}
                   syncConfigs={{
                     contacts:      data.contacts_sync    || {},
                     companies:     data.companies_sync   || {},

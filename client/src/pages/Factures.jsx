@@ -7,24 +7,29 @@ import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { fmtDate } from '../lib/formatDate.js'
 
 function fmtCad(n) {
   if (!n && n !== 0) return '—'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
 }
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', year: 'numeric' })
-}
 
 const STATUS_COLORS = {
+  'Payé': 'green',
   'Payée': 'green',
+  'À payer': 'yellow',
   'Partielle': 'yellow',
   'En retard': 'red',
   'Envoyée': 'blue',
+  'Draft': 'gray',
   'Brouillon': 'gray',
   'Annulée': 'red',
+  'Void': 'gray',
+  'Supprimé': 'gray',
+  'Note de crédit': 'purple',
+  'Remboursement': 'purple',
+  'Uncollectible': 'red',
 }
 
 const RENDERS = {
@@ -33,14 +38,24 @@ const RENDERS = {
     ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   project_name:    row => <span className="text-slate-600">{row.project_name || '—'}</span>,
+  order_number:    row => row.order_id && row.order_number
+    ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">#{row.order_number}</Link>
+    : <span className="text-slate-400">—</span>,
   status:          row => row.status
     ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
     : <span className="text-slate-400">—</span>,
   document_date:   row => <span className="text-slate-500">{fmtDate(row.document_date)}</span>,
   due_date:        row => <span className="text-slate-500">{fmtDate(row.due_date)}</span>,
-  total_cad:       row => <span className="font-medium text-slate-700">{fmtCad(row.total_cad)}</span>,
-  balance_due_cad: row => {
-    const val = row.balance_due_cad
+  invoice_id:      row => row.invoice_id
+    ? <span className="font-mono text-xs text-slate-500">{row.invoice_id}</span>
+    : <span className="text-slate-400">—</span>,
+  currency:        row => row.currency
+    ? <span className="font-mono text-xs text-slate-600">{row.currency}</span>
+    : <span className="text-slate-400">—</span>,
+  amount_before_tax_cad: row => <span className="font-medium text-slate-700">{fmtCad(row.amount_before_tax_cad)}</span>,
+  total_amount:    row => <span className="font-medium text-slate-700">{fmtCad(row.total_amount)}</span>,
+  balance_due:     row => {
+    const val = row.balance_due
     if (!val && val !== 0) return <span className="text-slate-400">—</span>
     return <span className={`font-medium ${val > 0 ? 'text-red-600' : 'text-green-600'}`}>{fmtCad(val)}</span>
   },
@@ -67,17 +82,19 @@ export default function Factures() {
       <div className="p-6 max-w-7xl mx-auto">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Factures</h1>
+            <h1 className="text-2xl font-bold text-slate-900">Factures clients</h1>
           </div>
-          <TableConfigModal table="factures" />
+          <div className="flex items-center gap-2">
+            <TableConfigModal table="factures" />
+          </div>
         </div>
 
         <DataTable
           table="factures"
           columns={COLUMNS}
           data={factures}
-          loading={loading}
           searchFields={['document_number']}
+          loading={loading}
           onRowClick={row => navigate(`/factures/${row.id}`)}
         />
       </div>

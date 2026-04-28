@@ -70,7 +70,7 @@ async function syncAccount(oauthRow) {
           for (const m of (record.messagesAdded || [])) messages.push(m.message)
         }
         newHistoryId = hist.data.historyId || newHistoryId
-      } catch (histErr) {
+      } catch {
         console.log(`⚠️ Gmail ${account_email}: history expiré, resync complet`)
         const list = await gmail.users.messages.list({ userId: 'me', maxResults: 50 })
         messages = list.data.messages || []
@@ -87,7 +87,7 @@ async function syncAccount(oauthRow) {
       let msg
       try {
         msg = await gmail.users.messages.get({ userId: 'me', id: msgRef.id, format: 'full' })
-      } catch (getMsgErr) {
+      } catch {
         // Message supprimé/inaccessible entre le list et le get — on skip
         continue
       }
@@ -128,7 +128,7 @@ async function syncAccount(oauthRow) {
 
     db.prepare(`
       INSERT INTO gmail_sync_state (connector_oauth_id, last_history_id, last_synced_at)
-      VALUES (?,?,datetime('now'))
+      VALUES (?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       ON CONFLICT(connector_oauth_id) DO UPDATE SET
         last_history_id=excluded.last_history_id, last_synced_at=excluded.last_synced_at
     `).run(oauthId, newHistoryId)
@@ -140,30 +140,101 @@ async function syncAccount(oauthRow) {
 }
 
 /**
- * Envoie un courriel au nom du premier compte Google OAuth.
- * Requiert le scope gmail.send (les comptes connectés avant cette mise à jour
- * doivent être reconnectés pour obtenir ce scope).
+ * Envoie un courriel via Gmail OAuth.
+ * Sélection du compte expéditeur, par ordre de priorité :
+ *   1. options.accountEmail explicite (ex : picker UI)
+ *   2. options.userId → compte Google dont l'email matche celui de l'utilisateur ERP
+ * Aucun fallback silencieux : si aucun des deux ne matche, on lève une erreur
+ * plutôt qu'envoyer depuis le compte de quelqu'un d'autre.
+ * Requiert le scope gmail.send — les comptes connectés avant l'ajout du scope
+ * doivent être reconnectés.
+ *
+ * @param {string} to
+ * @param {string} subject
+ * @param {string} htmlBody
+ * @param {Object} [options]
+ * @param {string} [options.cc]
+ * @param {Array<{filename: string, content: Buffer, contentType?: string}>} [options.attachments]
+ * @param {string} [options.userId] ID de l'utilisateur ERP actif
+ * @param {string} [options.accountEmail] Compte Gmail explicite à utiliser
+ * @returns {Promise<{account_email: string, message_id: string, thread_id: string}>}
  */
-export async function sendEmail(to, subject, htmlBody) {
-  const account = db.prepare(
-    `SELECT * FROM connector_oauth WHERE connector='google' AND refresh_token IS NOT NULL LIMIT 1`
-  ).get()
-  if (!account) throw new Error('Aucun compte Google configuré')
+export async function sendEmail(to, subject, htmlBody, options = {}) {
+  const { cc, attachments, userId, accountEmail } = options
+
+  let account = null
+  if (accountEmail) {
+    account = db.prepare(
+      `SELECT * FROM connector_oauth
+       WHERE connector='google' AND refresh_token IS NOT NULL AND account_email=?`
+    ).get(accountEmail)
+    if (!account) throw new Error(`Compte Gmail "${accountEmail}" non connecté`)
+  }
+  if (!account && userId) {
+    account = db.prepare(`
+      SELECT co.* FROM connector_oauth co
+      JOIN users u ON lower(u.email) = lower(co.account_email)
+      WHERE co.connector='google' AND co.refresh_token IS NOT NULL AND u.id=?
+      LIMIT 1
+    `).get(userId)
+    if (!account) {
+      throw new Error('Votre compte Gmail n\'est pas connecté — connectez-le depuis Connectors, ou sélectionnez un autre compte.')
+    }
+  }
+  if (!account) throw new Error('Aucun compte Gmail fourni (accountEmail ou userId requis)')
 
   const gmail = await getGmailClient(account.id)
+  const subjectHeader = `=?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`
 
-  // RFC 2822 raw message, encodé en base64url
-  const rawLines = [
-    `To: ${to}`,
-    'Content-Type: text/html; charset=utf-8',
-    'MIME-Version: 1.0',
-    `Subject: =?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`,
-    '',
-    htmlBody,
-  ]
-  const raw = Buffer.from(rawLines.join('\r\n')).toString('base64url')
+  let raw
+  if (attachments && attachments.length > 0) {
+    const boundary = `=_orisha_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`
+    const lines = [
+      `To: ${to}`,
+      ...(cc ? [`Cc: ${cc}`] : []),
+      `Subject: ${subjectHeader}`,
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/html; charset=utf-8',
+      'Content-Transfer-Encoding: 7bit',
+      '',
+      htmlBody,
+    ]
+    for (const att of attachments) {
+      const b64 = Buffer.from(att.content).toString('base64').replace(/(.{76})/g, '$1\r\n')
+      lines.push(
+        '',
+        `--${boundary}`,
+        `Content-Type: ${att.contentType || 'application/octet-stream'}; name="${att.filename}"`,
+        `Content-Disposition: attachment; filename="${att.filename}"`,
+        'Content-Transfer-Encoding: base64',
+        '',
+        b64,
+      )
+    }
+    lines.push('', `--${boundary}--`)
+    raw = Buffer.from(lines.join('\r\n')).toString('base64url')
+  } else {
+    const rawLines = [
+      `To: ${to}`,
+      ...(cc ? [`Cc: ${cc}`] : []),
+      'Content-Type: text/html; charset=utf-8',
+      'MIME-Version: 1.0',
+      `Subject: ${subjectHeader}`,
+      '',
+      htmlBody,
+    ]
+    raw = Buffer.from(rawLines.join('\r\n')).toString('base64url')
+  }
 
-  await gmail.users.messages.send({ userId: 'me', requestBody: { raw } })
+  const resp = await gmail.users.messages.send({ userId: 'me', requestBody: { raw } })
+  return {
+    account_email: account.account_email,
+    message_id: resp.data.id,
+    thread_id: resp.data.threadId,
+  }
 }
 
 export async function syncAllMailboxes() {

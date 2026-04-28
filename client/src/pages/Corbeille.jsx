@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { Layout } from '../components/Layout.jsx'
 import { Trash2, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react'
 import { useToast } from '../components/ui/ToastProvider.jsx'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { formatRelativeTime } from '../utils/formatters.js'
 import api from '../lib/api.js'
 
@@ -15,7 +16,9 @@ export function CorbeilleContent() {
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState({})
   const { addToast } = useToast()
+  const confirm = useConfirm()
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [])
 
   async function load() {
@@ -41,7 +44,7 @@ export function CorbeilleContent() {
   }
 
   async function handlePurge() {
-    if (!confirm('Supprimer définitivement tous les éléments de la corbeille ? Cette action est irréversible.')) return
+    if (!(await confirm('Supprimer définitivement tous les éléments de la corbeille ? Cette action est irréversible.'))) return
     try {
       const res = await api.admin.purgeTrash()
       addToast({ message: `Corbeille vidée (${res.purged} élément${res.purged !== 1 ? 's' : ''})`, type: 'success' })

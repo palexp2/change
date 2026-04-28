@@ -37,7 +37,7 @@ export function logSync(module, trigger, result) {
 /** Delete logs older than 7 days. */
 export function purgeSyncLogs() {
   try {
-    const { changes } = db.prepare("DELETE FROM sync_log WHERE created_at < datetime('now', '-7 days')").run()
+    const { changes } = db.prepare("DELETE FROM sync_log WHERE created_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')").run()
     if (changes > 0) console.log(`🧹 sync_log: ${changes} old entries purged`)
   } catch (e) {
     console.error('syncLog purge error:', e.message)

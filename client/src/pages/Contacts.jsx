@@ -3,11 +3,13 @@ import { Link, useNavigate } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
+import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 const RENDERS = {
@@ -75,10 +77,14 @@ function ContactForm({ initial = {}, companies = [], onSave, onClose }) {
         </div>
         <div className="col-span-2">
           <label className="label">Entreprise</label>
-          <select value={form.company_id} onChange={e => setForm(f => ({ ...f, company_id: e.target.value }))} className="select">
-            <option value="">— Aucune entreprise —</option>
-            {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
+          <LinkedRecordField
+            name="contact_company_id"
+            value={form.company_id}
+            options={companies}
+            labelFn={c => c.name}
+            placeholder="Entreprise"
+            onChange={v => setForm(f => ({ ...f, company_id: v }))}
+          />
         </div>
       </div>
       {error && <p className="text-red-600 text-sm">{error}</p>}
@@ -96,6 +102,7 @@ export default function Contacts() {
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
+  const undoableDelete = useUndoableDelete()
 
   const load = useCallback(async () => {
     await loadProgressive(
@@ -106,7 +113,7 @@ export default function Contacts() {
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
-    api.companies.list({ limit: 'all' }).then(r => setCompanies(r.data)).catch(() => {})
+    api.companies.lookup().then(setCompanies).catch(() => {})
   }, [])
 
   async function handleCreate(form) {
@@ -136,6 +143,15 @@ export default function Contacts() {
           loading={loading}
           onRowClick={row => navigate(`/contacts/${row.id}`)}
           searchFields={['first_name', 'last_name', 'email', 'phone']}
+          onBulkDelete={async (ids) => {
+            await undoableDelete({
+              table: 'contacts',
+              ids,
+              deleteFn: () => Promise.all(ids.map(id => api.contacts.delete(id))),
+              label: `${ids.length} contact${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`,
+              onChange: load,
+            })
+          }}
         />
       </div>
 

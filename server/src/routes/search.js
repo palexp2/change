@@ -108,6 +108,34 @@ router.get('/', requireAuth, (req, res) => {
     url: `/tickets/${r.id}`
   }))
 
+  // Achats fournisseurs (factures + dépenses dans la même table)
+  const achats = db.prepare(`
+    SELECT id, type, vendor, vendor_invoice_number, bill_number, reference,
+           description, total_cad, date_achat
+    FROM achats_fournisseurs
+    WHERE (vendor LIKE ? OR vendor_invoice_number LIKE ? OR bill_number LIKE ?
+           OR reference LIKE ? OR description LIKE ?)
+    ORDER BY date_achat DESC
+    LIMIT 8
+  `).all(like, like, like, like, like)
+  achats.forEach(r => {
+    const isBill = r.type === 'bill'
+    const num = r.vendor_invoice_number || r.bill_number || r.reference || ''
+    const label = isBill
+      ? `Facture ${num || '—'}`
+      : `Dépense ${num || (r.description ? r.description.slice(0, 40) : '—')}`
+    const sub = [
+      r.vendor,
+      r.date_achat,
+      r.total_cad != null ? `${Number(r.total_cad).toFixed(2)} CAD` : null,
+    ].filter(Boolean).join(' · ')
+    results.push({
+      type: isBill ? 'bill' : 'expense',
+      id: r.id, label, sub,
+      url: `/achats-fournisseurs?id=${r.id}`,
+    })
+  })
+
   res.json({ results })
 })
 

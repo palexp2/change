@@ -4,17 +4,19 @@ import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
-import { Plus, FileDown, Search, Trash2, ChevronUp, ChevronDown } from 'lucide-react'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { Plus, FileDown, Trash2, ChevronUp, ChevronDown } from 'lucide-react'
+import { fmtDate } from '../lib/formatDate.js'
+import { DataTable } from '../components/DataTable.jsx'
+import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useToast } from '../contexts/ToastContext.jsx'
 
 function fmtCad(n) {
   if (!n && n !== 0) return '—'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
 }
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', year: 'numeric' })
-}
 
 const STATUS_COLORS = {
   'Brouillon': 'gray',
@@ -27,6 +29,7 @@ const STATUS_COLORS = {
 // ── Create modal ──────────────────────────────────────────────────────────────
 
 function CreateModal({ onClose, onCreated }) {
+  const { addToast } = useToast()
   const [catalog, setCatalog] = useState([])
   const [companies, setCompanies] = useState([])
   const [contacts, setContacts] = useState([])
@@ -45,7 +48,7 @@ function CreateModal({ onClose, onCreated }) {
 
   useEffect(() => {
     api.catalog.list().then(setCatalog).catch(console.error)
-    api.companies.list({ limit: 'all' }).then(r => setCompanies(r.data || [])).catch(console.error)
+    api.companies.lookup().then(setCompanies).catch(console.error)
   }, [])
 
   useEffect(() => {
@@ -110,7 +113,7 @@ function CreateModal({ onClose, onCreated }) {
       })
       onCreated(result)
     } catch (e) {
-      alert(e.message)
+      addToast({ message: e.message, type: 'error' })
     } finally {
       setSaving(false)
     }
@@ -134,21 +137,25 @@ function CreateModal({ onClose, onCreated }) {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Entreprise</label>
-              <select className="w-full border rounded-lg px-3 py-2 text-sm"
+              <LinkedRecordField
+                name="soumission_company_id"
                 value={form.company_id}
-                onChange={e => setForm(f => ({ ...f, company_id: e.target.value }))}>
-                <option value="">— Sélectionner —</option>
-                {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
+                options={companies}
+                labelFn={c => c.name}
+                placeholder="Entreprise"
+                onChange={v => setForm(f => ({ ...f, company_id: v }))}
+              />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Contact</label>
-              <select className="w-full border rounded-lg px-3 py-2 text-sm"
+              <LinkedRecordField
+                name="soumission_contact_id"
                 value={form.contact_id}
-                onChange={e => setForm(f => ({ ...f, contact_id: e.target.value }))}>
-                <option value="">— Sélectionner —</option>
-                {contacts.map(c => <option key={c.id} value={c.id}>{c.first_name} {c.last_name}</option>)}
-              </select>
+                options={contacts}
+                labelFn={c => `${c.first_name || ''} ${c.last_name || ''}`.trim()}
+                placeholder="Contact"
+                onChange={v => setForm(f => ({ ...f, contact_id: v }))}
+              />
             </div>
           </div>
 
@@ -295,19 +302,48 @@ function CreateModal({ onClose, onCreated }) {
 
 // ── Main page ──────────────────────────────────────────────────────────────────
 
+const RENDERS = {
+  title: row => (
+    <div>
+      <div className="font-medium text-slate-900">{row.title || <span className="text-slate-400 italic">Sans titre</span>}</div>
+      {row.contact_name && <div className="text-xs text-slate-500">{row.contact_name}</div>}
+    </div>
+  ),
+  company_name: row => row.company_id
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline text-sm">{row.company_name}</Link>
+    : <span className="text-slate-400">—</span>,
+  status: row => row.status
+    ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
+    : <span className="text-slate-400">—</span>,
+  created_at: row => <span className="text-sm text-slate-600">{fmtDate(row.created_at)}</span>,
+  expiration_date: row => <span className="text-sm text-slate-600">{fmtDate(row.expiration_date)}</span>,
+  pdf: row => row.generated_pdf_path
+    ? <a
+        href={`/erp/api/documents/soumissions/${row.id}/pdf`}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={e => e.stopPropagation()}
+        className="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-800 text-sm"
+      >
+        <FileDown size={15} /> PDF
+      </a>
+    : <span className="text-slate-300">—</span>,
+}
+
+const COLUMNS = TABLE_COLUMN_META.soumissions.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
+
 export default function Soumissions() {
   const [rows, setRows] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
   const [showCreate, setShowCreate] = useState(false)
-  const [search, setSearch] = useState('')
   const navigate = useNavigate()
 
   const load = useCallback(async () => {
     try {
-      const res = await api.documents.soumissions.list({ limit: 100 })
+      const res = await api.documents.soumissions.list({ limit: 'all' })
       setRows(res.data || [])
-      setTotal(res.total || 0)
+      setTotal(res.total || (res.data || []).length)
     } catch (e) {
       console.error(e)
     } finally {
@@ -317,94 +353,33 @@ export default function Soumissions() {
 
   useEffect(() => { load() }, [load])
 
-  const filtered = rows.filter(r => {
-    if (!search) return true
-    const q = search.toLowerCase()
-    return (r.title || '').toLowerCase().includes(q)
-      || (r.company_name || '').toLowerCase().includes(q)
-  })
-
   return (
     <Layout>
-      <div className="max-w-6xl mx-auto px-4 py-6">
+      <div className="max-w-7xl mx-auto px-4 py-6">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Soumissions</h1>
             <p className="text-sm text-slate-500 mt-1">{total} soumission{total !== 1 ? 's' : ''}</p>
           </div>
-          <button
-            onClick={() => setShowCreate(true)}
-            className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700"
-          >
-            <Plus size={16} /> Nouvelle soumission
-          </button>
+          <div className="flex items-center gap-2">
+            <TableConfigModal table="soumissions" />
+            <button
+              onClick={() => setShowCreate(true)}
+              className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700"
+            >
+              <Plus size={16} /> Nouvelle soumission
+            </button>
+          </div>
         </div>
 
-        <div className="relative mb-4">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            className="w-full pl-9 pr-4 py-2 border rounded-lg text-sm"
-            placeholder="Rechercher par titre, entreprise…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
-        </div>
-
-        <div className="bg-white rounded-xl border shadow-sm overflow-hidden">
-          <table className="w-full">
-            <thead>
-              <tr className="bg-slate-50 border-b">
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Titre</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Entreprise</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Statut</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Date</th>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider">Expiration</th>
-                <th className="px-4 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider">PDF</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">Chargement…</td></tr>
-              ) : filtered.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">Aucune soumission</td></tr>
-              ) : (
-                filtered.map(row => (
-                  <tr key={row.id} className="border-b hover:bg-slate-50 cursor-pointer"
-                    onClick={() => navigate(`/soumissions/${row.id}`)}>
-                    <td className="px-4 py-3">
-                      <div className="font-medium text-slate-900">{row.title || <span className="text-slate-400 italic">Sans titre</span>}</div>
-                      {row.contact_name && <div className="text-xs text-slate-500">{row.contact_name}</div>}
-                    </td>
-                    <td className="px-4 py-3">
-                      {row.company_id
-                        ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline text-sm">{row.company_name}</Link>
-                        : <span className="text-slate-400">—</span>}
-                    </td>
-                    <td className="px-4 py-3">
-                      {row.status
-                        ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
-                        : <span className="text-slate-400">—</span>}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{fmtDate(row.created_at)}</td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{fmtDate(row.expiration_date)}</td>
-                    <td className="px-4 py-3 text-right" onClick={e => e.stopPropagation()}>
-                      {row.generated_pdf_path && (
-                        <a
-                          href={`/erp/api/documents/soumissions/${row.id}/pdf`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-800 text-sm"
-                        >
-                          <FileDown size={15} /> PDF
-                        </a>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          table="soumissions"
+          columns={COLUMNS}
+          data={rows}
+          loading={loading}
+          onRowClick={row => navigate(`/soumissions/${row.id}`)}
+          searchFields={['title', 'company_name', 'contact_name']}
+        />
 
         {showCreate && (
           <CreateModal

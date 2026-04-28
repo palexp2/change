@@ -8,6 +8,7 @@ import { Badge, ticketStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 function fmtDuration(mins) {
@@ -74,24 +75,36 @@ function TicketForm({ initial = {}, meta = {}, companies = [], users = [], conta
         </div>
         <div>
           <label className="label">Entreprise</label>
-          <select value={form.company_id} onChange={e => setForm(f => ({ ...f, company_id: e.target.value, contact_id: '' }))} className="select">
-            <option value="">—</option>
-            {companies.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
+          <LinkedRecordField
+            name="ticket_company_id"
+            value={form.company_id}
+            options={companies}
+            labelFn={c => c.name}
+            placeholder="Entreprise"
+            onChange={v => setForm(f => ({ ...f, company_id: v, contact_id: '' }))}
+          />
         </div>
         <div>
           <label className="label">Contact</label>
-          <select value={form.contact_id} onChange={e => setForm(f => ({ ...f, contact_id: e.target.value }))} className="select">
-            <option value="">—</option>
-            {filteredContacts.map(c => <option key={c.id} value={c.id}>{c.first_name} {c.last_name}</option>)}
-          </select>
+          <LinkedRecordField
+            name="ticket_contact_id"
+            value={form.contact_id}
+            options={filteredContacts}
+            labelFn={c => `${c.first_name || ''} ${c.last_name || ''}`.trim()}
+            placeholder="Contact"
+            onChange={v => setForm(f => ({ ...f, contact_id: v }))}
+          />
         </div>
         <div>
           <label className="label">Assigne a</label>
-          <select value={form.assigned_to} onChange={e => setForm(f => ({ ...f, assigned_to: e.target.value }))} className="select">
-            <option value="">—</option>
-            {users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-          </select>
+          <LinkedRecordField
+            name="ticket_assigned_to"
+            value={form.assigned_to}
+            options={users}
+            labelFn={u => u.name}
+            placeholder="Assigner"
+            onChange={v => setForm(f => ({ ...f, assigned_to: v }))}
+          />
         </div>
         <div>
           <label className="label">Duree (minutes)</label>
@@ -99,7 +112,7 @@ function TicketForm({ initial = {}, meta = {}, companies = [], users = [], conta
         </div>
       </div>
       <div>
-        <label className="label">Description</label>
+        <label className="label">Question</label>
         <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} className="input" rows={3} />
       </div>
       {error && <p className="text-red-600 text-sm">{error}</p>}
@@ -130,8 +143,8 @@ export default function Tickets() {
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
-    api.companies.list({ limit: 'all' }).then(r => setCompanies(r.data)).catch(() => {})
-    api.contacts.list({ limit: 'all' }).then(r => setContacts(r.data)).catch(() => {})
+    api.companies.lookup().then(setCompanies).catch(() => {})
+    api.contacts.lookup().then(setContacts).catch(() => {})
     api.admin.listUsers().then(setUsers).catch(() => {})
     api.tickets.meta().then(setMeta).catch(() => {})
   }, [])

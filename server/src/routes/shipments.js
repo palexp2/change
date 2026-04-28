@@ -7,6 +7,8 @@ import sharp from 'sharp'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import * as postmark from 'postmark'
+import { logSystemRun } from '../services/systemAutomations.js'
+import { getAutomationFrom } from '../services/postmarkConfig.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -284,6 +286,7 @@ function buildTrackingHtml(t, recipientName, addressLine1, carrier, trackingNumb
 
 // POST /api/shipments/:id/send-tracking
 router.post('/:id/send-tracking', async (req, res) => {
+  const started = Date.now()
   const { to } = req.body
   if (!to || !to.includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
 
@@ -313,9 +316,11 @@ router.post('/:id/send-tracking', async (req, res) => {
   const html = buildTrackingHtml(t, recipientName, row.address_line1, row.carrier, row.tracking_number, trackingLink, trackPixelUrl)
 
   try {
+    const fromAddress = getAutomationFrom('sys_shipment_tracking_email')
+    if (!fromAddress) throw new Error('Adresse expéditeur Postmark non configurée')
     const client = new postmark.ServerClient(process.env.POSTMARK_API_KEY)
     await client.sendEmail({
-      From: process.env.POSTMARK_FROM,
+      From: fromAddress,
       To: to,
       Subject: subject,
       HtmlBody: html,
@@ -325,23 +330,54 @@ router.post('/:id/send-tracking', async (req, res) => {
     const interactionId = uuidv4()
     db.prepare(`
       INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
-      VALUES (?, ?, ?, 'email', 'out', datetime('now'))
+      VALUES (?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     `).run(interactionId, row.address_contact_id || null, row.company_id || null)
     db.prepare(`
       INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, automated)
       VALUES (?, ?, ?, ?, ?, ?, 1)
-    `).run(emailId, interactionId, subject, html, process.env.POSTMARK_FROM, to)
+    `).run(emailId, interactionId, subject, html, fromAddress, to)
 
     db.prepare(`
       UPDATE shipments SET
-        tracking_email_sent_at = datetime('now'),
+        tracking_email_sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
         tracking_email_interaction_id = ?,
         tracking_email_contact_id = ?
       WHERE id = ?
     `).run(interactionId, row.address_contact_id || null, req.params.id)
 
+    const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+    const nowIso = new Date().toISOString()
+    logSystemRun('sys_shipment_tracking_email', {
+      status: 'success',
+      result: [
+        `Email de suivi envoyé`,
+        `  De : ${fromAddress}`,
+        `  À : ${to}`,
+        `  Sujet : ${subject}`,
+        `  Langue : ${lang}`,
+        `  Transporteur : ${row.carrier || 'N/A'} — ${row.tracking_number}`,
+        '',
+        `Envoi : ${row.order_number || req.params.id}`,
+        `${appUrl}/erp/envois/${req.params.id}`,
+        '',
+        `Changements (shipments) :`,
+        `  • tracking_email_sent_at: ∅ → ${nowIso}`,
+        `  • tracking_email_interaction_id: ∅ → ${interactionId}`,
+        `  • tracking_email_contact_id: ∅ → ${row.address_contact_id || '∅'}`,
+        '',
+        `Interaction créée : ${interactionId} (emails.id = ${emailId}, pixel de tracking actif)`,
+      ].join('\n'),
+      duration_ms: Date.now() - started,
+      triggerData: { shipment_id: req.params.id, to, interaction_id: interactionId, email_id: emailId },
+    })
     res.json({ success: true, interaction_id: interactionId, contact_id: row.address_contact_id || null })
   } catch (e) {
+    logSystemRun('sys_shipment_tracking_email', {
+      status: 'error',
+      error: e.message,
+      duration_ms: Date.now() - started,
+      triggerData: { shipment_id: req.params.id, to },
+    })
     res.status(500).json({ error: e.message })
   }
 })
@@ -662,7 +698,7 @@ router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM shipments WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Envoi introuvable' })
 
-  db.prepare("UPDATE shipments SET deleted_at = datetime('now') WHERE id = ?").run(req.params.id)
+  db.prepare("UPDATE shipments SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id)
   res.json({ success: true })
 })
 

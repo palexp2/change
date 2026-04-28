@@ -1,14 +1,11 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Barcode } from 'lucide-react'
+import { ArrowLeft, Barcode, History } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
+import { fmtDate } from '../lib/formatDate.js'
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric' })
-}
 function fmtCad(n) {
   if (!n && n !== 0) return '—'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
@@ -28,12 +25,16 @@ export default function SerialDetail() {
   const navigate = useNavigate()
   const [serial, setSerial] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [history, setHistory] = useState([])
 
   useEffect(() => {
     api.serials.get(id)
       .then(setSerial)
       .catch(() => setSerial(null))
       .finally(() => setLoading(false))
+    api.serials.history(id)
+      .then(r => setHistory(r.data || []))
+      .catch(() => setHistory([]))
   }, [id])
 
   if (loading) {
@@ -93,6 +94,31 @@ export default function SerialDetail() {
             <span>Créé le {fmtDate(serial.created_at)}</span>
             <span>Mis à jour le {fmtDate(serial.updated_at)}</span>
           </div>
+        </div>
+
+        <div className="card p-5 mt-5">
+          <div className="flex items-center gap-2 mb-4">
+            <History size={16} className="text-slate-400" />
+            <h2 className="text-sm font-semibold text-slate-900">Historique des changements d'état</h2>
+            <span className="text-xs text-slate-400">({history.length})</span>
+          </div>
+          {history.length === 0 ? (
+            <div className="text-sm text-slate-400">Aucun changement d'état enregistré.</div>
+          ) : (
+            <ol className="relative border-l border-slate-200 ml-2">
+              {history.map(h => (
+                <li key={h.id} className="ml-4 pb-4 last:pb-0">
+                  <div className="absolute -left-1.5 w-3 h-3 bg-indigo-500 rounded-full mt-1.5 border-2 border-white" />
+                  <div className="text-xs text-slate-400">{fmtDate(h.changed_at || h.created_at)}</div>
+                  <div className="text-sm text-slate-900 mt-0.5">
+                    {h.previous_status ? <Badge color="slate">{h.previous_status}</Badge> : <span className="text-slate-400">—</span>}
+                    <span className="mx-2 text-slate-400">→</span>
+                    {h.new_status ? <Badge color="blue">{h.new_status}</Badge> : <span className="text-slate-400">—</span>}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
         </div>
       </div>
     </Layout>

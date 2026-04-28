@@ -6,6 +6,12 @@ import { requireAuth } from '../middleware/auth.js'
 const router = Router()
 router.use(requireAuth)
 
+// ── Airtable sync config (consumed by Employees page)
+router.get('/sync-config', (req, res) => {
+  const cfg = db.prepare("SELECT module, base_id, table_id, field_map, last_synced_at FROM airtable_module_config WHERE module='employees'").get() || {}
+  res.json(cfg)
+})
+
 router.get('/', (req, res) => {
   const { q, page = 1, limit = 50 } = req.query
   const limitVal = parseInt(limit)
@@ -35,14 +41,22 @@ router.get('/:id', (req, res) => {
   res.json(row)
 })
 
+const ALLOWED = [
+  'first_name', 'last_name', 'phone_personal', 'phone_work', 'email_personal', 'email_work',
+  'birth_date', 'hire_date', 'matricule', 'active', 'gender', 'address', 'emergency_contact',
+  'end_date', 'office_key', 'insurance_id', 'nethris_username', 'is_salesperson', 'is_consultant',
+  'accounting_department', 'hours_per_week', 'last_raise_date', 'group_insurance',
+  'address_verified', 'banking_info', 'issues', 'peer_reviews',
+]
+
 router.post('/', (req, res) => {
-  const { first_name, last_name, phone_personal, phone_work, email_personal, email_work, birth_date, hire_date, matricule } = req.body
+  const { first_name, last_name } = req.body
   if (!first_name || !last_name) return res.status(400).json({ error: 'Prénom et nom requis' })
   const id = randomUUID()
-  db.prepare(`
-    INSERT INTO employees (id, first_name, last_name, phone_personal, phone_work, email_personal, email_work, birth_date, hire_date, matricule)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
-  `).run(id, first_name, last_name, phone_personal || null, phone_work || null, email_personal || null, email_work || null, birth_date || null, hire_date || null, matricule || null)
+  const cols = ['id', ...ALLOWED.filter(k => k in req.body)]
+  const vals = [id, ...ALLOWED.filter(k => k in req.body).map(k => req.body[k] ?? null)]
+  const placeholders = cols.map(() => '?').join(',')
+  db.prepare(`INSERT INTO employees (${cols.join(',')}) VALUES (${placeholders})`).run(...vals)
   res.status(201).json(db.prepare('SELECT * FROM employees WHERE id=?').get(id))
 })
 
@@ -50,10 +64,9 @@ router.patch('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM employees WHERE id=?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
 
-  const fields = ["updated_at=datetime('now')"]
+  const fields = ["updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"]
   const params = []
-  const allowed = ['first_name', 'last_name', 'phone_personal', 'phone_work', 'email_personal', 'email_work', 'birth_date', 'hire_date', 'matricule']
-  for (const key of allowed) {
+  for (const key of ALLOWED) {
     if (key in req.body) { fields.push(`${key}=?`); params.push(req.body[key] ?? null) }
   }
 

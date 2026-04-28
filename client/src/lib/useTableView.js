@@ -1,11 +1,12 @@
 import { useState, useEffect, useMemo } from 'react'
 import api from './api.js'
+import { useAuth } from './auth.jsx'
 
 function norm(s) {
   return String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
 }
 
-export function applyFilter(row, filter) {
+export function applyFilter(row, filter, ctx = {}) {
   // Support both old format {field, op, value} and new format {field_key, operator, value}
   const field = filter.field_key || filter.field
   const op = filter.operator || filter.op
@@ -14,6 +15,8 @@ export function applyFilter(row, filter) {
   const str = norm(v)
   const val = norm(value)
   switch (op) {
+    case 'is_me':        return ctx.userName ? str === norm(ctx.userName) : false
+    case 'is_not_me':    return ctx.userName ? str !== norm(ctx.userName) : true
     case 'contains':     return str.includes(val)
     case 'not_contains': return !str.includes(val)
     case 'equals':
@@ -148,20 +151,33 @@ function tryParseArr(v) {
 }
 
 // Apply a nested filter group (conjunction + rules) to a row
-function applyFilterGroup(row, group) {
+function applyFilterGroup(row, group, ctx = {}) {
   if (!group?.rules?.length) return true
   const method = group.conjunction === 'OR' ? 'some' : 'every'
   return group.rules[method](rule => {
-    if (rule.conjunction && rule.rules) return applyFilterGroup(row, rule)
-    return applyFilter(row, rule)
+    if (rule.conjunction && rule.rules) return applyFilterGroup(row, rule, ctx)
+    return applyFilter(row, rule, ctx)
   })
 }
 
-export function applySort(data, sorts) {
+export function applySort(data, sorts, colTypes = {}) {
   if (!sorts.length) return data
   return [...data].sort((a, b) => {
     for (const { field, dir } of sorts) {
-      const cmp = String(a[field] ?? '').localeCompare(String(b[field] ?? ''), undefined, { numeric: true })
+      const type = colTypes[field]
+      const av = a[field], bv = b[field]
+      let cmp
+      if (type === 'date') {
+        // Parse to epoch ms so naive-local (e.g. "2026-04-23T12:10:10") and
+        // ISO-UTC (e.g. "2026-04-23T16:15:41.000Z") timestamps compare correctly.
+        const an = av == null || av === '' ? -Infinity : new Date(av).getTime()
+        const bn = bv == null || bv === '' ? -Infinity : new Date(bv).getTime()
+        const ax = Number.isNaN(an) ? -Infinity : an
+        const bx = Number.isNaN(bn) ? -Infinity : bn
+        cmp = ax < bx ? -1 : ax > bx ? 1 : 0
+      } else {
+        cmp = String(av ?? '').localeCompare(String(bv ?? ''), undefined, { numeric: true })
+      }
       if (cmp !== 0) return dir === 'asc' ? cmp : -cmp
     }
     return 0
@@ -169,6 +185,8 @@ export function applySort(data, sorts) {
 }
 
 export function useTableView({ table, columns, data, searchFields = [], forceAllView = false }) {
+  const { user } = useAuth()
+  const userName = user?.name || null
   const [activeViewId, setActiveViewIdRaw] = useState(null)
   const [sorts, setSorts] = useState([])
   const [filters, setFilters] = useState([])
@@ -228,6 +246,7 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
         setAdminConfig({ visible_columns: [], default_sort: [] })
         setConfigReady(true)
       })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table, reloadKey])
 
   function setActiveViewId(id, currentViews, currentConfig) {
@@ -259,8 +278,9 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
   const allColumns = useMemo(() => {
     if (!dynamicFields.length) return columns
     const existingIds = new Set(columns.map(c => c.id))
+    const existingLabels = new Set(columns.map(c => c.label))
     const extra = dynamicFields
-      .filter(f => !existingIds.has(f.id))
+      .filter(f => !existingIds.has(f.id) && !existingLabels.has(f.label))
       .map(f => ({
         ...f,
         defaultVisible: (f.sort_order != null && f.sort_order < 0) ? true : false,
@@ -270,9 +290,15 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
 
   const viewVisibleColumns = useMemo(() => {
     if (activeView?.visible_columns?.length > 0) return activeView.visible_columns
+    if (activeViewId === null) {
+      try {
+        const saved = JSON.parse(localStorage.getItem(`erp_allView_cols_${table}`) || 'null')
+        if (Array.isArray(saved) && saved.length > 0) return saved
+      } catch {}
+    }
     if (adminConfig?.visible_columns?.length > 0) return adminConfig.visible_columns
     return allColumns.filter(c => c.defaultVisible !== false).map(c => c.id)
-  }, [activeView, adminConfig, allColumns])
+  }, [activeView, activeViewId, adminConfig, allColumns, table])
 
   const viewGroupBy = activeView?.group_by || null
 
@@ -282,15 +308,17 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
       const q = norm(search)
       result = result.filter(row => searchFields.some(f => norm(row[f]).includes(q)))
     }
+    const ctx = { userName }
     // Support both flat array format and nested group format
     if (filters?.conjunction && filters?.rules) {
-      result = result.filter(row => applyFilterGroup(row, filters))
+      result = result.filter(row => applyFilterGroup(row, filters, ctx))
     } else if (Array.isArray(filters) && filters.length > 0) {
-      result = result.filter(row => filters.every(f => applyFilter(row, f)))
+      result = result.filter(row => filters.every(f => applyFilter(row, f, ctx)))
     }
-    result = applySort(result, sorts)
+    const colTypes = Object.fromEntries(allColumns.map(c => [c.field, c.type]))
+    result = applySort(result, sorts, colTypes)
     return result
-  }, [data, search, searchFields, filters, sorts])
+  }, [data, search, searchFields, filters, sorts, userName, allColumns])
 
   function reorderViews(newViews, newAllViewSortOrder) {
     const realViews = newViews.filter(v => v.id !== null).map((v, i) => ({ ...v, sort_order: i }))
@@ -318,5 +346,6 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
     allColumns,
     dynamicFields,
     columnWidths: adminConfig?.column_widths || {},
+    bulkDeleteEnabled: adminConfig?.bulk_delete_enabled === true,
   }
 }

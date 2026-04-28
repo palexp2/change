@@ -4,11 +4,8 @@ import { ArrowLeft } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
+import { fmtDate } from '../lib/formatDate.js'
 
-function fmtDate(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('fr-CA', { year: 'numeric', month: 'short', day: 'numeric' })
-}
 
 const STATUS_COLORS = {
   'Reçu': 'green',
@@ -128,7 +125,7 @@ export default function RetourDetail() {
                       <div className="font-medium text-slate-900">{item.product_name || '—'}</div>
                       {item.sku && <div className="text-xs text-slate-400 font-mono">{item.sku}</div>}
                     </td>
-                    <td className="px-4 py-3 hidden sm:table-cell text-slate-600">{item.reason || '—'}</td>
+                    <td className="px-4 py-3 hidden sm:table-cell text-slate-600">{item.return_reason || '—'}</td>
                     <td className="px-4 py-3 hidden md:table-cell text-slate-600">{item.action || '—'}</td>
                     <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(item.received_at)}</td>
                     <td className="px-4 py-3 hidden lg:table-cell text-slate-600">{item.product_to_receive || '—'}</td>

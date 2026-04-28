@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import USA from '@svg-maps/usa'
 import Canada from '@svg-maps/canada'
 
-export function GeoClientsMap({ geoData = [] }) {
+export function GeoClientsMap({ geoData = [], unplacedCount = 0 }) {
   const navigate = useNavigate()
   const containerRef = useRef(null)
   const [tooltip, setTooltip] = useState(null)
@@ -38,7 +38,7 @@ export function GeoClientsMap({ geoData = [] }) {
   }
 
   function handleClick(code) {
-    navigate(`/companies?farm_province=${code.toUpperCase()}`)
+    navigate(`/companies?shipping_province=${code.toUpperCase()}`)
   }
 
   const pathProps = (loc) => ({
@@ -73,21 +73,28 @@ export function GeoClientsMap({ geoData = [] }) {
         <div style={{ flex: '0 0 52%' }}>
           <p className="text-[10px] text-slate-400 text-center mb-0.5 font-medium tracking-wide uppercase">Canada</p>
           <svg viewBox="0 480 793 552" className="w-full">
-            {Canada.locations.map(loc => <path {...pathProps(loc)} />)}
+            {Canada.locations.map(loc => <path key={loc.id} {...pathProps(loc)} />)}
           </svg>
         </div>
         {/* USA */}
         <div style={{ flex: '0 0 48%' }}>
           <p className="text-[10px] text-slate-400 text-center mb-0.5 font-medium tracking-wide uppercase">États-Unis</p>
           <svg viewBox={USA.viewBox} className="w-full">
-            {USA.locations.map(loc => <path {...pathProps(loc)} />)}
+            {USA.locations.map(loc => <path key={loc.id} {...pathProps(loc)} />)}
           </svg>
         </div>
       </div>
 
       {/* Légende */}
       <div className="flex items-center justify-between mt-2 px-1">
-        <span className="text-xs text-slate-400">{total} client{total !== 1 ? 's' : ''} total (adresse de ferme)</span>
+        <span className="text-xs text-slate-400">
+          {total + unplacedCount} client{(total + unplacedCount) !== 1 ? 's' : ''} total
+          {unplacedCount > 0 && (
+            <span className="ml-1 text-slate-400">
+              {' '}dont <span title="Clients sans adresse de livraison avec province renseignée">{unplacedCount} sans province de livraison</span>
+            </span>
+          )}
+        </span>
         <div className="flex items-center gap-1.5">
           <span className="text-xs text-slate-400">0</span>
           <div className="w-24 h-2.5 rounded" style={{

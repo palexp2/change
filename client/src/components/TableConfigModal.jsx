@@ -1,310 +1,88 @@
 import { useState, useEffect } from 'react'
-import { Settings, Plus, X, ChevronUp, ChevronDown } from 'lucide-react'
+import { Settings, Plus, X, Pencil, Check } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import api from '../lib/api.js'
-import { TABLE_COLUMN_META, TABLE_LABELS, TABLE_ALL_LABEL } from '../lib/tableDefs.js'
+import { TABLE_LABELS } from '../lib/tableDefs.js'
 import { Modal } from './Modal.jsx'
-import { FilterRow, defaultOpForType } from './FilterRow.jsx'
-
-const PILL_COLORS = [
-  { value: 'gray',   bg: 'bg-slate-400'  },
-  { value: 'blue',   bg: 'bg-blue-500'   },
-  { value: 'green',  bg: 'bg-green-500'  },
-  { value: 'red',    bg: 'bg-red-500'    },
-  { value: 'yellow', bg: 'bg-yellow-400' },
-  { value: 'purple', bg: 'bg-purple-500' },
-  { value: 'orange', bg: 'bg-orange-400' },
-]
-const pillBg = color => PILL_COLORS.find(c => c.value === color)?.bg || 'bg-slate-400'
-
-function ViewConfigEditor({ columns, current, selectedViewId, onSaveGlobal, onSaveView, saving }) {
-  const isGlobal = selectedViewId === null
-
-  const [globalCols, setGlobalCols]   = useState([])
-  const [globalSorts, setGlobalSorts] = useState([])
-  const [viewLabel, setViewLabel]     = useState('')
-  const [viewColor, setViewColor]     = useState('blue')
-  const [viewCols, setViewCols]       = useState([])
-  const [viewSorts, setViewSorts]     = useState([])
-  const [viewGroupBy, setViewGroupBy] = useState(null)
-  const [viewFilters, setViewFilters] = useState([])
-
-  useEffect(() => {
-    if (isGlobal) {
-      const preset = current.config.visible_columns?.length > 0
-        ? current.config.visible_columns
-        : columns.filter(c => c.defaultVisible !== false).map(c => c.id)
-      setGlobalCols(preset)
-      setGlobalSorts(current.config.default_sort || [])
-    } else {
-      const pill = current.pills.find(p => p.id === selectedViewId)
-      if (!pill) return
-      setViewLabel(pill.label)
-      setViewColor(pill.color || 'blue')
-      setViewCols(pill.visible_columns?.length > 0 ? pill.visible_columns : [])
-      setViewSorts(pill.sort || [])
-      setViewGroupBy(pill.group_by || null)
-      setViewFilters(pill.filters || [])
-    }
-  }, [selectedViewId])
-
-  function toggleCol(id) {
-    if (isGlobal) setGlobalCols(v => v.includes(id) ? v.filter(x => x !== id) : [...v, id])
-    else          setViewCols(v  => v.includes(id) ? v.filter(x => x !== id) : [...v, id])
-  }
-
-  function addSort() {
-    const active = isGlobal ? globalSorts : viewSorts
-    const setActive = isGlobal ? setGlobalSorts : setViewSorts
-    const used = new Set(active.map(s => s.field))
-    const next = columns.find(c => c.sortable !== false && c.field && !used.has(c.field))
-    if (!next) return
-    setActive(s => [...s, { field: next.field, dir: 'asc' }])
-  }
-  function updateSort(i, patch) {
-    const setActive = isGlobal ? setGlobalSorts : setViewSorts
-    setActive(s => s.map((item, idx) => idx === i ? { ...item, ...patch } : item))
-  }
-  function removeSort(i) {
-    const setActive = isGlobal ? setGlobalSorts : setViewSorts
-    setActive(s => s.filter((_, idx) => idx !== i))
-  }
-
-  const filterableCols = columns.filter(c => c.filterable !== false && c.field)
-
-  function addFilter() {
-    const first = filterableCols[0]
-    const type = first?.type || 'text'
-    setViewFilters(f => [...f, { field: first?.field || '', op: defaultOpForType(type), value: '' }])
-  }
-  function updateFilter(i, newFilter) {
-    setViewFilters(f => f.map((item, idx) => idx === i ? newFilter : item))
-  }
-  function removeFilter(i) {
-    setViewFilters(f => f.filter((_, idx) => idx !== i))
-  }
-
-  function handleSave() {
-    if (isGlobal) {
-      onSaveGlobal({ visible_columns: globalCols, default_sort: globalSorts })
-    } else {
-      onSaveView(selectedViewId, {
-        label: viewLabel,
-        color: viewColor,
-        visible_columns: viewCols,
-        sort: viewSorts,
-        group_by: viewGroupBy,
-        filters: viewFilters,
-      })
-    }
-  }
-
-  const activeCols  = isGlobal ? globalCols  : viewCols
-  const activeSorts = isGlobal ? globalSorts : viewSorts
-
-  return (
-    <div className="space-y-5">
-
-      {/* Nom + couleur (vues personnalisées) */}
-      {!isGlobal && (
-        <div className="flex items-end gap-4">
-          <div className="flex-1">
-            <label className="label">Nom de la vue</label>
-            <input value={viewLabel} onChange={e => setViewLabel(e.target.value)} className="input" />
-          </div>
-          <div>
-            <label className="label">Couleur</label>
-            <div className="flex gap-2 mt-1">
-              {PILL_COLORS.map(c => (
-                <button key={c.value} type="button" onClick={() => setViewColor(c.value)}
-                  className={`w-6 h-6 rounded-full ${c.bg} transition-transform ${viewColor === c.value ? 'ring-2 ring-offset-1 ring-slate-400 scale-110' : 'hover:scale-105'}`} />
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-
-        {/* Colonnes visibles */}
-        <div>
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Colonnes visibles</p>
-          {!isGlobal && activeCols.length === 0 && (
-            <p className="text-xs text-slate-400 mb-2 italic">Aucune sélection → colonnes par défaut</p>
-          )}
-          <div className="space-y-0.5">
-            {columns.map(col => (
-              <label key={col.id} className="flex items-center gap-2.5 px-2 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
-                <input type="checkbox"
-                  checked={activeCols.includes(col.id)}
-                  onChange={() => toggleCol(col.id)}
-                  className="rounded border-slate-300 text-indigo-600" />
-                <span className="text-sm text-slate-700">{col.label || col.id}</span>
-              </label>
-            ))}
-          </div>
-        </div>
-
-        {/* Tri + Grouper + Filtres */}
-        <div className="space-y-5">
-
-          {/* Tri */}
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Tri par défaut</p>
-            <div className="space-y-2">
-              {activeSorts.length === 0 && <p className="text-sm text-slate-400">Aucun tri</p>}
-              {activeSorts.map((s, i) => (
-                <div key={i} className="flex items-center gap-2">
-                  <select value={s.field} onChange={e => updateSort(i, { field: e.target.value })} className="select text-sm flex-1">
-                    {columns.filter(c => c.sortable !== false && c.field).map(c => (
-                      <option key={c.id} value={c.field}>{c.label}</option>
-                    ))}
-                  </select>
-                  <button onClick={() => updateSort(i, { dir: s.dir === 'asc' ? 'desc' : 'asc' })}
-                    className="flex items-center gap-1 px-2.5 py-1.5 text-xs border border-slate-200 rounded hover:bg-slate-50 text-slate-600">
-                    {s.dir === 'asc' ? <><ChevronUp size={12} /> Croissant</> : <><ChevronDown size={12} /> Décroissant</>}
-                  </button>
-                  <button onClick={() => removeSort(i)} className="text-slate-300 hover:text-red-500"><X size={14} /></button>
-                </div>
-              ))}
-              <button onClick={addSort} className="flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-medium mt-1">
-                <Plus size={13} /> Ajouter un tri
-              </button>
-            </div>
-          </div>
-
-          {/* Grouper (vues personnalisées) */}
-          {!isGlobal && (
-            <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Grouper par</p>
-              <select value={viewGroupBy || ''} onChange={e => setViewGroupBy(e.target.value || null)} className="select text-sm w-full">
-                <option value="">— Aucun groupement —</option>
-                {columns.filter(c => c.groupable !== false && c.field).map(c => (
-                  <option key={c.id} value={c.field}>{c.label}</option>
-                ))}
-              </select>
-            </div>
-          )}
-
-          {/* Filtres (vues personnalisées) */}
-          {!isGlobal && (
-            <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Filtres</p>
-              <div className="space-y-2">
-                {viewFilters.length === 0 && <p className="text-sm text-slate-400">Aucun filtre</p>}
-                {viewFilters.map((f, i) => (
-                  <FilterRow
-                    key={i}
-                    columns={columns}
-                    filter={f}
-                    onChange={updated => updateFilter(i, updated)}
-                    onRemove={() => removeFilter(i)}
-                    size="sm"
-                  />
-                ))}
-                <button onClick={addFilter} className="flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-medium mt-1">
-                  <Plus size={13} /> Ajouter un filtre
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-
-      <button onClick={handleSave} disabled={saving} className="btn-primary btn-sm">
-        {saving ? 'Enregistrement...' : 'Sauvegarder'}
-      </button>
-    </div>
-  )
-}
+import { useConfirm } from './ConfirmProvider.jsx'
 
 export function TableConfigModal({ table }) {
   const { user } = useAuth()
+  const confirm = useConfirm()
   const [open, setOpen]               = useState(false)
-  const [viewData, setViewData]       = useState(null)
-  const [selectedViewId, setSelectedViewId] = useState(null)
-  const [saving, setSaving]           = useState(false)
+  const [pills, setPills]             = useState([])
+  const [loading, setLoading]         = useState(false)
   const [addingView, setAddingView]   = useState(false)
   const [newViewName, setNewViewName] = useState('')
-
-  if (user?.role !== 'admin') return null
-
-  const columns = TABLE_COLUMN_META[table] || []
-  const current = viewData || { config: { visible_columns: [], default_sort: [] }, pills: [] }
+  const [editingId, setEditingId]     = useState(null)
+  const [editingName, setEditingName] = useState('')
+  const [bulkDeleteEnabled, setBulkDeleteEnabled] = useState(false)
 
   useEffect(() => {
     if (!open) return
-    setViewData(null)
-    setSelectedViewId(null)
+    setLoading(true)
+    setEditingId(null)
+    setAddingView(false)
+    setNewViewName('')
     api.views.get(table)
-      .then(data => setViewData(data))
-      .catch(() => setViewData({ config: { visible_columns: [], default_sort: [] }, pills: [] }))
-  }, [open])
+      .then(data => {
+        setPills(data.pills || [])
+        setBulkDeleteEnabled(data.config?.bulk_delete_enabled === true)
+      })
+      .catch(() => setPills([]))
+      .finally(() => setLoading(false))
+  }, [open, table])
 
-  async function handleSaveGlobal(data) {
-    setSaving(true)
+  async function toggleBulkDelete() {
+    const next = !bulkDeleteEnabled
+    setBulkDeleteEnabled(next)
     try {
-      await api.views.updateConfig(table, data)
-      setViewData(v => ({ ...v, config: data }))
+      await api.views.setBulkDeleteEnabled(table, next)
       window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
-      setOpen(false)
-    } finally { setSaving(false) }
+    } catch {
+      setBulkDeleteEnabled(!next)
+    }
   }
 
-  async function handleSaveView(id, form) {
-    setSaving(true)
-    try {
-      const updated = await api.views.updatePill(table, id, form)
-      setViewData(v => ({ ...v, pills: v.pills.map(p => p.id === id ? updated : p) }))
-      window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
-      setOpen(false)
-    } finally { setSaving(false) }
-  }
-
-  const [draggingPillId, setDraggingPillId] = useState(null)
-  const [dragOverPillId, setDragOverPillId] = useState(null)
-
-  function handlePillDrop(targetId) {
-    if (!draggingPillId || draggingPillId === targetId) return
-    const pills = [...current.pills]
-    const fromIdx = pills.findIndex(p => p.id === draggingPillId)
-    const toIdx = pills.findIndex(p => p.id === targetId)
-    const [item] = pills.splice(fromIdx, 1)
-    pills.splice(toIdx, 0, item)
-    setViewData(v => ({ ...v, pills }))
-    const order = pills.map((p, i) => ({ id: p.id, sort_order: i }))
-    api.views.reorderPills(table, order).then(() => {
-      window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
-    })
-    setDraggingPillId(null)
-    setDragOverPillId(null)
-  }
+  if (user?.role !== 'admin') return null
 
   async function handleAddView() {
-    if (!newViewName.trim()) return
-    setSaving(true)
-    try {
-      const pill = await api.views.createPill(table, {
-        label: newViewName.trim(),
-        color: 'blue',
-        filters: [],
-        visible_columns: [],
-        sort: [],
-        group_by: null,
-        sort_order: current.pills.length,
-      })
-      setViewData(v => ({ ...v, pills: [...v.pills, pill] }))
-      setSelectedViewId(pill.id)
-      setNewViewName('')
-      setAddingView(false)
-    } finally { setSaving(false) }
+    const name = newViewName.trim()
+    if (!name) return
+    const pill = await api.views.createPill(table, {
+      label: name,
+      color: 'blue',
+      filters: [],
+      visible_columns: [],
+      sort: [],
+      group_by: null,
+      sort_order: pills.length,
+    })
+    setPills(p => [...p, pill])
+    setNewViewName('')
+    setAddingView(false)
+    window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
+  }
+
+  async function handleRename(id) {
+    const name = editingName.trim()
+    if (!name) { setEditingId(null); return }
+    const updated = await api.views.updatePill(table, id, { label: name })
+    setPills(p => p.map(x => x.id === id ? updated : x))
+    setEditingId(null)
+    window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
   }
 
   async function handleDeleteView(id) {
-    if (!confirm('Supprimer cette vue ?')) return
+    if (!(await confirm('Supprimer cette vue ?'))) return
     await api.views.deletePill(table, id)
-    setViewData(v => ({ ...v, pills: v.pills.filter(p => p.id !== id) }))
-    if (selectedViewId === id) setSelectedViewId(null)
+    setPills(p => p.filter(x => x.id !== id))
+    window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
+  }
+
+  function startEdit(pill) {
+    setEditingId(pill.id)
+    setEditingName(pill.label)
   }
 
   return (
@@ -312,7 +90,7 @@ export function TableConfigModal({ table }) {
       <button
         onClick={() => setOpen(true)}
         className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
-        title="Configurer les vues de la table"
+        title="Gérer les vues de la table"
       >
         <Settings size={17} />
       </button>
@@ -321,109 +99,104 @@ export function TableConfigModal({ table }) {
         isOpen={open}
         onClose={() => setOpen(false)}
         title={`Vues — ${TABLE_LABELS[table] || table}`}
-        size="xl"
+        size="md"
       >
-        <div className="-mx-6 -mb-4 flex min-h-[480px]">
-
-          {/* Panneau gauche — liste des vues */}
-          <div className="w-52 flex-shrink-0 border-r border-slate-200 flex flex-col overflow-hidden">
-            <div className="flex-1 overflow-y-auto py-2">
-
-              <button
-                onClick={() => setSelectedViewId(null)}
-                className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-left transition-colors ${
-                  selectedViewId === null
-                    ? 'bg-indigo-50 text-indigo-700 font-medium'
-                    : 'text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                <div className="w-2 h-2 rounded-full bg-slate-400 flex-shrink-0" />
-                {TABLE_ALL_LABEL[table] || 'Tous'}
-              </button>
-
-              {current.pills.map(pill => (
-                <div key={pill.id}
-                  draggable
-                  onDragStart={() => setDraggingPillId(pill.id)}
-                  onDragOver={e => { e.preventDefault(); setDragOverPillId(pill.id) }}
-                  onDrop={e => { e.preventDefault(); handlePillDrop(pill.id) }}
-                  onDragEnd={() => { setDraggingPillId(null); setDragOverPillId(null) }}
-                  className={`group flex items-center gap-2 px-4 py-2.5 text-sm transition-colors cursor-grab ${
-                    draggingPillId === pill.id ? 'opacity-40' : ''
-                  } ${dragOverPillId === pill.id && dragOverPillId !== draggingPillId ? 'border-t-2 border-indigo-400' : ''
-                  } ${selectedViewId === pill.id
-                      ? 'bg-indigo-50 text-indigo-700'
-                      : 'text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  <button onClick={() => setSelectedViewId(pill.id)} className="flex items-center gap-2.5 flex-1 text-left min-w-0">
-                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${pillBg(pill.color)}`} />
-                    <span className="truncate font-medium">{pill.label}</span>
-                  </button>
-                  <button
-                    onClick={() => handleDeleteView(pill.id)}
-                    className="opacity-0 group-hover:opacity-100 p-0.5 text-slate-300 hover:text-red-500 flex-shrink-0 transition-opacity"
-                  >
-                    <X size={13} />
-                  </button>
-                </div>
-              ))}
-            </div>
-
-            <div className="border-t border-slate-200 p-3 flex-shrink-0">
-              {addingView ? (
-                <div className="space-y-2">
-                  <input
-                    autoFocus
-                    value={newViewName}
-                    onChange={e => setNewViewName(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Enter') handleAddView(); if (e.key === 'Escape') setAddingView(false) }}
-                    className="input text-sm w-full"
-                    placeholder="Nom de la vue..."
-                  />
-                  <div className="flex gap-2">
-                    <button onClick={handleAddView} className="btn-primary btn-sm flex-1">Créer</button>
-                    <button onClick={() => setAddingView(false)} className="btn-secondary btn-sm">✕</button>
+        <div className="space-y-3">
+          {loading ? (
+            <div className="text-slate-400 text-sm py-4">Chargement...</div>
+          ) : (
+            <>
+              <div className="space-y-1">
+                {pills.length === 0 && (
+                  <p className="text-sm text-slate-400 py-2">Aucune vue personnalisée.</p>
+                )}
+                {pills.map(pill => (
+                  <div key={pill.id} className="group flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-50">
+                    {editingId === pill.id ? (
+                      <>
+                        <input
+                          autoFocus
+                          value={editingName}
+                          onChange={e => setEditingName(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === 'Enter') handleRename(pill.id)
+                            if (e.key === 'Escape') setEditingId(null)
+                          }}
+                          className="input text-sm flex-1"
+                        />
+                        <button onClick={() => handleRename(pill.id)} className="p-1 text-indigo-600 hover:text-indigo-800">
+                          <Check size={15} />
+                        </button>
+                        <button onClick={() => setEditingId(null)} className="p-1 text-slate-400 hover:text-slate-600">
+                          <X size={15} />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <span className="flex-1 text-sm text-slate-700 truncate">{pill.label}</span>
+                        <button
+                          onClick={() => startEdit(pill)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-slate-700 transition-opacity"
+                          title="Renommer"
+                        >
+                          <Pencil size={13} />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteView(pill.id)}
+                          className="opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-red-500 transition-opacity"
+                          title="Supprimer"
+                        >
+                          <X size={15} />
+                        </button>
+                      </>
+                    )}
                   </div>
-                </div>
-              ) : (
-                <button onClick={() => setAddingView(true)}
-                  className="flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-medium w-full">
-                  <Plus size={13} /> Nouvelle vue
-                </button>
-              )}
-            </div>
-          </div>
+                ))}
+              </div>
 
-          {/* Panneau droit — éditeur */}
-          <div className="flex-1 overflow-y-auto p-6">
-            {!viewData ? (
-              <div className="text-slate-400 text-sm">Chargement...</div>
-            ) : (
-              <>
-                <div className="mb-4">
-                  <h3 className="font-semibold text-slate-900 text-sm">
-                    {selectedViewId === null
-                      ? (TABLE_ALL_LABEL[table] || 'Vue par défaut')
-                      : (current.pills.find(p => p.id === selectedViewId)?.label || 'Vue')
-                    }
-                  </h3>
-                  {selectedViewId === null && (
-                    <p className="text-xs text-slate-400 mt-0.5">Vue par défaut — colonnes et tri de base pour tous les utilisateurs</p>
-                  )}
-                </div>
-                <ViewConfigEditor
-                  key={`${table}-${selectedViewId}`}
-                  columns={columns}
-                  current={current}
-                  selectedViewId={selectedViewId}
-                  onSaveGlobal={handleSaveGlobal}
-                  onSaveView={handleSaveView}
-                  saving={saving}
-                />
-              </>
-            )}
-          </div>
+              <div className="border-t border-slate-200 pt-3">
+                <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={bulkDeleteEnabled}
+                    onChange={toggleBulkDelete}
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  Autoriser la suppression en lot
+                </label>
+                <p className="text-xs text-slate-400 mt-1 ml-6">Quand activé, des cases à cocher apparaissent sur chaque ligne et un bouton permet de supprimer plusieurs enregistrements à la fois.</p>
+              </div>
+
+              <div className="border-t border-slate-200 pt-3">
+                {addingView ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      autoFocus
+                      value={newViewName}
+                      onChange={e => setNewViewName(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') handleAddView()
+                        if (e.key === 'Escape') { setAddingView(false); setNewViewName('') }
+                      }}
+                      className="input text-sm flex-1"
+                      placeholder="Nom de la vue..."
+                    />
+                    <button onClick={handleAddView} className="btn-primary btn-sm">Créer</button>
+                    <button onClick={() => { setAddingView(false); setNewViewName('') }} className="btn-secondary btn-sm">
+                      <X size={14} />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setAddingView(true)}
+                    className="flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                  >
+                    <Plus size={13} /> Nouvelle vue
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </Modal>
     </>

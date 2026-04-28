@@ -6,11 +6,24 @@ import { fileURLToPath } from 'url';
 import PDFDocument from 'pdfkit';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
+import { buildPartialUpdate } from '../utils/partialUpdate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const router = Router();
 router.use(requireAuth);
+
+// GET /api/orders/lookup — minimal list for dropdowns
+router.get('/lookup', (req, res) => {
+  const rows = db.prepare(
+    `SELECT o.id, o.order_number, o.company_id, c.name as company_name
+     FROM orders o
+     LEFT JOIN companies c ON c.id = o.company_id
+     WHERE o.deleted_at IS NULL
+     ORDER BY o.order_number DESC`
+  ).all()
+  res.json(rows)
+})
 
 // GET /api/orders
 router.get('/', (req, res) => {
@@ -146,18 +159,22 @@ router.post('/', (req, res) => {
   res.status(201).json({ ...order, items: orderItems });
 });
 
-// PUT /api/orders/:id
+// PUT /api/orders/:id — partial update
 router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Order not found' });
 
-  const { company_id, project_id, assigned_to, status, priority, notes, address_id, date_commande, is_subscription } = req.body;
-  db.prepare(
-    `UPDATE orders SET company_id=?, project_id=?, assigned_to=?, status=?, priority=?, notes=?, address_id=?, date_commande=?, is_subscription=?, updated_at=datetime('now')
-     WHERE id = ?`
-  ).run(company_id || null, project_id || null, assigned_to || null, status,
-    priority || null, notes || null, address_id || null, date_commande || null,
-    is_subscription ? 1 : 0, req.params.id);
+  const { setClause, values, error } = buildPartialUpdate(req.body, {
+    allowed: ['company_id', 'project_id', 'assigned_to', 'status', 'priority',
+      'notes', 'address_id', 'date_commande', 'is_subscription'],
+    nonNullable: new Set(['status']),
+    coerce: { is_subscription: v => v ? 1 : 0 },
+  });
+  if (error) return res.status(400).json({ error });
+  if (setClause) {
+    db.prepare(`UPDATE orders SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+      .run(...values, req.params.id);
+  }
 
   res.json(db.prepare('SELECT o.*, c.name as company_name, p.name as project_name FROM orders o LEFT JOIN companies c ON o.company_id = c.id LEFT JOIN projects p ON o.project_id = p.id WHERE o.id = ?').get(req.params.id));
 });
@@ -178,12 +195,12 @@ router.patch('/:id/status', (req, res) => {
   if (shippedStatuses.includes(status) && !shippedStatuses.includes(order.status)) {
     const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
     const run = db.transaction(() => {
-      db.prepare(`UPDATE orders SET status=?, updated_at=datetime('now') WHERE id = ?`).run(status, order.id);
+      db.prepare(`UPDATE orders SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(status, order.id);
       for (const item of items) {
         if (!item.product_id) continue;
         const product = db.prepare('SELECT stock_qty FROM products WHERE id = ?').get(item.product_id);
         if (product) {
-          db.prepare(`UPDATE products SET stock_qty=MAX(0, stock_qty - ?), updated_at=datetime('now') WHERE id = ?`)
+          db.prepare(`UPDATE products SET stock_qty=MAX(0, stock_qty - ?), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
             .run(item.qty, item.product_id);
           db.prepare(
             `INSERT INTO stock_movements (id, product_id, type, qty, reason, reference_id, user_id)
@@ -194,7 +211,7 @@ router.patch('/:id/status', (req, res) => {
     });
     run();
   } else {
-    db.prepare(`UPDATE orders SET status=?, updated_at=datetime('now') WHERE id = ?`)
+    db.prepare(`UPDATE orders SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(status, req.params.id);
   }
 
@@ -250,7 +267,7 @@ router.post('/:id/items', (req, res) => {
     `INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`
   ).run(itemId, req.params.id, product_id || null, qty || 1, cost || 0, item_type || 'Facturable', notes || null);
 
-  db.prepare(`UPDATE orders SET updated_at=datetime('now') WHERE id = ?`).run(req.params.id);
+  db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(req.params.id);
   res.status(201).json(db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId));
 });
 
@@ -278,7 +295,7 @@ router.patch('/:id/items/:itemId', (req, res) => {
   }
   if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
   db.prepare(`UPDATE order_items SET ${updates.join(', ')} WHERE id=? AND order_id=?`).run(...values, req.params.itemId, req.params.id);
-  db.prepare(`UPDATE orders SET updated_at=datetime('now') WHERE id=?`).run(req.params.id);
+  db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
   res.json(db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?').get(req.params.itemId));
 });
 
@@ -291,7 +308,7 @@ router.post('/:id/items/:itemId/duplicate', (req, res) => {
   const newId = uuidv4();
   db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes, sort_order) VALUES (?,?,?,?,?,?,?,?)')
     .run(newId, req.params.id, item.product_id, item.qty, item.unit_cost, item.item_type, item.notes, (item.sort_order || 0) + 1);
-  db.prepare(`UPDATE orders SET updated_at=datetime('now') WHERE id=?`).run(req.params.id);
+  db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
   res.status(201).json(db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?').get(newId));
 });
 
@@ -376,7 +393,7 @@ router.post('/:id/scan', (req, res) => {
     }
 
     db.prepare('UPDATE serial_numbers SET order_item_id = ? WHERE id = ?').run(item.id, serial.id)
-    db.prepare(`UPDATE orders SET updated_at=datetime('now') WHERE id=?`).run(req.params.id)
+    db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id)
     return res.json({ type: 'serial', action, serial, item })
   }
 
@@ -399,7 +416,7 @@ router.post('/:id/scan', (req, res) => {
       action = 'added'
     }
 
-    db.prepare(`UPDATE orders SET updated_at=datetime('now') WHERE id=?`).run(req.params.id)
+    db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id)
     return res.json({ type: 'sku', action, product, item })
   }
 
@@ -410,7 +427,7 @@ router.post('/:id/scan', (req, res) => {
 router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Order not found' });
-  db.prepare("UPDATE orders SET deleted_at = datetime('now') WHERE id = ?").run(req.params.id);
+  db.prepare("UPDATE orders SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);
   res.json({ message: 'Deleted' });
 });
 
@@ -538,7 +555,7 @@ router.post('/:id/bon-livraison', async (req, res) => {
 
   // Store relative path in DB
   const relPath = `bons-livraison/${filename}`;
-  db.prepare(`UPDATE orders SET bon_livraison_path = ?, updated_at = datetime('now') WHERE id = ?`).run(relPath, req.params.id);
+  db.prepare(`UPDATE orders SET bon_livraison_path = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(relPath, req.params.id);
 
   res.json({ bon_livraison_path: relPath, url: `/api/bons-livraison/${filename}` });
 });

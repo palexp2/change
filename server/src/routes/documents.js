@@ -24,8 +24,6 @@ function fmtPrice(n, currency = 'CAD') {
   if (n == null) return currency === 'USD' ? '$0.00' : '0,00 $'
   return new Intl.NumberFormat(currency === 'USD' ? 'en-US' : 'fr-CA', { style: 'currency', currency }).format(n)
 }
-// keep alias for existing call sites
-const fmtCad = (n) => fmtPrice(n, 'CAD')
 
 function fmtDate(d, lang = 'French') {
   if (!d) return '—'
@@ -370,7 +368,7 @@ router.put('/soumissions/:id', async (req, res) => {
       discount_pct = COALESCE(?, discount_pct),
       discount_amount = COALESCE(?, discount_amount),
       discount_valid_until = ?,
-      updated_at = datetime('now')
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ?
   `).run(language ?? null, currency ?? null, status ?? null, notes ?? null,
          discount_pct ?? null, discount_amount ?? null, discount_valid_until ?? null, req.params.id)
@@ -445,7 +443,7 @@ router.get('/soumissions/:id/pdf', async (req, res) => {
       pdfPath = await generateSoumissionPdf(soumission, allItems, company, contact, tenant)
       const relPath = path.relative(path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads'), pdfPath)
       db.prepare("UPDATE soumissions SET generated_pdf_path = ? WHERE id = ?").run(relPath, req.params.id)
-    } catch (e) {
+    } catch {
       return res.status(500).json({ error: 'PDF generation failed' })
     }
   }
@@ -454,8 +452,9 @@ router.get('/soumissions/:id/pdf', async (req, res) => {
   const lang = soumission.language === 'English' ? 'English' : 'French'
   const filename = lang === 'English' ? `Quote-${docNum}.pdf` : `Soumission-${docNum}.pdf`
 
+  const disposition = req.query.download ? 'attachment' : 'inline'
   res.setHeader('Content-Type', 'application/pdf')
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+  res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`)
   fs.createReadStream(pdfPath).pipe(res)
 })
 

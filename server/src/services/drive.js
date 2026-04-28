@@ -178,7 +178,7 @@ export async function syncDrive() {
 
   db.prepare(`
     INSERT INTO drive_sync_state (id, last_page_token, last_synced_at)
-    VALUES (1,?,datetime('now'))
+    VALUES (1,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     ON CONFLICT(id) DO UPDATE SET last_synced_at=excluded.last_synced_at
   `).run(null)
 

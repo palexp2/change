@@ -30,6 +30,12 @@ const PUBLIC_ROUTES = new Map([
   ['POST /api/agent/tasks/internal',                 'Agent sub-task creation (X-Agent-Secret via timingSafeEqual)'],
   ['GET /api/track/email/:emailId.gif',              'Email open-tracking pixel (incremented counter only)'],
   ['GET /api/public/installation-feedback/',         'Public customer feedback button from install follow-up email'],
+  ['GET /erp/pay/:pendingId',                        'Permanent customer payment link — redirects to a fresh Stripe Checkout Session'],
+  ['GET /api/email-tracking/:emailId.gif',           'Invoice email open-tracking pixel (counter only)'],
+  ['GET /api/customer/post-payment/:sessionId',      'Customer onboarding wizard — auth via Stripe Checkout Session id (validated via Stripe API)'],
+  ['POST /api/customer/post-payment/:sessionId/save',     'Customer onboarding autosave (Stripe session id auth)'],
+  ['POST /api/customer/post-payment/:sessionId/submit',   'Customer onboarding final submit (Stripe session id auth)'],
+  ['POST /api/customer/post-payment/:sessionId/extras',   'Customer onboarding extras → new pending invoice (Stripe session id auth)'],
 ])
 
 // Middleware names that count as "this route is protected". If a route's
@@ -69,9 +75,14 @@ const MOUNTS = {
   'serials.js':                 '/api/serials',
   'shipments.js':               '/api/shipments',
   'stock-movements.js':         '/api/stock-movements',
+  'customer-pay.js':            '/erp/pay',
+  'customer-post-payment.js':   '/api/customer/post-payment',
+  'email-tracking.js':          '/api/email-tracking',
+  'stripe-invoices.js':         '/api/stripe-invoices',
   'stripe-payouts.js':          '/api/stripe-payouts',
   'stripe-queue.js':            '/api/stripe-queue',
   'stripe-webhooks.js':         '/api/stripe-webhooks',
+  'undo.js':                    '/api/undo',
   'tasks.js':                   '/api/tasks',
   'tickets.js':                 '/api/tickets',
   'timesheets.js':              '/api/timesheets',

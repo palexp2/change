@@ -126,7 +126,7 @@ function CreateModal({ onClose, onCreated }) {
       <div className="flex gap-4 mb-6">
         {[{ n: 1, label: 'Informations' }, { n: 2, label: 'Articles' }].map(s => (
           <button key={s.n} onClick={() => setStep(s.n)}
-            className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${step === s.n ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:text-slate-700'}`}>
+            className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${step === s.n ? 'bg-brand-100 text-brand-700' : 'text-slate-500 hover:text-slate-700'}`}>
             {s.n}. {s.label}
           </button>
         ))}
@@ -202,7 +202,7 @@ function CreateModal({ onClose, onCreated }) {
 
           <div className="flex justify-end">
             <button onClick={() => setStep(2)}
-              className="bg-indigo-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700">
+              className="bg-brand-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-brand-700">
               Suivant : Articles →
             </button>
           </div>
@@ -217,7 +217,7 @@ function CreateModal({ onClose, onCreated }) {
             <div className="grid grid-cols-2 gap-2">
               {catalog.filter(p => p.active !== 0).map(p => (
                 <button key={p.id} onClick={() => addItem(p)}
-                  className="text-left border rounded-lg p-3 hover:border-indigo-400 hover:bg-indigo-50 transition-colors">
+                  className="text-left border rounded-lg p-3 hover:border-brand-400 hover:bg-brand-50 transition-colors">
                   <div className="font-medium text-sm text-slate-900">{isFr ? p.name_fr : p.name_en}</div>
                   <div className="text-xs text-slate-500 mt-0.5">{fmtCad(p.unit_price_cad)}</div>
                 </button>
@@ -290,7 +290,7 @@ function CreateModal({ onClose, onCreated }) {
               ← Retour
             </button>
             <button onClick={save} disabled={saving}
-              className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50">
+              className="flex items-center gap-2 bg-brand-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
               {saving ? 'Génération du PDF…' : 'Créer et générer PDF'}
             </button>
           </div>
@@ -310,7 +310,7 @@ const RENDERS = {
     </div>
   ),
   company_name: row => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline text-sm">{row.company_name}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline text-sm">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   status: row => row.status
     ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
@@ -323,7 +323,7 @@ const RENDERS = {
         target="_blank"
         rel="noopener noreferrer"
         onClick={e => e.stopPropagation()}
-        className="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-800 text-sm"
+        className="inline-flex items-center gap-1 text-brand-600 hover:text-brand-800 text-sm"
       >
         <FileDown size={15} /> PDF
       </a>
@@ -355,7 +355,7 @@ export default function Soumissions() {
 
   return (
     <Layout>
-      <div className="max-w-7xl mx-auto px-4 py-6">
+      <div className="px-4 py-6">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Soumissions</h1>
@@ -365,7 +365,7 @@ export default function Soumissions() {
             <TableConfigModal table="soumissions" />
             <button
               onClick={() => setShowCreate(true)}
-              className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700"
+              className="flex items-center gap-2 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700"
             >
               <Plus size={16} /> Nouvelle soumission
             </button>

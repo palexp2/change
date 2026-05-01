@@ -147,9 +147,9 @@ export default function ProductDetail() {
     }, 300)
   }
 
-  const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-indigo-400 bg-white'
+  const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
-  if (loading) return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" /></div></Layout>
+  if (loading) return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
   if (!product) return <Layout><div className="p-6 text-slate-500">Produit introuvable.</div></Layout>
 
   return (
@@ -196,7 +196,7 @@ export default function ProductDetail() {
           ].map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
-                tab === t.key ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'
+                tab === t.key ? 'border-brand-600 text-brand-600' : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}>
               {t.label}
               {t.key === 'mouvements' && product.movements?.length > 0 && (
@@ -235,7 +235,7 @@ export default function ProductDetail() {
                         {form.supplier_company_id && (
                           <Link
                             to={`/companies/${form.supplier_company_id}`}
-                            className="text-indigo-600 hover:text-indigo-800 inline-flex items-center gap-1 text-xs normal-case font-normal tracking-normal"
+                            className="text-brand-600 hover:text-brand-800 inline-flex items-center gap-1 text-xs normal-case font-normal tracking-normal"
                             title="Ouvrir la fiche fournisseur"
                           >
                             <ExternalLink size={12} /> Ouvrir la fiche

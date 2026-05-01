@@ -89,7 +89,7 @@ function TaskStream({ chunks, done = false }) {
               return (
                 <div key={i} className="flex items-center gap-1.5 leading-relaxed">
                   <span className="text-slate-600 flex-shrink-0">›</span>
-                  <span className="text-indigo-400 flex-shrink-0 font-semibold">{chunk.name}</span>
+                  <span className="text-brand-400 flex-shrink-0 font-semibold">{chunk.name}</span>
                   {chunk.input && (
                     <span className="text-slate-400 truncate">{chunk.input}</span>
                   )}
@@ -207,7 +207,7 @@ function TaskCard({ task, onUpdate, onDelete, streamChunks }) {
               onBlur={saveComment}
               rows={2}
               placeholder="Instructions, corrections, précisions…"
-              className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 transition-all"
+              className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20 transition-all"
             />
             {saving && <span className="text-xs text-slate-400">Enregistrement…</span>}
           </div>
@@ -242,7 +242,7 @@ function NewTaskForm({ onAdd, onCancel }) {
         onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
         placeholder="Description de la tâche…"
         rows={3}
-        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-500/20 transition-all"
+        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20 transition-all"
         required
       />
       <div className="flex gap-2 justify-end">
@@ -390,7 +390,7 @@ function TasksTab() {
               onClick={() => setFilter(prev => prev === key ? null : key)}
               className={`bg-white border border-t-2 ${border} rounded-xl p-3 text-center shadow-sm transition-all cursor-pointer ${
                 isActive
-                  ? 'border-slate-300 ring-1 ring-indigo-200'
+                  ? 'border-slate-300 ring-1 ring-brand-200'
                   : 'border-slate-200 opacity-50 hover:opacity-75'
               }`}
             >
@@ -412,7 +412,7 @@ function TasksTab() {
         <div className="flex justify-end mb-4">
           <button
             onClick={() => setShowForm(true)}
-            className="flex items-center gap-1.5 text-sm px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg font-medium transition-colors shadow-sm"
+            className="flex items-center gap-1.5 text-sm px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors shadow-sm"
           >
             <Plus size={14} />
             Nouvelle tâche
@@ -434,7 +434,7 @@ function TasksTab() {
           {!filter && (
             <button
               onClick={() => setShowForm(true)}
-              className="mt-3 text-indigo-600 hover:text-indigo-500 text-sm underline underline-offset-2 transition-colors"
+              className="mt-3 text-brand-600 hover:text-brand-500 text-sm underline underline-offset-2 transition-colors"
             >
               Proposer la première tâche
             </button>
@@ -497,8 +497,8 @@ export function AgentContent() {
         {/* Header */}
         <div className="flex items-center justify-between mb-7">
           <div className="flex items-center gap-3.5">
-            <div className="w-10 h-10 bg-gradient-to-br from-indigo-500/20 to-violet-500/10 border border-indigo-200 rounded-xl flex items-center justify-center">
-              <Bot size={20} className="text-indigo-500" />
+            <div className="w-10 h-10 bg-gradient-to-br from-brand-500/20 to-emerald-500/10 border border-brand-200 rounded-xl flex items-center justify-center">
+              <Bot size={20} className="text-brand-500" />
             </div>
             <div>
               <h1 className="text-lg font-semibold text-slate-900 leading-tight">Agent autonome</h1>

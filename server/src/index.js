@@ -15,6 +15,7 @@ import authRouter from './routes/auth.js'
 import companiesRouter from './routes/companies.js'
 import contactsRouter from './routes/contacts.js'
 import projectsRouter from './routes/projects.js'
+import customFieldsRouter from './routes/custom-fields.js'
 import productsRouter from './routes/products.js'
 import ordersRouter from './routes/orders.js'
 import ticketsRouter from './routes/tickets.js'
@@ -28,6 +29,7 @@ import purchasesRouter from './routes/purchases.js'
 import serialsRouter from './routes/serials.js'
 import viewsRouter from './routes/views.js'
 import projetsRouter from './routes/projets.js'
+import paymentsRouter from './routes/payments.js'
 import catalogRouter from './routes/catalog.js'
 import documentsRouter from './routes/documents.js'
 import searchRouter from './routes/search.js'
@@ -52,6 +54,7 @@ import customerPostPaymentRouter from './routes/customer-post-payment.js'
 import emailTrackingRouter from './routes/email-tracking.js'
 import stripeQueueRouter from './routes/stripe-queue.js'
 import stripePayoutsRouter from './routes/stripe-payouts.js'
+import stripeInvoiceItemsRouter from './routes/stripe-invoice-items.js'
 import novoxpressRouter from './routes/novoxpress.js'
 import trackRouter from './routes/track.js'
 import installationFeedbackRouter from './routes/installation-feedback.js'
@@ -166,6 +169,7 @@ app.use('/api/auth', authRouter)
 app.use('/api/companies', companiesRouter)
 app.use('/api/contacts', contactsRouter)
 app.use('/api/projects', projectsRouter)
+app.use('/api/custom-fields', customFieldsRouter)
 app.use('/api/products', productsRouter)
 app.use('/api/orders', ordersRouter)
 app.use('/api/tickets', ticketsRouter)
@@ -179,6 +183,7 @@ app.use('/api/purchases', purchasesRouter)
 app.use('/api/serials', serialsRouter)
 app.use('/api/views', viewsRouter)
 app.use('/api/projets', projetsRouter)
+app.use('/api/payments', paymentsRouter)
 app.use('/api/catalog', catalogRouter)
 app.use('/api/documents', documentsRouter)
 app.use('/api/search', searchRouter)
@@ -193,6 +198,7 @@ app.use('/api/stock-movements', stockMovementsRouter)
 app.use('/api/stripe-queue', stripeQueueRouter)
 app.use('/api/stripe-invoices', stripeInvoicesRouter)
 app.use('/api/stripe-payouts', stripePayoutsRouter)
+app.use('/api/stripe-invoice-items', stripeInvoiceItemsRouter)
 app.use('/api/email-tracking', emailTrackingRouter)
 app.use('/api/customer/post-payment', customerPostPaymentRouter)
 // Permanent customer-facing payment link — must be registered before the SPA

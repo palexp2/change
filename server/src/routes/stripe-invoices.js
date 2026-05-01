@@ -70,12 +70,16 @@ router.get('/companies/:companyId/shipping-province', (req, res) => {
 // POST /api/stripe-invoices — create a pending_invoice (no Stripe call yet).
 // If send_email=true, immediately creates a Checkout Session + emails the
 // customer with the permanent /pay/:id link. Otherwise stays as draft.
+//
+// Optional overrides : email_to, email_subject, email_message — passés à
+// sendInvoiceEmail pour personnaliser le destinataire / l'objet / le corps.
 router.post('/', async (req, res) => {
   const started = Date.now()
   const {
     company_id, soumission_id, items,
     shipping_province, shipping_country,
     send_email, due_days,
+    email_to, email_subject, email_message,
   } = req.body || {}
 
   if (!company_id) return res.status(400).json({ error: 'company_id requis' })
@@ -121,7 +125,11 @@ router.post('/', async (req, res) => {
       emailSkippedReason = 'gmail_not_connected'
     } else {
       try {
-        const sent = await sendInvoiceEmail({ pendingId: id, userId: req.user.id })
+        const sent = await sendInvoiceEmail({
+          pendingId: id,
+          userId: req.user.id,
+          overrides: { to: email_to, subject: email_subject, message: email_message },
+        })
         emailedTo = sent.emailedTo
         emailedFrom = sent.emailedFrom
         emailMessageId = sent.emailMessageId
@@ -150,6 +158,7 @@ router.post('/', async (req, res) => {
 
 // POST /api/stripe-invoices/:pendingId/send — send (or re-send) a pending
 // invoice by email. Creates a Checkout Session if needed.
+// Body optionnel : { to, subject, message } pour personnaliser l'envoi.
 router.post('/:pendingId/send', async (req, res) => {
   const pending = db.prepare('SELECT * FROM pending_invoices WHERE id=?').get(req.params.pendingId)
   if (!pending) return res.status(404).json({ error: 'Pending invoice introuvable' })
@@ -158,8 +167,13 @@ router.post('/:pendingId/send', async (req, res) => {
   if (!isGmailSendAvailable(req.user.id)) {
     return res.status(400).json({ error: 'Aucun compte Gmail connecté pour votre utilisateur', code: 'gmail_not_connected' })
   }
+  const { to, subject, message } = req.body || {}
   try {
-    const sent = await sendInvoiceEmail({ pendingId: pending.id, userId: req.user.id })
+    const sent = await sendInvoiceEmail({
+      pendingId: pending.id,
+      userId: req.user.id,
+      overrides: { to, subject, message },
+    })
     db.prepare(`UPDATE pending_invoices SET status='sent', sent_at=COALESCE(sent_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(pending.id)
     res.json({
       ok: true,
@@ -201,12 +215,74 @@ router.get('/pending/:pendingId', (req, res) => {
   })
 })
 
+// ── Helper: defaults for the send-email modal ──────────────────────────────
+
+function resolveDefaultRecipient(companyId) {
+  const co = db.prepare('SELECT email FROM companies WHERE id=?').get(companyId)
+  const ct = db.prepare(`
+    SELECT id, email, first_name FROM contacts
+    WHERE company_id=? AND email IS NOT NULL AND email!=''
+    ORDER BY created_at LIMIT 1
+  `).get(companyId)
+  return {
+    email: co?.email || ct?.email || null,
+    contactFirstName: ct?.first_name || null,
+    contactId: ct?.id || null,
+  }
+}
+
+function buildDefaultMessage({ contactFirstName, totalLabel, dueDateLabel }) {
+  const greeting = contactFirstName ? `Bonjour ${contactFirstName},` : 'Bonjour,'
+  const intro = `Vous trouverez ci-dessous le lien de paiement pour la facture au montant de ${totalLabel}${dueDateLabel ? `, payable au plus tard ${dueDateLabel}` : ''}.`
+  return `${greeting}\n\n${intro}`
+}
+
+function buildPendingTotalLabel(pending) {
+  const items = JSON.parse(pending.items_json || '[]')
+  const subtotal = items.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0)
+  return fmtMoney(subtotal, pending.currency || 'CAD') + ' (avant taxes)'
+}
+
+// GET /api/stripe-invoices/:pendingId/email-defaults — pré-remplit la modale d'envoi
+router.get('/:pendingId/email-defaults', (req, res) => {
+  const pending = db.prepare('SELECT * FROM pending_invoices WHERE id=?').get(req.params.pendingId)
+  if (!pending) return res.status(404).json({ error: 'Introuvable' })
+
+  const { email: defaultEmail, contactFirstName } = resolveDefaultRecipient(pending.company_id)
+  const company = db.prepare('SELECT id, name, email FROM companies WHERE id=?').get(pending.company_id)
+  const contacts = db.prepare(`
+    SELECT id, first_name, last_name, email FROM contacts
+    WHERE company_id=? AND email IS NOT NULL AND email!=''
+    ORDER BY created_at
+  `).all(pending.company_id)
+
+  const totalLabel = buildPendingTotalLabel(pending)
+  const dueDateLabel = pending.due_days ? `${pending.due_days} jours après émission` : null
+
+  res.json({
+    pending_invoice_id: pending.id,
+    company: company ? { id: company.id, name: company.name, email: company.email || null } : null,
+    contacts: contacts.map(c => ({
+      id: c.id,
+      name: [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email,
+      email: c.email,
+    })),
+    defaults: {
+      to: defaultEmail,
+      subject: `Facture Orisha — ${totalLabel}`,
+      message: buildDefaultMessage({ contactFirstName, totalLabel, dueDateLabel }),
+    },
+    total_label: totalLabel,
+    due_date_label: dueDateLabel,
+  })
+})
+
 // ── Helper: build + send the email ─────────────────────────────────────────
 
-// Resolves recipient (companies.email or first contact). Creates/refreshes
-// a Checkout Session for the /pay link, builds the email HTML + tracking
-// pixel, sends via Gmail, logs interaction + email.
-async function sendInvoiceEmail({ pendingId, userId }) {
+// Resolves recipient (companies.email or first contact, sauf override).
+// Creates/refreshes a Checkout Session for the /pay link, builds the email
+// HTML + tracking pixel, sends via Gmail, logs interaction + email.
+async function sendInvoiceEmail({ pendingId, userId, overrides }) {
   const stripe = getStripeClient()
   const pending = db.prepare('SELECT * FROM pending_invoices WHERE id=?').get(pendingId)
   if (!pending) throw new Error('pending_not_found')
@@ -216,30 +292,28 @@ async function sendInvoiceEmail({ pendingId, userId }) {
     stripe, pending, baseAppUrl: appBaseUrl(),
   })
 
-  // Resolve recipient
-  let recipientEmail = null
-  let recipientFirstName = null
-  let recipientContactId = null
-  const co = db.prepare('SELECT email FROM companies WHERE id=?').get(pending.company_id)
-  if (co?.email) recipientEmail = co.email
-  const ct = db.prepare(`
-    SELECT id, email, first_name FROM contacts
-    WHERE company_id=? AND email IS NOT NULL AND email!=''
-    ORDER BY created_at LIMIT 1
-  `).get(pending.company_id)
-  if (!recipientEmail && ct?.email) recipientEmail = ct.email
-  if (ct?.first_name) recipientFirstName = ct.first_name
-  if (ct?.id) recipientContactId = ct.id
+  const { email: defaultEmail, contactFirstName, contactId: defaultContactId } = resolveDefaultRecipient(pending.company_id)
+
+  const overrideTo = overrides?.to ? String(overrides.to).trim() : null
+  let recipientEmail = overrideTo || defaultEmail
   if (!recipientEmail) throw new Error('no_recipient_email')
 
-  const items = JSON.parse(pending.items_json || '[]')
-  const subtotal = items.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0)
-  const totalLabel = fmtMoney(subtotal, pending.currency || 'CAD') + ' (avant taxes)'
+  // Si le destinataire override correspond à un contact existant, on l'attache.
+  let recipientContactId = defaultContactId
+  if (overrideTo) {
+    const matchedContact = db.prepare(
+      `SELECT id FROM contacts WHERE company_id=? AND lower(email)=lower(?) LIMIT 1`
+    ).get(pending.company_id, overrideTo)
+    recipientContactId = matchedContact?.id || null
+  }
+
+  const totalLabel = buildPendingTotalLabel(pending)
+  const dueDateLabel = pending.due_days ? `${pending.due_days} jours après émission` : null
 
   const interactionId = randomUUID()
   const emailRowId = randomUUID()
   const ts = new Date().toISOString()
-  const subject = `Facture Orisha — ${totalLabel}`
+  const subject = (overrides?.subject && String(overrides.subject).trim()) || `Facture Orisha — ${totalLabel}`
 
   const trackingPixelUrl = `${appBaseUrl()}/erp/api/email-tracking/${emailRowId}.gif`
   const userRow = db.prepare('SELECT name FROM users WHERE id=?').get(userId)
@@ -248,14 +322,15 @@ async function sendInvoiceEmail({ pendingId, userId }) {
   const payUrl = `${appBaseUrl()}/erp/pay/${pending.id}`
 
   const html = buildInvoiceEmailHtml({
-    contactFirstName: recipientFirstName,
+    contactFirstName,
     invoiceNumber: '', // not assigned yet — Stripe will assign at payment
     hostedUrl: payUrl,
     pdfUrl: null,
     totalLabel,
-    dueDateLabel: pending.due_days ? `${pending.due_days} jours après émission` : null,
+    dueDateLabel,
     trackingPixelUrl,
     fromName: userRow?.name || 'Orisha',
+    customMessage: overrides?.message || null,
   })
 
   const sent = await sendEmail(recipientEmail, subject, html, { userId })

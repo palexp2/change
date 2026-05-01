@@ -35,11 +35,11 @@ const STATUS_COLORS = {
 const RENDERS = {
   document_number: row => <span className="font-mono font-medium text-slate-900">{row.document_number || '—'}</span>,
   company_name:    row => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">{row.company_name}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   project_name:    row => <span className="text-slate-600">{row.project_name || '—'}</span>,
   order_number:    row => row.order_id && row.order_number
-    ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">#{row.order_number}</Link>
+    ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">#{row.order_number}</Link>
     : <span className="text-slate-400">—</span>,
   status:          row => row.status
     ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
@@ -58,6 +58,17 @@ const RENDERS = {
     const val = row.balance_due
     if (!val && val !== 0) return <span className="text-slate-400">—</span>
     return <span className={`font-medium ${val > 0 ? 'text-red-600' : 'text-green-600'}`}>{fmtCad(val)}</span>
+  },
+  is_sent:         row => (
+    <span className={row.is_sent ? 'text-slate-700' : 'text-slate-400'}>
+      {row.is_sent ? 'Oui' : 'Non'}
+    </span>
+  ),
+  deferred_revenue_state: row => {
+    const v = row.deferred_revenue_state
+    if (v === 'Constaté') return <Badge color="green">Constaté</Badge>
+    if (v === 'En attente') return <Badge color="yellow">En attente</Badge>
+    return <span className="text-slate-300">—</span>
   },
 }
 
@@ -79,7 +90,7 @@ export default function Factures() {
 
   return (
     <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
+      <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Factures clients</h1>

@@ -64,7 +64,7 @@ export default function LinkedRecordField({
           {href ? (
             <Link
               to={href}
-              className={`${bodyCls} pl-2.5 pr-1 py-1 hover:text-indigo-600 hover:underline`}
+              className={`${bodyCls} pl-2.5 pr-1 py-1 hover:text-brand-600 hover:underline`}
               data-testid="linked-record-link"
             >
               {label}
@@ -117,7 +117,7 @@ export default function LinkedRecordField({
                 ref={inputRef}
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400"
                 placeholder="Rechercher..."
               />
             </div>

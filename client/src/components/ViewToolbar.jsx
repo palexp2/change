@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
-import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
+import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, ChevronsDownUp, ChevronsUpDown, AlertTriangle } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
-import { FilterRow, defaultOpForType } from './FilterRow.jsx'
+import { FilterRow, FieldSelect, defaultOpForType } from './FilterRow.jsx'
 import api from '../lib/api.js'
 
 function ToolbarBtn({ icon, label, active, badge, onClick }) {
@@ -9,13 +9,13 @@ function ToolbarBtn({ icon, label, active, badge, onClick }) {
     <button
       onClick={(e) => onClick(e)}
       className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-colors ${
-        active ? 'bg-indigo-50 text-indigo-700' : 'text-slate-600 hover:bg-slate-100'
+        active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-100'
       }`}
     >
       {icon}
       {label}
       {badge > 0 && (
-        <span className="bg-indigo-600 text-white rounded-full w-4 h-4 flex items-center justify-center text-[10px] leading-none">
+        <span className="bg-brand-600 text-white rounded-full w-4 h-4 flex items-center justify-center text-[10px] leading-none">
           {badge}
         </span>
       )}
@@ -64,7 +64,7 @@ function FieldsPanel({ columns, visibleCols, onChange, left }) {
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
-          className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-indigo-400"
+          className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400"
           placeholder="Rechercher..."
           autoFocus
         />
@@ -81,7 +81,7 @@ function FieldsPanel({ columns, visibleCols, onChange, left }) {
                 if (e.target.checked) onChange(v => [...v, col.id])
                 else onChange(v => v.filter(id => id !== col.id))
               }}
-              className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
             />
             <span className="text-sm text-slate-700">{col.label}</span>
           </label>
@@ -93,7 +93,7 @@ function FieldsPanel({ columns, visibleCols, onChange, left }) {
             type="button"
             onClick={showAll}
             disabled={allVisible}
-            className="flex-1 text-xs font-medium text-slate-600 hover:text-indigo-700 hover:bg-indigo-50 rounded px-2 py-1.5 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 disabled:cursor-not-allowed"
+            className="flex-1 text-xs font-medium text-slate-600 hover:text-brand-700 hover:bg-brand-50 rounded px-2 py-1.5 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 disabled:cursor-not-allowed"
           >
             Tout voir
           </button>
@@ -101,7 +101,7 @@ function FieldsPanel({ columns, visibleCols, onChange, left }) {
             type="button"
             onClick={hideAll}
             disabled={noneVisible}
-            className="flex-1 text-xs font-medium text-slate-600 hover:text-indigo-700 hover:bg-indigo-50 rounded px-2 py-1.5 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 disabled:cursor-not-allowed"
+            className="flex-1 text-xs font-medium text-slate-600 hover:text-brand-700 hover:bg-brand-50 rounded px-2 py-1.5 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 disabled:cursor-not-allowed"
           >
             Tout cacher
           </button>
@@ -111,8 +111,9 @@ function FieldsPanel({ columns, visibleCols, onChange, left }) {
   )
 }
 
-function FilterPanel({ columns, filters, onChange, data, left }) {
+function FilterPanel({ columns, filters, onChange, data, left, disabledColumns }) {
   const filterableCols = columns.filter(c => c.filterable !== false && c.field)
+  const isDisabledField = (fieldName) => !!(disabledColumns && fieldName && disabledColumns.has(fieldName))
 
   // Normalize to {conjunction, rules} format
   const normalized = Array.isArray(filters)
@@ -153,34 +154,45 @@ function FilterPanel({ columns, filters, onChange, data, left }) {
         {rules.length === 0 && (
           <p className="text-sm text-slate-400 py-1">Aucun filtre actif</p>
         )}
-        {rules.map((f, i) => (
-          <div key={i}>
-            {i > 0 && (
-              <div className="flex items-center gap-2 my-1.5">
-                <div className="flex-1 h-px bg-slate-100" />
-                <span className="text-[10px] font-bold text-slate-400 tracking-wide">{conjunction === 'OR' ? 'OU' : 'ET'}</span>
-                <div className="flex-1 h-px bg-slate-100" />
-              </div>
-            )}
-            <FilterRow
-              columns={columns}
-              filter={f}
-              onChange={updated => update(i, updated)}
-              onRemove={() => remove(i)}
-              size="xs"
-              data={data}
-            />
-          </div>
-        ))}
+        {rules.map((f, i) => {
+          const fieldName = f.field_key || f.field
+          const broken = isDisabledField(fieldName)
+          return (
+            <div key={i}>
+              {i > 0 && (
+                <div className="flex items-center gap-2 my-1.5">
+                  <div className="flex-1 h-px bg-slate-100" />
+                  <span className="text-[10px] font-bold text-slate-400 tracking-wide">{conjunction === 'OR' ? 'OU' : 'ET'}</span>
+                  <div className="flex-1 h-px bg-slate-100" />
+                </div>
+              )}
+              <FilterRow
+                columns={columns}
+                filter={f}
+                onChange={updated => update(i, updated)}
+                onRemove={() => remove(i)}
+                size="xs"
+                data={data}
+              />
+              {broken && (
+                <div className="flex items-start gap-1 mt-0.5 ml-1 text-[11px] text-amber-700">
+                  <AlertTriangle size={11} className="mt-0.5 flex-shrink-0" />
+                  <span>Le champ <code className="font-mono">{fieldName}</code> a été désactivé dans la sync Airtable. Ce filtre ne renverra plus rien — supprime-le ou change le champ.</span>
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
-      <button onClick={add} className="mt-3 flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-medium">
+      <button onClick={add} className="mt-3 flex items-center gap-1.5 text-xs text-brand-600 hover:text-brand-800 font-medium">
         <Plus size={13} /> Ajouter un filtre
       </button>
     </Panel>
   )
 }
 
-function SortPanel({ columns, sorts, onChange, left }) {
+function SortPanel({ columns, sorts, onChange, left, disabledColumns }) {
+  const isDisabledField = (fieldName) => !!(disabledColumns && fieldName && disabledColumns.has(fieldName))
   function add() {
     const used = new Set(sorts.map(s => s.field))
     const next = columns.find(c => !used.has(c.field))
@@ -199,34 +211,60 @@ function SortPanel({ columns, sorts, onChange, left }) {
       <PanelTitle>Trier par</PanelTitle>
       <div className="space-y-2 max-h-60 overflow-y-auto">
         {sorts.length === 0 && <p className="text-sm text-slate-400 py-1">Aucun tri actif</p>}
-        {sorts.map((s, i) => (
-          <div key={i} className="flex items-center gap-2">
-            <select value={s.field} onChange={e => update(i, { field: e.target.value })} className="select text-xs py-1.5 flex-1">
-              {columns.map(c => <option key={c.id} value={c.field}>{c.label}</option>)}
-            </select>
-            <button onClick={() => update(i, { dir: s.dir === 'asc' ? 'desc' : 'asc' })} className="flex items-center gap-1 px-2.5 py-1.5 text-xs border border-slate-200 rounded hover:bg-slate-50 flex-shrink-0 text-slate-600">
-              {s.dir === 'asc' ? <><ChevronUp size={12} /> Croissant</> : <><ChevronDown size={12} /> Décroissant</>}
-            </button>
-            <button onClick={() => remove(i)} className="text-slate-300 hover:text-red-500 flex-shrink-0"><X size={14} /></button>
-          </div>
-        ))}
+        {sorts.map((s, i) => {
+          const broken = isDisabledField(s.field)
+          // Si le tri référence un champ désactivé, on l'ajoute en option "ghost"
+          // pour que le select puisse afficher la valeur courante.
+          const optionsForRow = broken
+            ? [{ id: `__broken_${s.field}`, field: s.field, label: s.field }, ...columns]
+            : columns
+          return (
+            <div key={i}>
+              <div className="flex items-center gap-2">
+                <FieldSelect
+                  columns={optionsForRow}
+                  value={s.field}
+                  onChange={f => update(i, { field: f })}
+                  cls="text-xs py-1.5"
+                />
+                <button onClick={() => update(i, { dir: s.dir === 'asc' ? 'desc' : 'asc' })} className="flex items-center gap-1 px-2.5 py-1.5 text-xs border border-slate-200 rounded hover:bg-slate-50 flex-shrink-0 text-slate-600">
+                  {s.dir === 'asc' ? <><ChevronUp size={12} /> Croissant</> : <><ChevronDown size={12} /> Décroissant</>}
+                </button>
+                <button onClick={() => remove(i)} className="text-slate-300 hover:text-red-500 flex-shrink-0"><X size={14} /></button>
+              </div>
+              {broken && (
+                <div className="flex items-start gap-1 mt-0.5 ml-1 text-[11px] text-amber-700">
+                  <AlertTriangle size={11} className="mt-0.5 flex-shrink-0" />
+                  <span>Le champ <code className="font-mono">{s.field}</code> a été désactivé dans la sync Airtable. Ce tri n'a plus d'effet.</span>
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
-      <button onClick={add} className="mt-3 flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-medium">
+      <button onClick={add} className="mt-3 flex items-center gap-1.5 text-xs text-brand-600 hover:text-brand-800 font-medium">
         <Plus size={13} /> Ajouter un tri
       </button>
     </Panel>
   )
 }
 
-function GroupPanel({ columns, groupBy, onChange, onCollapseAll, onExpandAll, left }) {
+function GroupPanel({ columns, groupBy, onChange, onCollapseAll, onExpandAll, left, disabledColumns }) {
   const [search, setSearch] = useState('')
   const filtered = search
     ? columns.filter(c => c.label.toLowerCase().includes(search.toLowerCase()))
     : columns
+  const groupByBroken = !!(disabledColumns && groupBy && disabledColumns.has(groupBy))
 
   return (
     <Panel className="w-56" left={left}>
       <PanelTitle>Grouper par</PanelTitle>
+      {groupByBroken && (
+        <div className="flex items-start gap-1 mb-2 p-1.5 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-700">
+          <AlertTriangle size={11} className="mt-0.5 flex-shrink-0" />
+          <span>Le groupage actuel sur <code className="font-mono">{groupBy}</code> pointe sur un champ désactivé dans la sync Airtable.</span>
+        </div>
+      )}
       {groupBy && (
         <div className="flex items-center gap-1 mb-2">
           <button onClick={onExpandAll} className="flex items-center gap-1 flex-1 justify-center px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded border border-slate-200 transition-colors">
@@ -242,21 +280,21 @@ function GroupPanel({ columns, groupBy, onChange, onCollapseAll, onExpandAll, le
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
-          className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-indigo-400"
+          className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400"
           placeholder="Rechercher..."
           autoFocus
         />
       </div>
       <div className="space-y-0.5 max-h-60 overflow-y-auto">
         {!search && (
-          <button onClick={() => onChange(null)} className={`flex items-center justify-between w-full px-2 py-1.5 rounded text-sm text-left transition-colors ${!groupBy ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-slate-50 text-slate-600'}`}>
+          <button onClick={() => onChange(null)} className={`flex items-center justify-between w-full px-2 py-1.5 rounded text-sm text-left transition-colors ${!groupBy ? 'bg-brand-50 text-brand-700 font-medium' : 'hover:bg-slate-50 text-slate-600'}`}>
             Aucun {!groupBy && <Check size={13} />}
           </button>
         )}
         {filtered.length === 0
           ? <p className="text-xs text-slate-400 text-center py-2">Aucun résultat</p>
           : filtered.map(col => (
-          <button key={col.id} onClick={() => onChange(col.field)} className={`flex items-center justify-between w-full px-2 py-1.5 rounded text-sm text-left transition-colors ${groupBy === col.field ? 'bg-indigo-50 text-indigo-700 font-medium' : 'hover:bg-slate-50 text-slate-600'}`}>
+          <button key={col.id} onClick={() => onChange(col.field)} className={`flex items-center justify-between w-full px-2 py-1.5 rounded text-sm text-left transition-colors ${groupBy === col.field ? 'bg-brand-50 text-brand-700 font-medium' : 'hover:bg-slate-50 text-slate-600'}`}>
             {col.label} {groupBy === col.field && <Check size={13} />}
           </button>
         ))}
@@ -283,6 +321,7 @@ export function ViewToolbar({
   groupBy, setGroupBy,
   onCollapseAll, onExpandAll,
   data,
+  disabledColumns = null,
 }) {
   const [openPanel, setOpenPanel] = useState(null)
   const [panelLeft, setPanelLeft] = useState(0)
@@ -402,7 +441,7 @@ export function ViewToolbar({
   const tabCls = (id) =>
     `px-4 py-2.5 text-sm font-medium border-b-2 -mb-px whitespace-nowrap transition-colors ${
       activeViewId === id
-        ? 'border-indigo-600 text-indigo-600'
+        ? 'border-brand-600 text-brand-600'
         : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
     }`
 
@@ -519,18 +558,33 @@ export function ViewToolbar({
         </div>
 
         {openPanel === 'fields' && visibleCols && setVisibleCols && (
-          <FieldsPanel columns={columns} visibleCols={visibleCols} onChange={setVisibleCols} left={panelLeft} />
+          <FieldsPanel
+            columns={columns.filter(c => !disabledColumns?.has(c.field) && !disabledColumns?.has(c.id))}
+            visibleCols={visibleCols} onChange={setVisibleCols} left={panelLeft}
+          />
         )}
         {openPanel === 'filter' && (
-          <FilterPanel columns={columns.filter(c => c.filterable !== false)} filters={filters} onChange={setFilters} data={data} left={panelLeft} />
+          <FilterPanel
+            columns={columns.filter(c => c.filterable !== false && !disabledColumns?.has(c.field) && !disabledColumns?.has(c.id))}
+            filters={filters} onChange={setFilters} data={data} left={panelLeft}
+            disabledColumns={disabledColumns}
+          />
         )}
         {openPanel === 'sort' && (
-          <SortPanel columns={columns.filter(c => c.sortable !== false)} sorts={sorts} onChange={setSorts} left={panelLeft} />
+          <SortPanel
+            columns={columns.filter(c => c.sortable !== false && !disabledColumns?.has(c.field) && !disabledColumns?.has(c.id))}
+            sorts={sorts} onChange={setSorts} left={panelLeft}
+            disabledColumns={disabledColumns}
+          />
         )}
         {openPanel === 'group' && setGroupBy && (
-          <GroupPanel columns={columns.filter(c => c.groupable !== false)} groupBy={groupBy}
+          <GroupPanel
+            columns={columns.filter(c => c.groupable !== false && !disabledColumns?.has(c.field) && !disabledColumns?.has(c.id))}
+            groupBy={groupBy}
             onChange={v => { setGroupBy(v); setOpenPanel(null) }}
-            onCollapseAll={onCollapseAll} onExpandAll={onExpandAll} left={panelLeft} />
+            onCollapseAll={onCollapseAll} onExpandAll={onExpandAll} left={panelLeft}
+            disabledColumns={disabledColumns}
+          />
         )}
       </div>
     </div>

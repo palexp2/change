@@ -1028,7 +1028,7 @@ function SyncLogPanel() {
 
           {loading && logs.length === 0 ? (
             <div className="flex items-center justify-center h-20">
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-indigo-600" />
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-brand-600" />
             </div>
           ) : logs.length === 0 ? (
             <div className="px-5 py-6 text-center text-sm text-slate-400">Aucun log</div>
@@ -1135,7 +1135,7 @@ export function ConnectorsContent() {
 
         {loading ? (
           <div className="flex items-center justify-center h-32">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" />
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600" />
           </div>
         ) : (
           <>

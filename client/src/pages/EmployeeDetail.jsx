@@ -73,7 +73,7 @@ function normalize(raw) {
   return out
 }
 
-const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-indigo-400 bg-white'
+const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
 export default function EmployeeDetail() {
   const { id } = useParams()
@@ -137,7 +137,7 @@ export default function EmployeeDetail() {
   }
 
   if (loading || !form) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" /></div></Layout>
+    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
   }
   if (!employee) {
     return <Layout><div className="p-6 text-slate-500">Employé introuvable.</div></Layout>
@@ -152,7 +152,7 @@ export default function EmployeeDetail() {
           <button onClick={() => navigate('/employees')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
             <ArrowLeft size={18} />
           </button>
-          <div className="w-14 h-14 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-semibold text-lg flex-shrink-0">
+          <div className="w-14 h-14 rounded-full bg-brand-100 text-brand-600 flex items-center justify-center font-semibold text-lg flex-shrink-0">
             {initials || '—'}
           </div>
           <div className="flex-1 min-w-0">
@@ -167,7 +167,7 @@ export default function EmployeeDetail() {
             <div className="text-sm text-slate-500 mt-1 flex gap-3 flex-wrap">
               {form.matricule && <span className="font-mono bg-slate-100 px-2 py-0.5 rounded">{form.matricule}</span>}
               {form.accounting_department && <span>{form.accounting_department}</span>}
-              {form.email_work && <a href={`mailto:${form.email_work}`} className="text-indigo-600 hover:underline">{form.email_work}</a>}
+              {form.email_work && <a href={`mailto:${form.email_work}`} className="text-brand-600 hover:underline">{form.email_work}</a>}
             </div>
           </div>
           <div className="flex items-center gap-3 pt-1">
@@ -335,7 +335,7 @@ function VacationsSection({ employeeId }) {
         <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Vacances</div>
         <button
           onClick={addVacation}
-          className="text-xs text-indigo-600 hover:text-indigo-700 flex items-center gap-1 font-medium"
+          className="text-xs text-brand-600 hover:text-brand-700 flex items-center gap-1 font-medium"
           data-testid="add-vacation"
         >
           <Plus size={14} /> Ajouter

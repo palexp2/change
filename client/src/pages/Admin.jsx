@@ -29,7 +29,7 @@ function fmtUptime(seconds) {
   return `${m}m`
 }
 
-function BarStat({ label, used, total, color = 'bg-indigo-500', warn = 80, danger = 90 }) {
+function BarStat({ label, used, total, color = 'bg-brand-500', warn = 80, danger = 90 }) {
   const pct = total ? Math.round(used / total * 100) : 0
   const barColor = pct >= danger ? 'bg-red-500' : pct >= warn ? 'bg-amber-500' : color
   return (
@@ -296,7 +296,7 @@ function EmployeePicker({ value, onChange, disabled }) {
                 key={e.id}
                 type="button"
                 onClick={() => { onChange(e.id); setOpen(false); setQuery('') }}
-                className={`w-full text-left px-3 py-1.5 text-sm hover:bg-slate-50 ${value === e.id ? 'bg-indigo-50 text-indigo-700' : 'text-slate-700'}`}
+                className={`w-full text-left px-3 py-1.5 text-sm hover:bg-slate-50 ${value === e.id ? 'bg-brand-50 text-brand-700' : 'text-slate-700'}`}
               >
                 {label(e)}
                 {e.matricule && <span className="ml-2 text-xs text-slate-400 font-mono">#{e.matricule}</span>}
@@ -310,7 +310,7 @@ function EmployeePicker({ value, onChange, disabled }) {
           <Link
             to="/employees"
             onClick={e => e.stopPropagation()}
-            className="text-indigo-600 hover:underline"
+            className="text-brand-600 hover:underline"
           >
             Voir la liste des employés →
           </Link>
@@ -468,8 +468,8 @@ function UsersSection({ currentUser }) {
     const renders = {
       name: u => (
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-indigo-100 rounded-full flex items-center justify-center flex-shrink-0">
-            <span className="text-indigo-600 font-semibold text-sm">{u.name?.[0]?.toUpperCase()}</span>
+          <div className="w-8 h-8 bg-brand-100 rounded-full flex items-center justify-center flex-shrink-0">
+            <span className="text-brand-600 font-semibold text-sm">{u.name?.[0]?.toUpperCase()}</span>
           </div>
           <div className="font-medium text-slate-900">{u.name}
             {u.id === currentUser.id && <span className="ml-1.5 text-xs text-slate-400">(vous)</span>}
@@ -481,7 +481,7 @@ function UsersSection({ currentUser }) {
       active: u => <Badge color={u.active ? 'green' : 'red'}>{u.active ? 'Actif' : 'Inactif'}</Badge>,
       reset: u => (
         <button onClick={e => { e.stopPropagation(); setResetUser(u) }}
-          className="text-xs text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 px-2 py-1 rounded transition-colors">
+          className="text-xs text-slate-400 hover:text-brand-600 hover:bg-brand-50 px-2 py-1 rounded transition-colors">
           🔑 Reset
         </button>
       ),
@@ -535,10 +535,10 @@ export default function Admin() {
 
   return (
     <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
+      <div className="p-6">
         <div className="flex items-center gap-3 mb-6">
-          <div className="p-2 bg-indigo-50 rounded-lg">
-            <Settings size={20} className="text-indigo-600" />
+          <div className="p-2 bg-brand-50 rounded-lg">
+            <Settings size={20} className="text-brand-600" />
           </div>
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Paramètres</h1>
@@ -554,7 +554,7 @@ export default function Admin() {
               <button key={tab.key} onClick={() => setActiveTab(tab.key)}
                 className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
                   activeTab === tab.key
-                    ? 'border-indigo-500 text-indigo-600'
+                    ? 'border-brand-500 text-brand-600'
                     : 'border-transparent text-slate-500 hover:text-slate-700'
                 }`}>
                 <Icon size={14} /> {tab.label}

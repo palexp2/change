@@ -351,23 +351,23 @@ function CreateJournalEntryForm({ accounts, onSaved, onCancel }) {
         </div>
       </div>
 
-      <div className="border border-indigo-200 bg-indigo-50/50 rounded-lg overflow-hidden">
+      <div className="border border-brand-200 bg-brand-50/50 rounded-lg overflow-hidden">
         <button
           type="button"
           onClick={() => setPrepOpen(v => !v)}
-          className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-semibold text-indigo-900 hover:bg-indigo-100/60"
+          className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-semibold text-brand-900 hover:bg-brand-100/60"
         >
           <span className="flex items-center gap-2">
             {prepOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             <Wand2 size={14} /> Prépopuler depuis les opérations ERP
           </span>
-          <span className="text-xs font-normal text-indigo-600">
+          <span className="text-xs font-normal text-brand-600">
             Numéros de série · Envois · Mouvements
           </span>
         </button>
 
         {prepOpen && (
-          <div className="px-4 py-3 border-t border-indigo-200 space-y-3">
+          <div className="px-4 py-3 border-t border-brand-200 space-y-3">
             <div className="grid grid-cols-3 gap-3 items-end">
               <div>
                 <label className="label">Du</label>
@@ -940,7 +940,7 @@ const RENDERS = {
   lines_count: row => <span className="tabular-nums text-slate-500">{row.lines_count ?? '—'}</span>,
   total:       row => <span className="font-medium tabular-nums text-slate-800">{fmtCad(row.total, row.currency)}</span>,
   qb:          row => row.qb_url
-    ? <a href={row.qb_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} title="Ouvrir dans QuickBooks" className="inline-flex items-center text-indigo-600 hover:text-indigo-800"><ExternalLink size={14} /></a>
+    ? <a href={row.qb_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} title="Ouvrir dans QuickBooks" className="inline-flex items-center text-brand-600 hover:text-brand-800"><ExternalLink size={14} /></a>
     : <span className="text-slate-300">—</span>,
 }
 
@@ -989,7 +989,7 @@ export default function JournalEntries() {
 
   return (
     <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
+      <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Écritures de journal</h1>

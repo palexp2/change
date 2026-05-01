@@ -5,6 +5,7 @@ import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
+import { upsertFromInvoiceLines } from '../services/stripeInvoiceItems.js'
 
 function getStripeKey() {
   const row = db.prepare(
@@ -102,7 +103,7 @@ router.post('/batch-enrich', async (req, res) => {
   try {
     // Paginate all invoices
     const allInvoices = []
-    for await (const inv of stripe.invoices.list({ limit: 100, expand: ['data.charge'] })) {
+    for await (const inv of stripe.invoices.list({ limit: 100, expand: ['data.charge', 'data.lines.data.price'] })) {
       allInvoices.push(inv)
     }
     batchProgress.total = allInvoices.length
@@ -188,6 +189,21 @@ router.post('/batch-enrich', async (req, res) => {
             batchProgress.pdf_errors++
             console.error(`❌ Stripe PDF dl ${factureId}:`, e.message)
           }
+        }
+
+        // Upsert des lignes — inv.lines.data inclus jusqu'à 10. Si has_more,
+        // paginer via listLineItems pour récupérer le reste avec price expandé.
+        try {
+          let allLines = inv.lines?.data || []
+          if (inv.lines?.has_more) {
+            for await (const ln of stripe.invoices.listLineItems(invoiceId, { limit: 100, expand: ['data.price'] })) {
+              if (!allLines.find(x => x.id === ln.id)) allLines.push(ln)
+            }
+          }
+          if (allLines.length) upsertFromInvoiceLines(factureId, invoiceId, allLines)
+        } catch (e) {
+          console.error(`❌ Stripe lines upsert ${invoiceId}:`, e.message)
+          batchProgress.errors.push({ invoice: invoiceId, error: `lines: ${e.message}` })
         }
       } catch (e) {
         batchProgress.errors.push({ invoice: inv.id, error: e.message })

@@ -17,7 +17,7 @@ function bool(row, key) {
 const RENDERS = {
   full_name: row => (
     <div className="flex items-center gap-2">
-      <div className="w-7 h-7 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center font-semibold text-xs flex-shrink-0">
+      <div className="w-7 h-7 rounded-full bg-brand-100 text-brand-600 flex items-center justify-center font-semibold text-xs flex-shrink-0">
         {(row.first_name?.[0] || '') + (row.last_name?.[0] || '')}
       </div>
       <span className="font-medium text-slate-900">{row.first_name} {row.last_name}</span>
@@ -159,7 +159,7 @@ function SyncPanel({ onSynced }) {
         className="w-full flex items-center gap-2 px-4 py-3 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
       >
         {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-        <Database size={15} className="text-indigo-500" />
+        <Database size={15} className="text-brand-500" />
         <span className="font-medium">Synchronisation Airtable</span>
         {configured ? (
           <span className="text-xs text-slate-400 ml-2">
@@ -239,7 +239,7 @@ export default function Employees() {
 
   return (
     <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
+      <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-slate-900">Employés</h1>
           <div className="flex items-center gap-2">

@@ -175,7 +175,7 @@ export function TaxMappingModal({ isOpen, onClose }) {
                 {knownStripeTaxIds.map(r => {
                   const checked = form.stripe_tax_ids.includes(r.id)
                   return (
-                    <label key={r.id} className={`flex items-center gap-2 px-2 py-1 rounded cursor-pointer hover:bg-slate-50 ${checked ? 'bg-indigo-50' : ''}`}>
+                    <label key={r.id} className={`flex items-center gap-2 px-2 py-1 rounded cursor-pointer hover:bg-slate-50 ${checked ? 'bg-brand-50' : ''}`}>
                       <input
                         type="checkbox"
                         checked={checked}
@@ -198,7 +198,7 @@ export function TaxMappingModal({ isOpen, onClose }) {
                 value={manualTaxId}
                 onChange={e => setManualTaxId(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addManualTaxId() } }}
-                className="flex-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                className="flex-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-brand-500"
               />
               <button
                 type="button"
@@ -211,9 +211,9 @@ export function TaxMappingModal({ isOpen, onClose }) {
             {form.stripe_tax_ids.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1">
                 {form.stripe_tax_ids.map(id => (
-                  <span key={id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 font-mono text-xs">
+                  <span key={id} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-brand-100 text-brand-700 font-mono text-xs">
                     {id}
-                    <button type="button" onClick={() => toggleTaxId(id)} className="hover:text-indigo-900">
+                    <button type="button" onClick={() => toggleTaxId(id)} className="hover:text-brand-900">
                       ×
                     </button>
                   </span>
@@ -242,7 +242,7 @@ export function TaxMappingModal({ isOpen, onClose }) {
               placeholder="Ex: TPS+TVQ Québec"
               value={form.stripe_tax_description}
               onChange={e => setForm({ ...form, stripe_tax_description: e.target.value })}
-              className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
             />
           </div>
           {error && <div className="text-sm text-red-600">{error}</div>}
@@ -250,7 +250,7 @@ export function TaxMappingModal({ isOpen, onClose }) {
             <button
               type="submit"
               disabled={saving}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg disabled:opacity-50"
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50"
             >
               <Plus size={14} /> {saving ? 'Enregistrement…' : 'Enregistrer'}
             </button>
@@ -305,7 +305,7 @@ function QbTaxCodeCombobox({ value, onChange, options, error }) {
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center justify-between border border-slate-200 rounded-lg px-2 py-1.5 text-sm bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+        className="w-full flex items-center justify-between border border-slate-200 rounded-lg px-2 py-1.5 text-sm bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-brand-500"
       >
         <span className={selected ? 'text-slate-900' : 'text-slate-400'}>
           {selected ? (
@@ -337,9 +337,9 @@ function QbTaxCodeCombobox({ value, onChange, options, error }) {
                     key={tc.Id}
                     type="button"
                     onClick={() => select(tc)}
-                    className={`w-full text-left px-3 py-2 text-sm hover:bg-indigo-50 flex items-start gap-2 ${isSel ? 'bg-indigo-50' : ''}`}
+                    className={`w-full text-left px-3 py-2 text-sm hover:bg-brand-50 flex items-start gap-2 ${isSel ? 'bg-brand-50' : ''}`}
                   >
-                    <Check size={14} className={`mt-0.5 flex-shrink-0 ${isSel ? 'text-indigo-600' : 'text-transparent'}`} />
+                    <Check size={14} className={`mt-0.5 flex-shrink-0 ${isSel ? 'text-brand-600' : 'text-transparent'}`} />
                     <div className="flex-1 min-w-0">
                       <div className="font-medium text-slate-900 truncate">{tc.Name}</div>
                       {tc.Description && <div className="text-xs text-slate-500 truncate">{tc.Description}</div>}

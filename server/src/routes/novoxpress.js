@@ -3,6 +3,8 @@ import path from 'path'
 import { fileURLToPath } from 'url'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+import { recognizeRevenueForOrder } from '../services/quickbooks.js'
+import { logSystemRun } from '../services/systemAutomations.js'
 import {
   isNovoxpressConfigured,
   clearTokenCache,
@@ -114,6 +116,22 @@ router.post('/label/:shipmentId', async (req, res) => {
       null, // carrier set manually or from service name
       req.params.shipmentId
     )
+
+    // Constat de vente — mêmes règles que la route PATCH /api/shipments (kind='order' uniquement,
+    // idempotent, asynchrone, ne bloque pas la réponse).
+    const ship = db.prepare('SELECT order_id FROM shipments WHERE id = ?').get(req.params.shipmentId)
+    if (ship?.order_id) {
+      recognizeRevenueForOrder(ship.order_id).then(r => {
+        if (r.recognized.length || r.errors.length) {
+          logSystemRun('sys_revenue_recognition', {
+            status: r.errors.length ? 'error' : 'success',
+            result: `Novoxpress label → shipment ${req.params.shipmentId} Envoyé · constatées=${r.recognized.length} skip=${r.skipped.length} err=${r.errors.length}`,
+            error: r.errors.length ? r.errors.map(e => e.error).join(' | ') : undefined,
+            triggerData: { order_id: ship.order_id, shipment_id: req.params.shipmentId, source: 'novoxpress_label' },
+          })
+        }
+      }).catch(err => console.error('recognizeRevenueForOrder error:', err.message))
+    }
 
     res.json({
       shipment_id: result.shipment_id,

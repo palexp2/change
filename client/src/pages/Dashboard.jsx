@@ -1,13 +1,15 @@
 import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowRight, SlidersHorizontal, X, Check } from 'lucide-react'
+import { ArrowRight, SlidersHorizontal, X, Check, Target } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { GeoClientsMap } from '../components/GeoClientsMap.jsx'
 import { fmtDate } from '../lib/formatDate.js'
+import { Modal } from '../components/Modal.jsx'
 
 const WIDGET_DEFS = [
+  { id: 'section_project_goal',     label: 'Objectif de projets',      group: 'Objectifs' },
   { id: 'section_profitability',    label: 'Rentabilité',              group: 'Graphiques' },
   { id: 'section_replacement_rate', label: 'Taux de remplacement',     group: 'Graphiques' },
   { id: 'section_closing',       label: 'Taux de closing',       group: 'Graphiques' },
@@ -52,7 +54,7 @@ function DashboardEditor({ prefs, onChange, onClose }) {
                       type="checkbox"
                       checked={prefs[w.id] !== false}
                       onChange={e => onChange({ ...prefs, [w.id]: e.target.checked })}
-                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                      className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
                     />
                     <span className="text-sm text-slate-700">{w.label}</span>
                   </label>
@@ -68,6 +70,139 @@ function DashboardEditor({ prefs, onChange, onClose }) {
         </div>
       </div>
     </div>
+  )
+}
+
+function ProjectGoalWidget({ goal, onEdit }) {
+  const { target, current, end_date } = goal || {}
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
+
+  if (!target) {
+    return (
+      <div className="flex flex-col items-center justify-center h-32 border-2 border-dashed border-slate-200 rounded-xl text-slate-400">
+        <Target size={24} className="mb-2 opacity-50" />
+        <p className="text-sm">Aucun objectif configuré</p>
+        {isAdmin && (
+          <button onClick={onEdit} className="mt-2 text-brand-600 text-sm font-medium hover:underline">
+            Configurer un objectif
+          </button>
+        )}
+      </div>
+    )
+  }
+
+  const progress = Math.min(Math.round((current / target) * 100), 100)
+  const daysLeft = end_date ? Math.max(0, Math.ceil((new Date(end_date + 'T23:59:59') - new Date()) / (1000 * 60 * 60 * 24))) : null
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-baseline gap-2">
+          <span className="text-2xl font-bold text-slate-900">{current}</span>
+          <span className="text-slate-400">/ {target} projets</span>
+        </div>
+        {isAdmin && (
+          <button onClick={onEdit} className="text-slate-400 hover:text-brand-600 p-1 rounded-lg hover:bg-slate-50 transition-colors">
+            <SlidersHorizontal size={14} />
+          </button>
+        )}
+      </div>
+      
+      <div className="h-4 bg-slate-100 rounded-full overflow-hidden mb-2">
+        <div 
+          className="h-full bg-brand-500 transition-all duration-500 ease-out"
+          style={{ width: `${progress}%` }}
+        />
+      </div>
+
+      <div className="flex justify-between text-xs font-medium">
+        <span className={progress >= 100 ? 'text-green-600' : 'text-slate-500'}>
+          {progress}% complété
+        </span>
+        {daysLeft !== null && (
+          <span className="text-slate-500">
+            {daysLeft === 0 ? "Échéance aujourd'hui" : `${daysLeft} jour${daysLeft > 1 ? 's' : ''} restant${daysLeft > 1 ? 's' : ''}`}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function GoalEditorModal({ isOpen, onClose, onSave }) {
+  const [loading, setLoading] = useState(false)
+  const [form, setForm] = useState({ target_qty: '', start_date: '', end_date: '' })
+
+  useEffect(() => {
+    if (isOpen) {
+      setLoading(true)
+      api.dashboard.getGoal()
+        .then(setForm)
+        .catch(console.error)
+        .finally(() => setLoading(false))
+    }
+  }, [isOpen])
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    setLoading(true)
+    try {
+      await api.dashboard.updateGoal(form)
+      onSave()
+      onClose()
+    } catch (err) {
+      alert(err.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Configurer l'objectif de projets" size="sm">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <div>
+          <label className="block text-sm font-medium text-slate-700 mb-1">Quantité cible</label>
+          <input
+            type="number"
+            required
+            min="1"
+            className="w-full rounded-lg border-slate-200 focus:border-brand-500 focus:ring-brand-500"
+            value={form.target_qty}
+            onChange={e => setForm({ ...form, target_qty: e.target.value })}
+            placeholder="ex: 50"
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Date de début</label>
+            <input
+              type="date"
+              required
+              className="w-full rounded-lg border-slate-200 focus:border-brand-500 focus:ring-brand-500"
+              value={form.start_date}
+              onChange={e => setForm({ ...form, start_date: e.target.value })}
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1">Date de fin</label>
+            <input
+              type="date"
+              required
+              className="w-full rounded-lg border-slate-200 focus:border-brand-500 focus:ring-brand-500"
+              value={form.end_date}
+              onChange={e => setForm({ ...form, end_date: e.target.value })}
+            />
+          </div>
+        </div>
+        <div className="pt-2">
+          {/* Manual save instead of autosave to avoid triggering expensive dashboard refreshes on every keystroke */}
+          <button type="submit" disabled={loading} className="w-full btn-primary py-2.5">
+            {loading ? 'Enregistrement...' : 'Enregistrer'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 
@@ -149,7 +284,7 @@ function ClosingRateChart({ data, onMonthClick }) {
           {types.map(t => (
             <button key={t} onClick={() => setActiveType(t)}
               className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
-                activeType === t ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                activeType === t ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
               }`}>
               {t}
             </button>
@@ -171,8 +306,8 @@ function ClosingRateChart({ data, onMonthClick }) {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 180 }}>
         <defs>
           <linearGradient id="closingGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#6366f1" stopOpacity="0.18" />
-            <stop offset="100%" stopColor="#6366f1" stopOpacity="0" />
+            <stop offset="0%" stopColor="#21B14B" stopOpacity="0.18" />
+            <stop offset="100%" stopColor="#21B14B" stopOpacity="0" />
           </linearGradient>
         </defs>
         {gridLines.map(v => (
@@ -186,7 +321,7 @@ function ClosingRateChart({ data, onMonthClick }) {
           <path key={`area-${si}`} d={areaPath(seg)} fill="url(#closingGrad)" />
         ))}
         {segments.map((seg, si) => (
-          <path key={`line-${si}`} d={linePath(seg)} fill="none" stroke="#6366f1" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          <path key={`line-${si}`} d={linePath(seg)} fill="none" stroke="#21B14B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
         ))}
         {months.map((m, i) => (
           <g key={m.key} onClick={() => m.total > 0 && onMonthClick && onMonthClick(m.key)} style={{ cursor: m.total > 0 && onMonthClick ? 'pointer' : 'default' }}
@@ -197,7 +332,7 @@ function ClosingRateChart({ data, onMonthClick }) {
             <rect x={xPos(i) - 14} y={padT} width={28} height={chartH + padB} fill="transparent" />
             {m.rate !== null && (
               <circle cx={xPos(i)} cy={yPos(m.rate)} r="4"
-                fill={tooltip?.i === i ? '#6366f1' : 'white'} stroke="#6366f1" strokeWidth="2"
+                fill={tooltip?.i === i ? '#21B14B' : 'white'} stroke="#21B14B" strokeWidth="2"
                 pointerEvents="none"
               />
             )}
@@ -267,12 +402,12 @@ function ShipmentsWeeklyChart({ data }) {
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 180 }}>
         <defs>
           <linearGradient id="shipmentsGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#6366f1" stopOpacity="0.9" />
-            <stop offset="100%" stopColor="#6366f1" stopOpacity="0.5" />
+            <stop offset="0%" stopColor="#21B14B" stopOpacity="0.9" />
+            <stop offset="100%" stopColor="#21B14B" stopOpacity="0.5" />
           </linearGradient>
           <linearGradient id="shipmentsGradHover" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#4f46e5" stopOpacity="1" />
-            <stop offset="100%" stopColor="#4f46e5" stopOpacity="0.7" />
+            <stop offset="0%" stopColor="#1B8E3C" stopOpacity="1" />
+            <stop offset="100%" stopColor="#1B8E3C" stopOpacity="0.7" />
           </linearGradient>
         </defs>
         {gridCounts.map(v => {
@@ -601,7 +736,7 @@ function ProfitabilityChart({ data, recentOrders }) {
           <button key={f} onClick={() => setActiveFilter(f)}
             className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
               activeFilter === f
-                ? f === 'Abonnement' ? 'bg-violet-600 text-white' : f === 'Achat' ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-white'
+                ? f === 'Abonnement' ? 'bg-violet-600 text-white' : f === 'Achat' ? 'bg-brand-600 text-white' : 'bg-slate-700 text-white'
                 : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
             }`}>
             {f}
@@ -617,7 +752,7 @@ function ProfitabilityChart({ data, recentOrders }) {
           {activeFilter === 'Tous' && (rolling28Revenue > 0) && (
             <div className="flex gap-2 mt-1 text-xs text-slate-400">
               <span className="text-violet-500">{fmtCad(subRevenue28)} abo</span>
-              <span className="text-indigo-500">{fmtCad(achatRevenue28)} achat</span>
+              <span className="text-brand-500">{fmtCad(achatRevenue28)} achat</span>
             </div>
           )}
         </div>
@@ -1023,7 +1158,7 @@ function InventoryValuationCard({ valuation }) {
       label: s.status,
       sub: `${s.count} numéro${s.count > 1 ? 's' : ''} de série · valeur à la fabrication`,
       value: s.total_value || 0,
-      color: 'bg-indigo-500',
+      color: 'bg-brand-500',
     })),
   ]
   const maxVal = Math.max(...rows.map(r => r.value), 1)
@@ -1035,7 +1170,7 @@ function InventoryValuationCard({ valuation }) {
         <p className="text-2xl font-bold text-slate-900">{fmtCad(grandTotal)}</p>
         <div className="flex gap-3 mt-1 text-xs text-slate-400 flex-wrap">
           <span><span className="inline-block w-2 h-2 rounded-full bg-slate-500 mr-1.5" />Pièces {fmtCad(piecesTotal)}</span>
-          <span><span className="inline-block w-2 h-2 rounded-full bg-indigo-500 mr-1.5" />Numéros de série {fmtCad(serialsTotal)}</span>
+          <span><span className="inline-block w-2 h-2 rounded-full bg-brand-500 mr-1.5" />Numéros de série {fmtCad(serialsTotal)}</span>
         </div>
       </div>
       <div className="space-y-3">
@@ -1078,12 +1213,18 @@ export default function Dashboard() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [showEditor, setShowEditor] = useState(false)
+  const [showGoalEditor, setShowGoalEditor] = useState(false)
   const { user } = useAuth()
   const navigate = useNavigate()
   const [prefs, setPrefs] = useState(() => loadPrefs(user?.id || 'default'))
 
-  useEffect(() => {
+  const refresh = () => {
+    setLoading(true)
     api.dashboard.get().then(setData).catch(console.error).finally(() => setLoading(false))
+  }
+
+  useEffect(() => {
+    refresh()
   }, [])
 
   function updatePrefs(newPrefs) {
@@ -1093,11 +1234,11 @@ export default function Dashboard() {
 
   const show = (id) => prefs[id] !== false
 
-  if (loading) {
+  if (loading && !data) {
     return (
       <Layout>
         <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" />
+          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" />
         </div>
       </Layout>
     )
@@ -1113,7 +1254,7 @@ export default function Dashboard() {
           </div>
           <button
             onClick={() => setShowEditor(v => !v)}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors ${showEditor ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors ${showEditor ? 'bg-brand-50 text-brand-700 border border-brand-200' : 'border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
           >
             <SlidersHorizontal size={14} /> Personnaliser
           </button>
@@ -1121,6 +1262,17 @@ export default function Dashboard() {
 
         {showEditor && (
           <DashboardEditor prefs={prefs} onChange={updatePrefs} onClose={() => setShowEditor(false)} />
+        )}
+
+        {/* Project Goal */}
+        {show('section_project_goal') && (
+          <div className="card p-5 mb-6">
+            <div className="mb-4">
+              <h2 className="font-semibold text-slate-900">Objectif d'acquisition de projets</h2>
+              <p className="text-xs text-slate-400 mt-0.5">Nombre de projets créés entre le {fmtDate(data?.projectGoal?.start_date)} et le {fmtDate(data?.projectGoal?.end_date)}</p>
+            </div>
+            <ProjectGoalWidget goal={data?.projectGoal} onEdit={() => setShowGoalEditor(true)} />
+          </div>
         )}
 
         {/* Profitability */}
@@ -1175,7 +1327,7 @@ export default function Dashboard() {
                 <h2 className="font-semibold text-slate-900">Livraisons par semaine</h2>
                 <p className="text-xs text-slate-400 mt-0.5">Colis envoyés — 16 dernières semaines</p>
               </div>
-              <Link to="/envois" className="text-indigo-600 text-sm flex items-center gap-1 hover:underline">
+              <Link to="/envois" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
                 Voir tous <ArrowRight size={14} />
               </Link>
             </div>
@@ -1215,7 +1367,7 @@ export default function Dashboard() {
                 <h2 className="font-semibold text-slate-900">Amélioration du support</h2>
                 <p className="text-xs text-slate-400 mt-0.5">Indicateurs par semaine — 16 dernières semaines</p>
               </div>
-              <Link to="/tickets" className="text-indigo-600 text-sm flex items-center gap-1 hover:underline">
+              <Link to="/tickets" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
                 Voir tickets <ArrowRight size={14} />
               </Link>
             </div>
@@ -1223,6 +1375,11 @@ export default function Dashboard() {
           </div>
         )}
 
+        <GoalEditorModal
+          isOpen={showGoalEditor}
+          onClose={() => setShowGoalEditor(false)}
+          onSave={refresh}
+        />
       </div>
     </Layout>
   )

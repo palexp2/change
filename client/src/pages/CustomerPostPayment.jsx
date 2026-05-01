@@ -4,8 +4,8 @@ import { useSearchParams } from 'react-router-dom'
 // Public page (no auth) — onboarding wizard shown after a customer pays.
 // Branches based on detected products + answers. Autosaves per change.
 
-const inputCls = 'w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500'
-const btnPrimary = 'inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg disabled:opacity-50'
+const inputCls = 'w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500'
+const btnPrimary = 'inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50'
 const btnGhost = 'inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg'
 
 const PROVINCES = ['QC', 'ON', 'NB', 'NS', 'PE', 'NL', 'AB', 'BC', 'MB', 'SK', 'YT', 'NT', 'NU']
@@ -122,7 +122,7 @@ function Header({ data }) {
           </div>
           {inv.pdf_url && (
             <div className="col-span-2">
-              <a href={inv.pdf_url} target="_blank" rel="noreferrer" className="text-xs text-indigo-600 hover:underline">Télécharger la facture (PDF)</a>
+              <a href={inv.pdf_url} target="_blank" rel="noreferrer" className="text-xs text-brand-600 hover:underline">Télécharger la facture (PDF)</a>
             </div>
           )}
         </div>
@@ -310,7 +310,7 @@ function Field({ label, colSpan = 1, children }) {
 
 function RadioOption({ checked, onChange, label, help }) {
   return (
-    <label className={`flex items-start gap-2 p-3 rounded-lg cursor-pointer border ${checked ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+    <label className={`flex items-start gap-2 p-3 rounded-lg cursor-pointer border ${checked ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
       <input type="radio" checked={checked} onChange={onChange} className="mt-0.5" />
       <div>
         <div className="text-sm text-slate-800">{label}</div>

@@ -38,7 +38,7 @@ export default function SerialDetail() {
   }, [id])
 
   if (loading) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" /></div></Layout>
+    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
   }
   if (!serial) {
     return <Layout><div className="p-6 text-slate-500">Numéro de série introuvable.</div></Layout>
@@ -60,7 +60,7 @@ export default function SerialDetail() {
             {serial.product_name && (
               <div className="text-sm text-slate-500 mt-1">
                 {serial.product_id
-                  ? <Link to={`/products/${serial.product_id}`} className="text-indigo-600 hover:underline">{serial.product_name}</Link>
+                  ? <Link to={`/products/${serial.product_id}`} className="text-brand-600 hover:underline">{serial.product_name}</Link>
                   : serial.product_name
                 }
                 {serial.sku && <span className="ml-1 font-mono text-slate-400">({serial.sku})</span>}
@@ -73,7 +73,7 @@ export default function SerialDetail() {
           <div className="grid grid-cols-2 gap-5">
             <Field label="Entreprise">
               {serial.company_id
-                ? <Link to={`/companies/${serial.company_id}`} className="text-indigo-600 hover:underline">{serial.company_name}</Link>
+                ? <Link to={`/companies/${serial.company_id}`} className="text-brand-600 hover:underline">{serial.company_name}</Link>
                 : serial.company_name
               }
             </Field>
@@ -108,7 +108,7 @@ export default function SerialDetail() {
             <ol className="relative border-l border-slate-200 ml-2">
               {history.map(h => (
                 <li key={h.id} className="ml-4 pb-4 last:pb-0">
-                  <div className="absolute -left-1.5 w-3 h-3 bg-indigo-500 rounded-full mt-1.5 border-2 border-white" />
+                  <div className="absolute -left-1.5 w-3 h-3 bg-brand-500 rounded-full mt-1.5 border-2 border-white" />
                   <div className="text-xs text-slate-400">{fmtDate(h.changed_at || h.created_at)}</div>
                   <div className="text-sm text-slate-900 mt-0.5">
                     {h.previous_status ? <Badge color="slate">{h.previous_status}</Badge> : <span className="text-slate-400">—</span>}

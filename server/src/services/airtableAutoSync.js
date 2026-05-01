@@ -232,6 +232,7 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
     'SELECT * FROM airtable_field_defs WHERE erp_table=?'
   ).all(erpTable)
   const defsByAtId = new Map(existingDefs.map(d => [d.airtable_field_id, d]))
+  const defsByName = new Map(existingDefs.map(d => [d.airtable_field_name, d]))
 
   let newFields = 0
   let updatedFields = 0
@@ -242,7 +243,19 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
     if (mappedAirtableFields.has(atField.name)) continue
 
     const mapped = mapAirtableType(atField)
-    const existingDef = defsByAtId.get(atField.id)
+    // On retrouve une def soit par airtable_field_id, soit par nom — utile
+    // pour les placeholders créés via la modale (id `pending_*`).
+    let existingDef = defsByAtId.get(atField.id) || defsByName.get(atField.name)
+    if (existingDef && existingDef.column_name === '__pending__') {
+      // Promote le placeholder : crée la vraie colonne et MAJ la def avec le bon id + column_name.
+      const colName = safeColumnName(atField.name, existingCols)
+      ensureColumn(erpTable, colName)
+      existingCols.add(colName)
+      db.prepare(
+        "UPDATE airtable_field_defs SET airtable_field_id=?, column_name=?, field_type=?, options=?, updated_at=datetime('now') WHERE id=?"
+      ).run(atField.id, colName, mapped.field_type, JSON.stringify(mapped.options), existingDef.id)
+      existingDef = { ...existingDef, airtable_field_id: atField.id, column_name: colName, field_type: mapped.field_type }
+    }
 
     if (existingDef) {
       // Field exists — check if type changed
@@ -254,6 +267,9 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
         ).run(mapped.field_type, JSON.stringify(mapped.options), atField.name, existingDef.id)
         updatedFields++
       }
+      // Si le champ a été désactivé via la modale de sync, on ne l'ajoute pas
+      // à la liste des fields à écrire — il est skippé.
+      if (existingDef.import_disabled === 1) continue
       dynamicFieldMap.push({
         airtableFieldName: atField.name,
         columnName: existingDef.column_name,
@@ -316,6 +332,9 @@ export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
   const defs = db.prepare('SELECT * FROM airtable_field_defs WHERE erp_table=?').all(erpTable)
   const defsByName = new Map(defs.map(d => [d.airtable_field_name, d]))
   const mappedFields = new Set(Object.values(hardcodedFieldMap || {}).filter(v => typeof v === 'string'))
+  // Fields disabled via la modale → skip dans tout ce qui suit (creation de
+  // colonnes pour nouveaux champs + écriture lors du sync).
+  const disabledFieldNames = new Set(defs.filter(d => d.import_disabled === 1).map(d => d.airtable_field_name))
   // Refresh cache from live schema — guards against drift between
   // airtable_field_defs and actual table columns (e.g. schema rebuilt).
   const existingCols = refreshTableColumns(erpTable)
@@ -323,12 +342,15 @@ export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
   // UPDATE statement below doesn't fail with "no such column".
   for (const d of defs) ensureColumn(erpTable, d.column_name)
 
-  // Detect new fields from records that aren't in hardcoded map or field_defs
+  // Detect new fields from records that aren't in hardcoded map or field_defs.
+  // On crée la def + colonne pour les nouveaux champs, mais SI le champ a déjà
+  // une def avec import_disabled=1, on ne fait rien (on skipe).
   const seenNewFields = new Map() // airtableFieldName → colName
   for (const rec of records) {
     for (const fieldName of Object.keys(rec.fields || {})) {
       if (mappedFields.has(fieldName)) continue
       if (defsByName.has(fieldName)) continue
+      if (disabledFieldNames.has(fieldName)) continue
       if (seenNewFields.has(fieldName)) continue
       // New field — create column and field_def
       const colName = safeColumnName(fieldName, existingCols)
@@ -343,9 +365,11 @@ export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
     }
   }
 
-  // Build dynamic field list (existing defs + newly created)
+  // Build dynamic field list (existing defs + newly created), en filtrant
+  // les champs désactivés via la modale de sync.
   const dynamicFields = []
   for (const d of defs) {
+    if (d.import_disabled === 1) continue
     dynamicFields.push({ airtableFieldName: d.airtable_field_name, columnName: d.column_name, fieldType: d.field_type })
   }
   for (const [fieldName, colName] of seenNewFields) {

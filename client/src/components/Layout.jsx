@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { NavLink, useLocation } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Settings,
   ChevronLeft, ChevronRight, ChevronDown, LogOut, Menu, X,
@@ -29,6 +29,7 @@ const NAV_PREFETCH = {
   '/companies':     () => api.companies.list({ limit: 'all', page: 1 }),
   '/orders':        () => api.orders.list({ limit: 'all', page: 1 }),
   '/factures':      () => api.factures.list({ limit: 'all', page: 1 }),
+  '/items-vendus':  () => api.stripeInvoiceItems.list({ limit: 'all', page: 1 }),
   '/retours':       () => api.retours.list({ limit: 'all', page: 1 }),
   '/products':      () => api.products.list({ limit: 'all', page: 1, active: true }),
   '/purchases':     () => api.purchases.list({ limit: 'all', page: 1 }),
@@ -73,6 +74,7 @@ const defaultNavItems = [
   ]},
   { group: 'Comptabilité', icon: Landmark, items: [
     { to: '/factures',              icon: FileText,   label: 'Factures clients' },
+    { to: '/items-vendus',          icon: Tag,        label: 'Items vendus' },
     { to: '/abonnements',           icon: RefreshCw,  label: 'Abonnements' },
     { to: '/achats-fournisseurs',   icon: Receipt,    label: 'Achats fournisseurs' },
     { to: '/sale-receipts',         icon: ReceiptText,label: 'Extraction de données' },
@@ -107,7 +109,7 @@ function NavItem({ to, icon: Icon, label, collapsed, badge }) {
       className={({ isActive }) =>
         `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all
         ${isActive
-          ? 'bg-indigo-600 text-white shadow-sm'
+          ? 'bg-brand-600 text-white shadow-sm'
           : 'text-slate-300 hover:text-white hover:bg-slate-800'
         }
         ${collapsed ? 'justify-center' : ''}`
@@ -136,7 +138,7 @@ function FlyoutNavLink({ item }) {
       {...hover}
       className={({ isActive }) =>
         `flex items-center gap-2.5 px-3 py-2 mx-1 rounded-md text-sm font-medium transition-colors
-        ${isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700'}`
+        ${isActive ? 'bg-brand-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-700'}`
       }
     >
       <item.icon size={15} className="flex-shrink-0" />
@@ -153,7 +155,7 @@ function GroupNavLink({ item }) {
       {...hover}
       className={({ isActive }) =>
         `flex items-center gap-2.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors
-        ${isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'}`
+        ${isActive ? 'bg-brand-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'}`
       }
     >
       <item.icon size={14} className="flex-shrink-0" />
@@ -204,7 +206,7 @@ function NavGroupCollapsedFlyout({ group, icon: Icon, items }) {
         <div
           title={group}
           className={`flex items-center justify-center gap-3 px-3 py-2 rounded-lg text-sm font-medium select-none cursor-default transition-all
-            ${isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'}`}
+            ${isActive ? 'bg-brand-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'}`}
         >
           <Icon size={16} className="flex-shrink-0" />
         </div>
@@ -263,13 +265,13 @@ function NavGroup({ group, icon: Icon, items, collapsed }) {
         onClick={toggle}
         aria-expanded={open}
         className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium w-full transition-all
-          ${isActive ? 'bg-indigo-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'}`}
+          ${isActive ? 'bg-brand-600 text-white' : 'text-slate-300 hover:text-white hover:bg-slate-800'}`}
       >
         <Icon size={16} className="flex-shrink-0" />
         <span className="flex-1 text-left">{group}</span>
         <ChevronDown
           size={12}
-          className={`flex-shrink-0 transition-transform duration-150 ${open ? '' : '-rotate-90'} ${isActive ? 'text-indigo-200' : 'text-slate-500'}`}
+          className={`flex-shrink-0 transition-transform duration-150 ${open ? '' : '-rotate-90'} ${isActive ? 'text-brand-200' : 'text-slate-500'}`}
         />
       </button>
 
@@ -328,7 +330,7 @@ function UserAvatarMenu({ user, roleLabel, onLogout }) {
       <div
         ref={triggerRef}
         onMouseEnter={openMenu}
-        className="w-8 h-8 bg-gradient-to-br from-indigo-400 to-violet-500 rounded-full flex items-center justify-center cursor-pointer ring-2 ring-transparent hover:ring-indigo-300/40 transition"
+        className="w-8 h-8 bg-gradient-to-br from-brand-500 to-emerald-700 rounded-full flex items-center justify-center cursor-pointer ring-2 ring-transparent hover:ring-brand-300/40 transition"
       >
         <span className="text-white text-xs font-semibold tracking-tight">{initials}</span>
       </div>
@@ -402,6 +404,7 @@ function ChangePasswordModal({ onClose }) {
 }
 
 export function Layout({ children }) {
+  const navigate = useNavigate()
   const [collapsed, setCollapsed] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [showChangePw, setShowChangePw] = useState(false)
@@ -409,19 +412,39 @@ export function Layout({ children }) {
   const { user, logout } = useAuth()
   const { anyRunning } = useSyncStatus()
 
-  // Cmd+K → recherche globale
+  // Raccourcis clavier globaux
   useEffect(() => {
+    const SHORTCUTS = {
+      d: '/dashboard',
+      t: '/feuille-de-temps',
+      b: '/tickets',
+      p: '/pipeline',
+      c: '/orders',
+    }
     function onKey(e) {
+      // Cmd+K → recherche globale
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
         const tag = document.activeElement?.tagName
         if (tag === 'INPUT' || tag === 'TEXTAREA') return
         e.preventDefault()
         setShowSearch(s => !s)
+        return
+      }
+      // Lettres simples → navigation. Ignorer si on tape dans un champ ou si
+      // un modificateur est actif.
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      const ae = document.activeElement
+      const tag = ae?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || ae?.isContentEditable) return
+      const target = SHORTCUTS[e.key.toLowerCase()]
+      if (target) {
+        e.preventDefault()
+        navigate(target)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [navigate])
 
   // WebSocket global — notifications
   // Désactivé : nginx n'a pas de location /ws (ni /erp/ws) pour router l'upgrade

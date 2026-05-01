@@ -4,7 +4,80 @@ import path from 'path'
 import Stripe from 'stripe'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { postRevenueRecognitionJE } from '../services/quickbooks.js'
+import { postRevenueRecognitionJE, reconcileFactureRevenueRecognition } from '../services/quickbooks.js'
+import { logSystemRun } from '../services/systemAutomations.js'
+import { qbEntityUrl } from '../connectors/quickbooks.js'
+import { computeCanadaTaxes } from '../services/taxes.js'
+
+// Calcule les taxes d'une facture (tableau {name, percentage, amount}).
+// Stratégie :
+//   1. Si on a des `stripe_balance_transactions` agrégeant invoice_tax_gst/qst
+//      → on retourne TPS + TVQ (Stripe split QC).
+//   2. Sinon, fallback : on calcule via la province d'expédition (ou de la
+//      ferme) du client + `amount_before_tax_cad` → split TPS/TVQ ou HST.
+//   3. Si rien ne matche, on dérive `total_amount - amount_before_tax_cad`
+//      en une seule ligne "Taxes" générique.
+function computeFactureTaxes(facture) {
+  // 1. Stripe balance transactions
+  if (facture.invoice_id) {
+    const agg = db.prepare(`
+      SELECT
+        COALESCE(SUM(invoice_tax_gst), 0) AS gst,
+        COALESCE(SUM(invoice_tax_qst), 0) AS qst,
+        COUNT(*) AS n
+      FROM stripe_balance_transactions
+      WHERE stripe_invoice_id = ?
+    `).get(facture.invoice_id)
+    if (agg && agg.n > 0 && (agg.gst > 0 || agg.qst > 0)) {
+      const out = []
+      if (agg.gst > 0) out.push({ name: 'TPS', percentage: 5, amount: Math.round(agg.gst * 100) / 100 })
+      if (agg.qst > 0) out.push({ name: 'TVQ', percentage: 9.975, amount: Math.round(agg.qst * 100) / 100 })
+      return out
+    }
+  }
+
+  // 2. Province d'expédition du client (Livraison > Ferme)
+  let province = null
+  let country = 'Canada'
+  if (facture.company_id) {
+    const ship = db.prepare(`
+      SELECT province, country FROM adresses
+      WHERE company_id = ? AND address_type = 'Livraison' AND province IS NOT NULL AND province != ''
+      ORDER BY created_at DESC LIMIT 1
+    `).get(facture.company_id)
+    const farm = ship || db.prepare(`
+      SELECT province, country FROM adresses
+      WHERE company_id = ? AND address_type = 'Ferme' AND province IS NOT NULL AND province != ''
+      ORDER BY created_at DESC LIMIT 1
+    `).get(facture.company_id)
+    if (farm) { province = farm.province; country = farm.country || 'Canada' }
+  }
+  const subtotal = Number(facture.amount_before_tax_cad) || 0
+  if (subtotal > 0 && province) {
+    const taxes = computeCanadaTaxes({ province, country, subtotal })
+    if (taxes.length > 0) return taxes
+  }
+
+  // 3. Fallback : différence brute, sans typage.
+  const total = Number(facture.total_amount) || 0
+  const diff = Math.round((total - subtotal) * 100) / 100
+  if (diff > 0 && subtotal > 0) {
+    return [{ name: 'Taxes', percentage: null, amount: diff }]
+  }
+  return []
+}
+
+// Convertit une référence `deferred_revenue_qb_ref` (`salesreceipt:123`,
+// `deposit:123`, `journal:123`) en URL profonde vers QB.
+function buildQbRefUrl(ref) {
+  if (!ref || typeof ref !== 'string') return null
+  const idx = ref.indexOf(':')
+  if (idx < 0) return null
+  const entity = ref.slice(0, idx)
+  const id = ref.slice(idx + 1)
+  if (!entity || !id) return null
+  return qbEntityUrl(entity, id)
+}
 
 function getStripeKey() {
   const row = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'").get()
@@ -246,7 +319,14 @@ router.get('/factures', (req, res) => {
 
   const facturesRows = db.prepare(`
     SELECT f.*, co.name as company_name, p.name as project_name, o.order_number,
-           'stripe' AS source
+           'stripe' AS source,
+           EXISTS (
+             SELECT 1
+             FROM shipments sh
+             LEFT JOIN orders od ON od.id = f.order_id
+             LEFT JOIN orders op ON op.project_id = f.project_id AND f.project_id IS NOT NULL
+             WHERE sh.order_id = od.id OR sh.order_id = op.id
+           ) AS has_linked_shipment
     FROM factures f
     LEFT JOIN companies co ON f.company_id = co.id
     LEFT JOIN projects p ON f.project_id = p.id
@@ -292,6 +372,17 @@ router.get('/factures', (req, res) => {
     const db_ = b.document_date || b.created_at || ''
     return db_.localeCompare(da)
   })
+  // is_sent : « expédié » = shipment sur la commande liée (directement via
+  // order_id ou via une commande du projet lié), OU override manuel via
+  // is_sent_manual=1. Pending = toujours faux.
+  // deferred_revenue_state : "Constaté" si revenue_recognized_at posé,
+  // "En attente" si deferred_revenue_at posé sans constat, sinon "—".
+  for (const r of merged) {
+    r.is_sent = r.has_linked_shipment === 1 || r.is_sent_manual === 1
+    if (r.revenue_recognized_at) r.deferred_revenue_state = 'Constaté'
+    else if (r.deferred_revenue_at) r.deferred_revenue_state = 'En attente'
+    else r.deferred_revenue_state = '—'
+  }
   const total = merged.length
   const sliced = limitAll ? merged : merged.slice(offset, offset + limitVal)
   res.json({ data: sliced, total, page: parseInt(page), limit: parseInt(limit) })
@@ -330,7 +421,85 @@ router.get('/factures/:id', (req, res) => {
       responses: JSON.parse(t.responses_json || '{}'),
       tech_info_fields: t.tech_info_fields ? JSON.parse(t.tech_info_fields) : [],
     })) : []
-    return res.json({ ...row, source: 'stripe', tech_responses: techResponses })
+    // URLs QB calculées : `deferred_revenue_qb_url` (SR ou Deposit qui a posté
+    // le revenu reçu d'avance) et `revenue_recognized_qb_url` (JE de constat).
+    const deferredQb = row.deferred_revenue_qb_ref ? buildQbRefUrl(row.deferred_revenue_qb_ref) : null
+    const recognizedQb = row.revenue_recognized_je_id ? qbEntityUrl('journal', row.revenue_recognized_je_id) : null
+    // Résumé du dernier paiement "in" (méthode + date) pour affichage en tête.
+    // 1. On regarde d'abord la table `payments` (saisies hors-Stripe ou backfill).
+    // 2. Si rien, fallback sur `stripe_balance_transactions` filtré sur cette
+    //    facture (charges Stripe — type='charge' ou reporting_category liée).
+    const paymentsAgg = db.prepare(`
+      SELECT COUNT(*) AS n FROM payments WHERE facture_id = ? AND direction = 'in'
+    `).get(req.params.id)
+    let lastPaymentIn = null
+    let paymentsInCount = paymentsAgg?.n || 0
+
+    if (paymentsInCount > 0) {
+      lastPaymentIn = db.prepare(`
+        SELECT received_at, method, amount, currency
+        FROM payments
+        WHERE facture_id = ? AND direction = 'in'
+        ORDER BY received_at DESC, created_at DESC LIMIT 1
+      `).get(req.params.id)
+    } else if (row.invoice_id) {
+      // Fallback 1 : `paid_at` populé par le webhook invoice.paid — date exacte
+      // du paiement Stripe, disponible immédiatement (pas besoin du payout).
+      if (row.paid_at) {
+        lastPaymentIn = {
+          received_at: row.paid_at,
+          method: 'stripe',
+          amount: row.paid_amount != null ? row.paid_amount : Number(row.total_amount),
+          currency: (row.currency || 'CAD').toUpperCase(),
+        }
+        paymentsInCount = 1
+      } else {
+        // Fallback 2 : les charges sont dans stripe_balance_transactions
+        // (synchronisées au moment du payout) — utile pour les anciennes
+        // factures payées avant l'ajout de paid_at.
+        const stripeAgg = db.prepare(`
+          SELECT COUNT(*) AS n FROM stripe_balance_transactions
+          WHERE stripe_invoice_id = ? AND type = 'charge'
+        `).get(row.invoice_id)
+        paymentsInCount = stripeAgg?.n || 0
+        if (paymentsInCount > 0) {
+          const bt = db.prepare(`
+            SELECT amount, currency, created_date FROM stripe_balance_transactions
+            WHERE stripe_invoice_id = ? AND type = 'charge'
+            ORDER BY created_date DESC LIMIT 1
+          `).get(row.invoice_id)
+          lastPaymentIn = {
+            received_at: bt.created_date,
+            method: 'stripe',
+            amount: Math.round(bt.amount * 100) / 100,
+            currency: (bt.currency || 'CAD').toUpperCase(),
+          }
+        } else if ((row.status === 'Payé' || row.status === 'Payée') && Number(row.balance_due) === 0) {
+          // Fallback 3 : la facture est marquée "Payé" mais ni `paid_at` ni
+          // balance txns. Cas rare (facture payée AVANT cet ajout, ou webhook
+          // raté). Date approximative basée sur updated_at.
+          lastPaymentIn = {
+            received_at: row.updated_at || row.document_date,
+            method: 'stripe',
+            amount: Number(row.total_amount) || null,
+            currency: (row.currency || 'CAD').toUpperCase(),
+            unsynced: true,
+          }
+          paymentsInCount = 1
+        }
+      }
+    }
+    return res.json({
+      ...row,
+      source: 'stripe',
+      tech_responses: techResponses,
+      deferred_revenue_qb_url: deferredQb,
+      revenue_recognized_qb_url: recognizedQb,
+      taxes: computeFactureTaxes(row),
+      last_payment_in: lastPaymentIn,
+      payments_in_count: paymentsInCount,
+      is_sent: row.has_linked_shipment === 1 || row.is_sent_manual === 1,
+    })
   }
   // Fall back to pending_invoices for unpaid drafts/sent
   const pending = db.prepare(`
@@ -360,6 +529,7 @@ router.get('/factures/:id', (req, res) => {
     last_session_url: pending.last_session_url,
     last_session_expires_at: pending.last_session_expires_at,
     pending_status: pending.status, // raw status for the UI
+    is_sent: false, // pending invoices : pas encore de commande liée
   })
 })
 
@@ -373,6 +543,12 @@ router.get('/factures/:id/pdf', (req, res) => {
 router.patch('/factures/:id', (req, res) => {
   const existing = db.prepare('SELECT id, company_id FROM factures WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
+
+  // Détecte si la mutation peut faire basculer la condition « produits envoyé »
+  // (changement order_id, project_id, ou company_id qui délie en cascade).
+  const linkMaybeChanged = ['order_id', 'project_id', 'company_id'].some(k =>
+    Object.prototype.hasOwnProperty.call(req.body, k)
+  )
 
   const updates = []
   const params = []
@@ -413,11 +589,69 @@ router.patch('/factures/:id', (req, res) => {
       params.push(null)
     }
   }
+  const wantsForceSent = Object.prototype.hasOwnProperty.call(req.body, 'is_sent_manual')
+    && !!req.body.is_sent_manual
+  if (Object.prototype.hasOwnProperty.call(req.body, 'is_sent_manual')) {
+    updates.push('is_sent_manual=?')
+    params.push(req.body.is_sent_manual ? 1 : 0)
+  }
   if (updates.length) {
     params.push(req.params.id)
     db.prepare(`UPDATE factures SET ${updates.join(', ')}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(...params)
   }
+
+  // Si le rattachement (order/project/company) a changé, la condition « produits
+  // envoyé » peut être devenue vraie — on tente le constat de vente. Asynchrone
+  // et idempotent : si QB est down ou rien à faire, on n'altère pas la réponse.
+  if (linkMaybeChanged) {
+    reconcileFactureRevenueRecognition(req.params.id).then(r => {
+      if (r.status === 'recognized' || r.status === 'error') {
+        logSystemRun('sys_revenue_recognition', {
+          status: r.status === 'error' ? 'error' : 'success',
+          result: r.status === 'recognized'
+            ? `Facture #${r.document_number || r.facture_id} constatée (JE ${r.qb_journal_entry_id} · ${r.amount} ${r.currency} · ${r.debit_account}) — déclenchement: PATCH /factures/${req.params.id}`
+            : `Facture #${r.document_number || r.facture_id} — erreur constat: ${r.error}`,
+          error: r.status === 'error' ? r.error : undefined,
+          triggerData: { facture_id: req.params.id, source: 'patch_facture_link' },
+        })
+      }
+    }).catch(err => {
+      console.error('reconcileFactureRevenueRecognition error:', err.message)
+      logSystemRun('sys_revenue_recognition', {
+        status: 'error', error: err.message,
+        triggerData: { facture_id: req.params.id, source: 'patch_facture_link' },
+      })
+    })
+  }
+
+  // Toggle « Envoyée » forcé manuellement (is_sent_manual=true) : déclenche
+  // la JE de constat de vente avec bypass du check shipment. Skippe
+  // silencieusement si conditions non remplies (déjà constaté, abonnement,
+  // facture pending sans Stripe invoice, etc.).
+  if (wantsForceSent) {
+    const f = db.prepare(
+      "SELECT id, document_number, kind, revenue_recognized_at FROM factures WHERE id=?"
+    ).get(req.params.id)
+    if (f && f.kind !== 'subscription' && !f.revenue_recognized_at) {
+      postRevenueRecognitionJE(req.params.id, { bypassShipmentCheck: true })
+        .then(r => {
+          logSystemRun('sys_revenue_recognition', {
+            status: 'success',
+            result: `Facture #${f.document_number || req.params.id} constatée via override "Envoyée" forcée (JE ${r.qb_journal_entry_id} · ${r.amount} ${r.currency} · ${r.debit_account})`,
+            triggerData: { facture_id: req.params.id, source: 'is_sent_manual' },
+          })
+        })
+        .catch(err => {
+          console.error('postRevenueRecognitionJE (is_sent_manual) error:', err.message)
+          logSystemRun('sys_revenue_recognition', {
+            status: 'error', error: err.message,
+            triggerData: { facture_id: req.params.id, source: 'is_sent_manual' },
+          })
+        })
+    }
+  }
+
   const row = db.prepare(`
     SELECT f.*, co.name as company_name, p.name as project_name,
       o.order_number

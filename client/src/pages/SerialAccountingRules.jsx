@@ -318,7 +318,7 @@ export default function SerialAccountingRules() {
             <button
               key={d}
               onClick={() => setWindowDays(d)}
-              className={`px-2 py-1 rounded ${windowDays === d ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+              className={`px-2 py-1 rounded ${windowDays === d ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
             >{d}j</button>
           ))}
         </div>
@@ -356,7 +356,7 @@ export default function SerialAccountingRules() {
                       <tr key={m.change_id} className="border-t border-red-50">
                         <td className="px-2 py-1 text-slate-500">{fmtDate(m.changed_at || m.created_at)}</td>
                         <td className="px-2 py-1">
-                          <a href={`/erp/serials/${m.serial_id}`} className="text-indigo-600 hover:underline">{m.serial}</a>
+                          <a href={`/erp/serials/${m.serial_id}`} className="text-brand-600 hover:underline">{m.serial}</a>
                           {m.serial_airtable_id && (
                             <a
                               href={`https://airtable.com/appB4Fehk9jYd4s4B/tblJKSmWxtwBQjdmB/viw6ZdCpuYAQ6KWT2/${m.serial_airtable_id}?blocks=hide`}
@@ -445,12 +445,12 @@ export default function SerialAccountingRules() {
                       {rule ? (
                         <button
                           onClick={() => setModal({ rule })}
-                          className="text-xs text-indigo-600 hover:text-indigo-800"
+                          className="text-xs text-brand-600 hover:text-brand-800"
                         >Modifier</button>
                       ) : (
                         <button
                           onClick={() => setModal({ transition: t })}
-                          className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800"
+                          className="inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-800"
                         >
                           <Plus size={12} /> Mapper
                         </button>
@@ -516,7 +516,7 @@ export default function SerialAccountingRules() {
                       {r.active ? <span className="text-green-700">Oui</span> : <span className="text-slate-400">Non</span>}
                     </td>
                     <td className="px-3 py-2 text-right">
-                      <button onClick={() => setModal({ rule: r })} className="text-xs text-indigo-600 hover:text-indigo-800 mr-3">Modifier</button>
+                      <button onClick={() => setModal({ rule: r })} className="text-xs text-brand-600 hover:text-brand-800 mr-3">Modifier</button>
                       <button onClick={() => deleteRule(r.id)} className="text-xs text-red-600 hover:text-red-800 inline-flex items-center gap-1">
                         <Trash2 size={11} />
                       </button>

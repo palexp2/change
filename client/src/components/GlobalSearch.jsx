@@ -96,7 +96,7 @@ export function GlobalSearch({ open, onClose }) {
             className="flex-1 text-sm outline-none text-slate-900 placeholder-slate-400"
           />
           {loading && (
-            <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+            <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
           )}
           {!loading && query && (
             <button onClick={() => { setQuery(''); setResults([]) }} className="text-slate-400 hover:text-slate-600">
@@ -114,7 +114,7 @@ export function GlobalSearch({ open, onClose }) {
               return (
                 <li key={`${r.type}-${r.id}`}>
                   <button
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${i === selected ? 'bg-indigo-50' : 'hover:bg-slate-50'}`}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${i === selected ? 'bg-brand-50' : 'hover:bg-slate-50'}`}
                     onClick={() => go(r)}
                     onMouseEnter={() => setSelected(i)}
                   >

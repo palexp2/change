@@ -262,7 +262,7 @@ export default function AutomationDetail() {
             <h1 className="text-xl font-semibold flex items-center gap-2">
               {isNew ? 'Nouvelle automation' : name}
               {isSystem && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-brand-50 text-brand-700 border border-brand-200">
                   <Lock size={12} /> Système
                 </span>
               )}
@@ -277,7 +277,7 @@ export default function AutomationDetail() {
             )}
             {isNew ? (
               <button onClick={handleCreate} disabled={saving}
-                className="px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+                className="px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50">
                 {saving ? 'Création...' : 'Créer'}
               </button>
             ) : (
@@ -287,7 +287,7 @@ export default function AutomationDetail() {
         </div>
 
         {isSystem && (
-          <div className="bg-indigo-50 border border-indigo-200 rounded-lg px-4 py-3 text-sm text-indigo-900">
+          <div className="bg-brand-50 border border-brand-200 rounded-lg px-4 py-3 text-sm text-brand-900">
             Cette automation est intégrée au code de l'application. Son trigger, son comportement et son script sont en lecture seule. Seul le statut (actif/inactif) peut être modifié.
           </div>
         )}
@@ -328,7 +328,7 @@ export default function AutomationDetail() {
           <h2 className="text-sm font-semibold mb-4 flex items-center gap-2">
             Déclencheur
             {isFieldRule && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 font-medium">
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand-50 text-brand-700 border border-brand-200 font-medium">
                 <Zap size={9} className="inline -mt-0.5" /> Règle de champ
               </span>
             )}
@@ -382,7 +382,7 @@ export default function AutomationDetail() {
                   <button key={t} onClick={() => handleActionTypeChange(t)} disabled={false}
                     className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
                       actionType === t
-                        ? 'bg-indigo-600 text-white'
+                        ? 'bg-brand-600 text-white'
                         : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
                     } disabled:opacity-50`}>
                     {ACTION_TYPE_LABELS[t]}
@@ -421,7 +421,7 @@ export default function AutomationDetail() {
                   <RotateCcw size={13} /> Réinitialiser
                 </button>
                 <button onClick={() => setShowTestModal(true)}
-                  className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center gap-1.5">
+                  className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 flex items-center gap-1.5">
                   <FlaskConical size={13} /> Tester
                 </button>
               </div>
@@ -443,14 +443,14 @@ export default function AutomationDetail() {
               </div>
               <div className="flex gap-2">
                 <button onClick={() => handleManualRun(true)} disabled={manualRunning !== null}
-                  className="px-3 py-1.5 text-sm border border-indigo-300 text-indigo-700 rounded-lg hover:bg-indigo-50 disabled:opacity-50 flex items-center gap-1.5">
+                  className="px-3 py-1.5 text-sm border border-brand-300 text-brand-700 rounded-lg hover:bg-brand-50 disabled:opacity-50 flex items-center gap-1.5">
                   {manualRunning === 'dryRun'
-                    ? <><div className="w-3 h-3 border-2 border-indigo-700 border-t-transparent rounded-full animate-spin" /> Simulation...</>
+                    ? <><div className="w-3 h-3 border-2 border-brand-700 border-t-transparent rounded-full animate-spin" /> Simulation...</>
                     : <><FlaskConical size={14} /> Simuler (dry-run)</>}
                 </button>
                 <button onClick={() => handleManualRun(false)} disabled={manualRunning !== null || !active}
                   title={!active ? 'Activez l\'automation avant de pouvoir la lancer manuellement' : ''}
-                  className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1.5">
+                  className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5">
                   {manualRunning === 'live'
                     ? <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Exécution...</>
                     : <><Play size={14} /> Lancer maintenant</>}
@@ -510,7 +510,7 @@ export default function AutomationDetail() {
             </p>
             <textarea value={script} onChange={e => setScript(e.target.value)}
               rows={12}
-              className="w-full border rounded-lg px-4 py-3 font-mono text-sm bg-gray-900 text-green-400 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+              className="w-full border rounded-lg px-4 py-3 font-mono text-sm bg-gray-900 text-green-400 focus:outline-none focus:ring-2 focus:ring-brand-400"
               placeholder={"// Votre script ici...\nlog('Hello from automation!')\n\nif (record) {\n  updateRecord(record.id, { status: 'Traité' })\n}"} />
           </div>
         )}
@@ -521,7 +521,7 @@ export default function AutomationDetail() {
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold">Tester</h2>
               <button onClick={handleTest} disabled={testRunning}
-                className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 flex items-center gap-1.5">
+                className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5">
                 {testRunning ? (
                   <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Exécution...</>
                 ) : (
@@ -784,7 +784,7 @@ function FieldRuleActionEditor({ actionType, actionConfig, onChange, erpTable, r
             {allVars.map(v => (
               <button key={v} type="button"
                 onClick={() => navigator.clipboard?.writeText(`{{${v}}}`)}
-                className="px-2 py-0.5 text-[11px] font-mono bg-gray-100 text-gray-700 rounded hover:bg-indigo-100 hover:text-indigo-700">
+                className="px-2 py-0.5 text-[11px] font-mono bg-gray-100 text-gray-700 rounded hover:bg-brand-100 hover:text-brand-700">
                 {`{{${v}}}`}
               </button>
             ))}
@@ -850,7 +850,7 @@ function FieldRuleTestModal({ automationId, onClose }) {
             <>
               <div className="flex gap-6 text-sm mb-4">
                 <div><span className="text-gray-500">Candidats :</span> <strong>{result.candidates_total}</strong></div>
-                <div><span className="text-gray-500">Tireraient :</span> <strong className="text-indigo-700">{result.would_fire}</strong></div>
+                <div><span className="text-gray-500">Tireraient :</span> <strong className="text-brand-700">{result.would_fire}</strong></div>
                 <div><span className="text-gray-500">Déjà tirés :</span> <strong className="text-gray-500">{result.already_fired}</strong></div>
               </div>
               {result.previews.length === 0 && (
@@ -922,7 +922,7 @@ function TriggerConfig({ triggerType, triggerConfig, onTypeChange, onConfigChang
                 onClick={() => onConfigChange({ ...triggerConfig, cron: p.value })}
                 className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
                   triggerConfig.cron === p.value
-                    ? 'bg-indigo-50 border-indigo-300 text-indigo-700'
+                    ? 'bg-brand-50 border-brand-300 text-brand-700'
                     : 'border-gray-200 text-gray-500 hover:border-gray-300'
                 }`}>
                 {p.label}
@@ -963,7 +963,7 @@ function LinkifiedText({ text }) {
     const url = match[0]
     parts.push(
       <a key={key++} href={url} target="_blank" rel="noreferrer"
-        className="text-indigo-600 hover:text-indigo-800 underline decoration-dotted break-all">
+        className="text-brand-600 hover:text-brand-800 underline decoration-dotted break-all">
         {url}
       </a>
     )
@@ -1003,9 +1003,9 @@ function ManualRunResult({ result }) {
   const details = out.details || []
 
   return (
-    <div className={`rounded-lg border p-3 ${isError ? 'bg-red-50 border-red-200' : (result.dryRun ? 'bg-indigo-50 border-indigo-200' : 'bg-green-50 border-green-200')}`}>
+    <div className={`rounded-lg border p-3 ${isError ? 'bg-red-50 border-red-200' : (result.dryRun ? 'bg-brand-50 border-brand-200' : 'bg-green-50 border-green-200')}`}>
       <div className="flex items-center gap-2 text-sm mb-2">
-        <span className={`font-medium ${isError ? 'text-red-700' : (result.dryRun ? 'text-indigo-700' : 'text-green-700')}`}>
+        <span className={`font-medium ${isError ? 'text-red-700' : (result.dryRun ? 'text-brand-700' : 'text-green-700')}`}>
           {isError ? '✗ Erreur' : (result.dryRun ? '🧪 Dry-run terminé' : '✓ Exécution terminée')}
         </span>
         {result.duration_ms != null && <span className="text-xs text-gray-500">{result.duration_ms}ms</span>}
@@ -1021,7 +1021,7 @@ function ManualRunResult({ result }) {
               <span className={`px-1.5 py-0.5 rounded font-mono text-[10px] ${
                 d.action === 'sent' ? 'bg-green-100 text-green-700' :
                 d.action === 'error' ? 'bg-red-100 text-red-700' :
-                'bg-indigo-100 text-indigo-700'
+                'bg-brand-100 text-brand-700'
               }`}>
                 {d.action}
               </span>
@@ -1153,7 +1153,7 @@ function EmailPreview({ automationId, actionConfig, isSystem }) {
           {preview.bodyText && (
             <div>
               <button onClick={() => setShowText(s => !s)}
-                className="text-xs text-indigo-600 hover:text-indigo-800 flex items-center gap-1">
+                className="text-xs text-brand-600 hover:text-brand-800 flex items-center gap-1">
                 <ChevronDown size={12} className={`transition-transform ${showText ? 'rotate-180' : ''}`} />
                 Version texte (fallback)
               </button>

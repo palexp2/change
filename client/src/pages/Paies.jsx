@@ -94,7 +94,7 @@ function SyncPanel({ onSynced }) {
         className="w-full flex items-center gap-2 px-4 py-3 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
       >
         {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-        <Database size={15} className="text-indigo-500" />
+        <Database size={15} className="text-brand-500" />
         <span className="font-medium">Synchronisation Airtable</span>
         {configured ? (
           <span className="text-xs text-slate-400 ml-2">
@@ -444,7 +444,7 @@ export default function Paies() {
 
   return (
     <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
+      <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-slate-900">Paies</h1>
           <div className="flex items-center gap-2">

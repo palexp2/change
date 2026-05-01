@@ -105,7 +105,9 @@ router.put('/:id', (req, res) => {
 
   const { setClause, values, error } = buildPartialUpdate(req.body, {
     allowed: ['company_id', 'contact_id', 'assigned_to', 'title', 'description',
-      'response', 'type', 'status', 'duration_minutes'],
+      'response', 'type', 'status', 'duration_minutes',
+      'lien_issue_github', 'escalade', 'mots_cles',
+      'arbre_de_troubleshoot_utilise', 'documents', 'items_retours'],
   });
   if (error) return res.status(400).json({ error });
   if (setClause) {

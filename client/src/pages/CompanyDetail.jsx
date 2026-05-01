@@ -43,7 +43,7 @@ function fmtPhone(val) {
 const SERIAL_RENDERS = {
   serial: row => <span className="font-mono font-medium text-slate-900">{row.serial}</span>,
   product_name: row => row.product_id
-    ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-2 text-indigo-600 hover:underline">
+    ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-2 text-brand-600 hover:underline">
         {row.product_image
           ? <img src={row.product_image} alt="" className="w-8 h-8 object-cover rounded border border-slate-200 shrink-0" />
           : <div className="w-8 h-8 rounded border border-slate-200 bg-slate-100 shrink-0" />}
@@ -62,13 +62,31 @@ function InlineField({ field, value, saving, onSave }) {
   const [local, setLocal] = useState(String(value ?? ''))
   useEffect(() => { setLocal(String(value ?? '')) }, [value])
 
-  const base = `w-full text-sm rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-400 ${saving ? 'opacity-50' : ''}`
+  const base = `w-full text-sm rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-brand-400 ${saving ? 'opacity-50' : ''}`
   const inputCls = `${base} border-slate-200 bg-white px-3 py-1.5 hover:border-slate-300`
   const selectCls = `${base} border-slate-200 bg-white px-3 py-1.5 hover:border-slate-300`
 
   function commit(val) {
     if (val === String(value ?? '')) return
     onSave(val)
+  }
+
+  if (field.type === 'boolean') {
+    const checked = value === 1 || value === true || value === '1'
+    return (
+      <div className={field.span2 ? 'col-span-2' : ''}>
+        <label className="inline-flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={checked}
+            onChange={e => onSave(e.target.checked ? 1 : 0)}
+            disabled={saving}
+            className="rounded"
+          />
+          <span className="text-sm text-slate-700">{field.label}</span>
+        </label>
+      </div>
+    )
   }
 
   return (
@@ -105,6 +123,7 @@ const COMPANY_FIELDS = [
   { key: 'website',         label: 'Site web',  type: 'url', span2: true },
   { key: 'currency',        label: 'Devise',    type: 'select', options: ['CAD','USD','EUR'] },
   { key: 'language',        label: 'Langue',    type: 'select', options: ['French','English'] },
+  { key: 'is_vendeur_orisha', label: 'Vendeur Orisha', type: 'boolean', span2: true },
   { key: 'notes',           label: 'Notes',     type: 'textarea', span2: true, defaultVisible: false },
 ]
 
@@ -409,6 +428,133 @@ function CompanyTaskModal({ companyId, company, users, editingTask, taskForm, se
   )
 }
 
+function fmtAddress(a) {
+  if (!a) return '—'
+  const parts = [a.line1, a.city, a.province, a.postal_code, a.country].filter(Boolean)
+  return parts.join(', ') || '—'
+}
+
+function OnboardingResponsesPanel({ responses }) {
+  const [expanded, setExpanded] = useState(() => responses.length === 1 ? new Set([responses[0].id]) : new Set())
+  function toggle(id) {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+  if (!responses.length) {
+    return <div className="card p-10 text-center text-slate-400">Aucune réponse d'onboarding</div>
+  }
+  return (
+    <div className="space-y-3">
+      {responses.map(r => {
+        const isOpen = expanded.has(r.id)
+        const headline = r.is_new_site === 'new' ? 'Nouveau site' : r.is_new_site === 'add_to_existing' ? 'Ajout à un site existant' : 'Configuration'
+        const statusBadge = r.status === 'submitted'
+          ? <span className="inline-flex text-xs font-medium px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">Soumis</span>
+          : <span className="inline-flex text-xs font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">En cours</span>
+        return (
+          <div key={r.id} className="card overflow-hidden">
+            <button
+              onClick={() => toggle(r.id)}
+              className="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50 text-left"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <ChevronDown size={16} className={`text-slate-400 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-slate-900 truncate">{headline}</div>
+                  <div className="text-xs text-slate-500">
+                    {r.submitted_at ? `Soumis le ${fmtDate(r.submitted_at)}` : `Démarré le ${fmtDate(r.created_at)}`}
+                    {r.stripe_invoice_id ? ` · Facture Stripe ${r.stripe_invoice_id}` : ''}
+                  </div>
+                </div>
+              </div>
+              {statusBadge}
+            </button>
+            {isOpen && (
+              <div className="border-t border-slate-100 p-4 space-y-4 text-sm">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">Adresse de la ferme</div>
+                    <div className="text-slate-700">{fmtAddress(r.farm_address)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">Adresse de livraison</div>
+                    <div className="text-slate-700">
+                      {r.shipping_same_as_farm ? <span className="text-slate-500 italic">Identique à la ferme</span> : fmtAddress(r.shipping_address)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">Niveau de permission</div>
+                    <div className="text-slate-700">{r.permission_level || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">Accès réseau</div>
+                    <div className="text-slate-700">{r.network_access || '—'}</div>
+                  </div>
+                  {(r.wifi_ssid || r.wifi_password) && (
+                    <>
+                      <div>
+                        <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">SSID Wi-Fi</div>
+                        <div className="text-slate-700 font-mono">{r.wifi_ssid || '—'}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">Mot de passe Wi-Fi</div>
+                        <div className="text-slate-700 font-mono">{r.wifi_password || '—'}</div>
+                      </div>
+                    </>
+                  )}
+                  <div>
+                    <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">Nombre de serres</div>
+                    <div className="text-slate-700">{r.num_greenhouses ?? '—'}</div>
+                  </div>
+                </div>
+
+                {r.greenhouses?.length > 0 && (
+                  <div>
+                    <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Configuration des serres</div>
+                    <div className="space-y-2">
+                      {r.greenhouses.map((g, i) => (
+                        <div key={i} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+                          <div className="text-sm font-medium text-slate-800 mb-1">Serre {i + 1}{g.name ? ` — ${g.name}` : ''}</div>
+                          <pre className="text-xs text-slate-600 whitespace-pre-wrap font-mono">{JSON.stringify(g, null, 2)}</pre>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {r.extras?.length > 0 && (
+                  <div>
+                    <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Extras demandés</div>
+                    <ul className="space-y-1">
+                      {r.extras.map((e, i) => (
+                        <li key={i} className="text-slate-700">
+                          <span className="font-medium">{e.role || e.product || 'Extra'}</span>
+                          {e.qty != null ? ` × ${e.qty}` : ''}
+                          {e.description ? ` — ${e.description}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                    {r.extras_pending_invoice && (
+                      <div className="mt-2 text-xs text-slate-500">
+                        Facture extras générée
+                        {r.extras_pending_invoice.status ? ` — ${r.extras_pending_invoice.status}` : ''}
+                        {r.extras_pending_invoice.paid_invoice_id ? ' (payée)' : ''}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function CompanyDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -456,6 +602,7 @@ export default function CompanyDetail() {
   const [showAdresseModal, setShowAdresseModal] = useState(false)
   const [editingAdresse, setEditingAdresse] = useState(null)
   const [adresseForm, setAdresseForm] = useState({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' })
+  const [onboardingResponses, setOnboardingResponses] = useState([])
   async function load() {
     setLoading(true)
     try {
@@ -471,6 +618,7 @@ export default function CompanyDetail() {
 
   useEffect(() => {
     api.adresses.list({ company_id: id, limit: 'all' }).then(r => setAdresses(r.data || [])).catch(() => {})
+    api.companies.onboardingResponses(id).then(r => setOnboardingResponses(r.data || [])).catch(() => {})
   }, [id])
 
   useEffect(() => {
@@ -583,13 +731,13 @@ export default function CompanyDetail() {
   }, [linkQuery, contactMode, id])
 
   if (loading) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" /></div></Layout>
+    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
   }
   if (!company) {
     return <Layout><div className="p-6 text-slate-500">Entreprise introuvable.</div></Layout>
   }
 
-  const tabs = ['info', 'contacts', 'interactions', 'projets', 'commandes', 'envois', 'retours', 'support', 'numéros de série', 'factures', 'abonnements', 'tâches', ...(company.quickbooks_vendor_id ? ['achats'] : [])]
+  const tabs = ['info', 'contacts', 'interactions', 'projets', 'commandes', 'envois', 'retours', 'support', 'numéros de série', 'factures', 'abonnements', 'tâches', ...(company.quickbooks_vendor_id ? ['achats'] : []), ...(onboardingResponses.length > 0 ? ['onboarding'] : [])]
 
   return (
     <Layout>
@@ -618,7 +766,7 @@ export default function CompanyDetail() {
                       target="_blank"
                       rel="noopener noreferrer"
                       title={cc.serial ? `Contrôleur ${cc.serial} · adresse ${cc.address}` : `Adresse ${cc.address}`}
-                      className="inline-flex items-center gap-1 text-indigo-600 hover:underline"
+                      className="inline-flex items-center gap-1 text-brand-600 hover:underline"
                     >
                       <ExternalLink size={12} />
                       {company.central_controllers.length === 1 ? 'Ouvrir dans Orisha' : `Orisha ${cc.address}`}
@@ -632,7 +780,7 @@ export default function CompanyDetail() {
             <div className="relative">
               <button
                 onClick={() => setInvoiceMenuOpen(o => !o)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg"
               >
                 <FileText size={14} /> Nouvelle facture <ChevronDown size={14} />
               </button>
@@ -668,7 +816,7 @@ export default function CompanyDetail() {
           <div className="w-44 flex-shrink-0">
             <nav className="flex flex-col gap-0.5">
               {tabs.map(t => {
-                const tabLabel = t === 'info' ? 'Informations' : t === 'interactions' ? 'Interactions' : t === 'numéros de série' ? 'N° de série' : t === 'achats' ? 'Achats fourn.' : t === 'retours' ? 'Retours (RMA)' : t.charAt(0).toUpperCase() + t.slice(1)
+                const tabLabel = t === 'info' ? 'Informations' : t === 'interactions' ? 'Interactions' : t === 'numéros de série' ? 'N° de série' : t === 'achats' ? 'Achats fourn.' : t === 'retours' ? 'Retours (RMA)' : t === 'onboarding' ? 'Onboarding' : t.charAt(0).toUpperCase() + t.slice(1)
                 const counts = {
                   contacts: company.contacts?.length,
                   projets: company.projects?.length,
@@ -682,6 +830,7 @@ export default function CompanyDetail() {
                   tâches: tasks.length || undefined,
                   achats: achatsTotal || undefined,
                   retours: (tab === 'retours' ? retours.length : company.returns_count) || undefined,
+                  onboarding: onboardingResponses.length || undefined,
                 }
                 const count = counts[t]
                 return (
@@ -690,7 +839,7 @@ export default function CompanyDetail() {
                     onClick={() => setTab(t)}
                     className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left w-full ${
                       tab === t
-                        ? 'bg-indigo-50 text-indigo-700'
+                        ? 'bg-brand-50 text-brand-700'
                         : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
                     }`}
                   >
@@ -749,12 +898,12 @@ export default function CompanyDetail() {
                         {[a.city, a.province, a.postal_code, a.country].filter(Boolean).join(', ')}
                       </div>
                       {a.contact_name?.trim() && (
-                        <Link to={`/contacts/${a.contact_id}`} className="text-xs text-indigo-500 hover:underline mt-0.5 block">{a.contact_name.trim()}</Link>
+                        <Link to={`/contacts/${a.contact_id}`} className="text-xs text-brand-500 hover:underline mt-0.5 block">{a.contact_name.trim()}</Link>
                       )}
                       {a.language && <div className="text-xs text-slate-400 mt-0.5">{a.language}</div>}
                     </div>
                     <div className="flex gap-1 flex-shrink-0">
-                      <button onClick={() => { setEditingAdresse(a); setAdresseForm({ line1: a.line1||'', city: a.city||'', province: a.province||'', postal_code: a.postal_code||'', country: a.country||'Canada', address_type: a.address_type||'Ferme', contact_id: a.contact_id||'' }); setShowAdresseModal(true) }} className="text-slate-400 hover:text-indigo-600 p-1"><Edit2 size={13} /></button>
+                      <button onClick={() => { setEditingAdresse(a); setAdresseForm({ line1: a.line1||'', city: a.city||'', province: a.province||'', postal_code: a.postal_code||'', country: a.country||'Canada', address_type: a.address_type||'Ferme', contact_id: a.contact_id||'' }); setShowAdresseModal(true) }} className="text-slate-400 hover:text-brand-600 p-1"><Edit2 size={13} /></button>
                       <button onClick={async () => { if (!(await confirm('Supprimer cette adresse ?'))) return; await api.adresses.delete(a.id); setAdresses(prev => prev.filter(x => x.id !== a.id)) }} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={13} /></button>
                     </div>
                   </div>
@@ -784,7 +933,7 @@ export default function CompanyDetail() {
                   <tbody>
                     {company.contacts.map(c => (
                       <tr key={c.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer" onClick={() => navigate(`/contacts/${c.id}`)}>
-                        <td className="px-4 py-3 font-medium text-indigo-600">{c.first_name} {c.last_name}</td>
+                        <td className="px-4 py-3 font-medium text-brand-600">{c.first_name} {c.last_name}</td>
                         <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{c.email || '—'}</td>
                         <td className="px-4 py-3 hidden md:table-cell text-slate-500 font-mono text-sm">{fmtPhone(c.phone || c.mobile) || '—'}</td>
                         <td className="px-4 py-3">
@@ -969,7 +1118,7 @@ export default function CompanyDetail() {
                   </thead>
                   <tbody>
                     {abonnements.map(a => (
-                      <tr key={a.id} className={`border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer ${selectedAbonnement?.id === a.id ? 'bg-indigo-50' : ''}`}
+                      <tr key={a.id} className={`border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer ${selectedAbonnement?.id === a.id ? 'bg-brand-50' : ''}`}
                         onClick={() => {
                           if (selectedAbonnement?.id === a.id) { setSelectedAbonnement(null); setAbonnementDetails(null); return }
                           setSelectedAbonnement(a)
@@ -1001,7 +1150,7 @@ export default function CompanyDetail() {
                   <h3 className="text-base font-semibold text-slate-900">Détails de l'abonnement</h3>
                   <div className="flex items-center gap-2">
                     {selectedAbonnement.stripe_url && (
-                      <a href={selectedAbonnement.stripe_url} target="_blank" rel="noopener noreferrer" className="text-xs text-indigo-600 hover:underline">Voir sur Stripe</a>
+                      <a href={selectedAbonnement.stripe_url} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-600 hover:underline">Voir sur Stripe</a>
                     )}
                     <button onClick={() => { setSelectedAbonnement(null); setAbonnementDetails(null) }} className="text-slate-400 hover:text-slate-600">
                       <X size={16} />
@@ -1010,7 +1159,7 @@ export default function CompanyDetail() {
                 </div>
 
                 {loadingAbDetails ? (
-                  <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-indigo-600" /></div>
+                  <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-brand-600" /></div>
                 ) : !abonnementDetails ? (
                   <p className="text-center py-6 text-slate-400 text-sm">Impossible de charger les détails Stripe</p>
                 ) : (
@@ -1045,7 +1194,7 @@ export default function CompanyDetail() {
                         </table>
                       </div>
                       {abonnementDetails.discount && (
-                        <div className="mt-2 text-xs text-indigo-600">
+                        <div className="mt-2 text-xs text-brand-600">
                           Rabais: {abonnementDetails.discount.name}
                           {abonnementDetails.discount.percent_off && ` (${abonnementDetails.discount.percent_off}%)`}
                           {abonnementDetails.discount.amount_off && ` (${abonnementDetails.discount.amount_off} $)`}
@@ -1094,7 +1243,7 @@ export default function CompanyDetail() {
                                 </div>
                                 <div className="flex items-center gap-3">
                                   <span className="font-medium text-slate-700 text-sm">{inv.amount.toFixed(2)} $</span>
-                                  {inv.pdf && <a href={inv.pdf} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline text-xs">PDF</a>}
+                                  {inv.pdf && <a href={inv.pdf} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:underline text-xs">PDF</a>}
                                 </div>
                               </div>
                               {inv.lines && inv.lines.length > 0 && (
@@ -1214,7 +1363,7 @@ export default function CompanyDetail() {
                     return (
                       <tr key={a.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
                         <td className="px-4 py-3">
-                          <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${a.type === 'bill' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>
+                          <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${a.type === 'bill' ? 'bg-brand-100 text-brand-700' : 'bg-slate-100 text-slate-600'}`}>
                             {a.type === 'bill' ? 'Facture' : 'Dépense'}
                           </span>
                         </td>
@@ -1242,6 +1391,10 @@ export default function CompanyDetail() {
         )}
 
         {/* Retours (RMA) Tab */}
+        {tab === 'onboarding' && (
+          <OnboardingResponsesPanel responses={onboardingResponses} />
+        )}
+
         {tab === 'retours' && (
           <div className="card overflow-hidden">
             {!retours.length ? (
@@ -1381,7 +1534,7 @@ export default function CompanyDetail() {
                 />
               </div>
               {linkSelected ? (
-                <div className="border border-indigo-200 bg-indigo-50 rounded-lg px-3 py-2 flex items-start justify-between gap-3">
+                <div className="border border-brand-200 bg-brand-50 rounded-lg px-3 py-2 flex items-start justify-between gap-3">
                   <div>
                     <div className="font-medium text-slate-900">{linkSelected.first_name} {linkSelected.last_name}</div>
                     <div className="text-xs text-slate-500">

@@ -155,7 +155,7 @@ export default function CatalogProduits() {
 
   return (
     <Layout>
-      <div className="max-w-7xl mx-auto px-4 py-6">
+      <div className="px-4 py-6">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Catalogue de produits</h1>
@@ -165,7 +165,7 @@ export default function CatalogProduits() {
             <TableConfigModal table="catalog" />
             <button
               onClick={() => setEditing('new')}
-              className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700"
+              className="flex items-center gap-2 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700"
             >
               <Plus size={16} /> Ajouter un produit
             </button>

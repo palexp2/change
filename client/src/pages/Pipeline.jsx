@@ -12,10 +12,80 @@ import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
+import { useDisabledColumns } from '../lib/useDisabledColumns.js'
+import { useCustomFields } from '../lib/useCustomFields.js'
+import CustomFieldModal from '../components/CustomFieldModal.jsx'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
 
 function fmtCad(n) {
   if (!n && n !== 0) return '—'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
+}
+
+// Cellule éditable inline pour un champ custom (text/number). Click sur la
+// cellule → input plein-largeur, blur ou Enter → sauvegarde via onSave.
+// L'event onClick stoppe la propagation pour ne pas ouvrir la fiche détail.
+function CustomFieldCell({ row, field, onSave }) {
+  const initial = row[field.column_name]
+  const [editing, setEditing] = useState(false)
+  const [local, setLocal] = useState(initial == null ? '' : String(initial))
+  useEffect(() => { setLocal(initial == null ? '' : String(initial)) }, [initial])
+
+  function commit() {
+    setEditing(false)
+    const trimmed = String(local).trim()
+    const currentStr = initial == null ? '' : String(initial)
+    if (trimmed === currentStr) return
+    if (field.type === 'number') {
+      if (trimmed === '') return onSave(null)
+      const n = Number(trimmed)
+      if (!Number.isFinite(n)) return // invalide → no-op
+      onSave(n)
+    } else {
+      onSave(trimmed === '' ? null : trimmed)
+    }
+  }
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        type={field.type === 'number' ? 'number' : 'text'}
+        step={field.type === 'number' ? `0.${'0'.repeat(Math.max(0, (field.decimals ?? 0) - 1))}1` : undefined}
+        value={local}
+        onChange={e => setLocal(e.target.value)}
+        onClick={e => e.stopPropagation()}
+        onBlur={commit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') { e.preventDefault(); commit() }
+          if (e.key === 'Escape') { setEditing(false); setLocal(initial == null ? '' : String(initial)) }
+        }}
+        className="w-full bg-white border border-brand-400 rounded px-2 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-brand-500"
+      />
+    )
+  }
+
+  let display
+  if (initial == null || initial === '') display = <span className="text-slate-300">—</span>
+  else if (field.type === 'number') {
+    const n = Number(initial)
+    display = Number.isFinite(n)
+      ? <span className="tabular-nums">{n.toLocaleString('fr-CA', { minimumFractionDigits: field.decimals ?? 0, maximumFractionDigits: field.decimals ?? 0 })}</span>
+      : <span className="text-slate-300">—</span>
+  } else {
+    display = <span>{initial}</span>
+  }
+
+  return (
+    <div
+      onClick={e => { e.stopPropagation(); setEditing(true) }}
+      className="cursor-text hover:bg-slate-100 rounded px-1 -mx-1 py-0.5 transition-colors"
+      title="Cliquer pour modifier"
+    >
+      {display}
+    </div>
+  )
 }
 
 const PROJECT_TYPES = ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange']
@@ -78,7 +148,7 @@ function ProjectForm({ initial = {}, companies = [], onSave, onClose }) {
             onChange={e => setForm(f => ({ ...f, probability: parseInt(e.target.value) }))}
             className="w-full mt-1"
           />
-          <div className="text-center text-sm font-medium text-indigo-600">{form.probability}%</div>
+          <div className="text-center text-sm font-medium text-brand-600">{form.probability}%</div>
         </div>
         <div>
           <label className="label">Date de clôture prévue</label>
@@ -114,9 +184,9 @@ function AirtableSyncButton({ onSynced }) {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState(null)
-  const [erpColumns, setErpColumns] = useState(null) // null = not loaded; [] = loaded
-  const [frozenCols, setFrozenCols] = useState(null) // null = not loaded
-  const [columnFilter, setColumnFilter] = useState('')
+  const [airtableFields, setAirtableFields] = useState(null) // null = not loaded
+  const [fieldFilter, setFieldFilter] = useState('')
+  const [togglingField, setTogglingField] = useState(null)
   const { status: syncStatus } = useSyncStatus(3000)
   const syncing = !!syncStatus?.projets?.running
 
@@ -129,6 +199,12 @@ function AirtableSyncButton({ onSynced }) {
     }).catch(() => {})
   }, [])
 
+  const loadAirtableFields = useCallback(() => {
+    api.airtable.projetsAirtableFields()
+      .then(d => setAirtableFields(d.fields || []))
+      .catch(() => setAirtableFields([]))
+  }, [])
+
   useEffect(() => {
     if (!open) return
     if (bases.length === 0) {
@@ -139,30 +215,33 @@ function AirtableSyncButton({ onSynced }) {
         .catch(e => setError(e.message || 'Erreur de chargement'))
         .finally(() => setLoading(false))
     }
-    if (erpColumns === null) {
-      api.airtable.erpTableColumns('projects')
-        .then(cols => setErpColumns((cols || []).slice().sort((a, b) => a.name.localeCompare(b.name))))
-        .catch(() => setErpColumns([]))
-    }
-    if (frozenCols === null) {
-      api.airtable.frozenColumns('projects')
-        .then(rows => setFrozenCols(new Set((rows || []).map(r => r.column_name))))
-        .catch(() => setFrozenCols(new Set()))
-    }
-  }, [open, bases.length, erpColumns, frozenCols])
+    if (airtableFields === null) loadAirtableFields()
+  }, [open, bases.length, airtableFields, loadAirtableFields])
 
-  async function toggleFrozen(columnName) {
-    const next = new Set(frozenCols || [])
-    const willFreeze = !next.has(columnName)
+  // Recharge la liste des champs Airtable quand un sync se termine, pour
+  // refléter les nouveaux champs auto-créés et les statuts à jour.
+  useEffect(() => {
+    if (open && airtableFields !== null) loadAirtableFields()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [syncing])
+
+  async function toggleAirtableFieldImport(fieldName, currentlyDisabled) {
+    const willDisable = !currentlyDisabled // checkbox checked = imported = !disabled
     // optimistic update
-    if (willFreeze) next.add(columnName); else next.delete(columnName)
-    setFrozenCols(next)
+    setTogglingField(fieldName)
+    setAirtableFields(prev =>
+      (prev || []).map(f => f.airtable_field_name === fieldName ? { ...f, import_disabled: willDisable } : f),
+    )
     try {
-      await api.airtable.setFrozenColumn('projects', columnName, willFreeze)
-    } catch {
+      await api.airtable.setProjetsFieldDisabled(fieldName, willDisable)
+    } catch (e) {
       // revert on failure
-      const revert = new Set(frozenCols || [])
-      setFrozenCols(revert)
+      setAirtableFields(prev =>
+        (prev || []).map(f => f.airtable_field_name === fieldName ? { ...f, import_disabled: !willDisable } : f),
+      )
+      setError(e.message || 'Erreur')
+    } finally {
+      setTogglingField(null)
     }
   }
 
@@ -215,7 +294,7 @@ function AirtableSyncButton({ onSynced }) {
           ? (config.last_synced_at ? `Dernière sync : ${fmtDate(config.last_synced_at)}` : 'Configurée')
           : 'Synchronisation Airtable non configurée'}
       >
-        <Database size={15} className="text-indigo-500" />
+        <Database size={15} className="text-brand-500" />
         <span>Sync Airtable</span>
         {syncing
           ? <RefreshCw size={13} className="animate-spin text-amber-500" />
@@ -275,53 +354,55 @@ function AirtableSyncButton({ onSynced }) {
           <div className="pt-3 border-t border-slate-100">
             <div className="flex items-baseline justify-between mb-1">
               <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                Champs de la table <code className="font-mono text-slate-700">projects</code> (DB ERP)
+                Champs Airtable importés
               </p>
-              {erpColumns && (
+              {airtableFields && (
                 <span className="text-[11px] text-slate-400">
-                  {erpColumns.length} champs
-                  {frozenCols?.size > 0 && <> · <span className="text-amber-600 font-medium">{frozenCols.size} gelés</span></>}
+                  {airtableFields.length} champs
+                  {airtableFields.filter(f => f.import_disabled).length > 0 && (
+                    <> · <span className="text-amber-600 font-medium">{airtableFields.filter(f => f.import_disabled).length} désactivés</span></>
+                  )}
                 </span>
               )}
             </div>
             <p className="text-[11px] text-slate-400 mb-2">
-              Décoche un champ pour qu'il ne soit plus mis à jour par Airtable — sa valeur vivra uniquement dans la DB.
+              Coche pour importer le champ Airtable dans l'ERP. Décoche pour arrêter l'import — la colonne correspondante est immédiatement vidée (réimportable au prochain sync). Les champs essentiels (nom, entreprise, statut, valeur, etc.) ne sont pas listés ici.
             </p>
-            {erpColumns && erpColumns.length > 10 && (
+            {airtableFields && airtableFields.length > 10 && (
               <input
                 type="text"
-                value={columnFilter}
-                onChange={e => setColumnFilter(e.target.value)}
+                value={fieldFilter}
+                onChange={e => setFieldFilter(e.target.value)}
                 placeholder="Rechercher un champ…"
                 className="input text-xs mb-2"
               />
             )}
-            {erpColumns === null ? (
+            {airtableFields === null ? (
               <p className="text-xs text-slate-400">Chargement…</p>
-            ) : erpColumns.length === 0 ? (
-              <p className="text-xs text-slate-400">Aucun champ trouvé.</p>
+            ) : airtableFields.length === 0 ? (
+              <p className="text-xs text-slate-400">Configure d'abord la base et la table, puis ré-ouvre cette modale.</p>
             ) : (
               <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 max-h-64 overflow-y-auto">
-                {erpColumns
-                  .filter(c => !columnFilter || c.name.toLowerCase().includes(columnFilter.toLowerCase()))
-                  .map(c => {
-                    const frozen = frozenCols?.has(c.name)
-                    const synced = !frozen
+                {airtableFields
+                  .filter(f => !fieldFilter || f.airtable_field_name.toLowerCase().includes(fieldFilter.toLowerCase()))
+                  .map(f => {
+                    const imported = !f.import_disabled
+                    const isToggling = togglingField === f.airtable_field_name
                     return (
                       <label
-                        key={c.name}
-                        className={`flex items-center gap-2 text-xs py-1 px-1 rounded cursor-pointer hover:bg-slate-100 ${frozen ? 'opacity-60' : ''}`}
-                        title={frozen ? 'Gelé — non mis à jour par Airtable' : 'Mis à jour par Airtable'}
+                        key={f.airtable_field_name}
+                        className={`flex items-center gap-2 text-xs py-1 px-1 rounded cursor-pointer hover:bg-slate-100 ${!imported ? 'opacity-60' : ''}`}
+                        title={imported ? 'Importé depuis Airtable' : 'Désactivé — non importé, colonne vide côté ERP'}
                       >
                         <input
                           type="checkbox"
-                          checked={synced}
-                          disabled={frozenCols === null}
-                          onChange={() => toggleFrozen(c.name)}
-                          className="accent-indigo-500"
+                          checked={imported}
+                          disabled={isToggling}
+                          onChange={() => toggleAirtableFieldImport(f.airtable_field_name, f.import_disabled)}
+                          className="accent-brand-500"
                         />
-                        <span className={`font-mono flex-1 truncate ${frozen ? 'line-through text-slate-400' : 'text-slate-700'}`}>{c.name}</span>
-                        <span className="text-[10px] text-slate-400">{c.type}</span>
+                        <span className={`flex-1 truncate ${!imported ? 'line-through text-slate-400' : 'text-slate-700'}`}>{f.airtable_field_name}</span>
+                        <span className="text-[10px] text-slate-400">{f.airtable_field_type}</span>
                       </label>
                     )
                   })}
@@ -343,6 +424,29 @@ export default function Pipeline() {
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editProject, setEditProject] = useState(null)
+  const disabledCols = useDisabledColumns('projects') // Map<column_name, { airtable_field_name }>
+  const { fields: customFields, reload: reloadCustomFields } = useCustomFields('projects')
+  const [customFieldModal, setCustomFieldModal] = useState(null) // { editing: field|null }
+  const confirm = useConfirm()
+  const { addToast } = useToast()
+
+  const customFieldsByColumn = useMemo(() => {
+    const m = new Map()
+    for (const f of customFields) m.set(f.column_name, f)
+    return m
+  }, [customFields])
+
+  async function handleDeleteCustomField(field) {
+    if (!(await confirm(`Supprimer le champ "${field.name}" ? Restaurable depuis la corbeille.`))) return
+    try {
+      await api.customFields.delete(field.id)
+      addToast({ message: 'Champ supprimé', type: 'success' })
+      await reloadCustomFields()
+      load() // recharge les projets pour refléter la perte de la colonne
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  }
 
   const load = useCallback(async () => {
     await loadProgressive(
@@ -382,7 +486,7 @@ export default function Pipeline() {
         </div>
       ) :
       meta.id === 'company_name' ? row => row.company_id
-        ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">{row.company_name}</Link>
+        ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
         : <span className="text-slate-400">—</span> :
       meta.id === 'status' ? row => (
         <Badge color={projectStatusColor(row.status)}>{row.status}</Badge>
@@ -404,7 +508,7 @@ export default function Pipeline() {
           <div className="flex flex-wrap gap-1" onClick={e => e.stopPropagation()}>
             {row.orders.map(o => (
               <Link key={o.id} to={`/orders/${o.id}`}
-                className="font-mono text-xs text-indigo-600 hover:underline bg-indigo-50 px-1.5 py-0.5 rounded">
+                className="font-mono text-xs text-brand-600 hover:underline bg-brand-50 px-1.5 py-0.5 rounded">
                 #{o.order_number}
               </Link>
             ))}
@@ -414,12 +518,44 @@ export default function Pipeline() {
       undefined
   })), [])
 
+  // Cellule éditable inline pour un champ custom : clic → input, blur → save.
+  const updateProjectField = useCallback(async (projectId, columnName, value) => {
+    try {
+      await api.projects.update(projectId, { [columnName]: value })
+      // Patch optimiste — évite un reload complet à chaque blur.
+      setProjects(prev => prev.map(p => p.id === projectId ? { ...p, [columnName]: value } : p))
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  }, [addToast])
+
+  // Colonnes finales = colonnes hardcodées + champs custom (text/number).
+  const COLUMNS_WITH_CUSTOM = useMemo(() => {
+    const customCols = customFields.map(f => ({
+      id: f.column_name,
+      label: f.name,
+      field: f.column_name,
+      type: f.type === 'number' ? 'number' : 'text',
+      groupable: true,
+      sortable: true,
+      filterable: true,
+      render: row => (
+        <CustomFieldCell
+          row={row}
+          field={f}
+          onSave={(v) => updateProjectField(row.id, f.column_name, v)}
+        />
+      ),
+    }))
+    return [...COLUMNS, ...customCols]
+  }, [COLUMNS, customFields, updateProjectField])
+
   async function handleCreate(form) { await api.projects.create(form); load() }
   async function handleUpdate(form) { await api.projects.update(editProject.id, form); setEditProject(null); load() }
 
   return (
     <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
+      <div className="p-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
           <div>
@@ -443,7 +579,7 @@ export default function Pipeline() {
           </div>
           <div className="card p-4">
             <div className="text-xs text-slate-500 font-medium">Valeur pondérée</div>
-            <div className="text-xl font-bold text-indigo-600 mt-1">{fmtCad(weightedValue)}</div>
+            <div className="text-xl font-bold text-brand-600 mt-1">{fmtCad(weightedValue)}</div>
             <div className="text-xs text-slate-400">Probabilité ajustée</div>
           </div>
           <div className="card p-4">
@@ -454,22 +590,27 @@ export default function Pipeline() {
         </div>
 
         {monthFilter && (
-          <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg text-sm text-indigo-700">
+          <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg text-sm text-brand-700">
             <span>Filtre : {new Date(monthFilter + '-15').toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })} · groupés par statut</span>
-            <button onClick={() => setSearchParams({})} className="ml-auto flex items-center gap-1 text-xs text-indigo-500 hover:text-indigo-700">
+            <button onClick={() => setSearchParams({})} className="ml-auto flex items-center gap-1 text-xs text-brand-500 hover:text-brand-700">
               <X size={13} /> Effacer
             </button>
           </div>
         )}
         <DataTable
           table="projects"
-          columns={COLUMNS}
+          columns={COLUMNS_WITH_CUSTOM}
           data={displayedProjects}
           loading={loading}
           onRowClick={row => navigate(`/projects/${row.id}`)}
           searchFields={['name', 'company_name', 'type']}
           initialGroupBy={monthFilter ? 'status' : null}
           forceAllView={!!monthFilter}
+          disabledColumns={disabledCols}
+          onAddCustomField={() => setCustomFieldModal({ editing: null })}
+          customFieldsByColumn={customFieldsByColumn}
+          onEditCustomField={(field) => setCustomFieldModal({ editing: field })}
+          onDeleteCustomField={handleDeleteCustomField}
         />
       </div>
 
@@ -482,6 +623,14 @@ export default function Pipeline() {
           <ProjectForm initial={editProject} companies={companies} onSave={handleUpdate} onClose={() => setEditProject(null)} />
         )}
       </Modal>
+
+      <CustomFieldModal
+        isOpen={!!customFieldModal}
+        onClose={() => setCustomFieldModal(null)}
+        erpTable="projects"
+        editing={customFieldModal?.editing || null}
+        onSaved={() => { reloadCustomFields(); load() }}
+      />
     </Layout>
   )
 }

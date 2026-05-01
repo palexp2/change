@@ -31,7 +31,7 @@ router.delete('/keywords/:id', (req, res) => {
 
 // GET /api/tasks
 router.get('/', (req, res) => {
-  const { search, status, priority, company_id, contact_id, assigned_to, page = 1, limit = 50 } = req.query;
+  const { search, status, priority, company_id, contact_id, assigned_to, ticket_id, page = 1, limit = 50 } = req.query;
   const limitAll = limit === 'all';
   const limitVal = limitAll ? -1 : parseInt(limit);
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
@@ -48,6 +48,7 @@ router.get('/', (req, res) => {
   if (company_id) { where += ' AND t.company_id = ?'; params.push(company_id); }
   if (contact_id) { where += ' AND t.contact_id = ?'; params.push(contact_id); }
   if (assigned_to) { where += ' AND t.assigned_to = ?'; params.push(assigned_to); }
+  if (ticket_id) { where += ' AND t.ticket_id = ?'; params.push(ticket_id); }
 
   const total = db.prepare(
     `SELECT COUNT(*) as c FROM tasks t ${where}`
@@ -57,11 +58,13 @@ router.get('/', (req, res) => {
     `SELECT t.*,
        c.name as company_name,
        ct.first_name || ' ' || ct.last_name as contact_name,
-       u.name as assigned_name
+       u.name as assigned_name,
+       tk.title as ticket_title
      FROM tasks t
      LEFT JOIN companies c ON t.company_id = c.id
      LEFT JOIN contacts ct ON t.contact_id = ct.id
      LEFT JOIN users u ON t.assigned_to = u.id
+     LEFT JOIN tickets tk ON t.ticket_id = tk.id
      ${where}
      ORDER BY
        CASE t.priority WHEN 'Urgente' THEN 1 WHEN 'Haute' THEN 2 WHEN 'Normal' THEN 3 ELSE 4 END,
@@ -79,11 +82,13 @@ router.get('/:id', (req, res) => {
     `SELECT t.*,
        c.name as company_name,
        ct.first_name || ' ' || ct.last_name as contact_name,
-       u.name as assigned_name
+       u.name as assigned_name,
+       tk.title as ticket_title
      FROM tasks t
      LEFT JOIN companies c ON t.company_id = c.id
      LEFT JOIN contacts ct ON t.contact_id = ct.id
      LEFT JOIN users u ON t.assigned_to = u.id
+     LEFT JOIN tickets tk ON t.ticket_id = tk.id
      WHERE t.id = ?`
   ).get(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found' });
@@ -92,13 +97,13 @@ router.get('/:id', (req, res) => {
 
 // POST /api/tasks
 router.post('/', (req, res) => {
-  const { title, description, status, priority, due_date, company_id, contact_id, assigned_to, notes, keywords, type } = req.body;
+  const { title, description, status, priority, due_date, company_id, contact_id, assigned_to, notes, keywords, type, ticket_id } = req.body;
   if (!title) return res.status(400).json({ error: 'Le titre est requis' });
 
   const id = uuidv4();
   db.prepare(
-    `INSERT INTO tasks (id, title, description, status, priority, due_date, company_id, contact_id, assigned_to, notes, keywords, type)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO tasks (id, title, description, status, priority, due_date, company_id, contact_id, assigned_to, notes, keywords, type, ticket_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id, title,
     description || null,
@@ -110,17 +115,20 @@ router.post('/', (req, res) => {
     assigned_to || null,
     notes || null,
     JSON.stringify(Array.isArray(keywords) ? keywords : []),
-    type || null
+    type || null,
+    ticket_id || null
   );
 
   pushTaskFireAndForget(id);
 
   res.status(201).json(db.prepare(
-    `SELECT t.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name, u.name as assigned_name
+    `SELECT t.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name, u.name as assigned_name,
+       tk.title as ticket_title
      FROM tasks t
      LEFT JOIN companies c ON t.company_id = c.id
      LEFT JOIN contacts ct ON t.contact_id = ct.id
      LEFT JOIN users u ON t.assigned_to = u.id
+     LEFT JOIN tickets tk ON t.ticket_id = tk.id
      WHERE t.id = ?`
   ).get(id));
 });
@@ -132,7 +140,7 @@ router.put('/:id', (req, res) => {
 
   const { setClause, values, error } = buildPartialUpdate(req.body, {
     allowed: ['title', 'description', 'status', 'priority', 'due_date',
-      'company_id', 'contact_id', 'assigned_to', 'notes', 'keywords', 'type'],
+      'company_id', 'contact_id', 'assigned_to', 'notes', 'keywords', 'type', 'ticket_id'],
     nonNullable: new Set(['title']),
     coerce: {
       keywords: v => JSON.stringify(Array.isArray(v) ? v : []),
@@ -147,10 +155,12 @@ router.put('/:id', (req, res) => {
   pushTaskFireAndForget(req.params.id);
 
   res.json(db.prepare(
-    `SELECT t.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name, u.name as assigned_name
+    `SELECT t.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name, u.name as assigned_name,
+       tk.title as ticket_title
      FROM tasks t LEFT JOIN companies c ON t.company_id = c.id
      LEFT JOIN contacts ct ON t.contact_id = ct.id
      LEFT JOIN users u ON t.assigned_to = u.id
+     LEFT JOIN tickets tk ON t.ticket_id = tk.id
      WHERE t.id = ?`
   ).get(req.params.id));
 });

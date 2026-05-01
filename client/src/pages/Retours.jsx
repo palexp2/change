@@ -20,7 +20,7 @@ const STATUS_COLORS = {
 const RENDERS = {
   return_number:     row => <span className="font-mono font-medium text-slate-900">{row.return_number || '—'}</span>,
   company_name:      row => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">{row.company_name}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   tracking_number:   row => <span className="font-mono text-xs text-slate-600">{row.tracking_number || '—'}</span>,
   processing_status: row => row.processing_status
@@ -47,7 +47,7 @@ export default function Retours() {
 
   return (
     <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
+      <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Retours</h1>

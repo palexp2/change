@@ -70,6 +70,7 @@ export const api = {
     create: (data) => post('/companies', data),
     update: (id, data) => put(`/companies/${id}`, data),
     delete: (id) => del(`/companies/${id}`),
+    onboardingResponses: (id) => get(`/companies/${id}/onboarding-responses`),
   },
 
   // Contacts
@@ -90,6 +91,7 @@ export const api = {
     update: (id, data) => put(`/projects/${id}`, data),
     updateStatus: (id, status, refusal_reason) => patch(`/projects/${id}/status`, { status, refusal_reason }),
     delete: (id) => del(`/projects/${id}`),
+    vendeurOptions: () => get('/projects/vendeur-options'),
   },
 
   // Products
@@ -162,6 +164,8 @@ export const api = {
   // Dashboard
   dashboard: {
     get: () => get('/dashboard'),
+    getGoal: () => get('/dashboard/goal'),
+    updateGoal: (data) => put('/dashboard/goal', data),
   },
 
   // Admin
@@ -267,6 +271,18 @@ export const api = {
     saveModuleConfig: (module, data) => put(`/connectors/airtable/module-config/${module}`, data),
     sync: (module) => post(`/connectors/sync/${module}`),
     syncAll: () => post('/connectors/sync/airtable-all'),
+    projetsAirtableFields: () => get('/connectors/airtable/projets/airtable-fields'),
+    setProjetsFieldDisabled: (airtable_field_name, disabled) =>
+      post('/connectors/airtable/projets/airtable-field-disabled', { airtable_field_name, disabled }),
+    disabledColumns: (erpTable) => get(`/connectors/airtable/disabled-columns/${erpTable}`),
+  },
+
+  // Custom fields (utilisateur peut ajouter / supprimer ses propres champs sur certaines tables)
+  customFields: {
+    list: (erpTable) => get(`/custom-fields/${erpTable}`),
+    create: (erpTable, data) => post(`/custom-fields/${erpTable}`, data),
+    update: (id, data) => put(`/custom-fields/${id}`, data),
+    delete: (id) => del(`/custom-fields/${id}`),
   },
 
   // Views (config + pills)
@@ -350,6 +366,14 @@ export const api = {
     get: (id) => get(`/projets/factures/${id}`),
     update: (id, data) => patch(`/projets/factures/${id}`, data),
     recognizeRevenue: (id) => post(`/projets/factures/${id}/recognize-revenue`, {}),
+  },
+
+  // Paiements / remboursements (Stripe et hors-Stripe) attachés aux factures
+  payments: {
+    listForFacture: (factureId) => get(`/payments/facture/${factureId}`),
+    create: (data) => post('/payments', data),
+    retryQb: (id) => post(`/payments/${id}/retry-qb`, {}),
+    delete: (id) => del(`/payments/${id}`),
   },
 
   // Retours
@@ -603,10 +627,17 @@ export const api = {
 
   stripeInvoices: {
     create: (data) => post('/stripe-invoices', data),
-    send: (stripeInvoiceId) => post(`/stripe-invoices/${stripeInvoiceId}/send`),
+    send: (pendingId, body) => post(`/stripe-invoices/${pendingId}/send`, body || {}),
+    emailDefaults: (pendingId) => get(`/stripe-invoices/${pendingId}/email-defaults`),
     convertibleSoumissions: (companyId) => get(`/stripe-invoices/companies/${companyId}/convertible-soumissions`),
     soumissionItems: (id) => get(`/stripe-invoices/soumissions/${id}/items`),
     shippingProvince: (companyId) => get(`/stripe-invoices/companies/${companyId}/shipping-province`),
+  },
+
+  stripeInvoiceItems: {
+    list: (params = {}) => get('/stripe-invoice-items?' + new URLSearchParams(params)),
+    get: (id) => get(`/stripe-invoice-items/${id}`),
+    update: (id, data) => patch(`/stripe-invoice-items/${id}`, data),
   },
 
 }

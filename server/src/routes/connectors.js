@@ -295,6 +295,17 @@ router.get('/airtable/field-defs/:erpTable', requireAuth, (req, res) => {
   res.json(defs)
 })
 
+// Liste des colonnes ERP dont l'import Airtable est désactivé via la modale
+// de sync. Le client s'en sert pour cacher la colonne du tableau, du picker
+// de champs et de la fiche détail, et pour afficher un warning sur les
+// filtres/tris/groupes qui référencent encore une colonne désactivée.
+router.get('/airtable/disabled-columns/:erpTable', requireAuth, (req, res) => {
+  const rows = db.prepare(
+    "SELECT column_name, airtable_field_name FROM airtable_field_defs WHERE erp_table=? AND import_disabled=1"
+  ).all(req.params.erpTable)
+  res.json({ columns: rows })
+})
+
 // Returns the actual SQLite columns of an ERP table (name + sql type), used by
 // sync UIs to show what's available on the ERP side independent of any Airtable mapping.
 router.get('/erp-table-columns/:erpTable', requireAuth, (req, res) => {
@@ -400,6 +411,98 @@ function saveProjetsConfig(req, res) {
 }
 router.put('/airtable/projets-config', requireAuth, saveProjetsConfig)
 router.put('/airtable/inv-config', requireAuth, saveProjetsConfig)
+
+// GET /api/connectors/airtable/projets/airtable-fields
+// Retourne la liste des champs Airtable de la table projets configurée,
+// EXCLUANT les champs « hardcodés » (mappés dans field_map_projects vers une
+// colonne ERP fixe). Pour chaque champ retourné, on indique l'état
+// import_disabled (0/1) déduit de airtable_field_defs.
+router.get('/airtable/projets/airtable-fields', requireAuth, async (req, res) => {
+  const config = db.prepare('SELECT * FROM airtable_projets_config').get()
+  if (!config?.base_id || !config?.projects_table_id) {
+    return res.json({ fields: [], hardcoded: [] })
+  }
+  let token
+  try { token = await getAccessToken() }
+  catch (e) { return res.status(500).json({ error: 'Airtable non connecté: ' + e.message }) }
+
+  let tableMeta
+  try {
+    const data = await airtableFetch(`/meta/bases/${config.base_id}/tables`, token)
+    tableMeta = (data.tables || []).find(t => t.id === config.projects_table_id)
+  } catch (e) { return res.status(500).json({ error: 'Erreur metadata Airtable: ' + e.message }) }
+  if (!tableMeta) return res.json({ fields: [], hardcoded: [] })
+
+  const fieldMap = config.field_map_projects ? JSON.parse(config.field_map_projects) : {}
+  // Les "hardcoded" Airtable field names = valeurs string du field_map (les
+  // *_choices, etc. sont des objets et ne sont pas des field names).
+  const hardcoded = new Set(Object.values(fieldMap).filter(v => typeof v === 'string'))
+
+  const defs = db.prepare(
+    "SELECT airtable_field_name, column_name, import_disabled FROM airtable_field_defs WHERE erp_table='projects'"
+  ).all()
+  const defByName = new Map(defs.map(d => [d.airtable_field_name, d]))
+
+  const fields = (tableMeta.fields || [])
+    .filter(f => !hardcoded.has(f.name))
+    .map(f => {
+      const def = defByName.get(f.name)
+      return {
+        airtable_field_id: f.id,
+        airtable_field_name: f.name,
+        airtable_field_type: f.type,
+        column_name: def?.column_name || null,
+        import_disabled: def?.import_disabled === 1,
+      }
+    })
+    .sort((a, b) => a.airtable_field_name.localeCompare(b.airtable_field_name))
+
+  res.json({ fields, hardcoded: [...hardcoded] })
+})
+
+// POST /api/connectors/airtable/projets/airtable-field-disabled
+// Body : { airtable_field_name: string, disabled: bool }
+// - Toggle import_disabled dans airtable_field_defs (upsert).
+// - Si on désactive et qu'une colonne existe : NULL-ifie les valeurs dans `projects`
+//   pour que le champ disparaisse immédiatement de la fiche détail conditionnelle
+//   et du tableau.
+router.post('/airtable/projets/airtable-field-disabled', requireAuth, (req, res) => {
+  const { airtable_field_name, disabled } = req.body || {}
+  if (!airtable_field_name) return res.status(400).json({ error: 'airtable_field_name requis' })
+  const flag = disabled ? 1 : 0
+
+  // Bloc anti-mistake : empêche de désactiver un champ hardcodé (présent dans field_map_projects).
+  const config = db.prepare('SELECT field_map_projects FROM airtable_projets_config').get()
+  const fieldMap = config?.field_map_projects ? JSON.parse(config.field_map_projects) : {}
+  const hardcoded = new Set(Object.values(fieldMap).filter(v => typeof v === 'string'))
+  if (hardcoded.has(airtable_field_name)) {
+    return res.status(400).json({ error: 'Ce champ est requis (hardcodé) et ne peut pas être désactivé' })
+  }
+
+  const def = db.prepare(
+    "SELECT id, column_name FROM airtable_field_defs WHERE erp_table='projects' AND airtable_field_name=?"
+  ).get(airtable_field_name)
+
+  if (def) {
+    db.prepare(
+      "UPDATE airtable_field_defs SET import_disabled=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?"
+    ).run(flag, def.id)
+    if (flag === 1 && def.column_name) {
+      // NULL-ifie la colonne dans projects pour disparition immédiate.
+      try {
+        db.prepare(`UPDATE projects SET ${def.column_name}=NULL`).run()
+      } catch { /* ignore si la colonne n'existe pas pour une raison quelconque */ }
+    }
+  } else {
+    // Pas encore de def → insère un placeholder désactivé. Au prochain sync,
+    // si le champ est ré-activé, la def sera mise à jour avec le column_name réel.
+    db.prepare(`
+      INSERT INTO airtable_field_defs (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, field_type, options, sort_order, import_disabled)
+      VALUES (?, 'projets', 'projects', ?, ?, ?, 'text', '{}', 0, ?)
+    `).run(uuid(), `pending_${Date.now()}`, airtable_field_name, '__pending__', flag)
+  }
+  res.json({ ok: true })
+})
 
 // ── Sync status
 router.get('/sync/status', requireAuth, (req, res) => {

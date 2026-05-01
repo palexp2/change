@@ -5,7 +5,9 @@ import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
+import { SendPaymentLinkModal } from '../components/SendPaymentLinkModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import FacturePaymentsSection from '../components/FacturePaymentsSection.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 
 
@@ -13,6 +15,7 @@ function fmtMoney(n, currency = 'CAD') {
   if (!n && n !== 0) return '—'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(n)
 }
+
 
 function formatTechValue(v) {
   if (v === null || v === undefined || v === '') return <span className="text-slate-300">—</span>
@@ -64,8 +67,7 @@ export default function FactureDetail() {
   const [showPdfModal, setShowPdfModal] = useState(false)
   const [subscriptionModal, setSubscriptionModal] = useState(null)
   const [loadingSubscription, setLoadingSubscription] = useState(false)
-  const [sendingInvoice, setSendingInvoice] = useState(false)
-  const [sendError, setSendError] = useState(null)
+  const [sendModalOpen, setSendModalOpen] = useState(false)
   const [recognizingRevenue, setRecognizingRevenue] = useState(false)
   const [recognizeError, setRecognizeError] = useState(null)
 
@@ -82,20 +84,13 @@ export default function FactureDetail() {
     }
   }
 
-  async function handleSendInvoice() {
-    // Only pending invoices can be sent from the ERP. The new endpoint expects
-    // the pending_invoice_id (which is the same as facture.id when source='pending').
+  function openSendModal() {
     if (facture?.source !== 'pending') return
-    setSendError(null)
-    setSendingInvoice(true)
-    try {
-      const r = await api.stripeInvoices.send(facture.id)
-      setFacture(f => ({ ...f, status: 'En attente', last_session_url: r.checkout_session_url || f.last_session_url, pending_status: 'sent' }))
-    } catch (e) {
-      setSendError(e.message || 'Erreur')
-    } finally {
-      setSendingInvoice(false)
-    }
+    setSendModalOpen(true)
+  }
+
+  function handleSent(r) {
+    setFacture(f => ({ ...f, status: 'En attente', last_session_url: r.checkout_session_url || f.last_session_url, pending_status: 'sent' }))
   }
 
   async function openSubscriptionModal() {
@@ -190,7 +185,7 @@ export default function FactureDetail() {
     return (
       <Layout>
         <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" />
+          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" />
         </div>
       </Layout>
     )
@@ -221,7 +216,7 @@ export default function FactureDetail() {
                     href={stripeUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg border border-indigo-200"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-brand-600 bg-brand-50 hover:bg-brand-100 rounded-lg border border-brand-200"
                     title="Ouvrir dans Stripe"
                   >
                     <ExternalLink size={12} /> Stripe
@@ -230,12 +225,11 @@ export default function FactureDetail() {
               })()}
               {facture.source === 'pending' && (facture.pending_status === 'draft' || facture.pending_status === 'sent') && (
                 <button
-                  onClick={handleSendInvoice}
-                  disabled={sendingInvoice}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg disabled:opacity-50"
-                  title="Créer/rafraîchir la session Checkout et envoyer le lien par email Gmail"
+                  onClick={openSendModal}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg"
+                  title="Personnaliser et envoyer le lien de paiement par email"
                 >
-                  <Send size={12} /> {sendingInvoice ? 'Envoi…' : facture.pending_status === 'sent' ? 'Renvoyer par email' : 'Envoyer par email'}
+                  <Send size={12} /> {facture.pending_status === 'sent' ? 'Renvoyer par email' : 'Envoyer par email'}
                 </button>
               )}
               {facture.source === 'pending' && facture.pay_url && (
@@ -251,13 +245,26 @@ export default function FactureDetail() {
               )}
               {/* Revenu reçu d'avance — états */}
               {facture.revenue_recognized_at ? (
-                <span
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-emerald-700 bg-emerald-50 rounded-lg border border-emerald-200"
-                  title={`Vente constatée le ${fmtDate(facture.revenue_recognized_at)}${facture.revenue_recognized_je_id ? ` — JE QB #${facture.revenue_recognized_je_id}` : ''}`}
-                  data-testid="revenue-status-recognized"
-                >
-                  <CheckCircle2 size={12} /> Vente constatée
-                </span>
+                facture.revenue_recognized_qb_url ? (
+                  <a
+                    href={facture.revenue_recognized_qb_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200"
+                    title={`Vente constatée le ${fmtDate(facture.revenue_recognized_at)} — ouvrir l'écriture de journal QB #${facture.revenue_recognized_je_id || ''}`}
+                    data-testid="revenue-status-recognized"
+                  >
+                    <CheckCircle2 size={12} /> Vente constatée <ExternalLink size={10} />
+                  </a>
+                ) : (
+                  <span
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-emerald-700 bg-emerald-50 rounded-lg border border-emerald-200"
+                    title={`Vente constatée le ${fmtDate(facture.revenue_recognized_at)}${facture.revenue_recognized_je_id ? ` — JE QB #${facture.revenue_recognized_je_id}` : ''}`}
+                    data-testid="revenue-status-recognized"
+                  >
+                    <CheckCircle2 size={12} /> Vente constatée
+                  </span>
+                )
               ) : facture.deferred_revenue_at && facture.has_linked_shipment ? (
                 <button
                   onClick={handleRecognizeRevenue}
@@ -269,18 +276,28 @@ export default function FactureDetail() {
                   <AlertCircle size={12} /> {recognizingRevenue ? 'Publication…' : 'Constater la vente'}
                 </button>
               ) : facture.deferred_revenue_at ? (
-                <span
-                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg border border-slate-200"
-                  title={`Comptabilisé dans le compte Revenus perçus d'avance (23900) le ${fmtDate(facture.deferred_revenue_at)}. La vente sera constatée après le premier envoi sur une commande liée.`}
-                  data-testid="revenue-status-deferred"
-                >
-                  <Hourglass size={12} /> Revenu perçu d'avance
-                </span>
+                facture.deferred_revenue_qb_url ? (
+                  <a
+                    href={facture.deferred_revenue_qb_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-200"
+                    title={`Comptabilisé dans le compte Revenus perçus d'avance (23900) le ${fmtDate(facture.deferred_revenue_at)} — ouvrir la transaction QB`}
+                    data-testid="revenue-status-deferred"
+                  >
+                    <Hourglass size={12} /> Revenu perçu d'avance <ExternalLink size={10} />
+                  </a>
+                ) : (
+                  <span
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-slate-700 bg-slate-100 rounded-lg border border-slate-200"
+                    title={`Comptabilisé dans le compte Revenus perçus d'avance (23900) le ${fmtDate(facture.deferred_revenue_at)}. La vente sera constatée après le premier envoi sur une commande liée.`}
+                    data-testid="revenue-status-deferred"
+                  >
+                    <Hourglass size={12} /> Revenu perçu d'avance
+                  </span>
+                )
               ) : null}
             </div>
-            {sendError && (
-              <div className="mt-2 text-xs text-red-600">{sendError === 'gmail_not_connected' ? "Aucun compte Gmail connecté pour votre utilisateur." : sendError === 'no_recipient_email' ? "Aucune adresse email trouvée pour l'entreprise ou ses contacts." : sendError}</div>
-            )}
             {recognizeError && (
               <div className="mt-2 text-xs text-red-600">Erreur constatation : {recognizeError}</div>
             )}
@@ -289,6 +306,9 @@ export default function FactureDetail() {
                 Cette facture est comptabilisée dans le compte <strong>23900 Revenus perçus d'avance</strong>
                 {facture.deferred_revenue_amount_cad
                   ? ` pour ${fmtMoney(facture.deferred_revenue_amount_cad, 'CAD')}`
+                  : ''}
+                {facture.deferred_revenue_qb_ref
+                  ? ` (réf. QB ${facture.deferred_revenue_qb_ref})`
                   : ''}.
                 {facture.has_linked_shipment
                   ? " Un envoi a été enregistré — autoriser l'écriture de journal pour constater la vente."
@@ -355,7 +375,7 @@ export default function FactureDetail() {
             <div>
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Abonnement</p>
               {facture.subscription_local_id
-                ? <button onClick={openSubscriptionModal} disabled={loadingSubscription} className="text-indigo-600 hover:underline font-medium disabled:opacity-50 font-mono text-sm">{facture.subscription_stripe_id || facture.subscription_id}</button>
+                ? <button onClick={openSubscriptionModal} disabled={loadingSubscription} className="text-brand-600 hover:underline font-medium disabled:opacity-50 font-mono text-sm">{facture.subscription_stripe_id || facture.subscription_id}</button>
                 : facture.subscription_id
                   ? <span className="text-slate-500 font-mono text-sm">{facture.subscription_id}</span>
                   : <span className="text-slate-400 text-sm">—</span>}
@@ -367,7 +387,7 @@ export default function FactureDetail() {
             <div className="p-5">
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Aperçu</p>
               <div
-                className="relative cursor-pointer overflow-hidden rounded-lg border border-slate-200 bg-slate-50 hover:border-indigo-300 transition-colors"
+                className="relative cursor-pointer overflow-hidden rounded-lg border border-slate-200 bg-slate-50 hover:border-brand-300 transition-colors"
                 style={{ height: 200, width: 154 }}
                 onClick={() => setShowPdfModal(true)}
               >
@@ -385,7 +405,7 @@ export default function FactureDetail() {
           )}
 
           {/* Dates */}
-          <div className="grid grid-cols-3 gap-4 p-5">
+          <div className="grid grid-cols-4 gap-4 p-5">
             <div>
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Date de facturation</p>
               <p className="text-sm text-slate-700">{fmtDate(facture.document_date)}</p>
@@ -398,7 +418,33 @@ export default function FactureDetail() {
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Devise</p>
               <p className="text-sm font-mono text-slate-700">{facture.currency || '—'}</p>
             </div>
+            <div>
+              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Envoyée</p>
+              <label className="inline-flex items-center gap-2 cursor-pointer" title="Coche pour forcer 'Envoyée=Oui' même si aucun shipment n'est lié (ex: facture de service sans matériel physique)">
+                <input
+                  type="checkbox"
+                  checked={!!facture.is_sent}
+                  onChange={async e => {
+                    const checked = e.target.checked
+                    // Optimiste : on patche localement avant le PATCH
+                    setFacture(f => ({ ...f, is_sent: checked, is_sent_manual: checked ? 1 : 0 }))
+                    try {
+                      const updated = await api.factures.update(id, { is_sent_manual: checked })
+                      setFacture(f => ({ ...f, ...updated }))
+                    } catch {
+                      setFacture(f => ({ ...f, is_sent: !checked, is_sent_manual: checked ? 0 : 1 }))
+                    }
+                  }}
+                  className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                />
+                <span className={`text-sm ${facture.is_sent ? 'text-slate-700' : 'text-slate-400'}`}>{facture.is_sent ? 'Oui' : 'Non'}</span>
+                {facture.is_sent_manual === 1 && !facture.has_linked_shipment && (
+                  <span className="text-[10px] text-slate-400 italic">(forcé)</span>
+                )}
+              </label>
+            </div>
           </div>
+
 
           {/* Montants */}
           <div className="grid grid-cols-3 gap-4 p-5">
@@ -420,6 +466,24 @@ export default function FactureDetail() {
               </p>
             </div>
           </div>
+
+          {/* Taxes — split par juridiction (TPS / TVQ / HST / etc.) */}
+          {Array.isArray(facture.taxes) && facture.taxes.length > 0 && (
+            <div className="px-5 pb-5">
+              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Taxes</p>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 divide-y divide-slate-200">
+                {facture.taxes.map((t, i) => (
+                  <div key={i} className="flex items-center justify-between px-3 py-1.5 text-sm">
+                    <span className="text-slate-700">
+                      {t.name}
+                      {t.percentage != null && <span className="text-slate-400 ml-1">({t.percentage}%)</span>}
+                    </span>
+                    <span className="font-medium text-slate-700 tabular-nums">{fmtMoney(t.amount, facture.currency)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Notes */}
           {facture.notes && (
@@ -451,6 +515,13 @@ export default function FactureDetail() {
             </table>
           </div>
         )}
+
+        {/* Paiements et remboursements (Stripe + saisis manuellement) */}
+        <FacturePaymentsSection
+          factureId={id}
+          factureCurrency={facture.currency || 'CAD'}
+          factureIsPaid={facture.status === 'Payé' || facture.status === 'Payée' || (facture.balance_due != null && Number(facture.balance_due) <= 0 && Number(facture.total_amount) > 0)}
+        />
 
         {/* Tech responses (paid Stripe invoices only) */}
         {Array.isArray(facture.tech_responses) && facture.tech_responses.length > 0 && (
@@ -502,6 +573,13 @@ export default function FactureDetail() {
       {subscriptionModal && (
         <AbonnementDetailModal abonnement={subscriptionModal} onClose={() => setSubscriptionModal(null)} />
       )}
+
+      <SendPaymentLinkModal
+        pendingInvoiceId={facture?.id}
+        isOpen={sendModalOpen}
+        onClose={() => setSendModalOpen(false)}
+        onSent={handleSent}
+      />
     </Layout>
   )
 }

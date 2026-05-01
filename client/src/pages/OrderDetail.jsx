@@ -239,7 +239,7 @@ function PickItemRow({ item, onToggle, onHold, flashId }) {
         ${isPicked ? 'bg-emerald-500 border-emerald-500 text-white' :
           isPartial ? 'bg-blue-500 border-blue-500 text-white' :
           isOnHold ? 'bg-amber-400 border-amber-400 text-white' :
-          isLocked ? 'bg-indigo-400 border-indigo-400 text-white' :
+          isLocked ? 'bg-brand-400 border-brand-400 text-white' :
           'border-slate-300 bg-white'}`}
       >
         {isPicked && <Check size={18} strokeWidth={2.5} />}
@@ -263,7 +263,7 @@ function PickItemRow({ item, onToggle, onHold, flashId }) {
         <div className="flex items-center gap-2 mt-0.5 flex-wrap">
           {item.sku && <span className="text-sm font-mono text-slate-400">{item.sku}</span>}
           {item.serials?.map(s => (
-            <span key={s.id} className="text-sm font-mono bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded">
+            <span key={s.id} className="text-sm font-mono bg-brand-100 text-brand-700 px-1.5 py-0.5 rounded">
               {s.serial}
             </span>
           ))}
@@ -345,7 +345,7 @@ function ExpeditionCreateShipmentModal({ orderId, pickedItems, onSave, onClose }
                 type="checkbox"
                 checked={selected.has(item.id)}
                 onChange={() => toggleItem(item.id)}
-                className="w-4 h-4 rounded text-indigo-600"
+                className="w-4 h-4 rounded text-brand-600"
               />
               <div className="flex-1 min-w-0">
                 <div className="font-medium text-slate-900 text-sm">{item.product_name}</div>
@@ -451,7 +451,7 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
           </div>
           <div className="h-2.5 bg-slate-200 rounded-full overflow-hidden">
             <div
-              className={`h-full rounded-full transition-all duration-500 ${pct === 100 ? 'bg-emerald-500' : 'bg-indigo-500'}`}
+              className={`h-full rounded-full transition-all duration-500 ${pct === 100 ? 'bg-emerald-500' : 'bg-brand-500'}`}
               style={{ width: `${pct}%` }}
             />
           </div>
@@ -567,7 +567,7 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
                     {s.carrier && <span className="text-sm font-medium text-slate-700">{s.carrier}</span>}
                     {s.tracking_number && (
                       url
-                        ? <a href={url} target="_blank" rel="noreferrer" className="text-xs font-mono text-indigo-600 hover:underline">{s.tracking_number}</a>
+                        ? <a href={url} target="_blank" rel="noreferrer" className="text-xs font-mono text-brand-600 hover:underline">{s.tracking_number}</a>
                         : <span className="text-xs font-mono text-slate-500">{s.tracking_number}</span>
                     )}
                   </div>
@@ -758,7 +758,7 @@ export default function OrderDetail() {
   }
 
   if (loading) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" /></div></Layout>
+    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
   }
   if (!order) return <Layout><div className="p-6 text-slate-500">Commande introuvable.</div></Layout>
 
@@ -812,12 +812,12 @@ export default function OrderDetail() {
             </div>
             <div className="text-sm text-slate-500 mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
               {order.company_name && (
-                <Link to={`/companies/${order.company_id}`} className="text-indigo-600 hover:underline">{order.company_name}</Link>
+                <Link to={`/companies/${order.company_id}`} className="text-brand-600 hover:underline">{order.company_name}</Link>
               )}
               {order.project_id && (
                 <>
                   <span className="text-slate-300">·</span>
-                  <Link to={`/projects/${order.project_id}`} className="text-indigo-500 hover:underline flex items-center gap-1">
+                  <Link to={`/projects/${order.project_id}`} className="text-brand-500 hover:underline flex items-center gap-1">
                     {order.project_name || 'Projet'}
                   </Link>
                 </>
@@ -825,7 +825,7 @@ export default function OrderDetail() {
               {order.factures?.map(f => (
                 <React.Fragment key={f.id}>
                   <span className="text-slate-300">·</span>
-                  <Link to={`/factures/${f.id}`} className="text-indigo-500 hover:underline flex items-center gap-1">
+                  <Link to={`/factures/${f.id}`} className="text-brand-500 hover:underline flex items-center gap-1">
                     {f.document_number || 'Facture'}
                   </Link>
                 </React.Fragment>
@@ -895,7 +895,7 @@ export default function OrderDetail() {
                     onDragEnd={handleDragEnd}
                     onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, item }) }}
                     className={`border-b border-slate-100 last:border-0 transition-colors
-                      ${isDragOver ? 'bg-indigo-50 border-t-2 border-t-indigo-400' : ''}
+                      ${isDragOver ? 'bg-brand-50 border-t-2 border-t-brand-400' : ''}
                       ${dragItemId === item.id ? 'opacity-40' : ''}
                       ${flashItemId === item.id ? 'bg-emerald-50 ring-1 ring-inset ring-emerald-300' : isEditing ? 'bg-amber-50/40' : 'hover:bg-slate-50'}
                     `}
@@ -913,14 +913,14 @@ export default function OrderDetail() {
                         <div className="min-w-0">
                           <div className="font-medium text-slate-900 leading-tight">
                             {item.product_id
-                              ? <Link to={`/products/${item.product_id}`} className="hover:text-indigo-600 hover:underline">{item.product_name || 'Produit inconnu'}</Link>
+                              ? <Link to={`/products/${item.product_id}`} className="hover:text-brand-600 hover:underline">{item.product_name || 'Produit inconnu'}</Link>
                               : (item.product_name || 'Produit inconnu')}
                           </div>
                           {item.sku && <div className="text-xs text-slate-400 font-mono">{item.sku}</div>}
                           {item.serials?.length > 0 && (
                             <div className="flex flex-wrap gap-1 mt-1">
                               {item.serials.map(s => (
-                                <Link key={s.id} to={`/serials/${s.id}`} className="inline-flex items-center gap-1 text-xs font-mono bg-slate-100 text-indigo-700 hover:bg-indigo-50 px-1.5 py-0.5 rounded border border-slate-200 hover:border-indigo-300 transition-colors">
+                                <Link key={s.id} to={`/serials/${s.id}`} className="inline-flex items-center gap-1 text-xs font-mono bg-slate-100 text-brand-700 hover:bg-brand-50 px-1.5 py-0.5 rounded border border-slate-200 hover:border-brand-300 transition-colors">
                                   {s.serial}
                                   {s.status && <span className="text-slate-400 text-[10px]">· {s.status}</span>}
                                 </Link>
@@ -998,7 +998,7 @@ export default function OrderDetail() {
                         {isEditing ? (
                           <button onClick={cancelEdit} className="text-slate-300 hover:text-slate-500 p-1 rounded" title="Annuler (Échap)"><X size={14} /></button>
                         ) : (
-                          <button onClick={() => handleDuplicateItem(item.id)} className="text-slate-400 hover:text-indigo-600 p-1 rounded" title="Dupliquer"><Copy size={13} /></button>
+                          <button onClick={() => handleDuplicateItem(item.id)} className="text-slate-400 hover:text-brand-600 p-1 rounded" title="Dupliquer"><Copy size={13} /></button>
                         )}
                       </div>
                     </td>
@@ -1041,7 +1041,7 @@ export default function OrderDetail() {
                         {(() => {
                           const url = trackingUrl(s.carrier, s.tracking_number)
                           return url
-                            ? <a href={url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">{s.tracking_number}</a>
+                            ? <a href={url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{s.tracking_number}</a>
                             : <span className="text-slate-500">{s.tracking_number || '—'}</span>
                         })()}
                       </td>

@@ -40,6 +40,17 @@ const EXTERNAL_ROUTES = new Set([
   'POST /api/agent/tasks/internal',
   'GET /api/track/email/:emailId.gif',
   'GET /api/public/installation-feedback/',
+  // Admin routes appelées via curl/scripts d'ops (pas depuis le client UI)
+  'POST /api/admin/factures/backfill-paid-at',
+  'POST /api/admin/factures/:id/clear-deferred-revenue',
+  'GET /api/admin/stripe-backfill/preview',
+  'POST /api/admin/stripe-backfill/process',
+  // Pixel de tracking dans les emails (variante de /api/track/email)
+  'GET /api/email-tracking/:emailId.gif',
+  // Page de paiement client (lien permanent partagé hors-app)
+  'GET /erp/pay/:pendingId',
+  // Pending invoice consulté côté FactureDetail via api.factures.get
+  'GET /api/stripe-invoices/pending/:pendingId',
 ])
 
 // Même table que _auth-audit.test.js — garder synchro.
@@ -50,6 +61,14 @@ const MOUNTS = {
   'agent.js':                   '/api/agent',
   'auth.js':                    '/api/auth',
   'automations.js':             '/api/automations',
+  'custom-fields.js':           '/api/custom-fields',
+  'customer-pay.js':            '/erp/pay',
+  'customer-post-payment.js':   '/api/customer/post-payment',
+  'email-tracking.js':          '/api/email-tracking',
+  'payments.js':                '/api/payments',
+  'stripe-invoice-items.js':    '/api/stripe-invoice-items',
+  'stripe-invoices.js':         '/api/stripe-invoices',
+  'undo.js':                    '/api/undo',
   'calls.js':                   '/api/calls',
   'catalog.js':                 '/api/catalog',
   'companies.js':               '/api/companies',

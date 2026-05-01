@@ -33,7 +33,7 @@ const RENDERS = {
         <Link
           to={`/companies/${row.supplier_company_id}`}
           onClick={e => e.stopPropagation()}
-          className="text-indigo-600 hover:underline"
+          className="text-brand-600 hover:underline"
         >
           {row.supplier_company_name}
         </Link>
@@ -65,7 +65,7 @@ export default function Purchases() {
 
   return (
     <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
+      <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Achats</h1>

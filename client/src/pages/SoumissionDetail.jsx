@@ -206,7 +206,7 @@ export default function SoumissionDetail() {
     : Math.min(subtotal, subtotal * (soumission?.discount_pct || 0) / 100 + (soumission?.discount_amount || 0))
   const netTotal = Math.max(0, subtotal - totalDiscount)
 
-  const inp = 'border border-slate-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-indigo-400 bg-white'
+  const inp = 'border border-slate-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-brand-400 bg-white'
 
   if (loading) return <Layout><div className="p-8 text-center text-slate-400">Chargement…</div></Layout>
   if (!soumission) return <Layout><div className="p-8 text-center text-slate-500">Soumission introuvable.</div></Layout>
@@ -238,7 +238,7 @@ export default function SoumissionDetail() {
               <>
                 <span className="text-xs text-slate-400">{saving ? 'Sauvegarde…' : 'Sauvegardé'}</span>
                 <button onClick={closeEdit}
-                  className="flex items-center gap-1.5 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700">
+                  className="flex items-center gap-1.5 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700">
                   <Check size={14} /> Fermer
                 </button>
               </>
@@ -251,7 +251,7 @@ export default function SoumissionDetail() {
                 </button>
                 {soumission.generated_pdf_path && (
                   <button onClick={handleDownload} disabled={pdfLoading}
-                    className="flex items-center gap-1.5 border border-indigo-200 text-indigo-600 px-3 py-2 rounded-lg text-sm hover:bg-indigo-50">
+                    className="flex items-center gap-1.5 border border-brand-200 text-brand-600 px-3 py-2 rounded-lg text-sm hover:bg-brand-50">
                     <FileDown size={14} /> {pdfLoading ? 'Chargement…' : 'PDF'}
                   </button>
                 )}
@@ -274,7 +274,7 @@ export default function SoumissionDetail() {
                 {soumission.title || <span className="text-slate-400 italic font-normal">Sans titre</span>}
               </h1>
               {soumission.company_name && (
-                <Link to={`/companies/${soumission.company_id}`} className="text-indigo-600 hover:underline text-sm">
+                <Link to={`/companies/${soumission.company_id}`} className="text-brand-600 hover:underline text-sm">
                   {soumission.company_name}
                 </Link>
               )}
@@ -395,7 +395,7 @@ export default function SoumissionDetail() {
 
               <div className="px-3 py-2 border-t">
                 <button onClick={addLine}
-                  className="flex items-center gap-1.5 text-sm text-indigo-600 hover:text-indigo-800 font-medium">
+                  className="flex items-center gap-1.5 text-sm text-brand-600 hover:text-brand-800 font-medium">
                   <Plus size={14} /> Ajouter une ligne
                 </button>
               </div>
@@ -451,7 +451,7 @@ export default function SoumissionDetail() {
                         <span className="font-mono">-{fmt(totalDiscount)}</span>
                       </div>
                     )}
-                    <div className="flex justify-between gap-6 font-bold text-indigo-700 pt-1 border-t border-slate-200">
+                    <div className="flex justify-between gap-6 font-bold text-brand-700 pt-1 border-t border-slate-200">
                       <span>Total (avant taxes)</span>
                       <span className="font-mono">{fmt(netTotal)}</span>
                     </div>
@@ -480,7 +480,7 @@ export default function SoumissionDetail() {
                         <td className="px-4 py-2.5">
                           {it.catalog_product_id ? (
                             <Link to={`/products/${it.catalog_product_id}`} target="_blank"
-                              className="text-slate-800 hover:text-indigo-600 hover:underline inline-flex items-center gap-1">
+                              className="text-slate-800 hover:text-brand-600 hover:underline inline-flex items-center gap-1">
                               {isFr ? (it.name_fr || it.description_fr) : (it.name_en || it.name_fr || it.description_en)}
                               <ExternalLink size={11} className="opacity-40" />
                             </Link>
@@ -517,9 +517,9 @@ export default function SoumissionDetail() {
                         <td className="px-4 py-2 text-right font-mono text-red-500">-{fmt(totalDiscount)}</td>
                       </tr>
                     )}
-                    <tr className="bg-indigo-50">
+                    <tr className="bg-brand-50">
                       <td colSpan={3} className="px-4 py-3 text-right font-semibold text-slate-700">Total (avant taxes)</td>
-                      <td className="px-4 py-3 text-right font-bold font-mono text-indigo-700">{fmt(netTotal)}</td>
+                      <td className="px-4 py-3 text-right font-bold font-mono text-brand-700">{fmt(netTotal)}</td>
                     </tr>
                   </tfoot>
                 </table>
@@ -540,7 +540,7 @@ export default function SoumissionDetail() {
               </div>
               {soumission.generated_pdf_path && (
                 <button onClick={handleDownload} disabled={pdfLoading}
-                  className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50">
+                  className="flex items-center gap-2 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
                   <FileDown size={15} /> {pdfLoading ? 'Chargement…' : 'Télécharger'}
                 </button>
               )}

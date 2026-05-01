@@ -42,7 +42,7 @@ function UploadZone({ onUpload, uploading }) {
   return (
     <div
       className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer
-        ${dragOver ? 'border-indigo-500 bg-indigo-50' : 'border-slate-300 bg-white hover:border-indigo-400 hover:bg-slate-50'}
+        ${dragOver ? 'border-brand-500 bg-brand-50' : 'border-slate-300 bg-white hover:border-brand-400 hover:bg-slate-50'}
         ${uploading ? 'opacity-60 pointer-events-none' : ''}`}
       onDragOver={e => { e.preventDefault(); setDragOver(true) }}
       onDragLeave={() => setDragOver(false)}
@@ -52,13 +52,13 @@ function UploadZone({ onUpload, uploading }) {
       <input ref={inputRef} type="file" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf" className="hidden" onChange={e => handleFiles(e.target.files)} />
       {uploading ? (
         <div className="flex flex-col items-center gap-3">
-          <RefreshCw size={32} className="text-indigo-500 animate-spin" />
+          <RefreshCw size={32} className="text-brand-500 animate-spin" />
           <p className="text-slate-600 font-medium">Téléversement en cours…</p>
         </div>
       ) : (
         <div className="flex flex-col items-center gap-3">
-          <div className="w-14 h-14 bg-indigo-100 rounded-full flex items-center justify-center">
-            <Upload size={24} className="text-indigo-600" />
+          <div className="w-14 h-14 bg-brand-100 rounded-full flex items-center justify-center">
+            <Upload size={24} className="text-brand-600" />
           </div>
           <div>
             <p className="text-slate-700 font-semibold">Glissez un fichier ici</p>
@@ -79,10 +79,10 @@ function ReceiptItem({ receipt, selected, onClick, onDelete }) {
     <div
       onClick={onClick}
       className={`flex items-start gap-3 px-3 py-3 rounded-lg cursor-pointer transition-colors group
-        ${selected ? 'bg-indigo-600 text-white' : 'hover:bg-slate-100 text-slate-700'}`}
+        ${selected ? 'bg-brand-600 text-white' : 'hover:bg-slate-100 text-slate-700'}`}
     >
       <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center mt-0.5
-        ${selected ? 'bg-indigo-500' : 'bg-slate-200'}`}>
+        ${selected ? 'bg-brand-500' : 'bg-slate-200'}`}>
         <ReceiptText size={14} className={selected ? 'text-white' : 'text-slate-500'} />
       </div>
       <div className="flex-1 min-w-0">
@@ -91,7 +91,7 @@ function ReceiptItem({ receipt, selected, onClick, onDelete }) {
           <StatusBadge status={receipt.status} />
         </div>
         {receipt.receipt_date && (
-          <p className={`text-xs mt-0.5 ${selected ? 'text-indigo-200' : 'text-slate-400'}`}>{fmtDate(receipt.receipt_date)}</p>
+          <p className={`text-xs mt-0.5 ${selected ? 'text-brand-200' : 'text-slate-400'}`}>{fmtDate(receipt.receipt_date)}</p>
         )}
         {amount && (
           <p className={`text-sm font-semibold mt-0.5 ${selected ? 'text-white' : 'text-slate-900'}`}>{amount}</p>
@@ -100,7 +100,7 @@ function ReceiptItem({ receipt, selected, onClick, onDelete }) {
       <button
         onClick={e => { e.stopPropagation(); onDelete() }}
         className={`opacity-0 group-hover:opacity-100 p-1 rounded transition-all flex-shrink-0
-          ${selected ? 'hover:bg-indigo-500 text-indigo-200 hover:text-white' : 'hover:bg-red-100 text-slate-400 hover:text-red-600'}`}
+          ${selected ? 'hover:bg-brand-500 text-brand-200 hover:text-white' : 'hover:bg-red-100 text-slate-400 hover:text-red-600'}`}
         title="Supprimer"
       >
         <Trash2 size={13} />

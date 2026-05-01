@@ -37,6 +37,24 @@ async function upsertFactureFromStripeInvoice(invoice) {
   const invoiceDate = invoice.created ? new Date(invoice.created * 1000).toISOString().slice(0, 10) : null
   const dueDate = invoice.due_date ? new Date(invoice.due_date * 1000).toISOString().slice(0, 10) : null
   const status = mapStripeInvoiceStatus(invoice.status)
+
+  // Encaissement : on capture date / charge / payment_intent / montant du Stripe
+  // invoice si celui-ci est marqué payé. Si le statut bascule autre que 'paid'
+  // (failed, voided), on reset les 4 champs pour ne pas afficher d'info trompeuse.
+  let paidAt = null
+  let paidAmount = null
+  let paidChargeId = null
+  let paidPaymentIntent = null
+  if (invoice.status === 'paid') {
+    const paidTs = invoice.status_transitions?.paid_at
+    paidAt = paidTs ? new Date(paidTs * 1000).toISOString() : new Date().toISOString()
+    paidAmount = (invoice.amount_paid ?? invoice.total ?? 0) / 100
+    paidChargeId = typeof invoice.charge === 'string' ? invoice.charge : (invoice.charge?.id || null)
+    // Stripe ≥ 2024 : payment_intent est sous inv.payments.data[0].payment.payment_intent
+    paidPaymentIntent = invoice.payment_intent
+      || invoice.payments?.data?.[0]?.payment?.payment_intent
+      || null
+  }
   const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer?.id || null)
   const companyId = findCompanyByStripeCustomerId(stripeCustomerId)
 
@@ -47,6 +65,10 @@ async function upsertFactureFromStripeInvoice(invoice) {
     const subRow = db.prepare('SELECT id FROM subscriptions WHERE stripe_id=?').get(stripeSub)
     if (subRow) subscriptionId = subRow.id
   }
+  // kind = 'subscription' si l'invoice Stripe vient d'un abonnement, sinon 'order'.
+  // Détection sur stripeSub directement (pas subscriptionId) parce qu'on peut recevoir
+  // un invoice d'abonnement avant que la subscription ait été synchronisée localement.
+  const kind = stripeSub ? 'subscription' : 'order'
 
   const existing = db.prepare(
     "SELECT id, airtable_pdf_path FROM factures WHERE invoice_id=?"
@@ -65,12 +87,15 @@ async function upsertFactureFromStripeInvoice(invoice) {
         due_date=COALESCE(?, due_date),
         subscription_id=COALESCE(subscription_id, ?),
         company_id=COALESCE(company_id, ?),
+        kind=?,
         montant_avant_taxes=?,
+        paid_at=?, paid_amount=?, paid_charge_id=?, paid_payment_intent=?,
         sync_source='Factures Stripe',
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id=?
     `).run(status, total, subtotal, balanceDue, currency, invoiceDate, invoice.number || null,
-      dueDate, subscriptionId, companyId, String(subtotal), existing.id)
+      dueDate, subscriptionId, companyId, kind, String(subtotal),
+      paidAt, paidAmount, paidChargeId, paidPaymentIntent, existing.id)
     factureId = existing.id
     pdfAlreadyDownloaded = !!existing.airtable_pdf_path
     action = 'updated'
@@ -79,10 +104,13 @@ async function upsertFactureFromStripeInvoice(invoice) {
     db.prepare(`
       INSERT INTO factures (id, invoice_id, company_id, document_number, document_date, due_date,
         status, currency, amount_before_tax_cad, total_amount, balance_due,
-        subscription_id, sync_source, montant_avant_taxes, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'Factures Stripe',?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        subscription_id, kind, sync_source, montant_avant_taxes,
+        paid_at, paid_amount, paid_charge_id, paid_payment_intent,
+        created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'Factures Stripe',?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     `).run(factureId, invoice.id, companyId, invoice.number || null, invoiceDate, dueDate,
-      status, currency, subtotal, total, balanceDue, subscriptionId, String(subtotal))
+      status, currency, subtotal, total, balanceDue, subscriptionId, kind, String(subtotal),
+      paidAt, paidAmount, paidChargeId, paidPaymentIntent)
     pdfAlreadyDownloaded = false
     action = 'created'
   }
@@ -96,8 +124,12 @@ async function upsertFactureFromStripeInvoice(invoice) {
     }
   }
 
-  return { id: factureId, action }
+  return { id: factureId, action, kind }
 }
+
+// (Plus de fonction recordStripeInvoicePayment ici : avec le pattern simple, le
+// revenu est constaté au payout via pushDepositFromPayout. Le webhook invoice.paid
+// se contente d'upsert la facture dans factures via upsertFactureFromStripeInvoice.)
 
 // Send a recovery email to the customer with a link back to the onboarding
 // wizard. Used after checkout.session.completed so they can complete the form
@@ -137,9 +169,11 @@ function findCompanyByStripeCustomerId(stripeCustomerId) {
   return row?.id || null
 }
 
-// charge.refunded → insert one facture per succeeded refund (sync_source='Remboursements Stripe').
-// Dedup by invoice_id=re_xxx (the refund id, unique per refund event).
-async function handleChargeRefunded({ req: _req, res, event, secretKey, started }) {
+// charge.refunded → crée une ligne payments négative (direction='out') sur la facture
+// d'origine (pas une nouvelle facture) et pose la JE QB adaptée à l'état comptable
+// (avant constat, après constat AR ouvert, après constat soldé, abonnement).
+// Idempotent par stripe_refund_id (UNIQUE).
+async function handleChargeRefunded({ req: _req, res, event, secretKey: _secretKey, started }) {
   const charge = event.data.object
   const refunds = charge?.refunds?.data || []
 
@@ -154,98 +188,125 @@ async function handleChargeRefunded({ req: _req, res, event, secretKey, started 
   }
 
   try {
-    const stripe = new Stripe(secretKey)
     const stripeCustomerId = typeof charge.customer === 'string' ? charge.customer : charge.customer?.id || null
     const customerEmail = charge.billing_details?.email || charge.receipt_email || null
     const customerName = charge.billing_details?.name || null
 
-    const companyId = findCompanyByStripeCustomerId(stripeCustomerId)
-
-    let subscriptionId = null
-    let origDocNumber = null
-    let origInvoiceNumber = null
+    // Trouver la facture d'origine via charge.invoice → factures.invoice_id.
+    let origFacture = null
+    let matchMethod = null
     if (charge.invoice) {
       const stripeInvoiceId = typeof charge.invoice === 'string' ? charge.invoice : charge.invoice?.id
-      try {
-        const inv = typeof charge.invoice === 'object'
-          ? charge.invoice
-          : await stripe.invoices.retrieve(stripeInvoiceId)
-        const stripeSub = typeof inv.subscription === 'string' ? inv.subscription : inv.subscription?.id
-        if (stripeSub) {
-          const subRow = db.prepare('SELECT id FROM subscriptions WHERE stripe_id=?').get(stripeSub)
-          subscriptionId = subRow?.id || null
-        }
-        origInvoiceNumber = inv.number || null
-      } catch (e) {
-        console.error('Could not resolve subscription for refund:', e.message)
-      }
-      const origFact = db.prepare(
-        'SELECT document_number FROM factures WHERE invoice_id=? AND document_number IS NOT NULL LIMIT 1'
+      origFacture = db.prepare(
+        'SELECT id, document_number, currency FROM factures WHERE invoice_id=? LIMIT 1'
       ).get(stripeInvoiceId)
-      origDocNumber = origFact?.document_number || origInvoiceNumber || null
+      if (origFacture) matchMethod = 'invoice_id'
+    }
+
+    // Fallback : charge sans invoice rattachée (paiement direct dans Stripe Dashboard,
+    // sub avec collection_method=charge_automatically pré-configuré, etc.).
+    // On cherche la facture par customer + montant + période proche (±35 jours).
+    if (!origFacture && stripeCustomerId) {
+      const company = db.prepare('SELECT id FROM companies WHERE stripe_customer_id = ?').get(stripeCustomerId)
+      if (company) {
+        const chargeAmount = (charge.amount || 0) / 100
+        const chargeDate = charge.created ? new Date(charge.created * 1000).toISOString().slice(0, 10) : null
+        const candidates = chargeDate
+          ? db.prepare(`
+              SELECT id, document_number, currency, total_amount, document_date, ABS(julianday(document_date) - julianday(?)) AS dist
+              FROM factures
+              WHERE company_id = ? AND ABS(total_amount - ?) < 0.02
+                AND sync_source != 'Remboursements Stripe'
+                AND ABS(julianday(document_date) - julianday(?)) <= 35
+              ORDER BY dist LIMIT 5
+            `).all(chargeDate, company.id, chargeAmount, chargeDate)
+          : []
+        if (candidates.length === 1) {
+          origFacture = candidates[0]
+          matchMethod = `customer+amount+date (${candidates[0].document_date}, dist=${Number(candidates[0].dist).toFixed(0)}j)`
+        } else if (candidates.length > 1) {
+          // Ambigu — on prend la plus proche dans le temps mais on log
+          origFacture = candidates[0]
+          matchMethod = `ambigu — ${candidates.length} candidates, plus proche=${candidates[0].document_number}`
+        }
+      }
+    }
+
+    if (!origFacture) {
+      logSystemRun('sys_stripe_charge_refunded', {
+        status: 'error',
+        error: `Facture d'origine introuvable (charge=${charge.id}, customer=${stripeCustomerId}, montant=${(charge.amount||0)/100}) — refund non rattaché`,
+        duration_ms: Date.now() - started,
+        triggerData: { charge_id: charge.id, refunds_count: refunds.length },
+      })
+      return res.json({ received: true, error: 'no_origin_facture', refunds_count: refunds.length })
     }
 
     const currency = (charge.currency || 'cad').toUpperCase()
     let createdCount = 0
     let skippedCount = 0
-    const insertedIds = []
+    const results = []
 
     for (const refund of refunds) {
       if (refund.status !== 'succeeded') { skippedCount++; continue }
 
+      // Idempotence : un refund Stripe (re_xxx) ne crée qu'une ligne payments grâce
+      // à l'index UNIQUE sur stripe_refund_id (cf. schema.js).
       const existing = db.prepare(
-        "SELECT id FROM factures WHERE invoice_id=? AND sync_source='Remboursements Stripe'"
+        'SELECT id, qb_payment_id, qb_journal_entry_id FROM payments WHERE stripe_refund_id=? LIMIT 1'
       ).get(refund.id)
-      if (existing) { skippedCount++; continue }
 
-      const refundAmount = (refund.amount || 0) / 100
-      const createdIso = refund.created ? new Date(refund.created * 1000).toISOString() : null
-      const docDate = createdIso ? createdIso.slice(0, 10) : null
-      const moisDoc = docDate ? docDate.slice(0, 7) : null
-      const annee = docDate ? docDate.slice(0, 4) : null
+      let paymentId = existing?.id
+      if (!paymentId) {
+        paymentId = randomUUID()
+        const refundAmount = (refund.amount || 0) / 100
+        const receivedAt = refund.created ? new Date(refund.created * 1000).toISOString() : new Date().toISOString()
+        db.prepare(`
+          INSERT INTO payments (
+            id, facture_id, direction, method, received_at, amount, currency,
+            stripe_refund_id, stripe_charge_id, notes
+          ) VALUES (?, ?, 'out', 'stripe', ?, ?, ?, ?, ?, ?)
+        `).run(
+          paymentId, origFacture.id, receivedAt, refundAmount, currency,
+          refund.id, charge.id,
+          `Remboursement Stripe ${refund.id} (charge ${charge.id})`
+        )
+        createdCount++
+      } else if (existing.qb_payment_id || existing.qb_journal_entry_id) {
+        skippedCount++
+        results.push({ refund_id: refund.id, payment_id: paymentId, skipped: 'already_posted' })
+        continue
+      }
 
-      const id = randomUUID()
-      const docNumber = origDocNumber ? `${origDocNumber}-R` : null
-      db.prepare(`
-        INSERT INTO factures (
-          id, invoice_id, company_id, document_number, document_date,
-          status, currency, amount_before_tax_cad, total_amount, balance_due,
-          subscription_id, sync_source, customer_id, lien_stripe,
-          date_equivalente, mois_du_document, annee_de_facturation,
-          montant_avant_taxes,
-          created_at, updated_at
-        ) VALUES (?,?,?,?,?,'Remboursement',?,?,?,0,?,'Remboursements Stripe',?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      `).run(
-        id, refund.id, companyId, docNumber, docDate,
-        currency, refundAmount, refundAmount,
-        subscriptionId, stripeCustomerId,
-        `https://dashboard.stripe.com/refunds/${refund.id}`,
-        createdIso, moisDoc, annee,
-        String(refundAmount)
-      )
-      createdCount++
-      insertedIds.push(id)
+      // Pas de pose comptable QB ici : le refund sera comptabilisé au payout
+      // via pushDepositFromPayout (ligne négative dans le Deposit, Cr revenue
+      // ou AR selon état). On garde juste la trace en DB pour la traçabilité.
+      results.push({ refund_id: refund.id, payment_id: paymentId, status: 'tracked' })
     }
 
     const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
     const lines = [
       `Charge ${charge.id} — ${refunds.length} refund(s) reçu(s).`,
       `Client : ${customerName || customerEmail || stripeCustomerId || 'N/A'}`,
-      `Company matched : ${companyId || 'non'}`,
-      `Factures créées : ${createdCount}, ignorées : ${skippedCount}`,
+      `Facture d'origine : #${origFacture.document_number || origFacture.id} (match=${matchMethod}) → ${appUrl}/erp/factures/${origFacture.id}`,
+      `Payments créés : ${createdCount}, ignorés : ${skippedCount}`,
+      ...results.map(r => {
+        const qbId = r.qb_refund_receipt || r.qb_je
+        const qbType = r.qb_refund_receipt ? 'RR' : (r.qb_je ? 'JE' : null)
+        if (qbId) return `  ✓ ${r.refund_id} → ${qbType} ${qbId} (Dr ${r.debit} / Cr ${r.credit})`
+        if (r.qb_error) return `  ⚠️ ${r.refund_id} → échouée : ${r.qb_error}`
+        return `  · ${r.refund_id} → ${r.skipped || 'ok'}`
+      }),
     ]
-    for (const fid of insertedIds) {
-      lines.push(`${appUrl}/erp/factures/${fid}`)
-    }
 
     logSystemRun('sys_stripe_charge_refunded', {
-      status: 'success',
+      status: results.some(r => r.qb_error) ? 'error' : 'success',
       result: lines.join('\n'),
       duration_ms: Date.now() - started,
-      triggerData: { charge_id: charge.id, refunds_count: refunds.length, created: createdCount },
+      triggerData: { charge_id: charge.id, refunds_count: refunds.length, created: createdCount, facture_id: origFacture.id },
     })
 
-    return res.json({ received: true, created: createdCount, skipped: skippedCount, ids: insertedIds })
+    return res.json({ received: true, facture_id: origFacture.id, created: createdCount, skipped: skippedCount, results })
   } catch (err) {
     console.error('charge.refunded processing error:', err.message)
     logSystemRun('sys_stripe_charge_refunded', {
@@ -364,6 +425,9 @@ async function handleWebhook(req, res) {
     const customerEmail = invoice.customer_email || null
     const factureInfo = await upsertFactureFromStripeInvoice(invoice)
 
+    // Pas de pose comptable QB ici : le revenu est constaté au payout (lundi)
+    // via pushDepositFromPayout. Le constat de vente final pour les commandes
+    // se fait à l'expédition via recognizeRevenueForOrder (hook shipments.status='Envoyé').
     console.log(`✅ Stripe ${event.type} ${invoice.id} → facture ${factureInfo?.action || 'no-op'}`)
     const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
     const resultLines = [
@@ -371,6 +435,7 @@ async function handleWebhook(req, res) {
       `Client : ${customerName || customerEmail || 'N/A'}`,
       `Montant : ${((invoice.total || 0) / 100).toFixed(2)} ${(invoice.currency || 'cad').toUpperCase()}`,
       `Statut Stripe : ${invoice.status}`,
+      `Type ERP : ${factureInfo?.kind || 'order'}`,
     ]
     if (factureInfo) {
       resultLines.push(`Facture ${factureInfo.action} : ${factureInfo.id}`, `${appUrl}/erp/factures/${factureInfo.id}`)

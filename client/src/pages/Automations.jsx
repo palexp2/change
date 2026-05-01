@@ -24,7 +24,7 @@ const RENDERS = {
     <div className="flex items-center gap-2">
       <span className="font-medium">{row.name}</span>
       {row.system ? (
-        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200">
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-brand-50 text-brand-700 border border-brand-200">
           <Lock size={10} /> Système
         </span>
       ) : null}
@@ -83,11 +83,11 @@ export function AutomationsContent() {
         <div className="flex items-center gap-2">
           <TableConfigModal table="automations" />
           <button onClick={() => navigate('/automations/new?kind=field_rule')}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-white border border-indigo-200 text-indigo-700 rounded-lg hover:bg-indigo-50">
+            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-white border border-brand-200 text-brand-700 rounded-lg hover:bg-brand-50">
             <Zap size={14} /> Nouvelle règle de champ
           </button>
           <button onClick={() => navigate('/automations/new')}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">
+            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700">
             <Plus size={14} /> Nouvelle automation
           </button>
         </div>
@@ -106,5 +106,5 @@ export function AutomationsContent() {
 }
 
 export default function Automations() {
-  return <Layout><div className="p-6 max-w-7xl mx-auto"><AutomationsContent /></div></Layout>
+  return <Layout><div className="p-6"><AutomationsContent /></div></Layout>
 }

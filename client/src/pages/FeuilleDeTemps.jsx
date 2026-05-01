@@ -8,7 +8,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { parseDurationToMinutes, formatMinutes, weekKey } from '../lib/duration.js'
 
-const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-indigo-400 bg-white'
+const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
 function todayStr() { return new Date().toISOString().slice(0, 10) }
 function shiftDate(dateStr, days) {
@@ -34,7 +34,7 @@ function minToTime(min) {
 
 // ---- Reusable searchable picker for FK (company / activity code) ----
 // Rendered via portal so the popup isn't clipped by its scrolling ancestor (table wrapper).
-function RefPicker({ value, items, labelOf, placeholder, onChange, disabled }) {
+function RefPicker({ value, items, labelOf, placeholder, onChange, disabled, autoFocus }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [highlightIdx, setHighlightIdx] = useState(0)
@@ -42,6 +42,10 @@ function RefPicker({ value, items, labelOf, placeholder, onChange, disabled }) {
   const btnRef = useRef(null)
   const popupRef = useRef(null)
   const highlightRef = useRef(null)
+
+  useEffect(() => {
+    if (autoFocus) btnRef.current?.focus()
+  }, [autoFocus])
 
   useEffect(() => {
     if (!open) return
@@ -191,7 +195,7 @@ function RefPicker({ value, items, labelOf, placeholder, onChange, disabled }) {
                     ref={isHighlighted ? highlightRef : null}
                     onClick={() => selectAt(i)}
                     onMouseEnter={() => setHighlightIdx(i)}
-                    className={`w-full text-left px-3 py-1.5 text-sm truncate ${isHighlighted ? 'bg-slate-100' : ''} ${isSelected ? 'text-indigo-700' : 'text-slate-700'}`}
+                    className={`w-full text-left px-3 py-1.5 text-sm truncate ${isHighlighted ? 'bg-slate-100' : ''} ${isSelected ? 'text-brand-700' : 'text-slate-700'}`}
                   >
                     {labelOf(it)}
                   </button>
@@ -336,6 +340,7 @@ export default function FeuilleDeTemps() {
   const [activityCodes, setActivityCodes] = useState([])
   const [history, setHistory] = useState([])
   const [prefMode, setPrefMode] = useState('simple')
+  const [focusEntryId, setFocusEntryId] = useState(null)
   const confirm = useConfirm()
   const { addToast } = useToast()
 
@@ -407,6 +412,9 @@ export default function FeuilleDeTemps() {
     }
     const updated = await api.timesheets.addEntry(d.id, { duration_minutes: 0 })
     setDay(updated)
+    // Focus le picker de code d'activité de la nouvelle ligne (la dernière).
+    const newEntry = updated?.entries?.[updated.entries.length - 1]
+    if (newEntry?.id) setFocusEntryId(newEntry.id)
     loadHistory()
   }
 
@@ -430,6 +438,42 @@ export default function FeuilleDeTemps() {
     setDay(updated)
     loadHistory()
   }
+
+  // Raccourcis clavier de la page : Enter = nouvelle activité, a = aujourd'hui,
+  // flèche gauche = jour précédent, flèche droite = jour suivant.
+  useEffect(() => {
+    function onKey(e) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return
+      // On filtre sur e.target ET document.activeElement : quand un picker se
+      // ferme via Enter, le focus saute sur le bouton avant que le keydown
+      // remonte ici — sans le check sur e.target on créerait une nouvelle
+      // entrée à chaque sélection dans le picker code d'activité.
+      const isInteractive = el => {
+        if (!el) return false
+        const tag = el.tagName
+        return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || el.isContentEditable
+      }
+      if (isInteractive(e.target) || isInteractive(document.activeElement)) return
+      if (e.key === 'Enter') {
+        e.preventDefault()
+        addEntry()
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        setDate(d => shiftDate(d, -1))
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        setDate(d => shiftDate(d, 1))
+      } else if (e.key.toLowerCase() === 'a') {
+        e.preventDefault()
+        setDate(todayStr())
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // addEntry est stable (closure sur day/prefMode), on le recalcule à chaque
+    // render — pas besoin de le mettre en dépendance car la closure se renouvelle.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [day, prefMode])
 
   // Totaux — un entry ne compte que si le code d'activité est payable (payable !== 0).
   // Les entrées sans code d'activité comptent (par défaut on assume payable).
@@ -478,7 +522,7 @@ export default function FeuilleDeTemps() {
                 <button onClick={() => setDate(d => shiftDate(d, 1))} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label="Jour suivant">
                   <ChevronRight size={18} />
                 </button>
-                <button onClick={() => setDate(todayStr())} className="ml-1 text-xs text-indigo-600 hover:underline">Aujourd'hui</button>
+                <button onClick={() => setDate(todayStr())} className="ml-1 text-xs text-brand-600 hover:underline">Aujourd'hui</button>
               </div>
               <div className="text-right">
                 <div className="text-xs text-slate-400 uppercase tracking-wide">Total payable du jour</div>
@@ -494,19 +538,19 @@ export default function FeuilleDeTemps() {
                   onClick={() => patchDay({ mode: 'simple' })}
                   disabled={day?.mode === 'detailed' && entries.length > 0}
                   title={day?.mode === 'detailed' && entries.length > 0 ? 'Supprimez d\'abord les activités détaillées pour revenir au mode simplifié.' : undefined}
-                  className={`px-3 py-1.5 text-sm ${effectiveMode === 'simple' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'} disabled:bg-slate-50 disabled:text-slate-300 disabled:cursor-not-allowed disabled:hover:bg-slate-50`}
+                  className={`px-3 py-1.5 text-sm ${effectiveMode === 'simple' ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'} disabled:bg-slate-50 disabled:text-slate-300 disabled:cursor-not-allowed disabled:hover:bg-slate-50`}
                   aria-pressed={effectiveMode === 'simple'}
                 >Simplifié</button>
                 <button
                   onClick={() => patchDay({ mode: 'detailed' })}
-                  className={`px-3 py-1.5 text-sm border-l border-slate-200 ${effectiveMode === 'detailed' ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                  className={`px-3 py-1.5 text-sm border-l border-slate-200 ${effectiveMode === 'detailed' ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
                   aria-pressed={effectiveMode === 'detailed'}
                 >Détaillé</button>
               </div>
               {day?.mode === 'detailed' && entries.length > 0 && (
                 <span className="text-xs text-slate-400">Mode verrouillé — {entries.length} activité{entries.length > 1 ? 's' : ''} présente{entries.length > 1 ? 's' : ''}</span>
               )}
-              {savingField.mode && <span className="text-xs text-indigo-500">enregistrement…</span>}
+              {savingField.mode && <span className="text-xs text-brand-500">enregistrement…</span>}
             </div>
 
             {/* Edit area */}
@@ -524,6 +568,8 @@ export default function FeuilleDeTemps() {
                 onPatchEntry={patchEntry}
                 onPatchDay={patchDay}
                 onDeleteEntry={deleteEntry}
+                focusEntryId={focusEntryId}
+                onFocusConsumed={() => setFocusEntryId(null)}
               />
             )}
 
@@ -556,7 +602,13 @@ function SimpleDayForm({ day, date: _date, saving, onPatch }) {
   )
 }
 
-function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPatchEntry, onPatchDay, onDeleteEntry }) {
+function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPatchEntry, onPatchDay, onDeleteEntry, focusEntryId, onFocusConsumed }) {
+  // Quand le parent demande à focuser une entrée précise, on consomme la
+  // demande après mount du picker correspondant.
+  useEffect(() => {
+    if (focusEntryId) onFocusConsumed?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusEntryId])
   // Première entrée → l'heure de début vient de day.start_time. Pour les suivantes,
   // start = end de l'entrée précédente (cumul des durées).
   const dayStartMin = timeToMin(day?.start_time)
@@ -607,7 +659,7 @@ function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPa
                     )}
                   </td>
                   <td className="px-2 py-1.5">
-                    <RefPicker value={e.activity_code_id} items={activityCodes} labelOf={a => a.name || '(sans nom)'} placeholder="Code…" onChange={v => onPatchEntry(e.id, { activity_code_id: v })} disabled={saving[`entry-${e.id}-activity_code_id`]} />
+                    <RefPicker value={e.activity_code_id} items={activityCodes} labelOf={a => a.name || '(sans nom)'} placeholder="Code…" onChange={v => onPatchEntry(e.id, { activity_code_id: v })} disabled={saving[`entry-${e.id}-activity_code_id`]} autoFocus={focusEntryId === e.id} />
                   </td>
                   <td className="px-2 py-1.5">
                     <EndTimeInput
@@ -628,7 +680,7 @@ function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPa
         </table>
       </div>
       <div className="mt-3">
-        <button onClick={onAddEntry} className="text-sm text-indigo-600 hover:underline flex items-center gap-1">
+        <button onClick={onAddEntry} className="text-sm text-brand-600 hover:underline flex items-center gap-1">
           <Plus size={14} /> Ajouter une activité
         </button>
       </div>
@@ -825,7 +877,7 @@ function DayRow({ day, isActive, onJump }) {
   const date = day.date
   const modeBadge = day.mode === 'detailed' ? 'D' : 'S'
   const baseRow = isActive
-    ? 'bg-indigo-50 border-l-2 border-indigo-500'
+    ? 'bg-brand-50 border-l-2 border-brand-500'
     : 'border-l-2 border-transparent hover:bg-slate-50'
   return (
     <tr
@@ -834,7 +886,7 @@ function DayRow({ day, isActive, onJump }) {
       data-testid={`history-day-row-${date}`}
       data-active={isActive ? 'true' : 'false'}
     >
-      <td className={`pl-2.5 pr-2 py-1.5 tabular-nums ${isActive ? 'text-indigo-700 font-semibold' : 'text-indigo-600 font-medium'}`}>
+      <td className={`pl-2.5 pr-2 py-1.5 tabular-nums ${isActive ? 'text-brand-700 font-semibold' : 'text-brand-600 font-medium'}`}>
         {date}
         <span className="ml-1.5 text-[10px] text-slate-400 font-normal">{modeBadge}</span>
       </td>

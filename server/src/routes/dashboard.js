@@ -1,12 +1,25 @@
 import { Router } from 'express';
 import db from '../db/database.js';
-import { requireAuth } from '../middleware/auth.js';
+import { requireAuth, requireAdmin } from '../middleware/auth.js';
 
 const router = Router();
 router.use(requireAuth);
 
 // GET /api/dashboard
 router.get('/', (req, res) => {
+  // Project goal (target count + end date)
+  const goalSettings = db.prepare("SELECT key, value FROM connector_config WHERE connector = 'dashboard_goal'").all();
+  const goalTarget = Number(goalSettings.find(s => s.key === 'target_qty')?.value || 0);
+  const goalEndDate = goalSettings.find(s => s.key === 'end_date')?.value || null;
+  const goalStartDate = goalSettings.find(s => s.key === 'start_date')?.value || (new Date().getFullYear() + '-01-01');
+
+  let goalCurrentCount = 0;
+  if (goalTarget > 0 && goalEndDate) {
+    goalCurrentCount = db.prepare(`
+      SELECT COUNT(*) as count FROM projects
+      WHERE created_at >= ? AND created_at <= ? AND deleted_at IS NULL
+    `).get(goalStartDate + 'T00:00:00Z', goalEndDate + 'T23:59:59Z').count;
+  }
   // Companies by lifecycle phase
   const companiesByPhase = db.prepare(
     `SELECT lifecycle_phase, COUNT(*) as count FROM companies GROUP BY lifecycle_phase ORDER BY count DESC`
@@ -15,7 +28,7 @@ router.get('/', (req, res) => {
   // Projects by status with values
   const projectsByStatus = db.prepare(
     `SELECT status, COUNT(*) as count, SUM(value_cad) as total_value, SUM(value_cad * probability / 100.0) as weighted_value
-     FROM projects GROUP BY status`
+     FROM projects WHERE deleted_at IS NULL GROUP BY status`
   ).all();
 
   // Orders by status
@@ -51,7 +64,7 @@ router.get('/', (req, res) => {
 
   // Won this month
   const wonThisMonth = db.prepare(
-    `SELECT COUNT(*) as count, SUM(value_cad) as total FROM projects WHERE status = 'Gagné' AND strftime('%Y-%m', updated_at) = strftime('%Y-%m', 'now')`
+    `SELECT COUNT(*) as count, SUM(value_cad) as total FROM projects WHERE deleted_at IS NULL AND status = 'Gagné' AND strftime('%Y-%m', updated_at) = strftime('%Y-%m', 'now')`
   ).get();
 
   // Weekly shipments (last 16 weeks)
@@ -73,7 +86,8 @@ router.get('/', (req, res) => {
       SUM(CASE WHEN status = 'Gagné' THEN 1 ELSE 0 END) as won,
       SUM(CASE WHEN status = 'Perdu' THEN 1 ELSE 0 END) as lost
     FROM projects
-    WHERE status IN ('Gagné', 'Perdu')
+    WHERE deleted_at IS NULL
+      AND status IN ('Gagné', 'Perdu')
       AND COALESCE(close_date, updated_at) >= date('now', '-12 months')
     GROUP BY month, type
     ORDER BY month, type
@@ -461,7 +475,43 @@ router.get('/', (req, res) => {
     recentShippedOrders,
     replacementRate: { parkValue, last28: replacementLast28, byMonth: replacementByMonth, items: replacementItems },
     weeklyShippingCosts,
+    projectGoal: {
+      target: goalTarget,
+      current: goalCurrentCount,
+      start_date: goalStartDate,
+      end_date: goalEndDate
+    }
   });
+});
+
+// GET /api/dashboard/goal
+router.get('/goal', (req, res) => {
+  const settings = db.prepare("SELECT key, value FROM connector_config WHERE connector = 'dashboard_goal'").all();
+  const resObj = {
+    target_qty: Number(settings.find(s => s.key === 'target_qty')?.value || 0),
+    end_date: settings.find(s => s.key === 'end_date')?.value || '',
+    start_date: settings.find(s => s.key === 'start_date')?.value || (new Date().getFullYear() + '-01-01'),
+  };
+  res.json(resObj);
+});
+
+// PUT /api/dashboard/goal
+router.put('/goal', requireAdmin, (req, res) => {
+  const { target_qty, end_date, start_date } = req.body;
+
+  const upsert = db.prepare(`
+    INSERT INTO connector_config (connector, key, value)
+    VALUES ('dashboard_goal', ?, ?)
+    ON CONFLICT(connector, key) DO UPDATE SET value = excluded.value
+  `);
+
+  db.transaction(() => {
+    upsert.run('target_qty', String(target_qty || 0));
+    upsert.run('end_date', end_date || '');
+    upsert.run('start_date', start_date || (new Date().getFullYear() + '-01-01'));
+  })();
+
+  res.json({ success: true });
 });
 
 export default router;

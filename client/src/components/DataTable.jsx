@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ChevronRight, ChevronDown, Trash2 } from 'lucide-react'
+import { ChevronRight, ChevronDown, Trash2, Plus, Edit2 } from 'lucide-react'
 import { useTableView } from '../lib/useTableView.js'
 import { ViewToolbar } from './ViewToolbar.jsx'
 import { TABLE_ALL_LABEL } from '../lib/tableDefs.js'
@@ -30,7 +30,7 @@ function DynamicCell({ value, col }) {
     if (!Array.isArray(items)) items = [items]
     return (
       <div className="flex gap-1 flex-wrap">
-        {items.map((v, i) => <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700">{v}</span>)}
+        {items.map((v, i) => <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-brand-50 text-brand-700">{v}</span>)}
       </div>
     )
   }
@@ -89,7 +89,7 @@ function ResizeHandle({ onResize }) {
 
   return (
     <div
-      className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize z-10 bg-transparent group-hover/header:bg-slate-200 hover:!bg-indigo-400 active:!bg-indigo-500"
+      className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize z-10 bg-transparent group-hover/header:bg-slate-200 hover:!bg-brand-400 active:!bg-brand-500"
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -108,6 +108,11 @@ export function DataTable({
   initialGroupBy = null,
   forceAllView = false,
   onBulkDelete,
+  disabledColumns = null, // Map<column_name, { airtable_field_name }> | null
+  onAddCustomField,       // () => void — affiche le bouton "+" en bout de header
+  customFieldsByColumn,   // Map<column_name, { id, name, type, decimals }> — pour right-click menu
+  onEditCustomField,      // (field) => void
+  onDeleteCustomField,    // (field) => void
 }) {
   const [visibleCols, setVisibleCols] = useState([])
   const [groupBy, setGroupBy] = useState(initialGroupBy)
@@ -115,6 +120,11 @@ export function DataTable({
   const [colWidths, setColWidths] = useState({})
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [deleting, setDeleting] = useState(false)
+  const [colMenu, setColMenu] = useState(null) // { x, y, field } pour right-click menu
+  // Tracks previously seen custom-field column ids so we can auto-show newly
+  // created fields in the active view (the user vient de créer le champ, on
+  // suppose qu'ils veulent le voir tout de suite).
+  const prevCustomFieldKeys = useRef(null)
   const confirm = useConfirm()
   const { addToast } = useToast()
 
@@ -123,6 +133,12 @@ export function DataTable({
   const selectionActive = bulkDeleteEnabled && typeof onBulkDelete === 'function'
   // Use allColumns (hardcoded + dynamic Airtable fields) everywhere
   const mergedColumns = allColumns || columns
+  // Helper passé aux consumers pour savoir si une colonne est désactivée
+  // (import Airtable coupé via la modale de sync). Comparaison sur field OU id.
+  const isDisabled = useCallback((c) => {
+    if (!disabledColumns || disabledColumns.size === 0 || !c) return false
+    return disabledColumns.has(c.field) || disabledColumns.has(c.id)
+  }, [disabledColumns])
 
   const parentRef = useRef(null)
   const saveWidthsTimer = useRef(null)
@@ -165,11 +181,34 @@ export function DataTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.activeViewId, view.configReady])
 
+  // Auto-show newly created custom fields in the active view : on diffe les
+  // clés de customFieldsByColumn entre renders ; toute nouvelle clé est
+  // ajoutée à visibleCols (l'autosave de ViewToolbar persiste). Skippé au
+  // premier render pour ne pas clobber la liste initiale chargée du serveur.
+  useEffect(() => {
+    if (!view.configReady) return
+    if (!customFieldsByColumn) return
+    const currentKeys = new Set(customFieldsByColumn.keys())
+    const prev = prevCustomFieldKeys.current
+    if (prev) {
+      const newOnes = [...currentKeys].filter(k => !prev.has(k))
+      if (newOnes.length > 0) {
+        setVisibleCols(cols => {
+          const set = new Set(cols)
+          for (const k of newOnes) set.add(k)
+          return [...set]
+        })
+      }
+    }
+    prevCustomFieldKeys.current = currentKeys
+  }, [customFieldsByColumn, view.configReady])
+
   const visibleColumns = useMemo(
     () => visibleCols
       .map(id => mergedColumns.find(c => c.id === id))
-      .filter(Boolean),
-    [mergedColumns, visibleCols]
+      .filter(Boolean)
+      .filter(c => !isDisabled(c)), // colonnes dont l'import Airtable est désactivé : on les retire du rendu
+    [mergedColumns, visibleCols, isDisabled]
   )
 
   const [dragOverCol, setDragOverCol] = useState(null)
@@ -214,8 +253,11 @@ export function DataTable({
 
   const gridTemplate = useMemo(() => {
     const cols = visibleColumns.map(c => colWidths[c.id] ? `${colWidths[c.id]}px` : 'minmax(120px, 1fr)').join(' ')
-    return selectionActive ? `40px ${cols}` : cols
-  }, [visibleColumns, colWidths, selectionActive])
+    // Si on a un onAddCustomField, on réserve une colonne `auto` à la fin pour
+    // le bouton "+" — les rows de données auront simplement une cellule vide.
+    const withAdd = onAddCustomField ? `${cols} 36px` : cols
+    return selectionActive ? `40px ${withAdd}` : withAdd
+  }, [visibleColumns, colWidths, selectionActive, onAddCustomField])
 
   // Reset selection when data changes (e.g., after delete, filter)
   const visibleIds = useMemo(() => filteredData.map(r => r.id).filter(Boolean), [filteredData])
@@ -374,11 +416,12 @@ export function DataTable({
         groupBy={groupBy} setGroupBy={setGroupBy}
         onCollapseAll={collapseAll} onExpandAll={expandAll}
         data={data}
+        disabledColumns={disabledColumns}
       />
 
       {selectionActive && selectedIds.size > 0 && (
-        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-indigo-50 border-b border-indigo-100">
-          <span className="text-sm text-indigo-900">
+        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-brand-50 border-b border-brand-100">
+          <span className="text-sm text-brand-900">
             {selectedIds.size} sélectionné{selectedIds.size > 1 ? 's' : ''}
           </span>
           <div className="flex items-center gap-2">
@@ -414,31 +457,75 @@ export function DataTable({
                   checked={allVisibleSelected}
                   ref={el => { if (el) el.indeterminate = someVisibleSelected }}
                   onChange={toggleAllVisible}
-                  className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                  className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
                 />
               </div>
             )}
-            {visibleColumns.map(col => (
-              <div
-                key={col.id}
-                draggable
-                onDragStart={e => handleColDragStart(e, col.id)}
-                onDragOver={e => handleColDragOver(e, col.id)}
-                onDrop={handleColDrop}
-                onDragEnd={handleColDragEnd}
-                onDragLeave={() => setDragOverCol(prev => prev === col.id ? null : prev)}
-                className="relative px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide leading-tight break-words select-none cursor-grab active:cursor-grabbing"
-              >
-                {col.label}
-                {dragOverCol === col.id && dragColRef.current && dragColRef.current !== col.id && (
-                  <div
-                    className={`absolute top-0 bottom-0 w-0.5 bg-indigo-500 pointer-events-none ${dragOverSide === 'before' ? '-left-px' : '-right-px'}`}
-                  />
-                )}
-                <ResizeHandle onResize={w => handleColResize(col.id, w)} />
+            {visibleColumns.map(col => {
+              const customField = customFieldsByColumn?.get(col.field) || customFieldsByColumn?.get(col.id)
+              return (
+                <div
+                  key={col.id}
+                  draggable
+                  onDragStart={e => handleColDragStart(e, col.id)}
+                  onDragOver={e => handleColDragOver(e, col.id)}
+                  onDrop={handleColDrop}
+                  onDragEnd={handleColDragEnd}
+                  onDragLeave={() => setDragOverCol(prev => prev === col.id ? null : prev)}
+                  onContextMenu={customField ? (e) => {
+                    e.preventDefault()
+                    setColMenu({ x: e.clientX, y: e.clientY, field: customField })
+                  } : undefined}
+                  className="relative px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide leading-tight break-words select-none cursor-grab active:cursor-grabbing"
+                  title={customField ? 'Clic-droit pour modifier ou supprimer' : undefined}
+                >
+                  {col.label}
+                  {dragOverCol === col.id && dragColRef.current && dragColRef.current !== col.id && (
+                    <div
+                      className={`absolute top-0 bottom-0 w-0.5 bg-brand-500 pointer-events-none ${dragOverSide === 'before' ? '-left-px' : '-right-px'}`}
+                    />
+                  )}
+                  <ResizeHandle onResize={w => handleColResize(col.id, w)} />
+                </div>
+              )
+            })}
+            {onAddCustomField && (
+              <div className="flex items-center justify-center">
+                <button
+                  type="button"
+                  onClick={onAddCustomField}
+                  className="p-1 rounded text-slate-400 hover:text-brand-600 hover:bg-brand-50 transition-colors"
+                  title="Ajouter un champ"
+                  aria-label="Ajouter un champ"
+                >
+                  <Plus size={14} />
+                </button>
               </div>
-            ))}
+            )}
           </div>
+
+          {colMenu && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setColMenu(null)} onContextMenu={e => { e.preventDefault(); setColMenu(null) }} />
+              <div
+                className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-lg py-1 min-w-[160px]"
+                style={{ top: colMenu.y, left: colMenu.x }}
+              >
+                <button
+                  onClick={() => { onEditCustomField?.(colMenu.field); setColMenu(null) }}
+                  className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 text-left"
+                >
+                  <Edit2 size={13} /> Modifier
+                </button>
+                <button
+                  onClick={() => { onDeleteCustomField?.(colMenu.field); setColMenu(null) }}
+                  className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 text-left"
+                >
+                  <Trash2 size={13} /> Supprimer
+                </button>
+              </div>
+            </>
+          )}
 
           {loading ? (
             <div className="flex items-center justify-center text-slate-400 text-sm py-12">
@@ -512,7 +599,7 @@ export function DataTable({
                         aria-label="Sélectionner la ligne"
                         checked={selectedIds.has(item.id)}
                         onChange={() => toggleRow(item.id)}
-                        className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                        className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500 cursor-pointer"
                       />
                     </div>
                   )}

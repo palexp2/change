@@ -9,6 +9,7 @@ import { requireAuth } from '../middleware/auth.js'
 import * as postmark from 'postmark'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { getAutomationFrom } from '../services/postmarkConfig.js'
+import { recognizeRevenueForOrder } from '../services/quickbooks.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -175,6 +176,34 @@ router.patch('/:id', (req, res) => {
       UPDATE order_items SET shipped_unit_cost = unit_cost
       WHERE shipment_id = ? AND shipped_unit_cost IS NULL
     `).run(req.params.id)
+
+    // Constat de vente — pour chaque facture liée à la commande (kind='order'),
+    // pose la JE Dr 23900|AR / Cr 40000. Asynchrone et idempotent : si QB est down
+    // ou si la JE est déjà posée, on continue sans bloquer la réponse PATCH.
+    const ship = db.prepare('SELECT order_id FROM shipments WHERE id = ?').get(req.params.id)
+    if (ship?.order_id) {
+      recognizeRevenueForOrder(ship.order_id).then(r => {
+        if (r.recognized.length || r.errors.length) {
+          logSystemRun('sys_revenue_recognition', {
+            status: r.errors.length ? 'error' : 'success',
+            result: [
+              `Commande ${ship.order_id} (shipment ${req.params.id} → Envoyé)`,
+              `Constatées : ${r.recognized.length} (${r.recognized.map(x => `#${x.document_number || x.facture_id} ${x.amount} ${x.currency} via ${x.debit_account}`).join(', ') || '—'})`,
+              `Skip : ${r.skipped.length}`,
+              r.errors.length ? `Erreurs : ${r.errors.map(e => `${e.facture_id}: ${e.error}`).join(' | ')}` : null,
+            ].filter(Boolean).join('\n'),
+            error: r.errors.length ? r.errors.map(e => e.error).join(' | ') : undefined,
+            triggerData: { order_id: ship.order_id, shipment_id: req.params.id },
+          })
+        }
+      }).catch(err => {
+        console.error('recognizeRevenueForOrder error:', err.message)
+        logSystemRun('sys_revenue_recognition', {
+          status: 'error', error: err.message,
+          triggerData: { order_id: ship.order_id, shipment_id: req.params.id },
+        })
+      })
+    }
   }
 
   const updated = db.prepare(`

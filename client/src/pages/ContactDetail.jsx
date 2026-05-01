@@ -309,7 +309,7 @@ export default function ContactDetail() {
   }
 
   if (loading) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" /></div></Layout>
+    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
   }
   if (!contact) {
     return <Layout><div className="p-6 text-slate-500">Contact introuvable.</div></Layout>
@@ -333,7 +333,7 @@ export default function ContactDetail() {
               )}
             </div>
             {contact.company_id && (
-              <Link to={`/companies/${contact.company_id}`} className="text-sm text-indigo-600 hover:underline mt-0.5 block">
+              <Link to={`/companies/${contact.company_id}`} className="text-sm text-brand-600 hover:underline mt-0.5 block">
                 {contact.company_name}
               </Link>
             )}
@@ -352,7 +352,7 @@ export default function ContactDetail() {
                 <div key={field.key} className={span2 ? 'sm:col-span-2' : ''}>
                   <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
                     {field.label}
-                    {fieldSaving[field.key] && <span className="inline-block w-3 h-3 border border-indigo-400 border-t-transparent rounded-full animate-spin" />}
+                    {fieldSaving[field.key] && <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />}
                   </div>
                   <InlineField
                     field={field}

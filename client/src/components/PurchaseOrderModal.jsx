@@ -3,7 +3,7 @@ import { Mail, Download, Plus, Trash2, RefreshCw, CheckCircle, Search } from 'lu
 import { api } from '../lib/api.js'
 import { Modal } from './Modal.jsx'
 
-const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-indigo-400 bg-white'
+const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
 function AddressFields({ label, value, onChange }) {
   const set = (k, v) => onChange({ ...value, [k]: v })
@@ -177,7 +177,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
     <Modal isOpen={isOpen} onClose={onClose} title="Bon de commande" size="xl">
       {loading || !po ? (
         <div className="flex items-center justify-center py-12">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" />
+          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" />
         </div>
       ) : sent ? (
         <div className="space-y-4 text-center py-8">
@@ -239,7 +239,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
                       setEmailToMode('select')
                       setEmailTo(supplierContacts[0].email)
                     }}
-                    className="text-xs text-indigo-600 hover:underline mt-1"
+                    className="text-xs text-brand-600 hover:underline mt-1"
                   >
                     ← Choisir dans la liste des contacts
                   </button>
@@ -326,7 +326,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
                   existingIds={new Set((po.items || []).map(it => it.product_id).filter(Boolean))}
                   onPick={addSupplierProduct}
                 />
-                <button onClick={addItem} className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
+                <button onClick={addItem} className="text-xs text-brand-600 hover:underline flex items-center gap-1">
                   <Plus size={12} /> Ligne vide
                 </button>
               </div>
@@ -436,7 +436,7 @@ function SupplierProductPicker({ products, existingIds, onPick }) {
     <div className="relative" ref={rootRef}>
       <button
         onClick={() => setOpen(o => !o)}
-        className="text-xs text-indigo-600 hover:underline flex items-center gap-1"
+        className="text-xs text-brand-600 hover:underline flex items-center gap-1"
         type="button"
       >
         <Plus size={12} /> Ajouter une pièce du fournisseur

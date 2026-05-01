@@ -2,10 +2,11 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Plus, Trash2, ExternalLink, Search, AlertTriangle, Check } from 'lucide-react'
 import api from '../lib/api.js'
 import { Modal } from './Modal.jsx'
+import { SendPaymentLinkModal } from './SendPaymentLinkModal.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { computeCanadaTaxes } from '../lib/taxes.js'
 
-const inputCls = 'border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500'
+const inputCls = 'border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500'
 
 function fmtMoney(n, currency = 'CAD') {
   try { return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(n) }
@@ -26,6 +27,7 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null) // { invoice_number, hosted_invoice_url, status, email }
+  const [sendModalOpen, setSendModalOpen] = useState(false)
 
   useEffect(() => { setMode(initialMode) }, [initialMode, isOpen])
 
@@ -118,18 +120,24 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
     }
     setSubmitting(true)
     try {
+      // On crée toujours en draft. Si l'utilisateur a coché "Envoyer par email",
+      // on ouvre la modale de personnalisation après la création.
       const r = await api.stripeInvoices.create({
         company_id: companyId,
         soumission_id: mode === 'convert' ? selectedSoumissionId || null : null,
         items: cleanItems,
         shipping_province: shipping.province,
         shipping_country: shipping.country || 'Canada',
-        send_email: sendEmail,
+        send_email: false,
         due_days: Number(dueDays) || 30,
       })
       setResult(r)
-      addToast({ message: `Facture ${r.invoice_number || r.invoice_id} créée — statut ${r.status}`, type: 'success' })
       onCreated?.(r)
+      if (sendEmail) {
+        setSendModalOpen(true)
+      } else {
+        addToast({ message: 'Facture créée en draft', type: 'success' })
+      }
     } catch (e) {
       setError(e.message)
     } finally {
@@ -197,7 +205,7 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
             <div>
               <div className="flex items-center justify-between mb-2">
                 <h3 className="text-sm font-semibold text-slate-700">Lignes</h3>
-                <button onClick={addCustomLine} className="inline-flex items-center gap-1 px-2 py-1 text-xs text-indigo-600 hover:bg-indigo-50 rounded">
+                <button onClick={addCustomLine} className="inline-flex items-center gap-1 px-2 py-1 text-xs text-brand-600 hover:bg-brand-50 rounded">
                   <Plus size={12} /> Ligne custom
                 </button>
               </div>
@@ -254,7 +262,7 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
               <button
                 onClick={handleSubmit}
                 disabled={submitting || noShippingProvince || shippingLoading}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg disabled:opacity-50"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50"
               >
                 {submitting ? 'Création…' : 'Créer la facture'}
               </button>
@@ -262,6 +270,15 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
           </>
         )}
       </div>
+
+      <SendPaymentLinkModal
+        pendingInvoiceId={result?.pending_invoice_id}
+        isOpen={sendModalOpen}
+        onClose={() => setSendModalOpen(false)}
+        onSent={r => {
+          setResult(prev => ({ ...prev, status: 'sent', email: { sent_to: r.email?.sent_to, from: r.email?.from } }))
+        }}
+      />
     </Modal>
   )
 }
@@ -272,7 +289,7 @@ function TabBtn({ active, disabled, onClick, children, title }) {
       onClick={onClick}
       disabled={disabled}
       title={title}
-      className={`px-3 py-2 text-sm border-b-2 -mb-px ${active ? 'border-indigo-600 text-indigo-600 font-medium' : 'border-transparent text-slate-500 hover:text-slate-700'} ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+      className={`px-3 py-2 text-sm border-b-2 -mb-px ${active ? 'border-brand-600 text-brand-600 font-medium' : 'border-transparent text-slate-500 hover:text-slate-700'} ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
     >{children}</button>
   )
 }
@@ -328,9 +345,9 @@ function ProductPicker({ products, value, description, onPick, onChangeDescripti
                 key={p.id}
                 type="button"
                 onClick={() => { onPick(p); setOpen(false); setQ('') }}
-                className={`w-full text-left px-3 py-2 text-sm hover:bg-indigo-50 flex items-start gap-2 ${value === p.id ? 'bg-indigo-50' : ''}`}
+                className={`w-full text-left px-3 py-2 text-sm hover:bg-brand-50 flex items-start gap-2 ${value === p.id ? 'bg-brand-50' : ''}`}
               >
-                <Check size={14} className={`mt-0.5 ${value === p.id ? 'text-indigo-600' : 'text-transparent'}`} />
+                <Check size={14} className={`mt-0.5 ${value === p.id ? 'text-brand-600' : 'text-transparent'}`} />
                 <div className="flex-1 min-w-0">
                   <div className="font-medium text-slate-900 truncate">{p.name_fr || p.name_en}</div>
                   <div className="text-xs text-slate-500 font-mono">{p.sku} · {fmtMoney(p.price_cad)}</div>
@@ -361,13 +378,13 @@ function SuccessView({ result, onClose }) {
       {result.pay_url && (
         <div className="rounded-lg border border-slate-200 p-3 text-sm">
           <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Lien de paiement permanent</div>
-          <a href={result.pay_url} target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline break-all font-mono text-xs">{result.pay_url}</a>
+          <a href={result.pay_url} target="_blank" rel="noreferrer" className="text-brand-600 hover:underline break-all font-mono text-xs">{result.pay_url}</a>
           <div className="text-xs text-slate-400 mt-1">Ce lien reste valide pour toujours — il génère une nouvelle session Stripe Checkout au besoin.</div>
         </div>
       )}
       <div className="flex justify-end gap-2">
         {result.pending_invoice_id && (
-          <a href={`/erp/factures/${result.pending_invoice_id}`} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm text-indigo-600 hover:bg-indigo-50 rounded-lg border border-indigo-200">
+          <a href={`/erp/factures/${result.pending_invoice_id}`} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm text-brand-600 hover:bg-brand-50 rounded-lg border border-brand-200">
             <ExternalLink size={14} /> Voir la facture
           </a>
         )}

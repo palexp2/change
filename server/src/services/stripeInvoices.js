@@ -192,12 +192,25 @@ export function buildInvoiceEmailHtml({
   dueDateLabel,
   trackingPixelUrl,
   fromName,
+  customMessage,
 }) {
   const greeting = contactFirstName ? `Bonjour ${escapeHtml(contactFirstName)},` : 'Bonjour,'
+  // Quand un message custom est fourni, on remplace l'intro (greeting + paragraphe)
+  // par les paragraphes du message. Le bouton de paiement et la signature restent.
+  let intro
+  if (customMessage && String(customMessage).trim()) {
+    const paragraphs = String(customMessage)
+      .replace(/\r\n/g, '\n')
+      .split(/\n{2,}/)
+      .map(p => p.trim())
+      .filter(Boolean)
+    intro = paragraphs.map(p => `<p>${escapeHtml(p).replace(/\n/g, '<br/>')}</p>`).join('\n')
+  } else {
+    intro = `<p>${greeting}</p>\n<p>Vous trouverez ci-jointe la facture <strong>${escapeHtml(invoiceNumber || '')}</strong> au montant de <strong>${escapeHtml(totalLabel || '')}</strong>${dueDateLabel ? `, payable au plus tard le <strong>${escapeHtml(dueDateLabel)}</strong>` : ''}.</p>`
+  }
   return `<!DOCTYPE html>
 <html><body style="font-family:Arial,sans-serif;color:#1f2937;line-height:1.5;">
-<p>${greeting}</p>
-<p>Vous trouverez ci-jointe la facture <strong>${escapeHtml(invoiceNumber || '')}</strong> au montant de <strong>${escapeHtml(totalLabel || '')}</strong>${dueDateLabel ? `, payable au plus tard le <strong>${escapeHtml(dueDateLabel)}</strong>` : ''}.</p>
+${intro}
 <p><a href="${escapeAttr(hostedUrl)}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px;font-weight:600;">Voir et payer la facture</a></p>
 ${pdfUrl ? `<p><a href="${escapeAttr(pdfUrl)}">Télécharger le PDF</a></p>` : ''}
 <p>Merci pour votre confiance,<br/>${escapeHtml(fromName || 'Orisha')}</p>

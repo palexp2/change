@@ -132,14 +132,19 @@ router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM companies WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Company not found' });
 
-  const allowed = ['name','type','lifecycle_phase','phone','email','website','address','city','province','country','notes','currency','language'];
+  const allowed = ['name','type','lifecycle_phase','phone','email','website','address','city','province','country','notes','currency','language','is_vendeur_orisha'];
   const sets = [];
   const params = [];
   for (const key of allowed) {
     if (Object.prototype.hasOwnProperty.call(req.body, key)) {
       sets.push(`${key}=?`);
       const v = req.body[key];
-      params.push(v === '' ? null : v);
+      // Booléens : on accepte 0/1, true/false, '0'/'1' — on stocke en 0/1.
+      if (key === 'is_vendeur_orisha') {
+        params.push(v === true || v === 1 || v === '1' ? 1 : 0);
+      } else {
+        params.push(v === '' ? null : v);
+      }
     }
   }
   if (sets.length > 0) {
@@ -165,6 +170,54 @@ router.get('/:id/returns', (req, res) => {
     ORDER BY r.created_at DESC
   `).all(req.params.id)
   res.json({ data: rows })
+})
+
+// GET /api/companies/:id/onboarding-responses
+// Réponses du wizard post-paiement (`customer_onboarding_responses`).
+router.get('/:id/onboarding-responses', (req, res) => {
+  const rows = db.prepare(`
+    SELECT r.*,
+           pi.id AS extras_pending_id,
+           pi.status AS extras_pending_status,
+           pi.paid_invoice_id AS extras_paid_invoice_id
+    FROM customer_onboarding_responses r
+    LEFT JOIN pending_invoices pi ON pi.id = r.extras_pending_invoice_id
+    WHERE r.company_id = ?
+    ORDER BY COALESCE(r.submitted_at, r.updated_at, r.created_at) DESC
+  `).all(req.params.id)
+
+  const safeParse = v => {
+    if (!v) return null
+    try { return JSON.parse(v) } catch { return null }
+  }
+
+  const data = rows.map(r => ({
+    id: r.id,
+    stripe_session_id: r.stripe_session_id,
+    stripe_invoice_id: r.stripe_invoice_id,
+    pending_invoice_id: r.pending_invoice_id,
+    status: r.status,
+    is_new_site: r.is_new_site,
+    farm_address: safeParse(r.farm_address_json),
+    shipping_same_as_farm: r.shipping_same_as_farm == null ? null : !!r.shipping_same_as_farm,
+    shipping_address: safeParse(r.shipping_address_json),
+    network_access: r.network_access,
+    wifi_ssid: r.wifi_ssid,
+    wifi_password: r.wifi_password,
+    permission_level: r.permission_level,
+    num_greenhouses: r.num_greenhouses,
+    greenhouses: safeParse(r.greenhouses_json) || [],
+    extras: safeParse(r.extras_json) || [],
+    extras_pending_invoice: r.extras_pending_id ? {
+      id: r.extras_pending_id,
+      status: r.extras_pending_status,
+      paid_invoice_id: r.extras_paid_invoice_id,
+    } : null,
+    submitted_at: r.submitted_at,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  }))
+  res.json({ data })
 })
 
 // DELETE /api/companies/:id

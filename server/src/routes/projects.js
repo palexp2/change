@@ -3,9 +3,39 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
+import { getActiveCustomColumns } from './custom-fields.js';
 
 const router = Router();
 router.use(requireAuth);
+
+// GET /api/projects/vendeur-options — liste fusionnée pour le picker du champ
+// Vendeur sur les projets : employés actifs avec is_salesperson=1 + companies
+// avec is_vendeur_orisha=1.
+router.get('/vendeur-options', (req, res) => {
+  const employees = db.prepare(`
+    SELECT id, first_name, last_name FROM employees
+    WHERE active=1 AND is_salesperson=1
+    ORDER BY first_name COLLATE NOCASE, last_name COLLATE NOCASE
+  `).all()
+  const companies = db.prepare(`
+    SELECT id, name FROM companies
+    WHERE deleted_at IS NULL AND is_vendeur_orisha=1
+    ORDER BY name COLLATE NOCASE
+  `).all()
+  const data = [
+    ...employees.map(e => ({
+      ref: `employee:${e.id}`,
+      kind: 'employee',
+      label: [e.first_name, e.last_name].filter(Boolean).join(' '),
+    })),
+    ...companies.map(c => ({
+      ref: `company:${c.id}`,
+      kind: 'company',
+      label: c.name,
+    })),
+  ]
+  res.json({ data })
+})
 
 // GET /api/projects
 router.get('/', (req, res) => {
@@ -40,6 +70,15 @@ router.get('/', (req, res) => {
 
   const projects = db.prepare(
     `SELECT p.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name,
+            CASE
+              WHEN p.vendeur_ref LIKE 'employee:%' THEN (
+                SELECT TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,''))
+                FROM employees e WHERE e.id = substr(p.vendeur_ref, 10)
+              )
+              WHEN p.vendeur_ref LIKE 'company:%' THEN (
+                SELECT vc.name FROM companies vc WHERE vc.id = substr(p.vendeur_ref, 9)
+              )
+            END AS vendeur_label,
             (SELECT json_group_array(json_object('id', o.id, 'order_number', o.order_number))
                FROM orders o WHERE o.project_id = p.id) as orders_json
      FROM projects p
@@ -62,7 +101,16 @@ router.get('/', (req, res) => {
 // GET /api/projects/:id
 router.get('/:id', (req, res) => {
   const project = db.prepare(
-    `SELECT p.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name
+    `SELECT p.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name,
+            CASE
+              WHEN p.vendeur_ref LIKE 'employee:%' THEN (
+                SELECT TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,''))
+                FROM employees e WHERE e.id = substr(p.vendeur_ref, 10)
+              )
+              WHEN p.vendeur_ref LIKE 'company:%' THEN (
+                SELECT vc.name FROM companies vc WHERE vc.id = substr(p.vendeur_ref, 9)
+              )
+            END AS vendeur_label
      FROM projects p
      LEFT JOIN companies c ON p.company_id = c.id
      LEFT JOIN contacts ct ON p.contact_id = ct.id
@@ -99,9 +147,11 @@ router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM projects WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Project not found' });
 
+  const customCols = getActiveCustomColumns('projects').map(c => c.column_name)
   const { setClause, values, error } = buildPartialUpdate(req.body, {
     allowed: ['name', 'company_id', 'contact_id', 'type', 'status', 'probability',
-      'value_cad', 'monthly_cad', 'nb_greenhouses', 'close_date', 'refusal_reason', 'notes'],
+      'value_cad', 'monthly_cad', 'nb_greenhouses', 'close_date', 'refusal_reason', 'notes',
+      'vendeur_ref', ...customCols],
     nonNullable: new Set(['name']),
   });
   if (error) return res.status(400).json({ error });

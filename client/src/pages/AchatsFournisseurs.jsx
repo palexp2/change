@@ -42,7 +42,7 @@ const RENDERS = {
     ? <Badge color="indigo">Facture</Badge>
     : <Badge color="slate">Dépense</Badge>,
   vendor: row => row.vendor_id
-    ? <Link to={`/companies/${row.vendor_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">{row.vendor}</Link>
+    ? <Link to={`/companies/${row.vendor_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.vendor}</Link>
     : <span>{row.vendor || <span className="text-slate-400">—</span>}</span>,
   date_achat: row => <span className="text-slate-500">{fmtDate(row.date_achat)}</span>,
   due_date: row => {
@@ -293,7 +293,7 @@ function QBAttachmentsSection({ achatId }) {
                   <button
                     type="button"
                     onClick={() => handleOpen(it.id)}
-                    className="text-indigo-600 hover:underline truncate block text-left"
+                    className="text-brand-600 hover:underline truncate block text-left"
                   >
                     {it.file_name}
                   </button>
@@ -366,7 +366,7 @@ export default function AchatsFournisseurs() {
 
   return (
     <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
+      <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Achats fournisseurs</h1>

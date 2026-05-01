@@ -6,9 +6,83 @@ import { requireAdmin } from '../middleware/auth.js';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import os from 'os';
+import Stripe from 'stripe';
+import { postInvoicePaidJE, stripeInvoiceNetHtCents } from '../services/quickbooks.js';
 
 const router = Router();
 router.use(requireAdmin);
+
+// POST /api/admin/factures/backfill-paid-at  body: { limit?: number = 100 }
+// Récupère depuis Stripe le paid_at / amount_paid / charge pour les factures
+// Stripe payées dont les champs paid_* sont NULL. Utile une fois après l'ajout
+// des colonnes paid_at — ensuite le webhook invoice.paid les pose en live.
+router.post('/factures/backfill-paid-at', async (req, res) => {
+  const stripeKey = getStripeKey()
+  if (!stripeKey) return res.status(400).json({ error: 'Stripe non configuré' })
+  const limit = Math.max(1, Math.min(parseInt(req.body?.limit) || 100, 500))
+  const stripe = new Stripe(stripeKey)
+
+  const candidates = db.prepare(`
+    SELECT id, invoice_id, status, balance_due
+    FROM factures
+    WHERE invoice_id IS NOT NULL
+      AND paid_at IS NULL
+      AND (status = 'Payé' OR status = 'Payée')
+    ORDER BY COALESCE(document_date, created_at) DESC
+    LIMIT ?
+  `).all(limit)
+
+  const results = { updated: 0, skipped: 0, errors: [] }
+  const upd = db.prepare(
+    'UPDATE factures SET paid_at=?, paid_amount=?, paid_charge_id=?, paid_payment_intent=?, updated_at=strftime(\'%Y-%m-%dT%H:%M:%fZ\', \'now\') WHERE id=?'
+  )
+
+  for (const f of candidates) {
+    try {
+      const inv = await stripe.invoices.retrieve(f.invoice_id, { expand: ['payments'] })
+      if (inv.status !== 'paid') { results.skipped++; continue }
+      const paidTs = inv.status_transitions?.paid_at
+      const paidAt = paidTs ? new Date(paidTs * 1000).toISOString() : null
+      const paidAmount = (inv.amount_paid ?? inv.total ?? 0) / 100
+      const chargeId = typeof inv.charge === 'string' ? inv.charge : (inv.charge?.id || null)
+      // Stripe ≥ 2024 : payment_intent migré sous inv.payments.data[0].payment.payment_intent
+      const paymentIntent = inv.payment_intent
+        || inv.payments?.data?.[0]?.payment?.payment_intent
+        || null
+      if (!paidAt) { results.skipped++; continue }
+      upd.run(paidAt, paidAmount, chargeId, paymentIntent, f.id)
+      results.updated++
+    } catch (e) {
+      results.errors.push({ facture_id: f.id, invoice_id: f.invoice_id, error: e.message })
+    }
+  }
+  res.json({ scanned: candidates.length, ...results })
+})
+
+// POST /api/admin/factures/:id/clear-deferred-revenue
+// Nettoie les champs deferred_revenue_* d'une facture quand la transaction QB
+// correspondante n'existe pas réellement (orphelin DB). Ne touche pas aux
+// champs revenue_recognized_* — c'est un concept séparé.
+// Use case : un sync incomplet ou une suppression manuelle d'un payment a
+// laissé des champs deferred sans contrepartie en QB → on remet à zéro pour
+// que la fiche cesse d'afficher le badge "Revenu perçu d'avance" et le bouton
+// "Constater la vente".
+router.post('/factures/:id/clear-deferred-revenue', (req, res) => {
+  const f = db.prepare('SELECT id, deferred_revenue_at FROM factures WHERE id=?').get(req.params.id)
+  if (!f) return res.status(404).json({ error: 'Facture introuvable' })
+  if (!f.deferred_revenue_at) return res.json({ ok: true, already_clean: true })
+  db.prepare(`
+    UPDATE factures
+    SET deferred_revenue_at = NULL,
+        deferred_revenue_amount_native = NULL,
+        deferred_revenue_amount_cad = NULL,
+        deferred_revenue_currency = NULL,
+        deferred_revenue_qb_ref = NULL,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = ?
+  `).run(req.params.id)
+  res.json({ ok: true })
+})
 
 // GET /api/admin/users
 router.get('/users', (req, res) => {
@@ -202,6 +276,7 @@ router.get('/trash', (req, res) => {
   const trash = {}
 
   const tables = [
+    { key: 'custom_fields', label: 'Champs personnalisés', sql: `SELECT id, (erp_table || ' / ' || name) as label, deleted_at FROM custom_fields WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
     { key: 'companies',     label: 'Entreprises',     sql: `SELECT id, name as label, deleted_at FROM companies WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
     { key: 'contacts',      label: 'Contacts',        sql: `SELECT id, (first_name || ' ' || last_name) as label, deleted_at FROM contacts WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
     { key: 'orders',        label: 'Commandes',       sql: `SELECT id, ('Commande #' || order_number) as label, deleted_at FROM orders WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
@@ -225,7 +300,7 @@ router.get('/trash', (req, res) => {
 
 // POST /api/admin/trash/:table/:id/restore
 router.post('/trash/:table/:id/restore', (req, res) => {
-  const allowed = ['companies','contacts','orders','products','shipments','returns','projects','assemblages','tasks','interactions','serial_numbers']
+  const allowed = ['companies','contacts','orders','products','shipments','returns','projects','assemblages','tasks','interactions','serial_numbers','custom_fields']
   if (!allowed.includes(req.params.table)) return res.status(400).json({ error: 'Table invalide' })
 
   const result = db.prepare(`UPDATE ${req.params.table} SET deleted_at = NULL WHERE id = ?`).run(req.params.id)
@@ -235,12 +310,159 @@ router.post('/trash/:table/:id/restore', (req, res) => {
 
 // DELETE /api/admin/trash — purge définitive de tous les enregistrements supprimés
 router.delete('/trash', (req, res) => {
-  const tables = ['companies','contacts','orders','products','shipments','returns','projects','assemblages','tasks','interactions','serial_numbers']
+  const tables = ['companies','contacts','orders','products','shipments','returns','projects','assemblages','tasks','interactions','serial_numbers','custom_fields']
   let total = 0
   for (const t of tables) {
     try { total += db.prepare(`DELETE FROM ${t} WHERE deleted_at IS NOT NULL`).run().changes } catch {}
   }
   res.json({ purged: total })
+})
+
+// ── Backfill factures Stripe post-cutoff (refonte avril 2026) ───────────────
+//
+// Pendant la transition vers le pivot 12900, les factures Stripe payées entre
+// le cutoff (date du dernier rapprochement QB côté ancien code) et le déploiement
+// du nouveau code n'ont ni JE invoice.paid (nouveau code pas encore déployé) ni
+// crédit revenue_* dans un Deposit QB (payouts pas encore poussés). Cette route
+// rattrape ces factures en posant rétroactivement la JE Dr 12900 / Cr revenu.
+//
+// GET preview, POST process. Idempotent — skip les factures avec déjà une ligne
+// payments direction='in' method='stripe'.
+function getStripeKey() {
+  const row = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'").get()
+  return row?.value || null
+}
+
+function listBackfillCandidates(cutoffDate) {
+  return db.prepare(`
+    SELECT f.id, f.invoice_id, f.document_number, f.document_date, f.kind,
+           f.currency, f.amount_before_tax_cad, f.total_amount, f.status,
+           f.deferred_revenue_at, f.revenue_recognized_at,
+           (SELECT COUNT(*) FROM payments p WHERE p.facture_id = f.id AND p.direction = 'in' AND p.method = 'stripe' AND (p.qb_journal_entry_id IS NOT NULL OR p.qb_payment_id IS NOT NULL)) AS posted_payments
+    FROM factures f
+    WHERE f.invoice_id IS NOT NULL
+      AND f.sync_source = 'Factures Stripe'
+      AND f.status = 'Payé'
+      AND f.document_date > ?
+    ORDER BY f.document_date, f.document_number
+  `).all(cutoffDate)
+}
+
+// GET /api/admin/stripe-backfill/preview?cutoff=YYYY-MM-DD
+router.get('/stripe-backfill/preview', (req, res) => {
+  const cutoff = String(req.query.cutoff || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cutoff)) {
+    return res.status(400).json({ error: 'cutoff doit être au format YYYY-MM-DD' })
+  }
+  const rows = listBackfillCandidates(cutoff)
+  const pending = rows.filter(r => r.posted_payments === 0)
+  const alreadyDone = rows.filter(r => r.posted_payments > 0)
+  res.json({
+    cutoff,
+    total_candidates: rows.length,
+    pending_count: pending.length,
+    already_done_count: alreadyDone.length,
+    pending: pending.map(r => ({
+      id: r.id,
+      invoice_id: r.invoice_id,
+      document_number: r.document_number,
+      document_date: r.document_date,
+      kind: r.kind,
+      currency: r.currency,
+      amount_before_tax: r.amount_before_tax_cad,
+      total: r.total_amount,
+    })),
+  })
+})
+
+// POST /api/admin/stripe-backfill/process — body: { cutoff, facture_ids?, dry_run? }
+// Si facture_ids est fourni, n'agit que sur ces factures-là. Sinon, traite tous les pending.
+router.post('/stripe-backfill/process', async (req, res) => {
+  const { cutoff, facture_ids, dry_run } = req.body || {}
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(cutoff || ''))) {
+    return res.status(400).json({ error: 'cutoff doit être au format YYYY-MM-DD' })
+  }
+  const stripeKey = getStripeKey()
+  if (!stripeKey) return res.status(400).json({ error: 'Stripe non configuré' })
+  const stripe = new Stripe(stripeKey)
+
+  let candidates = listBackfillCandidates(cutoff).filter(r => r.posted_payments === 0)
+  if (Array.isArray(facture_ids) && facture_ids.length) {
+    const set = new Set(facture_ids)
+    candidates = candidates.filter(r => set.has(r.id))
+  }
+
+  const results = []
+  for (const f of candidates) {
+    try {
+      // Si une ligne payments orpheline existe déjà (sans qb_journal_entry_id, créée
+      // par une tentative précédente qui a échoué côté QB), on la réutilise au lieu
+      // de créer un doublon.
+      const existing = db.prepare(
+        "SELECT id FROM payments WHERE facture_id = ? AND direction = 'in' AND method = 'stripe' AND qb_journal_entry_id IS NULL AND qb_payment_id IS NULL LIMIT 1"
+      ).get(f.id)
+
+      let paymentId = existing?.id
+      let chargeId, netHt, currency, receivedAt
+
+      if (!paymentId) {
+        // Récupérer les infos depuis Stripe et créer la ligne payments.
+        const inv = await stripe.invoices.retrieve(f.invoice_id)
+        chargeId = typeof inv.charge === 'string' ? inv.charge : inv.charge?.id || null
+        netHt = stripeInvoiceNetHtCents(inv) / 100
+        currency = (inv.currency || f.currency || 'CAD').toUpperCase()
+        receivedAt = inv.status_transitions?.paid_at
+          ? new Date(inv.status_transitions.paid_at * 1000).toISOString()
+          : (inv.created ? new Date(inv.created * 1000).toISOString() : new Date().toISOString())
+
+        if (dry_run) {
+          results.push({ facture_id: f.id, document_number: f.document_number, would_create: { charge_id: chargeId, amount: netHt, currency, received_at: receivedAt } })
+          continue
+        }
+
+        const { randomUUID } = await import('crypto')
+        paymentId = randomUUID()
+        db.prepare(`
+          INSERT INTO payments (
+            id, facture_id, direction, method, received_at, amount, currency,
+            stripe_charge_id, notes
+          ) VALUES (?, ?, 'in', 'stripe', ?, ?, ?, ?, ?)
+        `).run(paymentId, f.id, receivedAt, Math.round(netHt * 100) / 100, currency, chargeId, `Backfill post-cutoff ${cutoff} — invoice ${f.invoice_id}`)
+      } else if (dry_run) {
+        results.push({ facture_id: f.id, document_number: f.document_number, would_retry_existing_payment: paymentId })
+        continue
+      }
+
+      // Pose (ou re-tente) la JE QB. Si on n'a pas encore l'invoice (cas reuse),
+      // on la fetch maintenant pour pouvoir résoudre le TaxCode.
+      let invForJe = null
+      if (existing) {
+        try { invForJe = await stripe.invoices.retrieve(f.invoice_id) } catch {}
+      } else {
+        // Inv déjà fetchée plus haut pour créer la ligne ; on la passe directement.
+        // Mais on l'a déjà perdue (variable locale au if). Re-fetch.
+        try { invForJe = await stripe.invoices.retrieve(f.invoice_id) } catch {}
+      }
+      try {
+        const r = await postInvoicePaidJE(paymentId, invForJe ? { invoice: invForJe } : {})
+        results.push({ facture_id: f.id, document_number: f.document_number, payment_id: paymentId, qb_je: r.qb_journal_entry_id, qb_sales_receipt: r.qb_payment_id, credit: r.credit_account, reused: !!existing })
+      } catch (qbErr) {
+        results.push({ facture_id: f.id, document_number: f.document_number, payment_id: paymentId, qb_error: qbErr.message })
+      }
+    } catch (err) {
+      results.push({ facture_id: f.id, document_number: f.document_number, error: err.message })
+    }
+  }
+
+  res.json({
+    cutoff,
+    dry_run: !!dry_run,
+    processed: results.length,
+    success: results.filter(r => r.qb_je || r.qb_sales_receipt).length,
+    qb_errors: results.filter(r => r.qb_error).length,
+    other_errors: results.filter(r => r.error).length,
+    results,
+  })
 })
 
 export default router;

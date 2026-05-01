@@ -6,7 +6,7 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 
-const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-indigo-400 bg-white'
+const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
 function fmtHours(h) {
   if (h == null || !Number.isFinite(Number(h))) return '—'
@@ -148,7 +148,7 @@ function EntryList({ employeeId, details, isAdding, onStartAdd, onCancelAdd, onA
           Solde : <span className="font-semibold text-slate-900 tabular-nums">{fmtHours(details.balance_hours)}</span>
         </div>
         {!isAdding && (
-          <button onClick={onStartAdd} className="text-xs text-indigo-600 hover:underline flex items-center gap-1">
+          <button onClick={onStartAdd} className="text-xs text-brand-600 hover:underline flex items-center gap-1">
             <Plus size={12} /> Ajouter un ajustement manuel
           </button>
         )}
@@ -178,7 +178,7 @@ function EntryList({ employeeId, details, isAdding, onStartAdd, onCancelAdd, onA
                   <input type="number" step="0.25" className={inp + ' w-24 text-right'} defaultValue={e.hours} onBlur={ev => Number(ev.target.value) !== Number(e.hours) && onPatch(employeeId, e.id, { hours: Number(ev.target.value) })} />
                 </td>
                 <td className="px-2 py-1 text-xs">
-                  {e.source === 'timesheet_import' ? <span className="text-indigo-600">Feuilles de temps</span> : e.source === 'manual' ? <span className="text-slate-500">Manuel</span> : <span className="text-slate-400">{e.source || '—'}</span>}
+                  {e.source === 'timesheet_import' ? <span className="text-brand-600">Feuilles de temps</span> : e.source === 'manual' ? <span className="text-slate-500">Manuel</span> : <span className="text-slate-400">{e.source || '—'}</span>}
                 </td>
                 <td className="px-2 py-1 text-xs text-slate-500">{e.paie_number ? `#${e.paie_number}` : '—'}</td>
                 <td className="px-2 py-1">

@@ -16,10 +16,10 @@ const STATUS_COLORS = { 'À envoyer': 'yellow', 'Envoyé': 'green' }
 
 const RENDERS = {
   order_number: row => row.order_id
-    ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline font-medium">#{row.order_number}</Link>
+    ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline font-medium">#{row.order_number}</Link>
     : <span className="text-slate-400">—</span>,
   company_name: row => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-indigo-600 hover:underline">{row.company_name}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   tracking_number: row => <span className="font-mono text-xs text-slate-700">{row.tracking_number || '—'}</span>,
   carrier: row => <span className="text-slate-700">{row.carrier || '—'}</span>,
@@ -184,7 +184,7 @@ export default function Envois() {
 
   return (
     <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
+      <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Envois</h1>
@@ -199,11 +199,11 @@ export default function Envois() {
         </div>
 
         {weekLabel && (
-          <div className="flex items-center gap-2 mb-4 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg w-fit">
-            <span className="text-sm text-indigo-700 font-medium">Semaine du {weekLabel}</span>
+          <div className="flex items-center gap-2 mb-4 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg w-fit">
+            <span className="text-sm text-brand-700 font-medium">Semaine du {weekLabel}</span>
             <button
               onClick={() => setSearchParams({})}
-              className="text-indigo-400 hover:text-indigo-700 ml-1"
+              className="text-brand-400 hover:text-brand-700 ml-1"
               title="Effacer le filtre"
             >
               <X size={14} />

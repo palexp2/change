@@ -318,7 +318,7 @@ export default function StripePayoutDetail() {
               <button
                 onClick={handlePush}
                 disabled={pushing || alreadyPushed || transactions.length === 0}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 rounded-lg hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 title={alreadyPushed ? 'Déjà envoyé à QuickBooks' : 'Créer le Deposit dans QuickBooks'}
               >
                 <Send size={14} /> {pushing ? 'Envoi…' : alreadyPushed ? 'Déjà envoyé' : 'Pousser vers QB'}
@@ -381,7 +381,7 @@ export default function StripePayoutDetail() {
                           <span className="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">
                             {TX_TYPE_LABELS[bt.type] || bt.type}
                           </span>
-                          {bt.is_subscription ? <span className="ml-1 text-[10px] text-indigo-600">abo</span> : null}
+                          {bt.is_subscription ? <span className="ml-1 text-[10px] text-brand-600">abo</span> : null}
                         </td>
                         <td className="px-3 py-2 text-slate-700">{bt.customer_name || <span className="text-slate-300">—</span>}</td>
                         <td className="px-3 py-2 text-slate-600">{bt.invoice_number || <span className="text-slate-300">—</span>}</td>

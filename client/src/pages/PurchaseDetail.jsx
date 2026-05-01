@@ -16,14 +16,14 @@ function fmtCad(n) {
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
 }
 
-const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-indigo-400 bg-white'
+const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
 function FieldShell({ label, saving, children }) {
   return (
     <div>
       <div className="flex items-center gap-2 mb-0.5">
         <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">{label}</div>
-        {saving && <div className="h-2 w-2 rounded-full bg-indigo-400 animate-pulse" title="Enregistrement…" />}
+        {saving && <div className="h-2 w-2 rounded-full bg-brand-400 animate-pulse" title="Enregistrement…" />}
       </div>
       {children}
     </div>
@@ -173,7 +173,7 @@ export default function PurchaseDetail() {
   }
 
   if (loading) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" /></div></Layout>
+    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
   }
   if (!purchase) {
     return <Layout><div className="p-6 text-slate-500">Achat introuvable.</div></Layout>
@@ -199,7 +199,7 @@ export default function PurchaseDetail() {
             {purchase.product_name && (
               <div className="text-sm text-slate-500 mt-1">
                 {purchase.product_id
-                  ? <Link to={`/products/${purchase.product_id}`} className="text-indigo-600 hover:underline">{purchase.product_name}</Link>
+                  ? <Link to={`/products/${purchase.product_id}`} className="text-brand-600 hover:underline">{purchase.product_name}</Link>
                   : purchase.product_name
                 }
                 {purchase.sku && <span className="ml-1 font-mono text-slate-400">({purchase.sku})</span>}
@@ -219,7 +219,7 @@ export default function PurchaseDetail() {
             <FieldShell label="Fournisseur" saving={fieldSaving.supplier}>
               {purchase.supplier_company_id ? (
                 <div className="text-sm">
-                  <Link to={`/companies/${purchase.supplier_company_id}`} className="text-indigo-600 hover:underline">
+                  <Link to={`/companies/${purchase.supplier_company_id}`} className="text-brand-600 hover:underline">
                     {purchase.supplier_company_name || purchase.supplier}
                   </Link>
                 </div>

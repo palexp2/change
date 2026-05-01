@@ -16,6 +16,7 @@ import { Badge, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useDisabledColumns } from '../lib/useDisabledColumns.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 function fmtCad(n) {
@@ -107,7 +108,7 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
   const netTotal = Math.max(0, subtotal - totalDiscount)
   const fmtP = (n) => new Intl.NumberFormat(form.currency === 'USD' ? 'en-US' : 'fr-CA', { style: 'currency', currency: form.currency }).format(n || 0)
 
-  const inp = 'border border-slate-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-indigo-400'
+  const inp = 'border border-slate-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-brand-400'
 
   const save = async () => {
     setSaving(true)
@@ -135,7 +136,7 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
       <div className="flex gap-3 mb-5">
         {[{ n: 1, label: 'Informations' }, { n: 2, label: 'Articles' }].map(s => (
           <button key={s.n} onClick={() => setStep(s.n)}
-            className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${step === s.n ? 'bg-indigo-100 text-indigo-700' : 'text-slate-500 hover:text-slate-700'}`}>
+            className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${step === s.n ? 'bg-brand-100 text-brand-700' : 'text-slate-500 hover:text-slate-700'}`}>
             {s.n}. {s.label}
           </button>
         ))}
@@ -168,7 +169,7 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
               value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
           </div>
           <div className="flex justify-end">
-            <button onClick={() => setStep(2)} className="bg-indigo-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700">
+            <button onClick={() => setStep(2)} className="bg-brand-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-brand-700">
               Suivant : Articles →
             </button>
           </div>
@@ -225,7 +226,7 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
             </table>
             <div className="px-3 py-2 border-t">
               <button onClick={() => setItems(prev => [...prev, blankItem()])}
-                className="flex items-center gap-1.5 text-sm text-indigo-600 hover:text-indigo-800 font-medium">
+                className="flex items-center gap-1.5 text-sm text-brand-600 hover:text-brand-800 font-medium">
                 <Plus size={13} /> Ajouter une ligne
               </button>
             </div>
@@ -267,7 +268,7 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
                   <span className="font-mono">-{fmtP(totalDiscount)}</span>
                 </div>
               )}
-              <div className="flex justify-between gap-4 font-bold text-indigo-700 border-t pt-1">
+              <div className="flex justify-between gap-4 font-bold text-brand-700 border-t pt-1">
                 <span>{isFr ? 'Total' : 'Total'}</span>
                 <span className="font-mono">{fmtP(netTotal)}</span>
               </div>
@@ -277,7 +278,7 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
           <div className="flex items-center justify-between pt-1">
             <button onClick={() => setStep(1)} className="text-slate-500 text-sm hover:text-slate-700">← Retour</button>
             <button onClick={save} disabled={saving}
-              className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50">
+              className="flex items-center gap-2 bg-brand-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
               {saving ? 'Génération du PDF…' : 'Créer et générer PDF'}
             </button>
           </div>
@@ -293,6 +294,7 @@ export default function ProjectDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const location = useLocation()
+  const { addToast } = useToast()
   const [project, setProject] = useState(null)
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState(location.state?.tab || 'info')
@@ -300,6 +302,9 @@ export default function ProjectDetail() {
   const [factures, setFactures] = useState([])
   const [showCreate, setShowCreate] = useState(false)
   const [showPdf, setShowPdf] = useState(null) // { id, title }
+  const [vendeurOptions, setVendeurOptions] = useState([])
+  const [savingVendeur, setSavingVendeur] = useState(false)
+  const disabledCols = useDisabledColumns('projects')
 
   useEffect(() => {
     setLoading(true)
@@ -308,6 +313,24 @@ export default function ProjectDetail() {
       .catch(() => setProject(null))
       .finally(() => setLoading(false))
   }, [id])
+
+  useEffect(() => {
+    api.projects.vendeurOptions()
+      .then(r => setVendeurOptions(r.data || []))
+      .catch(() => setVendeurOptions([]))
+  }, [])
+
+  async function saveVendeur(ref) {
+    setSavingVendeur(true)
+    try {
+      const updated = await api.projects.update(id, { vendeur_ref: ref || null })
+      setProject(p => ({ ...p, ...updated, orders: p.orders }))
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally {
+      setSavingVendeur(false)
+    }
+  }
 
   const loadSoumissions = () => {
     api.documents.soumissions.list({ project_id: id, limit: 'all' })
@@ -331,7 +354,7 @@ export default function ProjectDetail() {
     return (
       <Layout>
         <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" />
+          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" />
         </div>
       </Layout>
     )
@@ -359,7 +382,7 @@ export default function ProjectDetail() {
             </div>
             <div className="text-sm text-slate-500 mt-1">
               {project.company_name && project.company_id && (
-                <Link to={`/companies/${project.company_id}`} className="text-indigo-600 hover:underline mr-2">
+                <Link to={`/companies/${project.company_id}`} className="text-brand-600 hover:underline mr-2">
                   {project.company_name}
                 </Link>
               )}
@@ -372,7 +395,7 @@ export default function ProjectDetail() {
           {TABS.map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
-                tab === t.key ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-700'
+                tab === t.key ? 'border-brand-600 text-brand-600' : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}>
               {t.label}
             </button>
@@ -405,12 +428,32 @@ export default function ProjectDetail() {
                   <dd className="flex flex-wrap gap-2">
                     {project.orders.map(o => (
                       <Link key={o.id} to={`/orders/${o.id}`}
-                        className="inline-flex items-center gap-1 font-mono text-xs text-indigo-600 hover:underline bg-indigo-50 px-2 py-1 rounded">
+                        className="inline-flex items-center gap-1 font-mono text-xs text-brand-600 hover:underline bg-brand-50 px-2 py-1 rounded">
                         #{o.order_number}
                         {o.status && <span className="text-slate-500 font-sans">· {o.status}</span>}
                       </Link>
                     ))}
                   </dd>
+                </div>
+              )}
+              <div>
+                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1 flex items-center gap-1">
+                  Vendeur
+                  {savingVendeur && <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />}
+                </dt>
+                <dd>
+                  <VendeurPicker
+                    value={project.vendeur_ref || ''}
+                    options={vendeurOptions}
+                    onChange={saveVendeur}
+                    disabled={savingVendeur}
+                  />
+                </dd>
+              </div>
+              {project.nom_du_vendeur && !disabledCols?.has('nom_du_vendeur') && (
+                <div>
+                  <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Vendeur AT</dt>
+                  <dd className="text-slate-700">{project.nom_du_vendeur}</dd>
                 </div>
               )}
               {project.refusal_reason && (
@@ -435,7 +478,7 @@ export default function ProjectDetail() {
             <div className="flex justify-end mb-3">
               <button
                 onClick={() => setShowCreate(true)}
-                className="flex items-center gap-2 bg-indigo-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-indigo-700"
+                className="flex items-center gap-2 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700"
               >
                 <Plus size={15} /> Nouvelle soumission
               </button>
@@ -485,20 +528,20 @@ export default function ProjectDetail() {
                             {s.generated_pdf_path && (
                               <button
                                 onClick={() => setShowPdf({ id: s.id, title: s.title })}
-                                className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:underline px-2 py-1 bg-indigo-50 rounded">
+                                className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline px-2 py-1 bg-brand-50 rounded">
                                 <FileText size={11} /> PDF
                               </button>
                             )}
                             {s.quote_url && (
                               <a href={s.quote_url} target="_blank" rel="noreferrer"
-                                className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:underline px-2 py-1 bg-indigo-50 rounded">
+                                className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline px-2 py-1 bg-brand-50 rounded">
                                 <ExternalLink size={11} /> Soumission
                               </a>
                             )}
                             {s.pdf_url && (
                               <button
                                 onClick={() => setShowPdf({ url: s.pdf_url, title: s.title, external: true })}
-                                className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:underline px-2 py-1 bg-indigo-50 rounded">
+                                className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline px-2 py-1 bg-brand-50 rounded">
                                 <FileText size={11} /> PDF Airtable
                               </button>
                             )}
@@ -595,5 +638,72 @@ export default function ProjectDetail() {
         </div>
       )}
     </Layout>
+  )
+}
+
+// Picker pour le champ Vendeur d'un projet — fusionne employés salesperson
+// actifs et entreprises avec is_vendeur_orisha=1. Recherche live, kind affiché
+// pour distinguer un employé d'une entreprise partenaire.
+function VendeurPicker({ value, options, onChange, disabled }) {
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const selected = options.find(o => o.ref === value)
+  const q = query.trim().toLowerCase()
+  const filtered = q
+    ? options.filter(o => o.label.toLowerCase().includes(q))
+    : options
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        disabled={disabled}
+        className={`w-full text-left text-sm rounded-lg border border-slate-200 bg-white px-3 py-1.5 hover:border-slate-300 flex items-center justify-between gap-2 ${disabled ? 'opacity-50' : ''}`}
+      >
+        <span className={selected ? 'text-slate-900 truncate' : 'text-slate-400'}>
+          {selected ? selected.label : '— Aucun —'}
+        </span>
+        <span className="text-xs text-slate-400 flex-shrink-0">
+          {selected ? (selected.kind === 'employee' ? 'Employé' : 'Partenaire') : '▾'}
+        </span>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => { setOpen(false); setQuery('') }} />
+          <div className="absolute left-0 right-0 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-lg max-h-72 flex flex-col">
+            <div className="p-2 border-b border-slate-100">
+              <input
+                autoFocus
+                value={query}
+                onChange={e => setQuery(e.target.value)}
+                placeholder="Rechercher…"
+                className="w-full text-sm focus:outline-none"
+              />
+            </div>
+            <div className="overflow-y-auto py-1">
+              <button
+                type="button"
+                onClick={() => { onChange(null); setOpen(false); setQuery('') }}
+                className="w-full text-left px-3 py-1.5 text-sm text-slate-400 italic hover:bg-slate-50"
+              >— Aucun —</button>
+              {filtered.length === 0 ? (
+                <div className="px-3 py-2 text-xs text-slate-400">Aucun résultat</div>
+              ) : filtered.map(o => (
+                <button
+                  key={o.ref}
+                  type="button"
+                  onClick={() => { onChange(o.ref); setOpen(false); setQuery('') }}
+                  className={`w-full text-left px-3 py-1.5 text-sm hover:bg-brand-50 flex items-center justify-between gap-2 ${value === o.ref ? 'text-brand-700 bg-brand-50' : 'text-slate-700'}`}
+                >
+                  <span className="truncate">{o.label}</span>
+                  <span className="text-xs text-slate-400 flex-shrink-0">{o.kind === 'employee' ? 'Employé' : 'Partenaire'}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   )
 }

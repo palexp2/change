@@ -7,6 +7,7 @@ import { formatRelativeTime } from '../utils/formatters.js'
 import api from '../lib/api.js'
 
 const TABLE_ORDER = [
+  'custom_fields',
   'companies', 'contacts', 'orders', 'products', 'shipments',
   'returns', 'projects', 'assemblages', 'tasks', 'interactions', 'serial_numbers',
 ]
@@ -75,7 +76,7 @@ export function CorbeilleContent() {
       </div>
 
       {loading ? (
-        <div className="flex justify-center py-12"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" /></div>
+        <div className="flex justify-center py-12"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600" /></div>
       ) : totalItems === 0 ? (
         <div className="text-center py-16 text-slate-400">
           <Trash2 size={32} className="mx-auto mb-3 opacity-30" />
@@ -109,7 +110,7 @@ export function CorbeilleContent() {
                         </div>
                         <button
                           onClick={() => handleRestore(key, item.id)}
-                          className="flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-medium px-2.5 py-1.5 rounded hover:bg-indigo-50 transition-colors"
+                          className="flex items-center gap-1.5 text-xs text-brand-600 hover:text-brand-800 font-medium px-2.5 py-1.5 rounded hover:bg-brand-50 transition-colors"
                         >
                           <RotateCcw size={12} /> Restaurer
                         </button>

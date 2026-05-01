@@ -36,9 +36,9 @@ function Bubble({ item, showContact, onOpen }) {
   // calls, truncated notes for meetings/notes.
   const preview = useMemo(() => buildPreview(item), [item])
 
-  const bubbleBg = isOut ? 'bg-indigo-600 text-white' : 'bg-white text-slate-800 border border-slate-200'
-  const metaColor = isOut ? 'text-indigo-200' : 'text-slate-400'
-  const linkColor = isOut ? 'text-indigo-100 hover:text-white' : 'text-indigo-600 hover:underline'
+  const bubbleBg = isOut ? 'bg-brand-600 text-white' : 'bg-white text-slate-800 border border-slate-200'
+  const metaColor = isOut ? 'text-brand-200' : 'text-slate-400'
+  const linkColor = isOut ? 'text-brand-100 hover:text-white' : 'text-brand-600 hover:underline'
 
   return (
     <div className={`flex ${isOut ? 'justify-end' : 'justify-start'}`}>
@@ -49,15 +49,15 @@ function Bubble({ item, showContact, onOpen }) {
         >
           {/* Header : icon + type only */}
           <div className="flex items-center gap-2 mb-1">
-            <Icon size={13} className={isOut ? 'text-indigo-200' : 'text-slate-400'} />
-            <span className={`text-xs font-semibold ${isOut ? 'text-indigo-100' : 'text-slate-500'}`}>
+            <Icon size={13} className={isOut ? 'text-brand-200' : 'text-slate-400'} />
+            <span className={`text-xs font-semibold ${isOut ? 'text-brand-100' : 'text-slate-500'}`}>
               {TYPE_LABELS[item.type] || item.type}
             </span>
             {item.direction === 'in' && item.type === 'call' && <PhoneIncoming size={11} className={metaColor} />}
             {item.direction === 'out' && item.type === 'call' && <PhoneOutgoing size={11} className={metaColor} />}
-            {item.automated === 1 && <Zap size={10} className={isOut ? 'text-indigo-200' : 'text-indigo-400'} title="Auto" />}
+            {item.automated === 1 && <Zap size={10} className={isOut ? 'text-brand-200' : 'text-brand-400'} title="Auto" />}
             {item.automated === 1 && item.open_count > 0 && (
-              <span className={`inline-flex items-center gap-0.5 text-xs ${isOut ? 'text-indigo-200' : 'text-green-600'}`} title={`Ouvert ${item.open_count}×`}>
+              <span className={`inline-flex items-center gap-0.5 text-xs ${isOut ? 'text-brand-200' : 'text-green-600'}`} title={`Ouvert ${item.open_count}×`}>
                 <Eye size={10} /> {item.open_count}
               </span>
             )}
@@ -93,7 +93,7 @@ function Bubble({ item, showContact, onOpen }) {
             </div>
           )}
           {preview.kind === 'text' && (
-            <div className={`text-sm mt-1 whitespace-pre-wrap break-words ${isOut ? 'text-indigo-50' : 'text-slate-700'}`}>
+            <div className={`text-sm mt-1 whitespace-pre-wrap break-words ${isOut ? 'text-brand-50' : 'text-slate-700'}`}>
               {preview.text}
               {preview.truncated && <span className={metaColor}> …</span>}
             </div>
@@ -187,7 +187,7 @@ function InteractionDetail({ item }) {
         {item.contact_name?.trim() && (<>
           <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">Contact</dt>
           <dd>{item.contact_id
-            ? <Link to={`/contacts/${item.contact_id}`} className="text-indigo-600 hover:underline">{item.contact_name.trim()}</Link>
+            ? <Link to={`/contacts/${item.contact_id}`} className="text-brand-600 hover:underline">{item.contact_name.trim()}</Link>
             : <span className="text-slate-800">{item.contact_name.trim()}</span>}
           </dd>
         </>)}
@@ -195,7 +195,7 @@ function InteractionDetail({ item }) {
         {item.company_name && (<>
           <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">Entreprise</dt>
           <dd>{item.company_id
-            ? <Link to={`/companies/${item.company_id}`} className="text-indigo-600 hover:underline">{item.company_name}</Link>
+            ? <Link to={`/companies/${item.company_id}`} className="text-brand-600 hover:underline">{item.company_name}</Link>
             : <span className="text-slate-800">{item.company_name}</span>}
           </dd>
         </>)}
@@ -283,7 +283,7 @@ function InteractionDetail({ item }) {
       {emailBody?.hasHidden && (
         <button
           onClick={() => setShowFull(v => !v)}
-          className="text-xs text-indigo-600 hover:underline"
+          className="text-xs text-brand-600 hover:underline"
         >
           {showFull ? 'Masquer chaîne et signature' : 'Afficher chaîne et signature'}
         </button>
@@ -298,7 +298,7 @@ export default function InteractionTimeline({ interactions, loading, total, onLo
   const [selected, setSelected] = useState(null)
 
   if (loading) {
-    return <div className="flex justify-center py-10"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" /></div>
+    return <div className="flex justify-center py-10"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600" /></div>
   }
   if (interactions.length === 0) {
     return <div className="card p-10 text-center text-slate-400">Aucune interaction</div>

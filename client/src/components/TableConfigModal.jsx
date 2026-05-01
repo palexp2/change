@@ -124,7 +124,7 @@ export function TableConfigModal({ table }) {
                           }}
                           className="input text-sm flex-1"
                         />
-                        <button onClick={() => handleRename(pill.id)} className="p-1 text-indigo-600 hover:text-indigo-800">
+                        <button onClick={() => handleRename(pill.id)} className="p-1 text-brand-600 hover:text-brand-800">
                           <Check size={15} />
                         </button>
                         <button onClick={() => setEditingId(null)} className="p-1 text-slate-400 hover:text-slate-600">
@@ -160,7 +160,7 @@ export function TableConfigModal({ table }) {
                     type="checkbox"
                     checked={bulkDeleteEnabled}
                     onChange={toggleBulkDelete}
-                    className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
                   />
                   Autoriser la suppression en lot
                 </label>
@@ -189,7 +189,7 @@ export function TableConfigModal({ table }) {
                 ) : (
                   <button
                     onClick={() => setAddingView(true)}
-                    className="flex items-center gap-1.5 text-xs text-indigo-600 hover:text-indigo-800 font-medium"
+                    className="flex items-center gap-1.5 text-xs text-brand-600 hover:text-brand-800 font-medium"
                   >
                     <Plus size={13} /> Nouvelle vue
                   </button>

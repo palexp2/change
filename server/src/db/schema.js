@@ -1263,6 +1263,9 @@ export function initSchema() {
   // User-editable display label for dynamic Airtable fields. Overrides
   // airtable_field_name in the UI when set; preserved across syncs.
   try { db.exec('ALTER TABLE airtable_field_defs ADD COLUMN display_label TEXT') } catch {}
+  // Permet de désactiver l'import d'un champ Airtable depuis la modale de sync.
+  // Quand =1, le sync skip ce champ (n'écrit pas dans la colonne ERP correspondante).
+  try { db.exec('ALTER TABLE airtable_field_defs ADD COLUMN import_disabled INTEGER DEFAULT 0') } catch {}
 
   // QB multi-currency support — store transaction currency + exchange rate on imports
   try { db.exec("ALTER TABLE factures_fournisseurs ADD COLUMN currency TEXT DEFAULT 'CAD'") } catch {}
@@ -1532,6 +1535,36 @@ export function initSchema() {
     console.log('✅ Companies: added installation_followup_sent_at')
   }
 
+  // Companies marquées comme « vendeur Orisha » — éligibles comme valeur du
+  // champ vendeur sur les projets (à côté des employés salesperson).
+  try { db.exec('ALTER TABLE companies ADD COLUMN is_vendeur_orisha INTEGER DEFAULT 0') } catch {}
+
+  // Nouveau champ vendeur sur les projets — référence polymorphe (employé OU
+  // company partenaire). Format : `employee:UUID` ou `company:UUID`.
+  // L'ancien champ `vendeur` (texte libre Airtable) est renommé "Vendeur AT" côté UI.
+  try { db.exec('ALTER TABLE projects ADD COLUMN vendeur_ref TEXT') } catch {}
+
+  // Custom fields : permet aux utilisateurs de créer des colonnes ERP-only
+  // (texte ou nombre avec N décimales) sur certaines tables principales.
+  // Les colonnes correspondantes sont créées dynamiquement via ALTER TABLE.
+  // Soft-delete via deleted_at — restaurable depuis la corbeille admin.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS custom_fields (
+      id TEXT PRIMARY KEY,
+      erp_table TEXT NOT NULL,
+      name TEXT NOT NULL,
+      column_name TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('text','number')),
+      decimals INTEGER,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT,
+      UNIQUE(erp_table, column_name)
+    );
+    CREATE INDEX IF NOT EXISTS idx_custom_fields_table ON custom_fields(erp_table) WHERE deleted_at IS NULL;
+  `)
+
   // Legacy tickets.slack_notified_hardware column — superseded by automation_rule_fires.
   // Drop it once the field_rule engine has taken over.
   if (db.pragma('table_info(tickets)').some(c => c.name === 'slack_notified_hardware')) {
@@ -1641,6 +1674,36 @@ export function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_sbt_type ON stripe_balance_transactions(type);
   `)
 
+  // Stripe invoice line items — un row par ligne de facture Stripe (option C : pas dédupé).
+  // Idempotent via stripe_line_id (= il_xxx fourni par Stripe ; pour les lignes ad-hoc
+  // sans ID Stripe stable, le service synthétise une clé déterministe).
+  // Le champ product_id (FK products) sert au mapping manuel Stripe → ERP.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS stripe_invoice_items (
+      id TEXT PRIMARY KEY,
+      facture_id TEXT REFERENCES factures(id),
+      stripe_invoice_id TEXT NOT NULL,
+      stripe_line_id TEXT NOT NULL UNIQUE,
+      stripe_price_id TEXT,
+      stripe_product_id TEXT,
+      description TEXT,
+      quantity INTEGER DEFAULT 1,
+      unit_amount INTEGER,
+      amount INTEGER,
+      currency TEXT,
+      period_start TEXT,
+      period_end TEXT,
+      proration INTEGER DEFAULT 0,
+      product_id TEXT REFERENCES products(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_sii_facture ON stripe_invoice_items(facture_id);
+    CREATE INDEX IF NOT EXISTS idx_sii_invoice ON stripe_invoice_items(stripe_invoice_id);
+    CREATE INDEX IF NOT EXISTS idx_sii_product ON stripe_invoice_items(product_id);
+    CREATE INDEX IF NOT EXISTS idx_sii_price ON stripe_invoice_items(stripe_price_id);
+  `)
+
   // Stripe balance_transactions — extracted invoice tax amounts (TPS/TVQ collected from client)
   try { db.exec('ALTER TABLE stripe_balance_transactions ADD COLUMN invoice_tax_gst REAL DEFAULT 0') } catch {}
   try { db.exec('ALTER TABLE stripe_balance_transactions ADD COLUMN invoice_tax_qst REAL DEFAULT 0') } catch {}
@@ -1653,6 +1716,10 @@ export function initSchema() {
 
   // Tasks — champ Type (single select libre, ex. "Problème")
   try { db.exec('ALTER TABLE tasks ADD COLUMN type TEXT') } catch {}
+
+  // Tasks — lien optionnel vers un billet
+  try { db.exec('ALTER TABLE tasks ADD COLUMN ticket_id TEXT REFERENCES tickets(id)') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_tasks_ticket ON tasks(ticket_id)') } catch {}
 
   // Mapping user ↔ employee (pour feuilles de temps, feuilles de paie, etc.)
   try { db.exec('ALTER TABLE users ADD COLUMN employee_id TEXT REFERENCES employees(id)') } catch {}
@@ -1802,6 +1869,83 @@ export function initSchema() {
   try { db.exec('ALTER TABLE factures ADD COLUMN deferred_revenue_currency TEXT') } catch {}
   try { db.exec('ALTER TABLE factures ADD COLUMN revenue_recognized_at TEXT') } catch {}
   try { db.exec('ALTER TABLE factures ADD COLUMN revenue_recognized_je_id TEXT') } catch {}
+  // Référence QB de la transaction qui a posté le revenu reçu d'avance.
+  // Format : `salesreceipt:<id>` (postInvoicePaidJE) ou `deposit:<id>` (pushDepositFromPayout).
+  // Conservée même si la ligne `payments` est supprimée — permet de retrouver
+  // la transaction QB depuis la fiche facture.
+  try { db.exec('ALTER TABLE factures ADD COLUMN deferred_revenue_qb_ref TEXT') } catch {}
+
+  // Encaissement Stripe — populé par le webhook invoice.paid pour avoir la
+  // date exacte du paiement avant que le payout (et ses balance_transactions)
+  // soient synchronisés. Reset à NULL sur invoice.payment_failed / voided.
+  try { db.exec('ALTER TABLE factures ADD COLUMN paid_at TEXT') } catch {}
+  try { db.exec('ALTER TABLE factures ADD COLUMN paid_amount REAL') } catch {}
+  try { db.exec('ALTER TABLE factures ADD COLUMN paid_charge_id TEXT') } catch {}
+  // Stripe API ≥ 2024 : `inv.charge` est null. Le PaymentIntent vit sous
+  // inv.payments.data[0].payment.payment_intent. On le stocke pour pouvoir
+  // matcher les balance_transactions (qui ont source.payment_intent dans leur raw).
+  try { db.exec('ALTER TABLE factures ADD COLUMN paid_payment_intent TEXT') } catch {}
+
+  // Override manuel pour la colonne « Envoyée » : par défaut on calcule via
+  // has_linked_shipment. Si =1, l'utilisateur force is_sent=true (utile pour
+  // factures sans matériel physique : services, frais, etc.).
+  try { db.exec('ALTER TABLE factures ADD COLUMN is_sent_manual INTEGER DEFAULT 0') } catch {}
+
+  // QB Customer ID persistant sur companies — évite le lookup par nom à chaque JE.
+  // Note : QB Online lie une devise unique par Customer. Pour les clients facturés
+  // dans plusieurs devises, on crée un 2e Customer suffixé " USD" et on stocke son ID.
+  try { db.exec('ALTER TABLE companies ADD COLUMN quickbooks_customer_id TEXT') } catch {}
+  try { db.exec('ALTER TABLE companies ADD COLUMN quickbooks_customer_id_usd TEXT') } catch {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_companies_qb_customer ON companies(quickbooks_customer_id) WHERE quickbooks_customer_id IS NOT NULL") } catch {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_companies_qb_customer_usd ON companies(quickbooks_customer_id_usd) WHERE quickbooks_customer_id_usd IS NOT NULL") } catch {}
+
+  // Type de facture pour router les écritures comptables :
+  //   'order'        → vente de pièces, constat à l'expédition (rail principal)
+  //   'subscription' → abonnement Stripe, constat immédiat à invoice.paid (rail séparé)
+  // Backfill : subscription_id présent → 'subscription', sinon 'order'.
+  try { db.exec("ALTER TABLE factures ADD COLUMN kind TEXT DEFAULT 'order'") } catch {}
+  try {
+    db.exec("UPDATE factures SET kind='subscription' WHERE subscription_id IS NOT NULL AND (kind IS NULL OR kind='order')")
+  } catch {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_factures_kind ON factures(kind)") } catch {}
+
+  // Table `payments` — chaque encaissement OU remboursement appliqué à une facture, peu importe
+  // le canal (Stripe ou hors-Stripe). Source unique de vérité pour le suivi des AR et la
+  // construction des QB Payment / Refund Receipt. Les charges Stripe alimentent cette table
+  // automatiquement (au webhook invoice.paid), les paiements manuels via UI.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS payments (
+      id TEXT PRIMARY KEY,
+      facture_id TEXT NOT NULL REFERENCES factures(id) ON DELETE CASCADE,
+      direction TEXT NOT NULL CHECK(direction IN ('in','out')),
+      method TEXT NOT NULL CHECK(method IN ('stripe','cheque','virement_bancaire','interac','comptant','autre')),
+      received_at TEXT NOT NULL,
+      amount REAL NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'CAD',
+      amount_cad REAL,
+      exchange_rate REAL DEFAULT 1,
+      stripe_balance_tx_id TEXT,
+      stripe_charge_id TEXT,
+      stripe_refund_id TEXT,
+      qb_payment_id TEXT,
+      qb_journal_entry_id TEXT,
+      notes TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_payments_facture ON payments(facture_id)") } catch {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_payments_received ON payments(received_at)") } catch {}
+  // Idempotence Stripe : un même balance_transaction ne crée qu'une ligne ; un même refund non plus.
+  try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_stripe_btx ON payments(stripe_balance_tx_id) WHERE stripe_balance_tx_id IS NOT NULL") } catch {}
+  try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_stripe_refund ON payments(stripe_refund_id) WHERE stripe_refund_id IS NOT NULL") } catch {}
+
+  // QB Invoice ID séparé : on crée une Invoice QB + un Receive Payment qui la solde.
+  // qb_payment_id porte le Payment, qb_invoice_id porte l'Invoice. Permet le LinkedTxn
+  // Payment → Invoice (et Deposit → Payment) supporté par l'API QB.
+  // Pour les refunds : qb_invoice_id porte le Credit Memo lié.
+  try { db.exec('ALTER TABLE payments ADD COLUMN qb_invoice_id TEXT') } catch {}
 
   console.log('Database schema initialized');
 }

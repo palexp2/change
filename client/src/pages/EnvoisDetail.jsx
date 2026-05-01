@@ -176,8 +176,8 @@ function CreateLabelModal({ envoi, orderItemsTotalWeight, onClose, onDone }) {
         <label className="label">Type de boîte</label>
         <div className="space-y-2">
           {Object.entries(BOX_PRESETS).map(([key, box]) => (
-            <label key={key} className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${preset === key ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:border-slate-300'}`}>
-              <input type="radio" name="preset" value={key} checked={preset === key} onChange={() => setPreset(key)} className="accent-indigo-600" />
+            <label key={key} className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${preset === key ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:border-slate-300'}`}>
+              <input type="radio" name="preset" value={key} checked={preset === key} onChange={() => setPreset(key)} className="accent-brand-600" />
               <span className="text-sm text-slate-700">{box.label}</span>
             </label>
           ))}
@@ -220,7 +220,7 @@ function CreateLabelModal({ envoi, orderItemsTotalWeight, onClose, onDone }) {
     <div className="space-y-4">
       {loading ? (
         <div className="flex flex-col items-center justify-center py-12 gap-3 text-slate-500">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-indigo-600" />
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600" />
           <span className="text-sm">Récupération des tarifs…</span>
         </div>
       ) : error ? (
@@ -243,7 +243,7 @@ function CreateLabelModal({ envoi, orderItemsTotalWeight, onClose, onDone }) {
               <button
                 key={rate.service_id || i}
                 onClick={() => { setSelectedRate(rate); setStep('confirm') }}
-                className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-indigo-400 hover:bg-indigo-50 transition-colors"
+                className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-brand-400 hover:bg-brand-50 transition-colors"
               >
                 <div className="flex items-center justify-between gap-3">
                   <div>
@@ -251,7 +251,7 @@ function CreateLabelModal({ envoi, orderItemsTotalWeight, onClose, onDone }) {
                     {getRateCarrier(rate) && <p className="text-xs text-slate-500">{getRateCarrier(rate)}</p>}
                     {getRateDelivery(rate) && <p className="text-xs text-slate-400 mt-0.5">{getRateDelivery(rate)}</p>}
                   </div>
-                  <span className="font-semibold text-indigo-700 whitespace-nowrap">{fmtPrice(rate)}</span>
+                  <span className="font-semibold text-brand-700 whitespace-nowrap">{fmtPrice(rate)}</span>
                 </div>
               </button>
             ))}
@@ -275,7 +275,7 @@ function CreateLabelModal({ envoi, orderItemsTotalWeight, onClose, onDone }) {
             <span>{getRateCarrier(selectedRate)}</span>
           </>}
           <span className="text-slate-400">Tarif</span>
-          <span className="font-semibold text-indigo-700">{fmtPrice(selectedRate)}</span>
+          <span className="font-semibold text-brand-700">{fmtPrice(selectedRate)}</span>
           <span className="text-slate-400">Boîte</span>
           <span>{BOX_PRESETS[preset]?.label || 'Personnalisée'} × {qty}</span>
           <span className="text-slate-400">Poids total</span>
@@ -336,9 +336,9 @@ function CreateLabelModal({ envoi, orderItemsTotalWeight, onClose, onDone }) {
       >
         <Download size={15} /> Télécharger l'étiquette PDF
       </a>
-      <div className="border border-indigo-200 bg-indigo-50 rounded-xl p-4 space-y-1">
-        <p className="text-sm font-semibold text-indigo-900">Planifier un ramassage ?</p>
-        <p className="text-xs text-indigo-700">Souhaitez-vous qu'un coursier vienne récupérer le colis ?</p>
+      <div className="border border-brand-200 bg-brand-50 rounded-xl p-4 space-y-1">
+        <p className="text-sm font-semibold text-brand-900">Planifier un ramassage ?</p>
+        <p className="text-xs text-brand-700">Souhaitez-vous qu'un coursier vienne récupérer le colis ?</p>
       </div>
       <div className="flex gap-3">
         <button onClick={onClose} className="btn-secondary flex-1">Non merci</button>
@@ -678,7 +678,7 @@ export default function EnvoisDetail() {
     return (
       <Layout>
         <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-indigo-600" />
+          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" />
         </div>
       </Layout>
     )
@@ -705,7 +705,7 @@ export default function EnvoisDetail() {
             </div>
             {envoi.company_name && envoi.company_id && (
               <div className="text-sm text-slate-500 mt-1">
-                <Link to={`/companies/${envoi.company_id}`} className="text-indigo-600 hover:underline">
+                <Link to={`/companies/${envoi.company_id}`} className="text-brand-600 hover:underline">
                   {envoi.company_name}
                 </Link>
               </div>
@@ -741,7 +741,7 @@ export default function EnvoisDetail() {
               <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Commande</dt>
               <dd>
                 {envoi.order_id
-                  ? <Link to={`/orders/${envoi.order_id}`} className="text-indigo-600 hover:underline font-medium">#{envoi.order_number}</Link>
+                  ? <Link to={`/orders/${envoi.order_id}`} className="text-brand-600 hover:underline font-medium">#{envoi.order_number}</Link>
                   : <span className="text-slate-400">—</span>
                 }
               </dd>
@@ -797,7 +797,7 @@ export default function EnvoisDetail() {
                     href={`/erp/api/novoxpress/labels/${envoi.label_pdf_path}`}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 text-sm text-indigo-600 hover:underline font-medium"
+                    className="inline-flex items-center gap-1.5 text-sm text-brand-600 hover:underline font-medium"
                   >
                     <Download size={13} /> Télécharger PDF
                   </a>
@@ -808,7 +808,7 @@ export default function EnvoisDetail() {
               <div className="col-span-2 md:col-span-3">
                 <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Ramassage</dt>
                 <dd className="flex items-center gap-2">
-                  <span className="inline-flex items-center gap-1.5 text-sm text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg px-2.5 py-1">
+                  <span className="inline-flex items-center gap-1.5 text-sm text-brand-700 bg-brand-50 border border-brand-200 rounded-lg px-2.5 py-1">
                     <Package size={13} /> Planifié · {envoi.novoxpress_pickup_id}
                   </span>
                   <button
@@ -882,10 +882,10 @@ export default function EnvoisDetail() {
           return (
             <div className="card p-5 mt-4">
               <h2 className="font-semibold text-slate-900 text-sm mb-3">Bon de livraison</h2>
-              <button onClick={() => setShowPdf(true)} className="group relative w-40 h-52 bg-white border border-slate-200 rounded-lg overflow-hidden hover:border-indigo-400 hover:shadow-md transition-all">
+              <button onClick={() => setShowPdf(true)} className="group relative w-40 h-52 bg-white border border-slate-200 rounded-lg overflow-hidden hover:border-brand-400 hover:shadow-md transition-all">
                 <iframe src={`${pdfUrl}#toolbar=0&navpanes=0&scrollbar=0`} className="w-[200%] h-[200%] origin-top-left scale-50 pointer-events-none" title="Aperçu bon de livraison" />
-                <div className="absolute inset-0 bg-transparent group-hover:bg-indigo-600/5 transition-colors flex items-center justify-center">
-                  <span className="opacity-0 group-hover:opacity-100 bg-indigo-600 text-white text-xs px-3 py-1.5 rounded-lg shadow-lg transition-opacity">Ouvrir</span>
+                <div className="absolute inset-0 bg-transparent group-hover:bg-brand-600/5 transition-colors flex items-center justify-center">
+                  <span className="opacity-0 group-hover:opacity-100 bg-brand-600 text-white text-xs px-3 py-1.5 rounded-lg shadow-lg transition-opacity">Ouvrir</span>
                 </div>
               </button>
             </div>

@@ -25,6 +25,7 @@ import Retours from './pages/Retours.jsx'
 import RetourDetail from './pages/RetourDetail.jsx'
 import Factures from './pages/Factures.jsx'
 import FactureDetail from './pages/FactureDetail.jsx'
+import ItemsVendus from './pages/ItemsVendus.jsx'
 import Abonnements from './pages/Abonnements.jsx'
 import Assemblages from './pages/Assemblages.jsx'
 import ProjectDetail from './pages/ProjectDetail.jsx'
@@ -91,6 +92,7 @@ function AppRoutes() {
       <Route path="/retours/:id" element={<ProtectedRoute><RetourDetail /></ProtectedRoute>} />
       <Route path="/factures" element={<ProtectedRoute><Factures /></ProtectedRoute>} />
       <Route path="/factures/:id" element={<ProtectedRoute><FactureDetail /></ProtectedRoute>} />
+      <Route path="/items-vendus" element={<ProtectedRoute><ItemsVendus /></ProtectedRoute>} />
       <Route path="/abonnements" element={<ProtectedRoute><Abonnements /></ProtectedRoute>} />
       <Route path="/assemblages" element={<ProtectedRoute><Assemblages /></ProtectedRoute>} />
       <Route path="/soumissions/:id" element={<ProtectedRoute><SoumissionDetail /></ProtectedRoute>} />

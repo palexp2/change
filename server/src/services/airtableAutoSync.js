@@ -366,10 +366,14 @@ export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
   }
 
   // Build dynamic field list (existing defs + newly created), en filtrant
-  // les champs désactivés via la modale de sync.
+  // les champs désactivés via la modale de sync et ceux gérés par le
+  // handler hardcodé (sinon une def dynamique préexistante peut écraser
+  // ce que le sync hardcodé a écrit — ex. products.image_url qui se
+  // faisait remplacer par l'URL Airtable temporaire).
   const dynamicFields = []
   for (const d of defs) {
     if (d.import_disabled === 1) continue
+    if (mappedFields.has(d.airtable_field_name)) continue
     dynamicFields.push({ airtableFieldName: d.airtable_field_name, columnName: d.column_name, fieldType: d.field_type })
   }
   for (const [fieldName, colName] of seenNewFields) {

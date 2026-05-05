@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, Fragment } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowRight, SlidersHorizontal, X, Check, Target } from 'lucide-react'
+import { ArrowRight, SlidersHorizontal, X, Check, Target, Trophy } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { useAuth } from '../lib/auth.jsx'
@@ -10,12 +10,16 @@ import { Modal } from '../components/Modal.jsx'
 
 const WIDGET_DEFS = [
   { id: 'section_project_goal',     label: 'Objectif de projets',      group: 'Objectifs' },
+  { id: 'section_stripe_revenue',   label: 'Ventes et abonnements',    group: 'Graphiques' },
+  { id: 'section_subscription_events', label: 'Mouvements d\'abonnements', group: 'Graphiques' },
   { id: 'section_profitability',    label: 'Rentabilité',              group: 'Graphiques' },
   { id: 'section_replacement_rate', label: 'Taux de remplacement',     group: 'Graphiques' },
+  { id: 'section_projects_created', label: 'Projets créés par mois',   group: 'Graphiques' },
   { id: 'section_closing',       label: 'Taux de closing',       group: 'Graphiques' },
   { id: 'section_shipments',     label: 'Livraisons par semaine', group: 'Graphiques' },
   { id: 'section_shipping_costs', label: 'Coûts d\'expédition',    group: 'Graphiques' },
   { id: 'section_geo_map',       label: 'Carte des clients',     group: 'Graphiques' },
+  { id: 'section_top_products', label: 'Meilleurs vendeurs',     group: 'Graphiques' },
   { id: 'section_inventory_valuation', label: 'Valeur de l\'inventaire', group: 'Inventaire' },
   { id: 'section_support_weekly', label: 'Amélioration du support', group: 'Support' },
 ]
@@ -207,6 +211,351 @@ function GoalEditorModal({ isOpen, onClose, onSave }) {
 }
 
 
+
+// SVG path helper — rectangle with independent corner radii, used to draw
+// stacked bars where the junction between the two segments stays sharp while
+// the outer top + bottom of the combined bar remain rounded.
+function roundedRectPath(x, y, w, h, rTL, rTR, rBR, rBL) {
+  const tl = Math.min(rTL, w / 2, h / 2)
+  const tr = Math.min(rTR, w / 2, h / 2)
+  const br = Math.min(rBR, w / 2, h / 2)
+  const bl = Math.min(rBL, w / 2, h / 2)
+  return `M${x + tl},${y}
+          L${x + w - tr},${y} Q${x + w},${y} ${x + w},${y + tr}
+          L${x + w},${y + h - br} Q${x + w},${y + h} ${x + w - br},${y + h}
+          L${x + bl},${y + h} Q${x},${y + h} ${x},${y + h - bl}
+          L${x},${y + tl} Q${x},${y} ${x + tl},${y} Z`
+}
+
+// Stripe revenue chart — last 12 months bucketed on document_date, split into
+// service (subscription) and achat (one-shot order). Each month is paired with
+// the matching month of the previous year, also stacked service+achat but
+// rendered in two grays (pâle = service, foncé = achat) so the comparison bar
+// carries the same breakdown as the current year.
+// Backend converts USD → CAD at the document_date BoC rate, taxes excluded.
+function StripeRevenueChart({ data, onMonthClick }) {
+  const [tooltip, setTooltip] = useState(null)
+
+  const byMonth = {}
+  for (const r of data || []) byMonth[r.month] = r
+
+  const now = new Date()
+  const months = []
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+    const prev = new Date(d.getFullYear() - 1, d.getMonth(), 1)
+    const prevKey = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`
+    const curr = byMonth[key] || { service: 0, achat: 0 }
+    const prevRow = byMonth[prevKey] || { service: 0, achat: 0 }
+    months.push({
+      key, prevKey,
+      label: d.toLocaleDateString('fr-CA', { month: 'short' }),
+      year: d.getFullYear(),
+      service: curr.service || 0,
+      achat: curr.achat || 0,
+      total: (curr.service || 0) + (curr.achat || 0),
+      prevService: prevRow.service || 0,
+      prevAchat: prevRow.achat || 0,
+      prevTotal: (prevRow.service || 0) + (prevRow.achat || 0),
+    })
+  }
+
+  const totalCurr = months.reduce((s, m) => s + m.total, 0)
+  const totalService = months.reduce((s, m) => s + m.service, 0)
+  const totalAchat = months.reduce((s, m) => s + m.achat, 0)
+  const maxVal = Math.max(...months.flatMap(m => [m.total, m.prevTotal]), 1)
+
+  const W = 600, H = 200
+  const padL = 44, padR = 8, padT = 12, padB = 32
+  const chartW = W - padL - padR
+  const chartH = H - padT - padB
+  const n = months.length
+  const groupW = chartW / n
+  const barW = Math.max(Math.floor((groupW - 6) / 2), 6)
+
+  const yPos = v => padT + chartH - (v / maxVal) * chartH
+  const groupCenter = i => padL + (i + 0.5) * groupW
+
+  const niceStep = (() => {
+    if (maxVal <= 1000) return 200
+    if (maxVal <= 5000) return 1000
+    if (maxVal <= 20000) return 5000
+    if (maxVal <= 50000) return 10000
+    if (maxVal <= 100000) return 20000
+    return Math.ceil(maxVal / 5 / 10000) * 10000
+  })()
+  const gridVals = []
+  for (let v = 0; v <= maxVal; v += niceStep) gridVals.push(v)
+  if (gridVals[gridVals.length - 1] < maxVal) gridVals.push(maxVal)
+
+  const fmtAxis = v => {
+    if (v >= 1000) return `${Math.round(v / 1000)}k$`
+    return `${Math.round(v)}$`
+  }
+  const fmtMoney = v => new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(v)
+
+  const hasAny = totalCurr > 0
+  if (!hasAny) {
+    return (
+      <div className="flex items-center justify-center h-40 text-slate-300 text-sm">
+        Aucune vente ni abonnement Stripe sur les 12 derniers mois
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative w-full">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
+        <div className="flex gap-4 text-xs text-slate-500 flex-wrap">
+          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-brand-500" /> Abonnement <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalService)}</span></span>
+          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-amber-500" /> Vente <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalAchat)}</span></span>
+          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-200" /> Abonnement an. préc.</span>
+          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-400" /> Vente an. préc.</span>
+        </div>
+        <span className="text-sm font-semibold text-slate-700">
+          Total <span className="text-slate-900">{fmtMoney(totalCurr)}</span>
+          <span className="text-xs font-normal text-slate-400 ml-1">12 derniers mois</span>
+        </span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 220 }}>
+        {gridVals.map((v, gi) => (
+          <g key={gi}>
+            <line x1={padL} x2={W - padR} y1={yPos(v)} y2={yPos(v)} stroke={v === 0 ? '#cbd5e1' : '#f1f5f9'} strokeWidth={v === 0 ? 0.8 : 1} />
+            <text x={padL - 4} y={yPos(v) + 3.5} textAnchor="end" fontSize="9" fill="#94a3b8">{fmtAxis(v)}</text>
+          </g>
+        ))}
+        {months.map((m, i) => {
+          const cx = groupCenter(i)
+          const xCurr = cx - barW - 1
+          const xPrev = cx + 1
+          const hService = (m.service / maxVal) * chartH
+          const hAchat = (m.achat / maxVal) * chartH
+          const hPrevService = (m.prevService / maxVal) * chartH
+          const hPrevAchat = (m.prevAchat / maxVal) * chartH
+          const isHovered = tooltip?.i === i
+          const yServiceTop = padT + chartH - hService - hAchat
+          const yAchatTop = padT + chartH - hAchat
+          const yPrevServiceTop = padT + chartH - hPrevService - hPrevAchat
+          const yPrevAchatTop = padT + chartH - hPrevAchat
+          return (
+            <g key={m.key}
+              data-testid={`stripe-revenue-month-${m.key}`}
+              onMouseEnter={() => setTooltip({ i, x: cx, m })}
+              onMouseLeave={() => setTooltip(null)}
+            >
+              <rect x={padL + i * groupW} y={0} width={groupW} height={H} fill="transparent" />
+              {/* Previous-year — stacked : service (gris pâle) en haut, achat (gris foncé)
+                  en bas (sur la ligne de base). Outer corners rounded ; jonction carrée. */}
+              {m.prevService > 0 && (
+                <path d={roundedRectPath(xPrev, yPrevAchatTop - hPrevService, barW, hPrevService,
+                  2, 2, m.prevAchat > 0 ? 0 : 2, m.prevAchat > 0 ? 0 : 2)}
+                  fill={isHovered ? '#cbd5e1' : '#e2e8f0'}
+                />
+              )}
+              {m.prevAchat > 0 && (
+                <path d={roundedRectPath(xPrev, yPrevAchatTop, barW, hPrevAchat,
+                  m.prevService > 0 ? 0 : 2, m.prevService > 0 ? 0 : 2, 2, 2)}
+                  fill={isHovered ? '#64748b' : '#94a3b8'}
+                />
+              )}
+              {/* Current month — stacked : service en haut, achat en bas (sur la ligne
+                  de base). Outer corners rounded ; jonction service↔achat carrée. */}
+              {m.service > 0 && (
+                <path d={roundedRectPath(xCurr, yAchatTop - hService, barW, hService,
+                  2, 2, m.achat > 0 ? 0 : 2, m.achat > 0 ? 0 : 2)}
+                  fill={isHovered ? '#1B8E3C' : '#21B14B'}
+                  style={{ cursor: onMonthClick ? 'pointer' : 'default' }}
+                  onClick={() => onMonthClick && onMonthClick(m.key, 'service')}
+                />
+              )}
+              {m.achat > 0 && (
+                <path d={roundedRectPath(xCurr, yAchatTop, barW, hAchat,
+                  m.service > 0 ? 0 : 2, m.service > 0 ? 0 : 2, 2, 2)}
+                  fill={isHovered ? '#d97706' : '#f59e0b'}
+                  style={{ cursor: onMonthClick ? 'pointer' : 'default' }}
+                  onClick={() => onMonthClick && onMonthClick(m.key, 'achat')}
+                />
+              )}
+              <text x={cx} y={H - 18} textAnchor="middle" fontSize="9" fill={i === n - 1 ? '#0f172a' : '#94a3b8'} fontWeight={i === n - 1 ? '600' : 'normal'}>{m.label}</text>
+              <text x={cx} y={H - 6} textAnchor="middle" fontSize="8" fill="#cbd5e1">{m.year}</text>
+            </g>
+          )
+        })}
+        {tooltip && (() => {
+          const m = tooltip.m
+          const tx = Math.min(Math.max(tooltip.x, 95), W - 95)
+          const ty = padT + 8
+          const delta = m.prevTotal > 0 ? Math.round(((m.total - m.prevTotal) / m.prevTotal) * 100) : null
+          return (
+            <g pointerEvents="none">
+              <rect x={tx - 90} y={ty - 4} width={180} height={104} rx="5" fill="#1e293b" opacity="0.93" />
+              <text x={tx} y={ty + 9} textAnchor="middle" fontSize="10" fill="#cbd5e1">{m.label} {m.year}</text>
+              <text x={tx - 80} y={ty + 25} textAnchor="start" fontSize="10" fill="#21B14B">Abonnement</text>
+              <text x={tx + 80} y={ty + 25} textAnchor="end" fontSize="11" fontWeight="bold" fill="white">{fmtMoney(m.service)}</text>
+              <text x={tx - 80} y={ty + 40} textAnchor="start" fontSize="10" fill="#f59e0b">Vente</text>
+              <text x={tx + 80} y={ty + 40} textAnchor="end" fontSize="11" fontWeight="bold" fill="white">{fmtMoney(m.achat)}</text>
+              <text x={tx - 80} y={ty + 58} textAnchor="start" fontSize="10" fill="#cbd5e1">Abonnement an. préc.</text>
+              <text x={tx + 80} y={ty + 58} textAnchor="end" fontSize="11" fontWeight="bold" fill="#cbd5e1">{fmtMoney(m.prevService)}</text>
+              <text x={tx - 80} y={ty + 73} textAnchor="start" fontSize="10" fill="#94a3b8">Vente an. préc.</text>
+              <text x={tx + 80} y={ty + 73} textAnchor="end" fontSize="11" fontWeight="bold" fill="#cbd5e1">{fmtMoney(m.prevAchat)}</text>
+              {delta !== null && (
+                <text x={tx} y={ty + 90} textAnchor="middle" fontSize="9" fill={delta >= 0 ? '#4ade80' : '#f87171'}>
+                  {delta >= 0 ? '+' : ''}{delta}% vs an. préc.
+                </text>
+              )}
+            </g>
+          )
+        })()}
+      </svg>
+      {onMonthClick && <p className="text-xs text-slate-400 text-right mt-1">Cliquer sur une portion pour voir les factures correspondantes</p>}
+    </div>
+  )
+}
+
+function ProjectsCreatedChart({ data, onMonthClick }) {
+  const [tooltip, setTooltip] = useState(null)
+
+  const now = new Date()
+  const currYear = now.getFullYear()
+  const prevYear = currYear - 1
+  const currentMonthIdx = now.getMonth() // 0-based
+
+  const counts = {}
+  for (const r of data || []) counts[r.month] = r.count
+
+  const months = []
+  for (let m = 0; m < 12; m++) {
+    const key = String(m + 1).padStart(2, '0')
+    const currKey = `${currYear}-${key}`
+    const prevKey = `${prevYear}-${key}`
+    months.push({
+      idx: m,
+      label: new Date(2000, m, 1).toLocaleDateString('fr-CA', { month: 'short' }),
+      curr: counts[currKey] || 0,
+      prev: counts[prevKey] || 0,
+      currKey,
+      prevKey,
+      isFuture: m > currentMonthIdx,
+    })
+  }
+
+  const totalCurr = months.reduce((s, m) => s + m.curr, 0)
+  const totalPrevYTD = months.reduce((s, m) => m.idx <= currentMonthIdx ? s + m.prev : s, 0)
+  const totalPrev = months.reduce((s, m) => s + m.prev, 0)
+  const deltaPct = totalPrevYTD > 0 ? Math.round(((totalCurr - totalPrevYTD) / totalPrevYTD) * 100) : null
+
+  const maxVal = Math.max(...months.flatMap(m => [m.curr, m.prev]), 1)
+
+  const W = 600, H = 180
+  const padL = 32, padR = 8, padT = 12, padB = 28
+  const chartW = W - padL - padR
+  const chartH = H - padT - padB
+  const n = months.length
+  const groupW = chartW / n
+  const barW = Math.max(Math.floor((groupW - 6) / 2), 6)
+
+  const yPos = v => padT + chartH - (v / maxVal) * chartH
+  const groupCenter = i => padL + (i + 0.5) * groupW
+
+  const niceStep = (() => {
+    if (maxVal <= 4) return 1
+    if (maxVal <= 10) return 2
+    if (maxVal <= 25) return 5
+    return Math.ceil(maxVal / 5)
+  })()
+  const gridVals = []
+  for (let v = 0; v <= maxVal; v += niceStep) gridVals.push(v)
+  if (gridVals[gridVals.length - 1] < maxVal) gridVals.push(maxVal)
+
+  const hasAny = totalCurr + totalPrev > 0
+  if (!hasAny) {
+    return (
+      <div className="flex items-center justify-center h-40 text-slate-300 text-sm">
+        Pas encore de projets créés
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative w-full">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
+        <div className="flex gap-4 text-xs text-slate-500">
+          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-brand-500" /> {currYear} <span className="font-semibold text-slate-700 ml-1">{totalCurr}</span></span>
+          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-300" /> {prevYear} <span className="font-semibold text-slate-700 ml-1">{totalPrev}</span></span>
+        </div>
+        {deltaPct !== null && (
+          <span className={`text-sm font-semibold ${deltaPct >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+            {deltaPct >= 0 ? '+' : ''}{deltaPct}%
+            <span className="text-xs font-normal text-slate-400 ml-1">vs {prevYear} YTD ({totalPrevYTD})</span>
+          </span>
+        )}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 200 }}>
+        {gridVals.map((v, gi) => (
+          <g key={gi}>
+            <line x1={padL} x2={W - padR} y1={yPos(v)} y2={yPos(v)} stroke={v === 0 ? '#cbd5e1' : '#f1f5f9'} strokeWidth={v === 0 ? 0.8 : 1} />
+            <text x={padL - 4} y={yPos(v) + 3.5} textAnchor="end" fontSize="9" fill="#94a3b8">{v}</text>
+          </g>
+        ))}
+        {months.map((m, i) => {
+          const cx = groupCenter(i)
+          const xPrev = cx - barW - 1
+          const xCurr = cx + 1
+          const hPrev = (m.prev / maxVal) * chartH
+          const hCurr = (m.curr / maxVal) * chartH
+          const isHovered = tooltip?.i === i
+          return (
+            <g key={m.idx}
+              data-testid={`projects-created-month-${m.idx}`}
+              onMouseEnter={() => setTooltip({ i, x: cx, m })}
+              onMouseLeave={() => setTooltip(null)}
+            >
+              <rect x={padL + i * groupW} y={0} width={groupW} height={H} fill="transparent" />
+              {m.prev > 0 && (
+                <rect x={xPrev} y={padT + chartH - hPrev} width={barW} height={hPrev} rx="2"
+                  fill={isHovered ? '#94a3b8' : '#cbd5e1'}
+                  style={{ cursor: onMonthClick ? 'pointer' : 'default' }}
+                  onClick={() => onMonthClick && onMonthClick(m.prevKey)}
+                />
+              )}
+              {m.curr > 0 && !m.isFuture && (
+                <rect x={xCurr} y={padT + chartH - hCurr} width={barW} height={hCurr} rx="2"
+                  fill={isHovered ? '#1B8E3C' : '#21B14B'}
+                  style={{ cursor: onMonthClick ? 'pointer' : 'default' }}
+                  onClick={() => onMonthClick && onMonthClick(m.currKey)}
+                />
+              )}
+              <text x={cx} y={H - 4} textAnchor="middle" fontSize="9" fill={m.idx === currentMonthIdx ? '#0f172a' : '#94a3b8'} fontWeight={m.idx === currentMonthIdx ? '600' : 'normal'}>{m.label}</text>
+            </g>
+          )
+        })}
+        {tooltip && (() => {
+          const m = tooltip.m
+          const tx = Math.min(Math.max(tooltip.x, 80), W - 80)
+          const ty = padT + 8
+          const delta = m.prev > 0 ? Math.round(((m.curr - m.prev) / m.prev) * 100) : null
+          return (
+            <g pointerEvents="none">
+              <rect x={tx - 70} y={ty - 4} width={140} height={64} rx="5" fill="#1e293b" opacity="0.93" />
+              <text x={tx} y={ty + 9} textAnchor="middle" fontSize="10" fill="#cbd5e1">{m.label}</text>
+              <text x={tx - 60} y={ty + 25} textAnchor="start" fontSize="10" fill="#21B14B">{currYear}</text>
+              <text x={tx + 60} y={ty + 25} textAnchor="end" fontSize="11" fontWeight="bold" fill="white">{m.curr}{m.isFuture ? ' (—)' : ''}</text>
+              <text x={tx - 60} y={ty + 40} textAnchor="start" fontSize="10" fill="#94a3b8">{prevYear}</text>
+              <text x={tx + 60} y={ty + 40} textAnchor="end" fontSize="11" fontWeight="bold" fill="#cbd5e1">{m.prev}</text>
+              {delta !== null && !m.isFuture && (
+                <text x={tx} y={ty + 55} textAnchor="middle" fontSize="9" fill={delta >= 0 ? '#4ade80' : '#f87171'}>
+                  {delta >= 0 ? '+' : ''}{delta}% YoY
+                </text>
+              )}
+            </g>
+          )
+        })()}
+      </svg>
+      {onMonthClick && <p className="text-xs text-slate-400 text-right mt-1">Cliquer sur une barre pour voir les projets du mois</p>}
+    </div>
+  )
+}
 
 function ClosingRateChart({ data, onMonthClick }) {
   const [tooltip, setTooltip] = useState(null)
@@ -474,6 +823,7 @@ function ShipmentsWeeklyChart({ data }) {
 
 function ShippingCostChart({ data }) {
   const [tooltip, setTooltip] = useState(null)
+  const navigate = useNavigate()
 
   if (!data || data.length === 0) {
     return (
@@ -548,10 +898,17 @@ function ShippingCostChart({ data }) {
             const y = padT + chartH - bh
             const isHovered = tooltip?.i === i
             const label = w.date.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })
+            const windowStart = new Date(w.date); windowStart.setDate(w.date.getDate() - 27)
+            const fromIso = windowStart.toISOString().slice(0, 10)
+            const toIso = w.date.toISOString().slice(0, 10)
+            const handleClick = () => navigate(`/achats-fournisseurs?from=${fromIso}&to=${toIso}&account=Expédition`)
             return (
               <g key={w.key}
                 onMouseEnter={() => setTooltip({ i, x: xCenter(i), y, w })}
                 onMouseLeave={() => setTooltip(null)}
+                onClick={handleClick}
+                style={{ cursor: 'pointer' }}
+                data-testid={`shipping-bar-${i}`}
               >
                 <rect x={padL + i * (chartW / n)} y={0} width={chartW / n} height={H} fill="transparent" />
                 {bh > 0 && (
@@ -664,6 +1021,7 @@ function ProfitabilityChart({ data, recentOrders }) {
   const [tooltip, setTooltip] = useState(null)
   const [activeFilter, setActiveFilter] = useState('Tous') // 'Tous' | 'Abonnement' | 'Achat'
   const [showOrders, setShowOrders] = useState(false)
+  const [selectedWeek, setSelectedWeek] = useState(null)
 
   // Build last 16 weeks grid, merging rows by is_subscription
   const weeks = []
@@ -817,19 +1175,34 @@ function ProfitabilityChart({ data, recentOrders }) {
             const cx = xPos(i)
             const cy = yPos(weekMargins[i])
             const isHovered = tooltip?.i === i
+            const isSelected = selectedWeek === w.key
             const isLast4 = i >= n - 4
             const showLabel = i === 0 || i === n - 1 || w.date.getDate() <= 7
             const label = w.date.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
             const color = weekMargins[i] >= 40 ? '#10b981' : weekMargins[i] >= 20 ? '#f59e0b' : '#ef4444'
             return (
               <g key={w.key}
+                data-testid={`profitability-week-${w.key}`}
                 onMouseEnter={() => setTooltip({ i, x: cx, y: cy, w, pct: weekMargins[i] })}
                 onMouseLeave={() => setTooltip(null)}
+                onClick={() => {
+                  setSelectedWeek(prev => prev === w.key ? null : w.key)
+                  setShowOrders(true)
+                }}
+                style={{ cursor: 'pointer' }}
               >
                 <rect x={padL + i * (chartW / n)} y={0} width={chartW / n} height={H} fill="transparent" />
-                <circle cx={cx} cy={cy} r={isHovered ? 5 : 3.5} fill={color} stroke="white" strokeWidth={isHovered ? 2 : 1.5} opacity={isLast4 ? 1 : 0.5} />
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={isSelected || isHovered ? 5 : 3.5}
+                  fill={color}
+                  stroke={isSelected ? '#0f172a' : 'white'}
+                  strokeWidth={isSelected ? 2.5 : (isHovered ? 2 : 1.5)}
+                  opacity={isLast4 || isSelected ? 1 : 0.5}
+                />
                 {showLabel && (
-                  <text x={cx} y={H - 4} textAnchor="middle" fontSize="8" fill="#94a3b8">{label}</text>
+                  <text x={cx} y={H - 4} textAnchor="middle" fontSize="8" fontWeight={isSelected ? 'bold' : 'normal'} fill={isSelected ? '#0f172a' : '#94a3b8'}>{label}</text>
                 )}
               </g>
             )
@@ -874,23 +1247,52 @@ function ProfitabilityChart({ data, recentOrders }) {
         </div>
       </div>
 
-      {/* Shipped orders table — filtered by activeFilter */}
+      {/* Shipped orders table — filtered by activeFilter and (optionally) selectedWeek */}
       {recentOrders?.length > 0 && (() => {
-        const filtered = activeFilter === 'Tous' ? recentOrders
+        const byType = activeFilter === 'Tous' ? recentOrders
           : activeFilter === 'Abonnement' ? recentOrders.filter(o => o.is_subscription)
           : recentOrders.filter(o => !o.is_subscription)
-        if (!filtered.length) return null
+
+        let weekStart = null, weekEnd = null, weekLabel = null
+        if (selectedWeek) {
+          const [yr, mo, dy] = selectedWeek.split('-').map(Number)
+          weekStart = new Date(yr, mo - 1, dy)
+          weekEnd = new Date(weekStart.getTime() + 7 * 86400000)
+          weekLabel = weekStart.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', year: 'numeric' })
+        }
+        const filtered = selectedWeek
+          ? byType.filter(o => {
+              if (!o.last_shipped_at) return false
+              const t = new Date(o.last_shipped_at).getTime()
+              return t >= weekStart.getTime() && t < weekEnd.getTime()
+            })
+          : byType
+
+        if (!byType.length && !selectedWeek) return null
         return (
           <div className="mt-6 border-t border-slate-100 pt-5">
-            <button
-              onClick={() => setShowOrders(!showOrders)}
-              className="text-sm text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1"
-            >
-              <span className="text-xs">{showOrders ? '▼' : '▶'}</span>
-              Commandes envoyées — 28 derniers jours ({filtered.length})
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setShowOrders(!showOrders)}
+                className="text-sm text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1"
+              >
+                <span className="text-xs">{showOrders ? '▼' : '▶'}</span>
+                {selectedWeek
+                  ? `Commandes — semaine du ${weekLabel} (${filtered.length})`
+                  : `Commandes envoyées — 28 derniers jours (${filtered.length})`}
+              </button>
+              {selectedWeek && (
+                <button
+                  data-testid="profitability-filter-clear"
+                  onClick={() => setSelectedWeek(null)}
+                  className="text-xs text-slate-500 hover:text-slate-700 underline"
+                >
+                  Effacer le filtre
+                </button>
+              )}
+            </div>
             {showOrders && <div className="overflow-x-auto mt-3">
-              <table className="w-full text-sm">
+              <table className="w-full text-sm" data-testid="profitability-orders-table">
                 <thead>
                   <tr className="border-b border-slate-100">
                     <th className="px-3 py-2 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">#</th>
@@ -929,6 +1331,15 @@ function ProfitabilityChart({ data, recentOrders }) {
                       </tr>
                     )
                   })}
+                  {filtered.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-4 text-center text-slate-400 text-sm">
+                        {selectedWeek
+                          ? `Aucune commande envoyée la semaine du ${weekLabel}${weekEnd && weekEnd.getTime() < Date.now() - 28 * 86400000 ? ' (au-delà de la fenêtre 28 jours du tableau)' : ''}`
+                          : 'Aucune commande'}
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>}
@@ -942,7 +1353,23 @@ function ProfitabilityChart({ data, recentOrders }) {
 function ReplacementRateChart({ replacementRate }) {
   const [tooltip, setTooltip] = useState(null)
   const [showItems, setShowItems] = useState(false)
+  const [selectedMonth, setSelectedMonth] = useState(null)
   const { parkValue = 0, last28 = 0, byMonth = [], items = [] } = replacementRate || {}
+
+  const filteredItems = selectedMonth
+    ? items.filter(it => {
+        if (!it.shipped_at) return false
+        const d = new Date(it.shipped_at)
+        const k = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+        return k === selectedMonth
+      })
+    : items
+  const selectedMonthLabel = selectedMonth
+    ? (() => {
+        const [yr, mo] = selectedMonth.split('-').map(Number)
+        return new Date(yr, mo - 1, 1).toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })
+      })()
+    : null
 
   // Build last 12 months grid
   const months = []
@@ -1043,14 +1470,28 @@ function ReplacementRateChart({ replacementRate }) {
             const cx = xPos(i)
             const cy = yPos(m.rate)
             const isHovered = tooltip?.i === i
+            const isSelected = selectedMonth === m.key
             return (
               <g key={m.key}
+                data-testid={`replacement-month-${m.key}`}
                 onMouseEnter={() => setTooltip({ i, x: cx, y: cy, m })}
                 onMouseLeave={() => setTooltip(null)}
+                onClick={() => {
+                  setSelectedMonth(prev => prev === m.key ? null : m.key)
+                  setShowItems(true)
+                }}
+                style={{ cursor: 'pointer' }}
               >
                 <rect x={padL + i * (chartW / n)} y={0} width={chartW / n} height={H} fill="transparent" />
-                <circle cx={cx} cy={cy} r={isHovered ? 5 : 3.5} fill="#f59e0b" stroke="white" strokeWidth={isHovered ? 2 : 1.5} />
-                <text x={cx} y={H - 4} textAnchor="middle" fontSize="9" fill="#94a3b8">{m.label}</text>
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={isSelected || isHovered ? 5 : 3.5}
+                  fill={isSelected ? '#d97706' : '#f59e0b'}
+                  stroke="white"
+                  strokeWidth={isSelected ? 2.5 : (isHovered ? 2 : 1.5)}
+                />
+                <text x={cx} y={H - 4} textAnchor="middle" fontSize="9" fontWeight={isSelected ? 'bold' : 'normal'} fill={isSelected ? '#d97706' : '#94a3b8'}>{m.label}</text>
               </g>
             )
           })}
@@ -1063,7 +1504,10 @@ function ReplacementRateChart({ replacementRate }) {
               <g pointerEvents="none">
                 <rect x={tx - 56} y={ty - 14} width={112} height={66} rx="5" fill="#1e293b" opacity="0.93" />
                 <text x={tx} y={ty + 2} textAnchor="middle" fontSize="9" fill="#94a3b8">
-                  {new Date(tooltip.m.key + '-01').toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })}
+                  {(() => {
+                    const [yr, mo] = tooltip.m.key.split('-').map(Number)
+                    return new Date(yr, mo - 1, 1).toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })
+                  })()}
                 </text>
                 <text x={tx} y={ty + 16} textAnchor="middle" fontSize="10" fontWeight="bold" fill="#fbbf24">
                   {fmtPct(tooltip.m.rate)} du parc
@@ -1086,16 +1530,29 @@ function ReplacementRateChart({ replacementRate }) {
       {/* Replacement items detail table */}
       {items.length > 0 && (
         <div className="mt-4">
-          <button
-            onClick={() => setShowItems(!showItems)}
-            className="text-sm text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1"
-          >
-            <span className="text-xs">{showItems ? '▼' : '▶'}</span>
-            {items.length} ligne{items.length > 1 ? 's' : ''} de remplacement (12 derniers mois)
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setShowItems(!showItems)}
+              className="text-sm text-blue-600 hover:text-blue-800 font-medium flex items-center gap-1"
+            >
+              <span className="text-xs">{showItems ? '▼' : '▶'}</span>
+              {selectedMonth
+                ? `${filteredItems.length} ligne${filteredItems.length > 1 ? 's' : ''} pour ${selectedMonthLabel}`
+                : `${items.length} ligne${items.length > 1 ? 's' : ''} de remplacement (12 derniers mois)`}
+            </button>
+            {selectedMonth && (
+              <button
+                data-testid="replacement-filter-clear"
+                onClick={() => setSelectedMonth(null)}
+                className="text-xs text-slate-500 hover:text-slate-700 underline"
+              >
+                Effacer le filtre
+              </button>
+            )}
+          </div>
           {showItems && (
             <div className="mt-2 border border-slate-200 rounded-lg overflow-hidden">
-              <table className="w-full text-sm">
+              <table className="w-full text-sm" data-testid="replacement-items-table">
                 <thead>
                   <tr className="bg-slate-50 text-left text-xs text-slate-500">
                     <th className="px-3 py-2 font-medium">Commande</th>
@@ -1108,7 +1565,7 @@ function ReplacementRateChart({ replacementRate }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((it, idx) => (
+                  {filteredItems.map((it, idx) => (
                     <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
                       <td className="px-3 py-1.5 text-slate-700 font-mono text-xs">#{it.order_number}</td>
                       <td className="px-3 py-1.5 text-slate-700">{it.company_name || '—'}</td>
@@ -1119,6 +1576,13 @@ function ReplacementRateChart({ replacementRate }) {
                       <td className="px-3 py-1.5 text-right text-slate-500">{it.shipped_at ? new Date(it.shipped_at).toLocaleDateString('fr-CA') : '—'}</td>
                     </tr>
                   ))}
+                  {filteredItems.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-4 text-center text-slate-400 text-sm">
+                        Aucun remplacement pour {selectedMonthLabel}
+                      </td>
+                    </tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1205,12 +1669,387 @@ function fmtCad(n) {
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
 }
 
+// Panel "Mouvements d'abonnements" — affiche, par mois, le nombre de
+// nouveaux abonnements / annulations / win-backs et le delta MRR net.
+// Chaque ligne se déplie pour montrer la liste des entreprises concernées
+// avec montants et liens.
+function SubscriptionEventsPanel({ data }) {
+  const [openMonth, setOpenMonth] = useState(null)
+  if (!data) return <div className="text-slate-400 text-sm">Chargement...</div>
+  const months = data.months || []
+  if (months.length === 0) {
+    return <div className="text-slate-400 text-sm py-4">Aucun mouvement d'abonnement enregistré.</div>
+  }
+  // Affichage chronologique inverse (mois récent en haut)
+  const ordered = [...months].reverse()
+
+  function fmtMonth(m) {
+    const [y, mm] = m.split('-')
+    return new Date(Number(y), Number(mm) - 1, 1).toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="border-b border-slate-200 text-xs text-slate-500 uppercase tracking-wide">
+            <th className="text-left py-2 pr-4 font-medium">Mois</th>
+            <th className="text-right py-2 px-3 font-medium">Net MRR</th>
+            <th className="text-right py-2 px-3 font-medium text-emerald-700">Nouveaux</th>
+            <th className="text-right py-2 px-3 font-medium text-amber-700">Win-back</th>
+            <th className="text-right py-2 px-3 font-medium text-rose-700">Annulations</th>
+            <th className="w-6"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {ordered.map(m => {
+            const isOpen = openMonth === m.month
+            const cats = m.categories
+            const net = m.net_mrr_delta_cad || 0
+            const netCls = net > 0 ? 'text-emerald-700' : net < 0 ? 'text-rose-700' : 'text-slate-500'
+            return (
+              <Fragment key={m.month}>
+                <tr
+                  data-testid={`sub-events-month-${m.month}`}
+                  className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
+                  onClick={() => setOpenMonth(isOpen ? null : m.month)}
+                >
+                  <td className="py-2.5 pr-4 font-medium text-slate-700 capitalize">{fmtMonth(m.month)}</td>
+                  <td className={`py-2.5 px-3 text-right font-semibold tabular-nums ${netCls}`}>
+                    {net > 0 ? '+' : ''}{fmtCad(Math.abs(net) < 1 ? net : Math.round(net))}
+                  </td>
+                  <td className="py-2.5 px-3 text-right tabular-nums">
+                    <span className="text-emerald-700 font-medium">{cats.new.count}</span>
+                    {cats.new.total_amount_cad > 0 && <span className="text-slate-400 text-xs ml-1.5">+{fmtCad(cats.new.total_amount_cad)}</span>}
+                  </td>
+                  <td className="py-2.5 px-3 text-right tabular-nums">
+                    <span className="text-amber-700 font-medium">{cats.winback.count}</span>
+                    {cats.winback.total_amount_cad > 0 && <span className="text-slate-400 text-xs ml-1.5">+{fmtCad(cats.winback.total_amount_cad)}</span>}
+                  </td>
+                  <td className="py-2.5 px-3 text-right tabular-nums">
+                    <span className="text-rose-700 font-medium">{cats.churn.count}</span>
+                    {cats.churn.total_amount_cad < 0 && <span className="text-slate-400 text-xs ml-1.5">{fmtCad(cats.churn.total_amount_cad)}</span>}
+                  </td>
+                  <td className="text-slate-400 text-center">{isOpen ? '▾' : '▸'}</td>
+                </tr>
+                {isOpen && (
+                  <tr>
+                    <td colSpan={6} className="bg-slate-50 px-4 py-3">
+                      <SubscriptionEventsDetail categories={cats} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function SubscriptionEventsDetail({ categories }) {
+  const sections = [
+    { key: 'new', label: 'Nouveaux abonnements', color: 'text-emerald-700' },
+    { key: 'winback', label: 'Win-back (rachats après annulation)', color: 'text-amber-700' },
+    { key: 'churn', label: 'Annulations', color: 'text-rose-700' },
+  ].filter(s => categories[s.key].count > 0)
+
+  if (sections.length === 0) return <div className="text-xs text-slate-400">Aucun mouvement ce mois.</div>
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {sections.map(s => (
+        <div key={s.key}>
+          <div className={`text-xs font-semibold uppercase tracking-wide mb-1.5 ${s.color}`}>
+            {s.label} ({categories[s.key].count})
+          </div>
+          <ul className="space-y-1">
+            {categories[s.key].items.map(it => (
+              <li key={it.event_id} className="flex items-center justify-between gap-2 text-xs">
+                {it.company_id
+                  ? <Link to={`/companies/${it.company_id}`} className="text-brand-600 hover:underline truncate">{it.company_name || '—'}</Link>
+                  : <span className="text-slate-400 truncate">— sans client</span>
+                }
+                <span className="text-slate-500 tabular-nums whitespace-nowrap">
+                  {it.amount_cad_delta != null
+                    ? (it.amount_cad_delta > 0 ? '+' : '') + fmtCad(it.amount_cad_delta)
+                    : '—'}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ============================================================
+// Top Products — best sellers panel (by revenue or quantity)
+// ============================================================
+
+function fmtCadCompact(n) {
+  if (n == null) return '—'
+  if (Math.abs(n) >= 1000) {
+    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
+  }
+  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
+}
+
+function fmtNumber(n) {
+  return new Intl.NumberFormat('fr-CA').format(n || 0)
+}
+
+function dateToYmd(d) { return d.toISOString().slice(0, 10) }
+function ymdToDate(s) { return new Date(s + 'T00:00:00Z') }
+
+function DateRangeSlider({ minDate, maxDate, from, to, onChange }) {
+  const min = ymdToDate(minDate).getTime()
+  const max = ymdToDate(maxDate).getTime()
+  const totalDays = Math.max(1, Math.round((max - min) / 86400000))
+  const fromDays = Math.max(0, Math.min(totalDays, Math.round((ymdToDate(from).getTime() - min) / 86400000)))
+  const toDays   = Math.max(0, Math.min(totalDays, Math.round((ymdToDate(to).getTime()   - min) / 86400000)))
+  const lowPct = (fromDays / totalDays) * 100
+  const highPct = (toDays / totalDays) * 100
+  const daysToYmd = days => dateToYmd(new Date(min + days * 86400000))
+
+  const handleLow = e => {
+    const v = Math.min(parseInt(e.target.value), toDays - 1)
+    onChange({ from: daysToYmd(v), to })
+  }
+  const handleHigh = e => {
+    const v = Math.max(parseInt(e.target.value), fromDays + 1)
+    onChange({ from, to: daysToYmd(v) })
+  }
+
+  return (
+    <div className="relative h-10 select-none" data-testid="dashboard-top-products-slider">
+      <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 bg-slate-200 rounded-full" />
+      <div
+        className="absolute top-1/2 -translate-y-1/2 h-1.5 bg-brand-500 rounded-full"
+        style={{ left: `${lowPct}%`, right: `${100 - highPct}%` }}
+      />
+      <input
+        type="range" min={0} max={totalDays} step={1}
+        value={fromDays} onChange={handleLow}
+        aria-label="Date de début"
+        className="range-slider-thumb absolute inset-0 w-full h-full"
+      />
+      <input
+        type="range" min={0} max={totalDays} step={1}
+        value={toDays} onChange={handleHigh}
+        aria-label="Date de fin"
+        className="range-slider-thumb absolute inset-0 w-full h-full"
+      />
+    </div>
+  )
+}
+
+const PRESETS = [
+  { id: '30d',  label: '30 j',  days: 30 },
+  { id: '90d',  label: '90 j',  days: 90 },
+  { id: '6m',   label: '6 mois', days: 182 },
+  { id: '1y',   label: '1 an',   days: 365 },
+  { id: '2y',   label: '2 ans',  days: 730 },
+  { id: 'all',  label: 'Tout',   days: null },
+]
+
+function TopProductsPanel() {
+  const [range, setRange] = useState({ from: null, to: null, min: null, max: null })
+  const [products, setProducts] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [metric, setMetric] = useState('amount') // 'amount' | 'quantity'
+  const [topN, setTopN] = useState(15)
+  const [activePreset, setActivePreset] = useState('1y')
+
+  // First load: fetch min/max bounds (no filter), then default to last 1 year
+  useEffect(() => {
+    let alive = true
+    api.dashboard.topProducts({}).then(r => {
+      if (!alive) return
+      const max = r.range?.max_date || dateToYmd(new Date())
+      const min = r.range?.min_date || dateToYmd(new Date(Date.now() - 365 * 86400000))
+      const oneYearAgo = dateToYmd(new Date(Date.now() - 365 * 86400000))
+      const from = oneYearAgo < min ? min : oneYearAgo
+      setRange({ from, to: max, min, max })
+      // Re-filter for the default 1y window
+      api.dashboard.topProducts({ from, to: max }).then(rr => {
+        if (!alive) return
+        setProducts(rr.products || [])
+        setLoading(false)
+      })
+    }).catch(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [])
+
+  // When range changes, refetch
+  useEffect(() => {
+    if (!range.from || !range.to) return
+    setLoading(true)
+    let alive = true
+    api.dashboard.topProducts({ from: range.from, to: range.to }).then(r => {
+      if (!alive) return
+      setProducts(r.products || [])
+      setLoading(false)
+    }).catch(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [range.from, range.to])
+
+  const applyPreset = id => {
+    setActivePreset(id)
+    if (id === 'all') {
+      setRange(r => ({ ...r, from: r.min, to: r.max }))
+      return
+    }
+    const preset = PRESETS.find(p => p.id === id)
+    if (!preset?.days) return
+    const to = range.max || dateToYmd(new Date())
+    const fromDate = new Date(ymdToDate(to).getTime() - preset.days * 86400000)
+    const from = dateToYmd(fromDate)
+    const min = range.min
+    setRange(r => ({ ...r, from: min && from < min ? min : from, to }))
+  }
+
+  const sorted = [...products].sort((a, b) => (
+    metric === 'amount' ? (b.amount_cad - a.amount_cad) : (b.quantity - a.quantity)
+  ))
+  const top = sorted.slice(0, topN)
+  const maxValue = top.length ? (metric === 'amount' ? top[0].amount_cad : top[0].quantity) : 0
+  const totals = products.reduce((acc, p) => ({
+    amount: acc.amount + (p.amount_cad || 0),
+    qty: acc.qty + (p.quantity || 0),
+  }), { amount: 0, qty: 0 })
+
+  if (!range.from || !range.to) {
+    return <div className="h-32 flex items-center justify-center text-slate-400 text-sm">Chargement…</div>
+  }
+
+  return (
+    <div data-testid="dashboard-top-products">
+      {/* Controls row: metric toggle + presets */}
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50">
+          <button
+            onClick={() => setMetric('amount')}
+            className={`px-3 py-1 text-xs rounded-md transition-colors ${metric === 'amount' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+            data-testid="dashboard-top-products-metric-amount"
+          >
+            Par revenus
+          </button>
+          <button
+            onClick={() => setMetric('quantity')}
+            className={`px-3 py-1 text-xs rounded-md transition-colors ${metric === 'quantity' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+            data-testid="dashboard-top-products-metric-quantity"
+          >
+            Par quantité
+          </button>
+        </div>
+
+        <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50">
+          {PRESETS.map(p => (
+            <button
+              key={p.id}
+              onClick={() => applyPreset(p.id)}
+              className={`px-2 py-1 text-xs rounded-md transition-colors ${activePreset === p.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              data-testid={`dashboard-top-products-preset-${p.id}`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
+          <label className="text-slate-500">Top</label>
+          <select
+            value={topN}
+            onChange={e => setTopN(parseInt(e.target.value))}
+            className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
+          >
+            <option value={5}>5</option>
+            <option value={10}>10</option>
+            <option value={15}>15</option>
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+          </select>
+        </div>
+      </div>
+
+      {/* Date range slider */}
+      <div className="mb-2">
+        <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
+          <span className="tabular-nums" data-testid="dashboard-top-products-from">Du {fmtDate(range.from)}</span>
+          <span className="tabular-nums" data-testid="dashboard-top-products-to">au {fmtDate(range.to)}</span>
+        </div>
+        <DateRangeSlider
+          minDate={range.min} maxDate={range.max}
+          from={range.from} to={range.to}
+          onChange={({ from, to }) => { setActivePreset(null); setRange(r => ({ ...r, from, to })) }}
+        />
+      </div>
+
+      {/* Totals */}
+      <div className="text-xs text-slate-500 mb-3">
+        {fmtNumber(products.length)} produits sur la période · revenus totaux{' '}
+        <span className="font-medium text-slate-700">{fmtCadCompact(totals.amount)}</span>{' '}
+        · {fmtNumber(totals.qty)} unités vendues
+      </div>
+
+      {/* Bar list */}
+      {loading && top.length === 0 ? (
+        <div className="h-32 flex items-center justify-center text-slate-400 text-sm">Chargement…</div>
+      ) : top.length === 0 ? (
+        <div className="h-32 flex items-center justify-center text-slate-400 text-sm">Aucun item vendu sur cette période.</div>
+      ) : (
+        <ul className="space-y-1.5" data-testid="dashboard-top-products-list">
+          {top.map((p, i) => {
+            const value = metric === 'amount' ? p.amount_cad : p.quantity
+            const pct = maxValue > 0 ? (value / maxValue) * 100 : 0
+            const name = p.name_fr || p.name_en || (p.product_id ? '(produit non lié)' : 'Items non liés')
+            const Wrapper = p.product_id
+              ? ({ children }) => <Link to={`/products/${p.product_id}`} className="block">{children}</Link>
+              : ({ children }) => <div>{children}</div>
+            return (
+              <Wrapper key={p.product_id || `unlinked-${i}`}>
+                <li className="group flex items-center gap-3 py-2 px-2 rounded-md hover:bg-slate-50 transition-colors">
+                  <span className="text-xs font-mono text-slate-400 w-7 text-right tabular-nums">#{i + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm text-slate-800 truncate" title={name}>{name}</span>
+                      <span className="text-sm font-medium text-slate-900 tabular-nums whitespace-nowrap">
+                        {metric === 'amount' ? fmtCadCompact(p.amount_cad) : `${fmtNumber(p.quantity)} u.`}
+                      </span>
+                    </div>
+                    <div className="mt-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                      <div className="h-full bg-brand-500 transition-all" style={{ width: `${pct}%` }} />
+                    </div>
+                    <div className="mt-0.5 flex justify-between text-[10px] text-slate-400">
+                      <span>{p.sku ? `SKU ${p.sku}` : ''}</span>
+                      <span>
+                        {metric === 'amount'
+                          ? `${fmtNumber(p.quantity)} u. · ${p.invoice_count} facture${p.invoice_count > 1 ? 's' : ''}`
+                          : `${fmtCadCompact(p.amount_cad)} · ${p.invoice_count} facture${p.invoice_count > 1 ? 's' : ''}`}
+                      </span>
+                    </div>
+                  </div>
+                </li>
+              </Wrapper>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 function fmtDateShort(d) {
   return fmtDate(d, { year: undefined })
 }
 
 export default function Dashboard() {
   const [data, setData] = useState(null)
+  const [stripeRevenue, setStripeRevenue] = useState(null)
+  const [subscriptionEvents, setSubscriptionEvents] = useState(null)
   const [loading, setLoading] = useState(true)
   const [showEditor, setShowEditor] = useState(false)
   const [showGoalEditor, setShowGoalEditor] = useState(false)
@@ -1221,6 +2060,8 @@ export default function Dashboard() {
   const refresh = () => {
     setLoading(true)
     api.dashboard.get().then(setData).catch(console.error).finally(() => setLoading(false))
+    api.dashboard.stripeRevenue().then(setStripeRevenue).catch(console.error)
+    api.dashboard.subscriptionEvents({ months: 12 }).then(setSubscriptionEvents).catch(console.error)
   }
 
   useEffect(() => {
@@ -1286,6 +2127,55 @@ export default function Dashboard() {
           </div>
         )}
 
+        {/* Ventes et abonnements — last 12 months */}
+        {show('section_stripe_revenue') && (
+          <div className="card p-5 mb-6">
+            <div className="mb-4">
+              <h2 className="font-semibold text-slate-900">Ventes et abonnements</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Encaissements Stripe sur les 12 derniers mois — abonnements vs ventes ponctuelles ·
+                remboursements déduits · USD converti au taux BoC du jour du document ·
+                taxes exclues · comparé au mois équivalent l'année précédente
+              </p>
+            </div>
+            <StripeRevenueChart
+              data={stripeRevenue?.byMonth}
+              onMonthClick={(month, type) => navigate(`/factures?month=${month}&type=${type}`)}
+            />
+          </div>
+        )}
+
+        {/* Mouvements d'abonnements */}
+        {show('section_subscription_events') && (
+          <div className="card p-5 mb-6" data-testid="section-subscription-events">
+            <div className="mb-4">
+              <h2 className="font-semibold text-slate-900">Mouvements d'abonnements</h2>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Nouveaux abonnements, win-back (rachats après annulation), annulations et delta MRR net par mois — 12 derniers mois.
+                Cliquer sur une ligne pour voir les entreprises concernées.
+              </p>
+            </div>
+            <SubscriptionEventsPanel data={subscriptionEvents} />
+          </div>
+        )}
+
+        {/* Top products — best sellers */}
+        {show('section_top_products') && (
+          <div className="card p-5 mb-6" data-testid="section-top-products">
+            <div className="mb-4 flex items-center gap-2">
+              <Trophy size={18} className="text-amber-500" />
+              <div>
+                <h2 className="font-semibold text-slate-900">Meilleurs vendeurs</h2>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Items vendus sur factures Stripe payées · classement par revenus (CAD) ou quantité ·
+                  USD converti au taux BoC du jour
+                </p>
+              </div>
+            </div>
+            <TopProductsPanel />
+          </div>
+        )}
+
         {/* Replacement rate */}
         {show('section_replacement_rate') && (
           <div className="card p-5 mb-6">
@@ -1294,6 +2184,20 @@ export default function Dashboard() {
               <p className="text-xs text-slate-400 mt-0.5">Coût des pièces de remplacement envoyées — 12 derniers mois · Rolling 28 jours</p>
             </div>
             <ReplacementRateChart replacementRate={data?.replacementRate} />
+          </div>
+        )}
+
+        {/* Projects created per month — YoY comparison */}
+        {show('section_projects_created') && (
+          <div className="card p-5 mb-6">
+            <div className="mb-4">
+              <h2 className="font-semibold text-slate-900">Projets créés par mois</h2>
+              <p className="text-xs text-slate-400 mt-0.5">Nombre de projets créés chaque mois — {new Date().getFullYear()} vs {new Date().getFullYear() - 1}</p>
+            </div>
+            <ProjectsCreatedChart
+              data={data?.projectsCreatedByMonth}
+              onMonthClick={month => navigate(`/pipeline?createdMonth=${month}`)}
+            />
           </div>
         )}
 

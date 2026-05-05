@@ -504,6 +504,333 @@ router.post('/airtable/projets/airtable-field-disabled', requireAuth, (req, res)
   res.json({ ok: true })
 })
 
+// ── Type compat helpers (mapping Airtable → ERP) ───────────────────────────
+
+const TYPE_COMPAT = {
+  text:          new Set(['text', 'long_text']),
+  long_text:     new Set(['text', 'long_text']),
+  number:        new Set(['number']),
+  date:          new Set(['date']),
+  single_select: new Set(['single_select']),
+  multi_select:  new Set(['multi_select']),
+  checkbox:      new Set(['checkbox']),
+  link:          new Set(['link']),
+}
+
+function typesCompatible(airtableType, erpType) {
+  const set = TYPE_COMPAT[airtableType]
+  return set ? set.has(erpType) : false
+}
+
+// Map Airtable field type from /meta/bases (raw API) to ERP-side enum.
+// Mirrors mapAirtableType() in services/airtableAutoSync.js without the
+// option-extraction since we only need the type.
+function airtableTypeToErp(atType, options) {
+  switch (atType) {
+    case 'singleLineText':
+    case 'richText':
+    case 'barcode':
+    case 'externalSyncSource':
+    case 'email':
+    case 'url':
+    case 'phoneNumber':
+      return 'text'
+    case 'multilineText':
+      return 'long_text'
+    case 'number':
+    case 'count':
+    case 'autoNumber':
+    case 'currency':
+    case 'percent':
+    case 'rating':
+      return 'number'
+    case 'singleSelect':
+      return 'single_select'
+    case 'multipleSelects':
+      return 'multi_select'
+    case 'checkbox':
+      return 'checkbox'
+    case 'date':
+    case 'dateTime':
+    case 'createdTime':
+    case 'lastModifiedTime':
+      return 'date'
+    case 'multipleRecordLinks':
+      return 'link'
+    case 'rollup':
+    case 'lookup':
+    case 'multipleLookupValues':
+    case 'formula': {
+      const r = options?.result?.type
+      if (r === 'number' || r === 'currency' || r === 'percent') return 'number'
+      if (r === 'date' || r === 'dateTime') return 'date'
+      if (r === 'checkbox') return 'checkbox'
+      return 'text'
+    }
+    case 'multipleAttachments':
+      return 'text'
+    default:
+      return 'text'
+  }
+}
+
+// Construit une map Airtable table_id → ERP table à partir des configs.
+// Permet (a) de pré-suggérer la table cible pour un champ lien, et (b) de
+// valider qu'une table cible référencée existe bien côté ERP.
+function buildAirtableTableToErp() {
+  const m = new Map()
+  const sync = db.prepare('SELECT contacts_table_id, companies_table_id FROM airtable_sync_config').get()
+  if (sync?.contacts_table_id) m.set(sync.contacts_table_id, 'contacts')
+  if (sync?.companies_table_id) m.set(sync.companies_table_id, 'companies')
+  const projets = db.prepare('SELECT projects_table_id FROM airtable_projets_config').get()
+  if (projets?.projects_table_id) m.set(projets.projects_table_id, 'projects')
+  const orders = db.prepare('SELECT orders_table_id, items_table_id FROM airtable_orders_config').get()
+  if (orders?.orders_table_id) m.set(orders.orders_table_id, 'orders')
+  if (orders?.items_table_id) m.set(orders.items_table_id, 'order_items')
+  const moduleToErp = {
+    pieces: 'products', achats: 'purchases', billets: 'tickets', serials: 'serial_numbers',
+    envois: 'shipments', soumissions: 'soumissions', retours: 'returns', retour_items: 'return_items',
+    adresses: 'adresses', bom: 'bom_items', assemblages: 'assemblages', employees: 'employees',
+    paies: 'paies', paie_items: 'paie_items',
+  }
+  for (const r of db.prepare('SELECT module, table_id FROM airtable_module_config').all()) {
+    if (r.table_id && moduleToErp[r.module]) m.set(r.table_id, moduleToErp[r.module])
+  }
+  return m
+}
+
+// GET /api/connectors/airtable/projets/mapping-data
+// Renvoie tout ce qu'il faut à la modale de mapping :
+// - airtable_fields : champs Airtable (hors hardcodés) avec leur type ERP, options, et mapping actuel
+// - erp_columns     : colonnes mappables de `projects` avec leur type
+// - hardcoded       : liste des airtable_field_name déjà gérés en code (read-only)
+// - airtable_table_to_erp : map Airtable table_id → erp_table (pour résoudre les liens)
+router.get('/airtable/projets/mapping-data', requireAuth, async (req, res) => {
+  const config = db.prepare('SELECT * FROM airtable_projets_config').get()
+  if (!config?.base_id || !config?.projects_table_id) {
+    return res.json({ airtable_fields: [], erp_columns: [], hardcoded: [], airtable_table_to_erp: {} })
+  }
+
+  let token
+  try { token = await getAccessToken() }
+  catch (e) { return res.status(500).json({ error: 'Airtable non connecté: ' + e.message }) }
+
+  let tableMeta
+  try {
+    const data = await airtableFetch(`/meta/bases/${config.base_id}/tables`, token)
+    tableMeta = (data.tables || []).find(t => t.id === config.projects_table_id)
+  } catch (e) { return res.status(500).json({ error: 'Erreur metadata Airtable: ' + e.message }) }
+  if (!tableMeta) return res.json({ airtable_fields: [], erp_columns: [], hardcoded: [], airtable_table_to_erp: {} })
+
+  const fieldMap = config.field_map_projects ? JSON.parse(config.field_map_projects) : {}
+  const hardcoded = new Set(Object.values(fieldMap).filter(v => typeof v === 'string'))
+
+  // Defs Airtable existantes pour `projects` (mappings actuels)
+  const defs = db.prepare(
+    "SELECT id, airtable_field_id, airtable_field_name, display_label, column_name, field_type, options, import_disabled FROM airtable_field_defs WHERE erp_table='projects'"
+  ).all()
+  const defByAtName = new Map()
+  for (const d of defs) defByAtName.set(d.airtable_field_name, d)
+
+  // Colonnes vivantes de `projects` (PRAGMA)
+  const liveCols = new Set(db.prepare('PRAGMA table_info(projects)').all().map(c => c.name))
+
+  // Une seule def par column_name (UNIQUE). On indexe par column_name pour
+  // dériver toutes les métas de la colonne ERP en un coup.
+  const defByColumn = new Map()
+  for (const d of defs) {
+    if (d.column_name && d.column_name !== '__pending__') {
+      defByColumn.set(d.column_name, d)
+    }
+  }
+
+  const SYSTEM = new Set(['id', 'airtable_id', 'created_at', 'updated_at', 'deleted_at'])
+  const erp_columns = [...liveCols]
+    .filter(c => !SYSTEM.has(c))
+    .map(c => {
+      const d = defByColumn.get(c)
+      const isNative = d && (d.airtable_field_id || '').startsWith('native_')
+      const isMapped = d && !isNative && d.import_disabled !== 1
+      let opts = {}
+      try { opts = JSON.parse(d?.options || '{}') } catch {}
+      return {
+        column_name: c,
+        // Label affiché : display_label utilisateur prime, puis airtable_field_name
+        // (qui pour une native vaut le label hardcodé, ex. "Statut").
+        label: d?.display_label || d?.airtable_field_name || c,
+        display_label: d?.display_label || null,
+        field_type: d?.field_type || 'text',
+        target_table: opts.link_target_table || opts.target_table || null,
+        mapped: isMapped,
+        // Métadonnées pour la page de gestion :
+        def_id: d?.id || null,
+        is_native: !!isNative,
+        mapped_airtable_field: isMapped ? d.airtable_field_name : null,
+        airtable_field_id: isMapped ? d.airtable_field_id : null,
+      }
+    })
+    .sort((a, b) => a.label.localeCompare(b.label))
+
+  const airtable_fields = (tableMeta.fields || [])
+    .filter(f => !hardcoded.has(f.name))
+    .map(f => {
+      const erpType = airtableTypeToErp(f.type, f.options)
+      const def = defByAtName.get(f.name)
+      let currentMapping = null
+      if (def && def.column_name && def.column_name !== '__pending__' && def.import_disabled !== 1) {
+        let opts = {}
+        try { opts = JSON.parse(def.options || '{}') } catch {}
+        currentMapping = {
+          column_name: def.column_name,
+          def_id: def.id,
+          link_target_table: opts.link_target_table || null,
+        }
+      }
+      return {
+        airtable_field_id: f.id,
+        airtable_field_name: f.name,
+        airtable_field_type: f.type,        // type brut Airtable (ex: multipleRecordLinks)
+        erp_field_type: erpType,            // type normalisé ERP
+        linked_table_id: f.options?.linkedTableId || null,
+        current_mapping: currentMapping,
+      }
+    })
+    .sort((a, b) => a.airtable_field_name.localeCompare(b.airtable_field_name))
+
+  res.json({
+    airtable_fields,
+    erp_columns,
+    hardcoded: [...hardcoded],
+    airtable_table_to_erp: Object.fromEntries(buildAirtableTableToErp()),
+  })
+})
+
+// POST /api/connectors/airtable/projets/airtable-field-mapping
+// Body : { airtable_field_id, airtable_field_name, airtable_field_type, column_name?, link_target_table? }
+// - Si column_name est falsy → unmap (set column_name='__pending__' + import_disabled=1).
+//   La colonne existante n'est pas vidée (différence avec field-disabled). On veut
+//   préserver les données déjà importées si l'utilisateur change d'avis.
+// - Sinon : valide le mapping (compat de type, table cible si lien) et upsert la def.
+router.post('/airtable/projets/airtable-field-mapping', requireAdmin, (req, res) => {
+  const { airtable_field_id, airtable_field_name, airtable_field_type, column_name, link_target_table } = req.body || {}
+
+  if (!airtable_field_name || !airtable_field_type) {
+    return res.status(400).json({ error: 'airtable_field_name et airtable_field_type requis' })
+  }
+
+  // Refus de remapper un champ hardcodé
+  const config = db.prepare('SELECT field_map_projects FROM airtable_projets_config').get()
+  const fieldMap = config?.field_map_projects ? JSON.parse(config.field_map_projects) : {}
+  const hardcoded = new Set(Object.values(fieldMap).filter(v => typeof v === 'string'))
+  if (hardcoded.has(airtable_field_name)) {
+    return res.status(400).json({ error: 'Ce champ est géré en code (hardcodé) et ne peut pas être remappé ici' })
+  }
+
+  const erpType = airtableTypeToErp(airtable_field_type, req.body?.airtable_field_options)
+
+  // Def existante portant ce nom de champ Airtable (ailleurs ou ici).
+  const defByName = db.prepare(
+    "SELECT id, column_name FROM airtable_field_defs WHERE erp_table='projects' AND airtable_field_name=?"
+  ).get(airtable_field_name)
+
+  // ── Cas 1 : unmap → on supprime la def. Si la colonne avait une def native
+  // (créée via ensureNativeFieldDefs), elle sera recréée au prochain redémarrage.
+  if (!column_name) {
+    if (defByName) {
+      db.prepare('DELETE FROM airtable_field_defs WHERE id=?').run(defByName.id)
+    }
+    return res.json({ ok: true, mapped: false })
+  }
+
+  // ── Cas 2 : mapping vers une colonne ERP
+  const liveCols = new Set(db.prepare('PRAGMA table_info(projects)').all().map(c => c.name))
+  if (!liveCols.has(column_name)) {
+    return res.status(400).json({ error: `Colonne ERP "${column_name}" introuvable dans projects` })
+  }
+
+  // Validation : pour les liens, target_table requis et doit exister.
+  // On le fait tôt — avant la vérification d'occupation de slot — pour que l'erreur
+  // utilisateur reflète la cause la plus directe (target invalide > slot pris).
+  let optionsToStore = {}
+  if (erpType === 'link') {
+    if (!link_target_table) {
+      return res.status(400).json({ error: 'link_target_table requis pour un champ de type lien' })
+    }
+    const targets = new Set([...buildAirtableTableToErp().values(), 'companies', 'contacts', 'projects', 'users'])
+    if (!targets.has(link_target_table)) {
+      return res.status(400).json({ error: `Table cible "${link_target_table}" inconnue côté ERP` })
+    }
+    const targetCols = new Set(db.prepare(`PRAGMA table_info(${link_target_table})`).all().map(c => c.name))
+    if (!targetCols.has('airtable_id')) {
+      return res.status(400).json({ error: `Table cible "${link_target_table}" n'a pas de colonne airtable_id (résolution impossible)` })
+    }
+    optionsToStore.link_target_table = link_target_table
+  }
+
+  // Def existante occupant le slot (erp_table, column_name) — peut être native
+  // (métadonnées de type), un autre Airtable field, ou la même qu'on remappe.
+  const defByColumn = db.prepare(
+    "SELECT id, airtable_field_id, airtable_field_name, field_type, import_disabled FROM airtable_field_defs WHERE erp_table='projects' AND column_name=?"
+  ).get(column_name)
+
+  // Si un autre champ Airtable réel et actif occupe déjà ce slot → refus.
+  if (defByColumn
+      && defByColumn.airtable_field_name !== airtable_field_name
+      && defByColumn.import_disabled !== 1
+      && !(defByColumn.airtable_field_id || '').startsWith('native_')) {
+    return res.status(400).json({ error: `Colonne déjà mappée par "${defByColumn.airtable_field_name}"` })
+  }
+
+  // Type ERP courant de la colonne (via la def occupante, native ou autre).
+  const erpColType = defByColumn?.field_type || 'text'
+  if (!typesCompatible(erpType, erpColType)) {
+    return res.status(400).json({
+      error: `Types incompatibles : champ Airtable "${erpType}" ne peut pas être mappé vers colonne ERP "${erpColType}"`,
+    })
+  }
+
+  const newAtFieldId = airtable_field_id || `pending_${Date.now()}`
+
+  // Stratégie d'upsert :
+  // - Si une def porte déjà notre airtable_field_name : on met à jour son column_name
+  //   (ce qui peut nécessiter de supprimer une def native ou autre dans le slot cible).
+  // - Sinon, si le slot (column_name) est occupé par une def native ou disabled :
+  //   on prend possession — UPDATE pour remplacer airtable_field_id, name, type, options.
+  // - Sinon : INSERT.
+  const tx = db.transaction(() => {
+    if (defByName) {
+      // L'utilisateur déplace ce champ Airtable vers une autre colonne.
+      // Si une def native/disabled occupe le slot cible, on la dégage d'abord.
+      if (defByColumn && defByColumn.id !== defByName.id) {
+        db.prepare('DELETE FROM airtable_field_defs WHERE id=?').run(defByColumn.id)
+      }
+      db.prepare(`
+        UPDATE airtable_field_defs SET
+          airtable_field_id=?, column_name=?, field_type=?, options=?, import_disabled=0,
+          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id=?
+      `).run(newAtFieldId, column_name, erpType, JSON.stringify(optionsToStore), defByName.id)
+    } else if (defByColumn) {
+      // Reuse de la def native/disabled qui occupait le slot.
+      db.prepare(`
+        UPDATE airtable_field_defs SET
+          airtable_field_id=?, airtable_field_name=?, field_type=?, options=?, import_disabled=0,
+          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id=?
+      `).run(newAtFieldId, airtable_field_name, erpType, JSON.stringify(optionsToStore), defByColumn.id)
+    } else {
+      db.prepare(`
+        INSERT INTO airtable_field_defs (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, field_type, options, sort_order)
+        VALUES (?, 'projets', 'projects', ?, ?, ?, ?, ?, 0)
+      `).run(uuid(), newAtFieldId, airtable_field_name, column_name, erpType, JSON.stringify(optionsToStore))
+    }
+  })
+  try { tx() }
+  catch (e) { return res.status(500).json({ error: e.message }) }
+
+  res.json({ ok: true, mapped: true, column_name, link_target_table: optionsToStore.link_target_table || null })
+})
+
 // ── Sync status
 router.get('/sync/status', requireAuth, (req, res) => {
   res.json(getStatus())

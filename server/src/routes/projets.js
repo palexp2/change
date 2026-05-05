@@ -4,9 +4,9 @@ import path from 'path'
 import Stripe from 'stripe'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { postRevenueRecognitionJE, reconcileFactureRevenueRecognition } from '../services/quickbooks.js'
+import { postRevenueRecognitionJE, reconcileFactureRevenueRecognition, factureHasPendingStripeDeposit } from '../services/quickbooks.js'
 import { logSystemRun } from '../services/systemAutomations.js'
-import { qbEntityUrl } from '../connectors/quickbooks.js'
+import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { computeCanadaTaxes } from '../services/taxes.js'
 
 // Calcule les taxes d'une facture (tableau {name, percentage, amount}).
@@ -489,6 +489,28 @@ router.get('/factures/:id', (req, res) => {
         }
       }
     }
+    // Lignes de la facture Stripe (1 par produit) — montants en cents en DB,
+    // convertis en unités pour l'UI (parité avec le format `pending` items).
+    const itemsRows = db.prepare(`
+      SELECT sii.id, sii.description, sii.quantity, sii.unit_amount, sii.amount,
+             sii.currency, sii.product_id, sii.stripe_product_id, sii.stripe_price_id,
+             p.name_fr AS product_name, p.sku AS product_sku
+      FROM stripe_invoice_items sii
+      LEFT JOIN products p ON p.id = sii.product_id
+      WHERE sii.facture_id = ?
+      ORDER BY sii.created_at ASC, sii.id ASC
+    `).all(req.params.id)
+    const items = itemsRows.map(r => ({
+      id: r.id,
+      description: r.description,
+      qty: Number(r.quantity) || 0,
+      unit_price: r.unit_amount != null ? r.unit_amount / 100 : null,
+      total: r.amount != null ? r.amount / 100 : null,
+      currency: r.currency,
+      product_id: r.product_id,
+      product_name: r.product_name,
+      product_sku: r.product_sku,
+    }))
     return res.json({
       ...row,
       source: 'stripe',
@@ -499,6 +521,7 @@ router.get('/factures/:id', (req, res) => {
       last_payment_in: lastPaymentIn,
       payments_in_count: paymentsInCount,
       is_sent: row.has_linked_shipment === 1 || row.is_sent_manual === 1,
+      items,
     })
   }
   // Fall back to pending_invoices for unpaid drafts/sent
@@ -629,26 +652,42 @@ router.patch('/factures/:id', (req, res) => {
   // la JE de constat de vente avec bypass du check shipment. Skippe
   // silencieusement si conditions non remplies (déjà constaté, abonnement,
   // facture pending sans Stripe invoice, etc.).
+  //
+  // Cas spécial Stripe en attente : si un payout existe avec un BT lié à cette
+  // facture mais que le Deposit QB n'a pas encore été poussé, on n'émet PAS
+  // de JE — quand le deposit sera poussé, buildDepositFromPayout posera
+  // directement Cr 40000 (la facture sera vue comme « envoyée » via
+  // is_sent_manual=1, donc factureHasLinkedShipment renvoie true, donc le
+  // routage tombe sur revenue_sale). Poser une JE Dr AR ici créerait un AR
+  // fantôme qui devrait ensuite être soldé manuellement.
   if (wantsForceSent) {
     const f = db.prepare(
       "SELECT id, document_number, kind, revenue_recognized_at FROM factures WHERE id=?"
     ).get(req.params.id)
     if (f && f.kind !== 'subscription' && !f.revenue_recognized_at) {
-      postRevenueRecognitionJE(req.params.id, { bypassShipmentCheck: true })
-        .then(r => {
-          logSystemRun('sys_revenue_recognition', {
-            status: 'success',
-            result: `Facture #${f.document_number || req.params.id} constatée via override "Envoyée" forcée (JE ${r.qb_journal_entry_id} · ${r.amount} ${r.currency} · ${r.debit_account})`,
-            triggerData: { facture_id: req.params.id, source: 'is_sent_manual' },
-          })
+      if (factureHasPendingStripeDeposit(req.params.id)) {
+        logSystemRun('sys_revenue_recognition', {
+          status: 'skipped',
+          result: `Facture #${f.document_number || req.params.id} : JE de constat skippée — payout Stripe en attente, le Deposit imputera 40000 directement`,
+          triggerData: { facture_id: req.params.id, source: 'is_sent_manual', reason: 'awaiting_deposit' },
         })
-        .catch(err => {
-          console.error('postRevenueRecognitionJE (is_sent_manual) error:', err.message)
-          logSystemRun('sys_revenue_recognition', {
-            status: 'error', error: err.message,
-            triggerData: { facture_id: req.params.id, source: 'is_sent_manual' },
+      } else {
+        postRevenueRecognitionJE(req.params.id, { bypassShipmentCheck: true })
+          .then(r => {
+            logSystemRun('sys_revenue_recognition', {
+              status: 'success',
+              result: `Facture #${f.document_number || req.params.id} constatée via override "Envoyée" forcée (JE ${r.qb_journal_entry_id} · ${r.amount} ${r.currency} · ${r.debit_account})`,
+              triggerData: { facture_id: req.params.id, source: 'is_sent_manual' },
+            })
           })
-        })
+          .catch(err => {
+            console.error('postRevenueRecognitionJE (is_sent_manual) error:', err.message)
+            logSystemRun('sys_revenue_recognition', {
+              status: 'error', error: err.message,
+              triggerData: { facture_id: req.params.id, source: 'is_sent_manual' },
+            })
+          })
+      }
     }
   }
 
@@ -718,6 +757,41 @@ router.get('/retours/:id', (req, res) => {
 
 // ── Abonnements ──────────────────────────────────────────────────────────────
 
+// Heuristique « rachat probable » : pour un abonnement annulé, on cherche une
+// facture du même client, hors abonnement (subscription_id IS NULL), payée ou
+// en cours, ≥ 1000 $ CAD-équiv., dans une fenêtre de ±60 jours autour de
+// cancel_date. Source pratique pour distinguer un client perdu d'un client
+// qui a simplement racheté son système. La facture la plus proche dans le
+// temps est retenue. usdRate vient de la dernière observation BoC en cache.
+const RACHAT_WINDOW_DAYS = 60
+const RACHAT_MIN_CAD = 1000
+
+const rachatCandidatesStmt = db.prepare(`
+  SELECT id AS facture_id, document_number, document_date, currency,
+         amount_before_tax_cad AS amount_native,
+         CAST(julianday(document_date) - julianday(?) AS INTEGER) AS days_from_cancel
+  FROM factures
+  WHERE company_id = ?
+    AND status IN ('Payé', 'À payer', 'En retard')
+    AND subscription_id IS NULL
+    AND sync_source IN ('Factures Stripe', 'Factures Quickbooks')
+    AND document_date BETWEEN date(?, '-${RACHAT_WINDOW_DAYS} days') AND date(?, '+${RACHAT_WINDOW_DAYS} days')
+`)
+
+function findRachatCandidate(companyId, cancelDate, usdRate) {
+  if (!companyId || !cancelDate) return null
+  const cands = rachatCandidatesStmt.all(cancelDate, companyId, cancelDate, cancelDate)
+  let best = null
+  for (const c of cands) {
+    const cad = (c.currency || 'CAD') === 'USD' ? c.amount_native * usdRate : c.amount_native
+    if (cad < RACHAT_MIN_CAD) continue
+    if (!best || Math.abs(c.days_from_cancel) < Math.abs(best.days_from_cancel)) {
+      best = { ...c, amount_cad_approx: Math.round(cad) }
+    }
+  }
+  return best
+}
+
 router.get('/abonnements', (req, res) => {
   const { company_id, status, page = 1, limit = 50 } = req.query
   const limitAll = limit === 'all'
@@ -736,7 +810,8 @@ router.get('/abonnements', (req, res) => {
     SELECT s.*,
       s.amount_monthly as amount_raw,
       s.cancel_date as end_date,
-      co.name as company_name
+      co.name as company_name,
+      substr(s.start_date, 1, 7) as start_month
     FROM subscriptions s
     LEFT JOIN companies co ON s.company_id = co.id
     ${where}
@@ -748,6 +823,9 @@ router.get('/abonnements', (req, res) => {
     row.amount_cad = row.currency === 'USD'
       ? Math.round(row.amount_raw * usdRate * 100) / 100
       : row.amount_raw
+    row.rachat_candidate = (row.status === 'canceled' || row.status === 'Annulé')
+      ? findRachatCandidate(row.company_id, row.cancel_date, usdRate)
+      : null
   }
 
   res.json({ data: rows, total, page: parseInt(page), limit: parseInt(limit) })
@@ -872,6 +950,164 @@ router.patch('/abonnements/:id', (req, res) => {
   }
   res.json({ ok: true })
 })
+
+// GET /factures/:id/qb-state
+// Vérifie l'état réel des transactions QuickBooks référencées localement par la
+// facture (deferred_revenue_qb_ref + revenue_recognized_je_id) et signale toute
+// divergence entre la DB ERP et QB. Permet à l'utilisateur de détecter les cas
+// où une transaction QB a été éditée/supprimée manuellement, et propose ensuite
+// un nettoyage des références locales orphelines via les routes admin.
+router.get('/factures/:id/qb-state', async (req, res) => {
+  try {
+    const f = db.prepare(`
+      SELECT id, document_number, currency,
+             deferred_revenue_at, deferred_revenue_qb_ref,
+             deferred_revenue_amount_native, deferred_revenue_amount_cad, deferred_revenue_currency,
+             revenue_recognized_at, revenue_recognized_je_id
+      FROM factures WHERE id = ?
+    `).get(req.params.id)
+    if (!f) return res.status(404).json({ error: 'Facture introuvable' })
+
+    const checks = []
+
+    if (f.deferred_revenue_qb_ref) {
+      const check = await checkDeferredRevenueRef(f)
+      checks.push(check)
+    }
+    if (f.revenue_recognized_je_id) {
+      const check = await checkRevenueRecognitionJE(f)
+      checks.push(check)
+    }
+
+    res.json({
+      facture_id: f.id,
+      document_number: f.document_number,
+      checks,
+      checked_at: new Date().toISOString(),
+    })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+async function checkDeferredRevenueRef(f) {
+  const ref = f.deferred_revenue_qb_ref
+  const idx = ref.indexOf(':')
+  const entity = idx > 0 ? ref.slice(0, idx) : null
+  const qbId = idx > 0 ? ref.slice(idx + 1) : null
+  const out = {
+    kind: 'deferred_revenue',
+    local_ref: ref,
+    local_set_at: f.deferred_revenue_at,
+    local_amount_native: f.deferred_revenue_amount_native,
+    local_amount_cad: f.deferred_revenue_amount_cad,
+    local_currency: f.deferred_revenue_currency,
+    qb_url: qbEntityUrl(entity, qbId),
+    expected_account_acctnum: '23900',
+    expected_account_label: 'Revenus perçus d\'avance (23900)',
+  }
+  try {
+    if (entity === 'deposit') {
+      const data = await qbGet(`/deposit/${qbId}`)
+      const dep = data?.Deposit
+      if (!dep) {
+        out.qb_status = 'missing'
+        out.consistent = false
+        out.message = `Deposit ${qbId} introuvable dans QuickBooks (probablement supprimé manuellement).`
+        return out
+      }
+      const lines = (dep.Line || []).filter(l => {
+        const desc = String(l.Description || '')
+        return desc.includes(f.document_number)
+      })
+      if (lines.length === 0) {
+        out.qb_status = 'line_missing'
+        out.consistent = false
+        out.message = `Deposit ${qbId} existe, mais aucune ligne ne référence ${f.document_number}.`
+        return out
+      }
+      const accountNames = lines.map(l => l.DepositLineDetail?.AccountRef?.name || '?')
+      const totalAmount = lines.reduce((s, l) => s + (Number(l.Amount) || 0), 0)
+      const looksDeferred = accountNames.some(n => /perçus.*avance|deferred/i.test(n))
+      out.qb_status = 'exists'
+      out.qb_amount = Math.round(totalAmount * 100) / 100
+      out.qb_account_names = accountNames
+      out.consistent = looksDeferred
+      out.message = looksDeferred
+        ? `Le passif Revenus perçus d'avance est bien posé dans le Deposit ${qbId}.`
+        : `La ligne du Deposit ${qbId} pour cette facture est imputée à « ${accountNames.join(', ')} » — pas au compte 23900 attendu.`
+    } else if (entity === 'salesreceipt') {
+      const data = await qbGet(`/salesreceipt/${qbId}`)
+      const sr = data?.SalesReceipt
+      if (!sr) {
+        out.qb_status = 'missing'
+        out.consistent = false
+        out.message = `Sales Receipt ${qbId} introuvable dans QuickBooks.`
+        return out
+      }
+      out.qb_status = 'exists'
+      out.qb_amount = Number(sr.TotalAmt) || 0
+      out.consistent = true
+      out.message = `Sales Receipt ${qbId} présent dans QuickBooks. (Vérification du compte d'imputation par item non automatisée — à valider visuellement.)`
+    } else {
+      out.qb_status = 'unsupported'
+      out.consistent = null
+      out.message = `Type de référence « ${entity || '?'} » non supporté pour la vérification automatique.`
+    }
+  } catch (err) {
+    if (/\b(404|6240|invalid|not.?found)\b/i.test(err.message)
+        || /"code"\s*:\s*"610"/.test(err.message)
+        || /introuvable|inactive/i.test(err.message)) {
+      out.qb_status = 'missing'
+      out.consistent = false
+      out.message = `${entity} ${qbId} introuvable dans QuickBooks.`
+    } else {
+      out.qb_status = 'error'
+      out.consistent = null
+      out.message = `Erreur QB : ${err.message}`
+    }
+  }
+  return out
+}
+
+async function checkRevenueRecognitionJE(f) {
+  const out = {
+    kind: 'revenue_recognition',
+    local_ref: `journal:${f.revenue_recognized_je_id}`,
+    local_set_at: f.revenue_recognized_at,
+    qb_url: qbEntityUrl('journal', f.revenue_recognized_je_id),
+    expected_account_acctnum: '40000',
+    expected_account_label: 'Ventes (40000) — débit 23900 / crédit 40000',
+  }
+  try {
+    const data = await qbGet(`/journalentry/${f.revenue_recognized_je_id}`)
+    const je = data?.JournalEntry
+    if (!je) {
+      out.qb_status = 'missing'
+      out.consistent = false
+      out.message = `Journal Entry ${f.revenue_recognized_je_id} introuvable (probablement supprimée manuellement).`
+      return out
+    }
+    out.qb_status = 'exists'
+    out.qb_total = Number(je.TotalAmt) || 0
+    out.qb_account_names = (je.Line || []).map(l => l.JournalEntryLineDetail?.AccountRef?.name).filter(Boolean)
+    out.consistent = true
+    out.message = `Journal Entry ${f.revenue_recognized_je_id} présente dans QuickBooks.`
+  } catch (err) {
+    if (/\b(404|6240|invalid|not.?found)\b/i.test(err.message)
+        || /"code"\s*:\s*"610"/.test(err.message)
+        || /introuvable|inactive/i.test(err.message)) {
+      out.qb_status = 'missing'
+      out.consistent = false
+      out.message = `Journal Entry ${f.revenue_recognized_je_id} introuvable dans QuickBooks.`
+    } else {
+      out.qb_status = 'error'
+      out.consistent = null
+      out.message = `Erreur QB : ${err.message}`
+    }
+  }
+  return out
+}
 
 // POST /factures/:id/recognize-revenue
 // Crée un Journal Entry dans QB qui débite "Revenus perçus d'avance" (23900) et

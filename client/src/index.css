@@ -13,6 +13,38 @@
   animation: slide-in-up 0.2s ease-out;
 }
 
+/* Dual range slider — used in Dashboard top-products date picker */
+.range-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  pointer-events: none;
+}
+.range-slider-thumb::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  pointer-events: auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  background: white;
+  border: 2px solid #21B14B;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  cursor: grab;
+}
+.range-slider-thumb::-webkit-slider-thumb:active { cursor: grabbing; }
+.range-slider-thumb::-moz-range-thumb {
+  pointer-events: auto;
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  background: white;
+  border: 2px solid #21B14B;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  cursor: grab;
+}
+.range-slider-thumb::-moz-range-track { background: transparent; border: none; }
+
 @layer base {
   * {
     box-sizing: border-box;

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronLeft, ChevronRight, Plus, Trash2, Clock, Search, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Trash2, Clock, Search, X, Copy } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -333,6 +333,7 @@ function TextCell({ value, onCommit, disabled, placeholder }) {
 
 export default function FeuilleDeTemps() {
   const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
   const [date, setDate] = useState(todayStr())
   const [day, setDay] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -341,35 +342,61 @@ export default function FeuilleDeTemps() {
   const [history, setHistory] = useState([])
   const [prefMode, setPrefMode] = useState('simple')
   const [focusEntryId, setFocusEntryId] = useState(null)
+  const [selectedUserId, setSelectedUserId] = useState(user?.id)
+  const [users, setUsers] = useState([])
+  const isViewingSelf = selectedUserId === user?.id
   const confirm = useConfirm()
   const { addToast } = useToast()
 
-  // Load reference data once
+  // Préférences chargées une fois (toujours pour le user connecté).
   useEffect(() => {
-    api.activityCodes.list().then(r => setActivityCodes(r.data || r)).catch(() => setActivityCodes([]))
     api.timesheets.getPreferences().then(p => setPrefMode(p.default_mode || 'simple')).catch(() => {})
   }, [])
 
+  // Codes d'activité : la liste dépend de l'user visualisé (filtre de visibilité).
+  // - Si je vois ma propre feuille : appel sans for_user_id → filtré par req.user (moi).
+  // - Si admin et je vois un autre user : appel avec for_user_id=selectedUserId → filtré comme ce user.
+  useEffect(() => {
+    if (!selectedUserId) return
+    const params = isViewingSelf ? {} : { for_user_id: selectedUserId }
+    api.activityCodes.list(params)
+      .then(r => setActivityCodes(r.data || r))
+      .catch(() => setActivityCodes([]))
+  }, [selectedUserId, isViewingSelf])
+
+  // Liste des users — uniquement pour les admins (qui peuvent consulter la feuille d'un autre employé).
+  useEffect(() => {
+    if (!isAdmin) return
+    api.admin.listUsers().then(setUsers).catch(() => setUsers([]))
+  }, [isAdmin])
+
+  const selectedUserName = useMemo(() => {
+    if (isViewingSelf) return user?.name
+    return users.find(u => u.id === selectedUserId)?.name || '…'
+  }, [isViewingSelf, selectedUserId, users, user])
+
   const loadDay = useCallback(async () => {
+    if (!selectedUserId) return
     setLoading(true)
     try {
-      const existing = await api.timesheets.getDay({ date })
+      const existing = await api.timesheets.getDay({ date, user_id: selectedUserId })
       setDay(existing)
     } finally {
       setLoading(false)
     }
-  }, [date])
+  }, [date, selectedUserId])
 
   useEffect(() => { loadDay() }, [loadDay])
 
   // Charge 12 mois de feuilles : sert à la sidebar historique (filtrée à 12 semaines)
   // ET au cumul mensuel par code en bas de page.
   const loadHistory = useCallback(async () => {
+    if (!selectedUserId) return
     const t = new Date()
     const from = new Date(t.getFullYear(), t.getMonth() - 11, 1).toISOString().slice(0, 10)
-    const r = await api.timesheets.list({ from })
+    const r = await api.timesheets.list({ from, user_id: selectedUserId })
     setHistory(r.data || [])
-  }, [])
+  }, [selectedUserId])
   useEffect(() => { loadHistory() }, [loadHistory])
 
   // Sidebar : ne montrer que les 12 dernières semaines pour rester compact.
@@ -378,9 +405,13 @@ export default function FeuilleDeTemps() {
     return history.filter(d => d.date >= cutoff)
   }, [history])
 
-  async function ensureDay(mode = prefMode) {
+  async function ensureDay(mode) {
     if (day) return day
-    const created = await api.timesheets.createDay({ date, mode })
+    // Si admin visualise un autre user et qu'aucun mode n'est explicite, on laisse le backend
+    // utiliser la préférence du user cible (au lieu d'imposer celle de l'admin).
+    let bodyMode = mode
+    if (bodyMode === undefined) bodyMode = isViewingSelf ? prefMode : undefined
+    const created = await api.timesheets.createDay({ date, mode: bodyMode, user_id: selectedUserId })
     setDay(created)
     return created
   }
@@ -394,7 +425,8 @@ export default function FeuilleDeTemps() {
       setDay(updated)
       // Le backend synchronise déjà la pref quand le user change le mode de sa propre journée —
       // on reflète le changement côté client pour les prochains rendus (défaut sur un jour non créé).
-      if (patch.mode && (patch.mode === 'simple' || patch.mode === 'detailed')) {
+      // Si admin visualise un autre user, on ne touche pas à la pref locale.
+      if (patch.mode && (patch.mode === 'simple' || patch.mode === 'detailed') && isViewingSelf) {
         setPrefMode(patch.mode)
       }
       loadHistory()
@@ -494,11 +526,39 @@ export default function FeuilleDeTemps() {
   return (
     <Layout>
       <div className="p-6 max-w-7xl mx-auto">
-        <div className="flex items-center gap-3 mb-6">
+        <div className="flex items-center gap-3 mb-6 flex-wrap">
           <Clock size={20} className="text-slate-400" />
           <h1 className="text-2xl font-bold text-slate-900">Feuille de temps</h1>
-          <span className="text-sm text-slate-400">— {user?.name}</span>
+          {isAdmin && users.length > 0 ? (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-slate-400">—</span>
+              <div className="w-56" data-testid="user-picker">
+                <RefPicker
+                  value={selectedUserId}
+                  items={users}
+                  labelOf={u => u.name}
+                  placeholder="Choisir un employé"
+                  onChange={(id) => setSelectedUserId(id || user.id)}
+                />
+              </div>
+            </div>
+          ) : (
+            <span className="text-sm text-slate-400">— {user?.name}</span>
+          )}
         </div>
+
+        {!isViewingSelf && (
+          <div
+            className="rounded-lg border border-amber-200 bg-amber-50 p-3 mb-4 text-sm text-amber-900 flex items-center justify-between gap-3"
+            data-testid="viewing-other-banner"
+          >
+            <span>Tu consultes la feuille de temps de <strong>{selectedUserName}</strong>. Toute modification sera enregistrée sur son compte.</span>
+            <button
+              onClick={() => setSelectedUserId(user.id)}
+              className="text-xs px-2 py-1 border border-amber-300 rounded text-amber-900 hover:bg-amber-100 whitespace-nowrap"
+            >Revenir à ma feuille</button>
+          </div>
+        )}
 
         <div className="flex flex-col lg:flex-row gap-6">
           {/* History — gauche en desktop, bas en mobile */}
@@ -573,7 +633,9 @@ export default function FeuilleDeTemps() {
               />
             )}
 
-            <MonthlyCumul history={history} activityCodes={activityCodes} />
+            <MonthlyCumul key={selectedUserId} history={history} activityCodes={activityCodes} userId={selectedUserId} />
+
+            <RsdeReport history={history} />
           </main>
         </div>
       </div>
@@ -688,8 +750,12 @@ function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPa
   )
 }
 
-function MonthlyCumul({ history, activityCodes }) {
-  const STORAGE_KEY = 'fdt:cumul-codes'
+function MonthlyCumul({ history, activityCodes, userId }) {
+  // Sélection des codes affichés persistée par employé visualisé : permet à un admin
+  // de garder une sélection différente pour sa propre feuille vs celle d'un autre user.
+  // Le parent passe `key={selectedUserId}` pour forcer le remount lors d'un changement
+  // d'employé — l'init useState lit alors le bon storage key dès le départ.
+  const STORAGE_KEY = `fdt:cumul-codes:${userId || 'self'}`
   const [selectedIds, setSelectedIds] = useState(() => {
     try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]') } catch { return [] }
   })
@@ -815,6 +881,122 @@ function MonthlyCumul({ history, activityCodes }) {
           </table>
         </div>
       )}
+    </div>
+  )
+}
+
+function RsdeReport({ history }) {
+  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7))
+  const { addToast } = useToast()
+  const [copied, setCopied] = useState(false)
+
+  const monthLabel = useMemo(() => {
+    const [y, m] = month.split('-').map(Number)
+    return new Date(y, m - 1, 1).toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })
+  }, [month])
+
+  const shiftMonth = (delta) => {
+    const [y, m] = month.split('-').map(Number)
+    const d = new Date(y, m - 1 + delta, 1)
+    setMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
+  }
+
+  // Agrège les entrées RSDE par jour, puis remplit toutes les dates du mois —
+  // les jours sans heure RSDE apparaissent à 0,00 h et description vide.
+  const rows = useMemo(() => {
+    const byDate = new Map()
+    for (const day of history || []) {
+      if (!day.date || !day.date.startsWith(month)) continue
+      for (const e of day.entries || []) {
+        if (!e.rsde) continue
+        const codeName = e.activity_code_name || ''
+        const desc = (e.description || '').trim()
+        const part = [codeName, desc].filter(Boolean).join(' — ')
+        const minutes = Number(e.duration_minutes) || 0
+        if (!byDate.has(day.date)) byDate.set(day.date, { minutes: 0, parts: [] })
+        const agg = byDate.get(day.date)
+        agg.minutes += minutes
+        if (part) agg.parts.push(part)
+      }
+    }
+    const [y, m] = month.split('-').map(Number)
+    const daysInMonth = new Date(y, m, 0).getDate()
+    const out = []
+    for (let d = 1; d <= daysInMonth; d++) {
+      const date = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+      const agg = byDate.get(date)
+      out.push({
+        date,
+        hours: agg ? agg.minutes / 60 : 0,
+        description: agg ? agg.parts.join(' ; ') : '',
+      })
+    }
+    return out
+  }, [history, month])
+
+  const totalHours = rows.reduce((s, r) => s + r.hours, 0)
+  const fmtH = (h) => h.toFixed(2).replace('.', ',')
+
+  const copyAsTsv = async () => {
+    const lines = rows.map(r => `${r.date}\t${fmtH(r.hours)}\t${r.description}`)
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'))
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch (e) {
+      addToast({ message: 'Échec de copie : ' + e.message, type: 'error' })
+    }
+  }
+
+  return (
+    <div className="card p-4 mt-4" data-testid="rsde-report">
+      <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
+        <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wide">Rapport RSDE mensuel</h2>
+        <div className="flex items-center gap-2">
+          <button onClick={() => shiftMonth(-1)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label="Mois précédent">
+            <ChevronLeft size={16} />
+          </button>
+          <span className="text-sm font-medium text-slate-700 capitalize tabular-nums min-w-[9rem] text-center">{monthLabel}</span>
+          <button onClick={() => shiftMonth(1)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label="Mois suivant">
+            <ChevronRight size={16} />
+          </button>
+          <button
+            onClick={copyAsTsv}
+            className="ml-2 text-xs px-2 py-1 border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 flex items-center gap-1"
+            data-testid="rsde-copy"
+          >
+            <Copy size={12} /> {copied ? 'Copié' : 'Copier'}
+          </button>
+        </div>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm" data-testid="rsde-table">
+          <thead>
+            <tr className="text-left text-xs font-semibold text-slate-500 uppercase tracking-wide">
+              <th className="px-2 py-2 w-32">Date</th>
+              <th className="px-2 py-2 w-24 text-right">Durée (h)</th>
+              <th className="px-2 py-2">Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={i} className="border-t border-slate-100">
+                <td className="px-2 py-1.5 tabular-nums text-slate-700">{r.date}</td>
+                <td className="px-2 py-1.5 tabular-nums text-slate-700 text-right">{fmtH(r.hours)}</td>
+                <td className="px-2 py-1.5 text-slate-700">{r.description}</td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t-2 border-slate-200 bg-slate-50">
+              <td className="px-2 py-1.5 font-semibold text-slate-700">Total</td>
+              <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-slate-900">{fmtH(totalHours)}</td>
+              <td></td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
     </div>
   )
 }

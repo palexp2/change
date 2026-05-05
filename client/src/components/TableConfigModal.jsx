@@ -62,6 +62,7 @@ export function TableConfigModal({ table }) {
     setNewViewName('')
     setAddingView(false)
     window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
+    setOpen(false)
   }
 
   async function handleRename(id) {

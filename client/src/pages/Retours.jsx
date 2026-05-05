@@ -61,7 +61,7 @@ export default function Retours() {
           data={retours}
           loading={loading}
           onRowClick={row => navigate(`/retours/${row.id}`)}
-          searchFields={['return_number', 'tracking_number']}
+          searchFields={['return_number', 'tracking_number', 'company_name']}
         />
       </div>
     </Layout>

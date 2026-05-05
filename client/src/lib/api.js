@@ -166,6 +166,9 @@ export const api = {
     get: () => get('/dashboard'),
     getGoal: () => get('/dashboard/goal'),
     updateGoal: (data) => put('/dashboard/goal', data),
+    stripeRevenue: () => get('/dashboard/stripe-revenue'),
+    subscriptionEvents: (params = {}) => get('/dashboard/subscription-events?' + new URLSearchParams(params)),
+    topProducts: (params = {}) => get('/dashboard/top-products?' + new URLSearchParams(params)),
   },
 
   // Admin
@@ -179,6 +182,8 @@ export const api = {
     trash: () => get('/admin/trash'),
     restoreTrash: (table, id) => post(`/admin/trash/${table}/${id}/restore`, {}),
     purgeTrash: () => del('/admin/trash'),
+    clearFactureDeferredRevenue: (id) => post(`/admin/factures/${id}/clear-deferred-revenue`, {}),
+    clearFactureRevenueRecognition: (id) => post(`/admin/factures/${id}/clear-revenue-recognition`, {}),
   },
 
   // Interactions
@@ -275,6 +280,10 @@ export const api = {
     setProjetsFieldDisabled: (airtable_field_name, disabled) =>
       post('/connectors/airtable/projets/airtable-field-disabled', { airtable_field_name, disabled }),
     disabledColumns: (erpTable) => get(`/connectors/airtable/disabled-columns/${erpTable}`),
+    // Mapping Airtable → ERP par champ (modale projets)
+    projetsMappingData: () => get('/connectors/airtable/projets/mapping-data'),
+    setProjetsFieldMapping: (data) =>
+      post('/connectors/airtable/projets/airtable-field-mapping', data),
   },
 
   // Custom fields (utilisateur peut ajouter / supprimer ses propres champs sur certaines tables)
@@ -285,6 +294,15 @@ export const api = {
     delete: (id) => del(`/custom-fields/${id}`),
   },
 
+  // Airtable field defs (modification du type & suppression de la colonne via clic-droit)
+  airtableFields: {
+    update: (id, data) => patch(`/airtable-fields/${id}`, data),
+    delete: (id) => del(`/airtable-fields/${id}`),
+    // Upsert par (erpTable, columnName) — utile pour les colonnes orphelines
+    // (sans def existante) sur la page de gestion des champs.
+    upsertByColumn: (erpTable, colName, data) => put(`/airtable-fields/by-column/${erpTable}/${encodeURIComponent(colName)}`, data),
+  },
+
   // Views (config + pills)
   views: {
     get: (table) => get(`/views/${table}`),
@@ -292,7 +310,7 @@ export const api = {
     createPill: (table, data) => post(`/views/${table}/pills`, data),
     updatePill: (table, id, data) => put(`/views/${table}/pills/${id}`, data),
     deletePill: (table, id) => del(`/views/${table}/pills/${id}`),
-    reorderPills: (table, order, all_view_sort_order) => patch(`/views/${table}/pills/reorder`, { order, all_view_sort_order }),
+    reorderPills: (table, order) => patch(`/views/${table}/pills/reorder`, { order }),
     saveColumnWidths: (table, column_widths) => patch(`/views/${table}/column-widths`, { column_widths }),
     setBulkDeleteEnabled: (table, enabled) => patch(`/views/${table}/bulk-delete-enabled`, { enabled }),
     getDetailLayout: (entityType) => get(`/views/detail/${entityType}`),
@@ -366,6 +384,7 @@ export const api = {
     get: (id) => get(`/projets/factures/${id}`),
     update: (id, data) => patch(`/projets/factures/${id}`, data),
     recognizeRevenue: (id) => post(`/projets/factures/${id}/recognize-revenue`, {}),
+    qbState: (id) => get(`/projets/factures/${id}/qb-state`),
   },
 
   // Paiements / remboursements (Stripe et hors-Stripe) attachés aux factures
@@ -416,6 +435,21 @@ export const api = {
     delete: (id) => del(`/vacations/${id}`),
   },
 
+  qualificationCalls: {
+    byCompany: (companyId) => get(`/qualification-calls/by-company/${companyId}`),
+  },
+
+  emailRelance: {
+    qualificationCalls: () => get('/email-relance/qualification-calls'),
+    settings: () => get('/email-relance/settings'),
+    saveGlobal: (instructions) => put('/email-relance/settings/global', { instructions }),
+    saveQc: (qcId, instructions) => put(`/email-relance/settings/qc/${qcId}`, { instructions }),
+    regenerate: (qualification_call_id, temperature, general_rules, specific_instructions) =>
+      post('/email-relance/regenerate', {
+        qualification_call_id, temperature, general_rules, specific_instructions,
+      }),
+  },
+
   timesheets: {
     list: (params = {}) => get('/timesheets?' + new URLSearchParams(params)),
     getDay: (params = {}) => get('/timesheets/day?' + new URLSearchParams(params)),
@@ -435,6 +469,8 @@ export const api = {
     create: (data) => post('/activity-codes', data),
     update: (id, data) => patch(`/activity-codes/${id}`, data),
     delete: (id) => del(`/activity-codes/${id}`),
+    getUsers: (id) => get(`/activity-codes/${id}/users`),
+    setUsers: (id, user_ids) => put(`/activity-codes/${id}/users`, { user_ids }),
   },
 
   paies: {

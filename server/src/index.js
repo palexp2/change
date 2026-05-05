@@ -16,6 +16,7 @@ import companiesRouter from './routes/companies.js'
 import contactsRouter from './routes/contacts.js'
 import projectsRouter from './routes/projects.js'
 import customFieldsRouter from './routes/custom-fields.js'
+import airtableFieldsRouter from './routes/airtable-fields.js'
 import productsRouter from './routes/products.js'
 import ordersRouter from './routes/orders.js'
 import ticketsRouter from './routes/tickets.js'
@@ -40,6 +41,8 @@ import agentRouter from './routes/agent.js'
 import achatsFournisseursRouter from './routes/achats-fournisseurs.js'
 import employeesRouter from './routes/employees.js'
 import vacationsRouter from './routes/vacations.js'
+import qualificationCallsRouter from './routes/qualification-calls.js'
+import emailRelanceRouter from './routes/email-relance.js'
 import paiesRouter from './routes/paies.js'
 import timesheetsRouter from './routes/timesheets.js'
 import activityCodesRouter from './routes/activity-codes.js'
@@ -162,6 +165,24 @@ ensureNativeFieldDefs([
   { module: 'pieces', erp_table: 'products', column_name: 'supplier',   label: 'Fournisseur',               field_type: 'text',   sort_order: -991 },
   { module: 'pieces', erp_table: 'products', column_name: 'image_url',  label: 'Image',                     field_type: 'text',   sort_order: -990, options: { format: 'url' } },
   { module: 'pieces', erp_table: 'products', column_name: 'location',   label: 'Emplacement',               field_type: 'text',   sort_order: -989 },
+
+  // Projects natives — enregistrés pour que le mapping Airtable→ERP puisse
+  // valider la compatibilité de type côté serveur (sans cette info, les
+  // natives ne sont connues que dans TABLE_COLUMN_META côté client).
+  { module: 'projets', erp_table: 'projects', column_name: 'name',           label: 'Projet',          field_type: 'text',          sort_order: -1000 },
+  { module: 'projets', erp_table: 'projects', column_name: 'type',           label: 'Type',            field_type: 'single_select', sort_order: -999 },
+  { module: 'projets', erp_table: 'projects', column_name: 'status',         label: 'Statut',          field_type: 'single_select', sort_order: -998 },
+  { module: 'projets', erp_table: 'projects', column_name: 'probability',    label: 'Probabilité',     field_type: 'number',        sort_order: -997 },
+  { module: 'projets', erp_table: 'projects', column_name: 'value_cad',      label: 'Valeur (CAD)',    field_type: 'number',        sort_order: -996 },
+  { module: 'projets', erp_table: 'projects', column_name: 'monthly_cad',    label: 'Mensuel (CAD)',   field_type: 'number',        sort_order: -995 },
+  { module: 'projets', erp_table: 'projects', column_name: 'nb_greenhouses', label: 'Nb serres',       field_type: 'number',        sort_order: -994 },
+  { module: 'projets', erp_table: 'projects', column_name: 'company_id',     label: 'Entreprise',      field_type: 'link',          sort_order: -993, options: { target_table: 'companies' } },
+  { module: 'projets', erp_table: 'projects', column_name: 'vendeur_id',     label: 'Vendeur',         field_type: 'link',          sort_order: -992, options: { target_table: 'users' } },
+  { module: 'projets', erp_table: 'projects', column_name: 'nom_du_vendeur', label: 'Vendeur AT',      field_type: 'text',          sort_order: -991 },
+  { module: 'projets', erp_table: 'projects', column_name: 'close_date',     label: 'Date de clôture', field_type: 'date',          sort_order: -990 },
+  { module: 'projets', erp_table: 'projects', column_name: 'refusal_reason', label: 'Raison du refus', field_type: 'text',          sort_order: -989 },
+  { module: 'projets', erp_table: 'projects', column_name: 'notes',          label: 'Notes',           field_type: 'long_text',     sort_order: -988 },
+  { module: 'projets', erp_table: 'projects', column_name: 'creation',       label: 'Créé le',         field_type: 'date',          sort_order: -987 },
 ])
 
 // API Routes
@@ -170,6 +191,7 @@ app.use('/api/companies', companiesRouter)
 app.use('/api/contacts', contactsRouter)
 app.use('/api/projects', projectsRouter)
 app.use('/api/custom-fields', customFieldsRouter)
+app.use('/api/airtable-fields', airtableFieldsRouter)
 app.use('/api/products', productsRouter)
 app.use('/api/orders', ordersRouter)
 app.use('/api/tickets', ticketsRouter)
@@ -206,6 +228,8 @@ app.use('/api/customer/post-payment', customerPostPaymentRouter)
 app.use('/erp/pay', customerPayRouter)
 app.use('/api/employees', employeesRouter)
 app.use('/api/vacations', vacationsRouter)
+app.use('/api/qualification-calls', qualificationCallsRouter)
+app.use('/api/email-relance', emailRelanceRouter)
 app.use('/api/paies', paiesRouter)
 app.use('/api/timesheets', timesheetsRouter)
 app.use('/api/activity-codes', activityCodesRouter)

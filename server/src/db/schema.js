@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import db from './database.js';
 
 export function initSchema() {
@@ -612,6 +613,62 @@ export function initSchema() {
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
 
+    -- Overrides éditables pour le générateur d'email de relance.
+    -- scope = 'global' pour les règles générales partagées entre tous les
+    -- emails, sinon qc_id pour les instructions spécifiques à un qualif call.
+    CREATE TABLE IF NOT EXISTS email_relance_overrides (
+      scope TEXT PRIMARY KEY,
+      instructions TEXT,
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    -- Qualification calls (importées d'Airtable « Communication interne » → « Qualification calls »)
+    -- Formulaire structuré rempli pendant les appels de qualification commerciale.
+    CREATE TABLE IF NOT EXISTS qualification_calls (
+      id TEXT PRIMARY KEY,
+      airtable_record_id TEXT UNIQUE NOT NULL,
+      company_id TEXT REFERENCES companies(id) ON DELETE SET NULL,
+      company_name_raw TEXT,
+      call_date TEXT,
+      status TEXT,
+      assignee TEXT,
+      contact_full_name TEXT,
+      contact_email TEXT,
+      contact_phone TEXT,
+      decision_maker_name TEXT,
+      decision_maker_role TEXT,
+      farm_description TEXT,
+      has_employees INTEGER,
+      employees_count TEXT,
+      is_charity INTEGER,
+      can_issue_charity_receipt INTEGER,
+      challenges TEXT,
+      challenge_duration TEXT,
+      challenge_financial_impact TEXT,
+      short_term_goals TEXT,
+      motivation_today TEXT,
+      motivation_why_now TEXT,
+      importance_score TEXT,
+      readiness_score TEXT,
+      has_budget TEXT,
+      budget_amount TEXT,
+      timeline TEXT,
+      role_in_company TEXT,
+      business_models TEXT,
+      current_management TEXT,
+      management_effective TEXT,
+      pain_points TEXT,
+      grows_tomatoes TEXT,
+      tomato_season_months TEXT,
+      summary TEXT,
+      next_steps TEXT,
+      notes TEXT,
+      raw_fields TEXT,
+      airtable_created_at TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
     -- Sale receipts (OCR/AI extraction)
     CREATE TABLE IF NOT EXISTS sale_receipts (
       id TEXT PRIMARY KEY,
@@ -678,6 +735,8 @@ export function initSchema() {
     'CREATE INDEX IF NOT EXISTS idx_tasks_company ON tasks(company_id)',
     'CREATE INDEX IF NOT EXISTS idx_tasks_contact ON tasks(contact_id)',
     'CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)',
+    'CREATE INDEX IF NOT EXISTS idx_qualification_calls_company ON qualification_calls(company_id)',
+    'CREATE INDEX IF NOT EXISTS idx_qualification_calls_date ON qualification_calls(call_date DESC)',
   ];
 
   // Add columns that may be missing from older schema versions
@@ -781,6 +840,23 @@ export function initSchema() {
     'ALTER TABLE table_view_pills ADD COLUMN visible_columns TEXT DEFAULT \'[]\'',
     'ALTER TABLE table_view_pills ADD COLUMN sort TEXT DEFAULT \'[]\'',
     'ALTER TABLE table_view_pills ADD COLUMN group_by TEXT DEFAULT NULL',
+    "ALTER TABLE table_view_pills ADD COLUMN group_order TEXT DEFAULT NULL",
+    // subscription_events — colonnes structurées pour le panel "Mouvements
+    // d'abonnements" du dashboard. La structure historique (event_type/details)
+    // reste, on enrichit avec : company_id (cache pour groupements), montants
+    // delta + devise, stripe_event_id (idempotence des webhooks), category
+    // (renormalisation des event_type vers les catégories du dashboard :
+    // 'new' / 'churn' / 'upgrade' / 'downgrade' / 'reactivation' / 'other').
+    "ALTER TABLE subscription_events ADD COLUMN company_id TEXT REFERENCES companies(id)",
+    "ALTER TABLE subscription_events ADD COLUMN category TEXT",
+    "ALTER TABLE subscription_events ADD COLUMN amount_cad_delta REAL",
+    "ALTER TABLE subscription_events ADD COLUMN previous_amount_cad REAL",
+    "ALTER TABLE subscription_events ADD COLUMN new_amount_cad REAL",
+    "ALTER TABLE subscription_events ADD COLUMN currency TEXT",
+    "ALTER TABLE subscription_events ADD COLUMN stripe_event_id TEXT",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_events_stripe_event_id ON subscription_events(stripe_event_id) WHERE stripe_event_id IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_subscription_events_date ON subscription_events(event_date)",
+    "CREATE INDEX IF NOT EXISTS idx_subscription_events_company ON subscription_events(company_id)",
     "ALTER TABLE table_view_configs ADD COLUMN column_widths TEXT DEFAULT '{}'",
     // delivery address on orders and shipments
     'ALTER TABLE orders ADD COLUMN address_id TEXT REFERENCES adresses(id)',
@@ -1544,6 +1620,20 @@ export function initSchema() {
   // L'ancien champ `vendeur` (texte libre Airtable) est renommé "Vendeur AT" côté UI.
   try { db.exec('ALTER TABLE projects ADD COLUMN vendeur_ref TEXT') } catch {}
 
+  // Unification de la date de création des projets sur le champ `creation`
+  // (originellement importé d'Airtable). Les projets créés nativement avant
+  // cette unification ont `creation IS NULL` — on remplit avec `created_at`
+  // pour avoir un seul champ canonique. Backfill idempotent : ne touche que
+  // les lignes vides. Voir routes/projects.js POST qui remplit `creation` à
+  // la création pour les futurs projets.
+  try {
+    const hasCreation = db.pragma('table_info(projects)').some(c => c.name === 'creation')
+    if (hasCreation) {
+      const r = db.prepare('UPDATE projects SET creation = created_at WHERE creation IS NULL').run()
+      if (r.changes > 0) console.log(`✅ Projects: backfilled creation pour ${r.changes} ligne(s)`)
+    }
+  } catch (e) { console.warn('Projects creation backfill skipped:', e.message) }
+
   // Custom fields : permet aux utilisateurs de créer des colonnes ERP-only
   // (texte ou nombre avec N décimales) sur certaines tables principales.
   // Les colonnes correspondantes sont créées dynamiquement via ALTER TABLE.
@@ -1792,6 +1882,21 @@ export function initSchema() {
   // Migration pour devs qui ont créé la table sans la colonne payable
   try { db.exec('ALTER TABLE activity_codes ADD COLUMN payable INTEGER DEFAULT 1') } catch {}
 
+  // Visibilité des codes d'activité par utilisateur. Sémantique : un code sans aucune
+  // ligne dans cette table est *public* (visible à tous, défaut). Dès qu'un user est
+  // listé pour un code, le code devient *restreint* à cette liste de users. Les admins
+  // ne sont PAS bypass — ils ne voient un code restreint dans leur picker de feuille de
+  // temps que s'ils sont eux-mêmes dans la liste. La page de gestion utilise `?all=1`.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS activity_code_users (
+      code_id TEXT NOT NULL REFERENCES activity_codes(id) ON DELETE CASCADE,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      PRIMARY KEY (code_id, user_id)
+    )
+  `)
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_activity_code_users_user ON activity_code_users(user_id)') } catch {}
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS timesheet_entries (
       id TEXT PRIMARY KEY,
@@ -1946,6 +2051,34 @@ export function initSchema() {
   // Payment → Invoice (et Deposit → Payment) supporté par l'API QB.
   // Pour les refunds : qb_invoice_id porte le Credit Memo lié.
   try { db.exec('ALTER TABLE payments ADD COLUMN qb_invoice_id TEXT') } catch {}
+
+  // Migration : suppression de la vue virtuelle « Tous ». Pour chaque table sans
+  // aucune pill, on crée une pill par défaut basée sur la config admin existante,
+  // de sorte que toute table affiche au moins une vue persistante (modifiable et
+  // supprimable). Idempotent : skip les tables qui ont déjà ≥ 1 pill.
+  const VIEW_TABLES = [
+    'companies', 'contacts', 'projects', 'products',
+    'orders', 'tickets', 'purchases', 'serial_numbers', 'interactions', 'shipments',
+    'abonnements', 'retours', 'factures', 'assemblages', 'achats_fournisseurs', 'tasks',
+    'employees', 'paies', 'paie_items', 'bom_items', 'company_serials',
+  ]
+  const cntPill = db.prepare('SELECT COUNT(*) as c FROM table_view_pills WHERE table_name=?')
+  const getCfg = db.prepare('SELECT visible_columns, default_sort FROM table_view_configs WHERE table_name=?')
+  const insPill = db.prepare(`
+    INSERT INTO table_view_pills (id, table_name, label, color, filters, visible_columns, sort, group_by, collapsed_groups, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const t of VIEW_TABLES) {
+    if (cntPill.get(t).c > 0) continue
+    const cfg = getCfg.get(t)
+    insPill.run(
+      randomUUID(), t, 'Tous', 'gray',
+      '[]',
+      cfg?.visible_columns || '[]',
+      cfg?.default_sort || '[]',
+      null, '[]', 0,
+    )
+  }
 
   console.log('Database schema initialized');
 }

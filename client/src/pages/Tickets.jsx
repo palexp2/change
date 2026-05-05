@@ -172,7 +172,7 @@ export default function Tickets() {
           data={tickets}
           loading={loading}
           onRowClick={row => navigate(`/tickets/${row.id}`)}
-          searchFields={['title', 'company_name']}
+          searchFields={['title', 'company_name', 'contact_name', 'assigned_name']}
         />
       </div>
 

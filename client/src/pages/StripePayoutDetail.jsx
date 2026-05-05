@@ -419,7 +419,7 @@ export default function StripePayoutDetail() {
 }
 
 function PreviewPanel({ preview, currency }) {
-  const { summary, warnings, deposit } = preview
+  const { summary, warnings, deposit, lineAccounts } = preview
   return (
     <div className="border border-slate-200 rounded-lg overflow-hidden">
       <div className="bg-slate-50 px-4 py-2 border-b border-slate-200">
@@ -479,16 +479,24 @@ function PreviewPanel({ preview, currency }) {
             <thead className="bg-slate-50 text-slate-500 uppercase">
               <tr>
                 <th className="text-left px-3 py-1.5">Description</th>
+                <th className="text-left px-3 py-1.5">Compte QB</th>
                 <th className="text-right px-3 py-1.5">Montant</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {deposit.Line.map((l, i) => (
-                <tr key={i}>
-                  <td className="px-3 py-1.5 text-slate-700">{l.Description || '—'}</td>
-                  <td className="px-3 py-1.5 text-right tabular-nums">{fmtMoney(l.Amount, currency)}</td>
-                </tr>
-              ))}
+              {deposit.Line.map((l, i) => {
+                const acct = lineAccounts?.[i]
+                const acctLabel = acct
+                  ? (acct.acctNum ? `${acct.acctNum} ${acct.name}` : acct.name)
+                  : '—'
+                return (
+                  <tr key={i}>
+                    <td className="px-3 py-1.5 text-slate-700">{l.Description || '—'}</td>
+                    <td className="px-3 py-1.5 text-slate-600 whitespace-nowrap">{acctLabel}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{fmtMoney(l.Amount, currency)}</td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </details>

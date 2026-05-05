@@ -4,10 +4,11 @@ import { useAuth } from '../lib/auth.jsx'
 import { FilterRow, FieldSelect, defaultOpForType } from './FilterRow.jsx'
 import api from '../lib/api.js'
 
-function ToolbarBtn({ icon, label, active, badge, onClick }) {
+function ToolbarBtn({ icon, label, active, badge, onClick, dataPanelBtn }) {
   return (
     <button
       onClick={(e) => onClick(e)}
+      data-panel-btn={dataPanelBtn}
       className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-colors ${
         active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-100'
       }`}
@@ -249,12 +250,21 @@ function SortPanel({ columns, sorts, onChange, left, disabledColumns }) {
   )
 }
 
-function GroupPanel({ columns, groupBy, onChange, onCollapseAll, onExpandAll, left, disabledColumns }) {
+function GroupPanel({ columns, groupBy, onChange, groupOrder, setGroupOrder, onCollapseAll, onExpandAll, left, disabledColumns }) {
   const [search, setSearch] = useState('')
   const filtered = search
     ? columns.filter(c => c.label.toLowerCase().includes(search.toLowerCase()))
     : columns
   const groupByBroken = !!(disabledColumns && groupBy && disabledColumns.has(groupBy))
+
+  const groupCol = groupBy ? columns.find(c => c.field === groupBy) : null
+  const hasOptionOrder = Array.isArray(groupCol?.options) && groupCol.options.length > 0
+
+  function orderBtnCls(active) {
+    return `flex items-center gap-1 flex-1 justify-center px-2 py-1.5 text-xs rounded border transition-colors ${
+      active ? 'bg-brand-50 text-brand-700 border-brand-200' : 'text-slate-600 hover:bg-slate-100 border-slate-200'
+    }`
+  }
 
   return (
     <Panel className="w-56" left={left}>
@@ -264,6 +274,36 @@ function GroupPanel({ columns, groupBy, onChange, onCollapseAll, onExpandAll, le
           <AlertTriangle size={11} className="mt-0.5 flex-shrink-0" />
           <span>Le groupage actuel sur <code className="font-mono">{groupBy}</code> pointe sur un champ désactivé dans la sync Airtable.</span>
         </div>
+      )}
+      {groupBy && setGroupOrder && (
+        <>
+          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Ordre des groupes</div>
+          <div className="flex items-center gap-1 mb-2">
+            {hasOptionOrder && (
+              <button
+                onClick={() => setGroupOrder('default')}
+                className={orderBtnCls(groupOrder === 'default' || groupOrder == null)}
+                title={`Ordre des options (${groupCol.options.slice(0, 3).join(', ')}${groupCol.options.length > 3 ? '...' : ''})`}
+              >
+                Défaut
+              </button>
+            )}
+            <button
+              onClick={() => setGroupOrder('asc')}
+              className={orderBtnCls(groupOrder === 'asc' || (groupOrder == null && !hasOptionOrder))}
+              title="Tri alphabétique croissant"
+            >
+              <ChevronUp size={12} /> A → Z
+            </button>
+            <button
+              onClick={() => setGroupOrder('desc')}
+              className={orderBtnCls(groupOrder === 'desc')}
+              title="Tri alphabétique décroissant"
+            >
+              <ChevronDown size={12} /> Z → A
+            </button>
+          </div>
+        </>
       )}
       {groupBy && (
         <div className="flex items-center gap-1 mb-2">
@@ -311,14 +351,13 @@ export function ViewToolbar({
   search, setSearch,
   searchFields = [],
   views = [],
-  allViewSortOrder = -1,
   onReorderViews,
   activeViewId,
   setActiveViewId,
-  tableLabel,
   processedCount,
   visibleCols, setVisibleCols,
   groupBy, setGroupBy,
+  groupOrder, setGroupOrder,
   onCollapseAll, onExpandAll,
   data,
   disabledColumns = null,
@@ -345,12 +384,11 @@ export function ViewToolbar({
   const tabElsRef = useRef({})
   const flipRectsRef = useRef({})
 
-  // Merged list: real views + virtual "Tous" entry, sorted by their sort_order
-  const ALL_ID = '__all__'
-  const mergedViews = [
-    ...views.map((v, i) => ({ ...v, __sortOrder: v.sort_order ?? i })),
-    { id: ALL_ID, label: tableLabel, __sortOrder: allViewSortOrder },
-  ].sort((a, b) => a.__sortOrder - b.__sortOrder)
+  // Liste des onglets : uniquement les pills réelles. La vue virtuelle « Tous »
+  // a été retirée — toutes les vues sont des pills configurables et supprimables.
+  const mergedViews = views
+    .map((v, i) => ({ ...v, __sortOrder: v.sort_order ?? i }))
+    .sort((a, b) => a.__sortOrder - b.__sortOrder)
 
   const displayViews = dragPreview || mergedViews
 
@@ -396,6 +434,7 @@ export function ViewToolbar({
       filters: p.filters || [],
       visible_columns: p.visibleCols || [],
       group_by: p.groupBy || null,
+      group_order: p.groupOrder || null,
     }).catch(() => {})
   }
   flushSaveRef.current = flushSave
@@ -411,13 +450,13 @@ export function ViewToolbar({
   useEffect(() => {
     if (!table) return
     if (activeViewId) {
-      pendingSaveRef.current = { table, viewId: activeViewId, sorts, filters, visibleCols, groupBy }
+      pendingSaveRef.current = { table, viewId: activeViewId, sorts, filters, visibleCols, groupBy, groupOrder }
       clearTimeout(autoSaveRef.current)
       autoSaveRef.current = setTimeout(() => flushSaveRef.current(), 600)
     } else if (visibleCols && visibleCols.length > 0) {
       try { localStorage.setItem(`erp_allView_cols_${table}`, JSON.stringify(visibleCols)) } catch {}
     }
-  }, [table, activeViewId, sorts, filters, visibleCols, groupBy])
+  }, [table, activeViewId, sorts, filters, visibleCols, groupBy, groupOrder])
 
   useEffect(() => {
     function onBeforeUnload() { flushSaveRef.current() }
@@ -438,6 +477,22 @@ export function ViewToolbar({
     return () => document.removeEventListener('mousedown', handler)
   }, [openPanel])
 
+  // Listen to context-menu requests from DataTable column headers — opens
+  // the relevant toolbar panel (filter/sort/group/fields) and aligns it under
+  // the matching toolbar button.
+  useEffect(() => {
+    function onOpenPanel(e) {
+      if (e.detail?.table !== table) return
+      const panel = e.detail?.panel
+      if (!panel) return
+      const btn = toolbarRef.current?.querySelector(`[data-panel-btn="${panel}"]`)
+      if (btn) setPanelLeft(btn.offsetLeft)
+      setOpenPanel(panel)
+    }
+    window.addEventListener('datatable:open-panel', onOpenPanel)
+    return () => window.removeEventListener('datatable:open-panel', onOpenPanel)
+  }, [table])
+
   const tabCls = (id) =>
     `px-4 py-2.5 text-sm font-medium border-b-2 -mb-px whitespace-nowrap transition-colors ${
       activeViewId === id
@@ -452,15 +507,14 @@ export function ViewToolbar({
       {displayViews.length > 1 && (
         <div ref={tabsRef} className="flex items-end gap-0 px-2 overflow-x-auto overflow-y-hidden border-b border-slate-200">
           {displayViews.map((v, _idx) => {
-            const realId = v.id === ALL_ID ? null : v.id
             const canDrag = isAdmin && !!onReorderViews
             const isDragging = draggingId === v.id
             return (
               <button
                 key={v.id}
                 ref={el => { if (el) tabElsRef.current[v.id] = el }}
-                className={`${tabCls(realId)} select-none ${isDragging ? 'opacity-40 scale-95' : ''}`}
-                onClick={() => { if (!draggingId) { flushSave(); setActiveViewId(realId) } }}
+                className={`${tabCls(v.id)} select-none ${isDragging ? 'opacity-40 scale-95' : ''}`}
+                onClick={() => { if (!draggingId) { flushSave(); setActiveViewId(v.id) } }}
                 onPointerDown={canDrag ? (e) => {
                   if (e.button !== 0) return
                   setDraggingId(v.id)
@@ -496,9 +550,7 @@ export function ViewToolbar({
                   const preview = dragPreviewRef.current
                   if (preview) {
                     captureRects()
-                    const newAllPos = preview.findIndex(x => x.id === ALL_ID)
-                    const realReordered = preview.filter(x => x.id !== ALL_ID)
-                    onReorderViews(realReordered, newAllPos - 0.5)
+                    onReorderViews(preview)
                   }
                   setDraggingId(null)
                   setDragPreview(null)
@@ -535,19 +587,23 @@ export function ViewToolbar({
 
           {visibleCols && setVisibleCols && (
             <ToolbarBtn icon={<Eye size={14} />} label="Champs" active={openPanel === 'fields'}
+              dataPanelBtn="fields"
               onClick={(e) => togglePanel('fields', e)} />
           )}
 
           <ToolbarBtn icon={<Filter size={14} />} label="Filtrer" active={openPanel === 'filter'}
             badge={Array.isArray(filters) ? filters.length : (filters?.rules?.length || 0)}
+            dataPanelBtn="filter"
             onClick={(e) => togglePanel('filter', e)} />
 
           <ToolbarBtn icon={<ArrowUpDown size={14} />} label="Trier" active={openPanel === 'sort'}
             badge={sorts.length}
+            dataPanelBtn="sort"
             onClick={(e) => togglePanel('sort', e)} />
 
           {setGroupBy && (
             <ToolbarBtn icon={<Layers size={14} />} label="Grouper" active={openPanel === 'group' || !!groupBy}
+              dataPanelBtn="group"
               onClick={(e) => togglePanel('group', e)} />
           )}
 
@@ -582,6 +638,8 @@ export function ViewToolbar({
             columns={columns.filter(c => c.groupable !== false && !disabledColumns?.has(c.field) && !disabledColumns?.has(c.id))}
             groupBy={groupBy}
             onChange={v => { setGroupBy(v); setOpenPanel(null) }}
+            groupOrder={groupOrder}
+            setGroupOrder={setGroupOrder}
             onCollapseAll={onCollapseAll} onExpandAll={onExpandAll} left={panelLeft}
             disabledColumns={disabledColumns}
           />

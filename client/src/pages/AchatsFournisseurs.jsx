@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Link } from 'react-router-dom'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -321,6 +322,7 @@ export default function AchatsFournisseurs() {
   const [creating, setCreating] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState(null)
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const load = useCallback(async () => {
     await loadProgressive(
@@ -332,12 +334,36 @@ export default function AchatsFournisseurs() {
   useEffect(() => { load() }, [load])
 
   useEffect(() => {
-    const p = new URLSearchParams(window.location.search)
-    const openId = p.get('id')
+    const openId = searchParams.get('id')
     if (!openId || rows.length === 0) return
     const row = rows.find(r => r.id === openId)
     if (row) setEditing(row)
-  }, [rows])
+  }, [rows, searchParams])
+
+  // Filtre venant du tableau de bord (clic sur une barre du graphique « Coûts d'expédition »).
+  const fromParam = searchParams.get('from')
+  const toParam = searchParams.get('to')
+  const accountParam = searchParams.get('account')
+  const filterActive = !!(fromParam && toParam && accountParam)
+
+  const filteredRows = useMemo(() => {
+    if (!filterActive) return rows
+    const accountQuery = accountParam.toLowerCase()
+    return rows.filter(r => {
+      if (!r.date_achat) return false
+      if (r.date_achat < fromParam || r.date_achat > toParam) return false
+      if (!r.lines) return false
+      let lines
+      try { lines = JSON.parse(r.lines) } catch { return false }
+      return Array.isArray(lines) && lines.some(l => (l.account_name || '').toLowerCase().includes(accountQuery))
+    })
+  }, [rows, filterActive, fromParam, toParam, accountParam])
+
+  const clearDashboardFilter = () => {
+    const next = new URLSearchParams(searchParams)
+    next.delete('from'); next.delete('to'); next.delete('account')
+    setSearchParams(next, { replace: true })
+  }
 
   async function handleQBImport() {
     setSyncing(true)
@@ -390,10 +416,29 @@ export default function AchatsFournisseurs() {
           </div>
         </div>
 
+        {filterActive && (
+          <div
+            className="mb-3 flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-900"
+            data-testid="dashboard-filter-banner"
+          >
+            <span>
+              Filtré depuis le tableau de bord — compte <strong>{accountParam}</strong> du <strong>{fmtDate(fromParam)}</strong> au <strong>{fmtDate(toParam)}</strong>
+              <span className="ml-2 text-amber-700/70">({filteredRows.length} ligne{filteredRows.length !== 1 ? 's' : ''})</span>
+            </span>
+            <button
+              onClick={clearDashboardFilter}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-amber-900 hover:bg-amber-100"
+              data-testid="dashboard-filter-clear"
+            >
+              <X size={14} /> Effacer
+            </button>
+          </div>
+        )}
+
         <DataTable
           table="achats_fournisseurs"
           columns={COLUMNS}
-          data={rows}
+          data={filteredRows}
           loading={loading}
           onRowClick={row => setEditing(row)}
           searchFields={['vendor', 'description', 'reference', 'vendor_invoice_number', 'bill_number', 'category']}

@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Plus, X, RefreshCw, Database } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Plus, X, Database } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
@@ -11,7 +11,6 @@ import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
-import { useSyncStatus } from '../lib/useSyncStatus.js'
 import { useDisabledColumns } from '../lib/useDisabledColumns.js'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import CustomFieldModal from '../components/CustomFieldModal.jsx'
@@ -174,251 +173,12 @@ function ProjectForm({ initial = {}, companies = [], onSave, onClose }) {
   )
 }
 
-function AirtableSyncButton({ onSynced }) {
-  const [open, setOpen] = useState(false)
-  const [config, setConfig] = useState(null)
-  const [bases, setBases] = useState([])
-  const [tables, setTables] = useState([])
-  const [baseId, setBaseId] = useState('')
-  const [tableId, setTableId] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState(null)
-  const [airtableFields, setAirtableFields] = useState(null) // null = not loaded
-  const [fieldFilter, setFieldFilter] = useState('')
-  const [togglingField, setTogglingField] = useState(null)
-  const { status: syncStatus } = useSyncStatus(3000)
-  const syncing = !!syncStatus?.projets?.running
-
-  useEffect(() => {
-    api.connectors.list().then(d => {
-      const cfg = d.projets_sync || {}
-      setConfig(cfg)
-      if (cfg.base_id) setBaseId(cfg.base_id)
-      if (cfg.projects_table_id) setTableId(cfg.projects_table_id)
-    }).catch(() => {})
-  }, [])
-
-  const loadAirtableFields = useCallback(() => {
-    api.airtable.projetsAirtableFields()
-      .then(d => setAirtableFields(d.fields || []))
-      .catch(() => setAirtableFields([]))
-  }, [])
-
-  useEffect(() => {
-    if (!open) return
-    if (bases.length === 0) {
-      setLoading(true)
-      setError(null)
-      api.airtable.bases()
-        .then(b => setBases(b || []))
-        .catch(e => setError(e.message || 'Erreur de chargement'))
-        .finally(() => setLoading(false))
-    }
-    if (airtableFields === null) loadAirtableFields()
-  }, [open, bases.length, airtableFields, loadAirtableFields])
-
-  // Recharge la liste des champs Airtable quand un sync se termine, pour
-  // refléter les nouveaux champs auto-créés et les statuts à jour.
-  useEffect(() => {
-    if (open && airtableFields !== null) loadAirtableFields()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncing])
-
-  async function toggleAirtableFieldImport(fieldName, currentlyDisabled) {
-    const willDisable = !currentlyDisabled // checkbox checked = imported = !disabled
-    // optimistic update
-    setTogglingField(fieldName)
-    setAirtableFields(prev =>
-      (prev || []).map(f => f.airtable_field_name === fieldName ? { ...f, import_disabled: willDisable } : f),
-    )
-    try {
-      await api.airtable.setProjetsFieldDisabled(fieldName, willDisable)
-    } catch (e) {
-      // revert on failure
-      setAirtableFields(prev =>
-        (prev || []).map(f => f.airtable_field_name === fieldName ? { ...f, import_disabled: !willDisable } : f),
-      )
-      setError(e.message || 'Erreur')
-    } finally {
-      setTogglingField(null)
-    }
-  }
-
-  useEffect(() => {
-    if (!baseId) { setTables([]); return }
-    api.airtable.tables(baseId).then(t => setTables(t || [])).catch(() => setTables([]))
-  }, [baseId])
-
-  // When sync transitions from running -> done, refresh config + parent data
-  const wasSyncing = useRef(false)
-  useEffect(() => {
-    if (syncing) { wasSyncing.current = true; return }
-    if (wasSyncing.current) {
-      wasSyncing.current = false
-      api.connectors.list().then(d => setConfig(d.projets_sync || {})).catch(() => {})
-      onSynced?.()
-    }
-  }, [syncing, onSynced])
-
-  async function handleSave() {
-    setSaving(true)
-    setError(null)
-    try {
-      await api.airtable.saveConfig('projets', {
-        base_id: baseId,
-        projects_table_id: tableId,
-        field_map_projects: {},
-      })
-      const d = await api.connectors.list()
-      setConfig(d.projets_sync || {})
-    } catch (e) { setError(e.message || 'Erreur enregistrement') }
-    finally { setSaving(false) }
-  }
-
-  async function handleSync() {
-    if (!baseId || !tableId) return
-    setError(null)
-    try { await api.airtable.sync('projets') }
-    catch (e) { setError(e.message || 'Erreur sync') }
-  }
-
-  const configured = !!(config?.base_id && config?.projects_table_id)
-
-  return (
-    <>
-      <button
-        onClick={() => setOpen(true)}
-        className="btn-secondary flex items-center gap-2"
-        title={configured
-          ? (config.last_synced_at ? `Dernière sync : ${fmtDate(config.last_synced_at)}` : 'Configurée')
-          : 'Synchronisation Airtable non configurée'}
-      >
-        <Database size={15} className="text-brand-500" />
-        <span>Sync Airtable</span>
-        {syncing
-          ? <RefreshCw size={13} className="animate-spin text-amber-500" />
-          : !configured && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />}
-      </button>
-
-      <Modal isOpen={open} onClose={() => setOpen(false)} title="Synchronisation Airtable" size="lg">
-        <div className="space-y-4">
-          <div className="text-xs text-slate-500 flex items-center gap-2">
-            {configured ? (
-              <>
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                <span>{config.last_synced_at ? `Dernière sync : ${fmtDate(config.last_synced_at)}` : 'Configurée'}</span>
-              </>
-            ) : (
-              <>
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                <span className="text-amber-600">Non configurée</span>
-              </>
-            )}
-            {syncing && <span className="text-amber-600 font-medium animate-pulse ml-2">Synchronisation en cours…</span>}
-          </div>
-
-          {loading ? (
-            <p className="text-xs text-slate-400">Chargement…</p>
-          ) : (
-            <>
-              <div className="grid grid-cols-1 gap-3">
-                <div>
-                  <label className="label text-xs">Base Airtable</label>
-                  <select className="input text-sm" value={baseId} onChange={e => { setBaseId(e.target.value); setTableId('') }}>
-                    <option value="">— Sélectionner —</option>
-                    {bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="label text-xs">Table projets</label>
-                  <select className="input text-sm" value={tableId} onChange={e => setTableId(e.target.value)} disabled={!baseId}>
-                    <option value="">— Sélectionner —</option>
-                    {tables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
-                </div>
-              </div>
-              {error && <p className="text-xs text-red-600">{error}</p>}
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-                <button onClick={handleSave} disabled={saving || !baseId || !tableId} className="btn-secondary btn-sm">
-                  {saving ? 'Enregistrement…' : 'Enregistrer'}
-                </button>
-                <button onClick={handleSync} disabled={syncing || !configured} className="btn-primary btn-sm flex items-center gap-1.5">
-                  <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
-                  {syncing ? 'Synchronisation…' : 'Synchroniser maintenant'}
-                </button>
-              </div>
-            </>
-          )}
-
-          <div className="pt-3 border-t border-slate-100">
-            <div className="flex items-baseline justify-between mb-1">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                Champs Airtable importés
-              </p>
-              {airtableFields && (
-                <span className="text-[11px] text-slate-400">
-                  {airtableFields.length} champs
-                  {airtableFields.filter(f => f.import_disabled).length > 0 && (
-                    <> · <span className="text-amber-600 font-medium">{airtableFields.filter(f => f.import_disabled).length} désactivés</span></>
-                  )}
-                </span>
-              )}
-            </div>
-            <p className="text-[11px] text-slate-400 mb-2">
-              Coche pour importer le champ Airtable dans l'ERP. Décoche pour arrêter l'import — la colonne correspondante est immédiatement vidée (réimportable au prochain sync). Les champs essentiels (nom, entreprise, statut, valeur, etc.) ne sont pas listés ici.
-            </p>
-            {airtableFields && airtableFields.length > 10 && (
-              <input
-                type="text"
-                value={fieldFilter}
-                onChange={e => setFieldFilter(e.target.value)}
-                placeholder="Rechercher un champ…"
-                className="input text-xs mb-2"
-              />
-            )}
-            {airtableFields === null ? (
-              <p className="text-xs text-slate-400">Chargement…</p>
-            ) : airtableFields.length === 0 ? (
-              <p className="text-xs text-slate-400">Configure d'abord la base et la table, puis ré-ouvre cette modale.</p>
-            ) : (
-              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 max-h-64 overflow-y-auto">
-                {airtableFields
-                  .filter(f => !fieldFilter || f.airtable_field_name.toLowerCase().includes(fieldFilter.toLowerCase()))
-                  .map(f => {
-                    const imported = !f.import_disabled
-                    const isToggling = togglingField === f.airtable_field_name
-                    return (
-                      <label
-                        key={f.airtable_field_name}
-                        className={`flex items-center gap-2 text-xs py-1 px-1 rounded cursor-pointer hover:bg-slate-100 ${!imported ? 'opacity-60' : ''}`}
-                        title={imported ? 'Importé depuis Airtable' : 'Désactivé — non importé, colonne vide côté ERP'}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={imported}
-                          disabled={isToggling}
-                          onChange={() => toggleAirtableFieldImport(f.airtable_field_name, f.import_disabled)}
-                          className="accent-brand-500"
-                        />
-                        <span className={`flex-1 truncate ${!imported ? 'line-through text-slate-400' : 'text-slate-700'}`}>{f.airtable_field_name}</span>
-                        <span className="text-[10px] text-slate-400">{f.airtable_field_type}</span>
-                      </label>
-                    )
-                  })}
-              </div>
-            )}
-          </div>
-        </div>
-      </Modal>
-    </>
-  )
-}
 
 export default function Pipeline() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const monthFilter = searchParams.get('month') // e.g. "2026-03"
+  const monthFilter = searchParams.get('month') // e.g. "2026-03" — filters by close_date/updated_at
+  const createdMonthFilter = searchParams.get('createdMonth') // e.g. "2026-03" — filters by created_at
   const [projects, setProjects] = useState([])
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(true)
@@ -462,12 +222,18 @@ export default function Pipeline() {
 
   // Filtre par mois si présent dans l'URL
   const displayedProjects = useMemo(() => {
+    if (createdMonthFilter) {
+      // Filtre sur `creation` en UTC — cohérent avec le bucketing du dashboard
+      // (strftime UTC) et avec l'affichage `fmtDate` qui détecte le pattern
+      // Airtable midnight-UTC.
+      return projects.filter(p => (p.creation || '').slice(0, 7) === createdMonthFilter)
+    }
     if (!monthFilter) return projects
     return projects.filter(p => {
       const d = p.close_date || p.updated_at || ''
       return d.startsWith(monthFilter)
     })
-  }, [projects, monthFilter])
+  }, [projects, monthFilter, createdMonthFilter])
 
   // Stats toujours calculées sur tous les projets
   const open   = useMemo(() => projects.filter(p => p.status === 'Ouvert'), [projects])
@@ -562,7 +328,10 @@ export default function Pipeline() {
             <h1 className="text-2xl font-bold text-slate-900">Projets</h1>
           </div>
           <div className="flex items-center gap-2">
-            <AirtableSyncButton onSynced={load} />
+            <Link to="/projects/fields" className="btn-secondary flex items-center gap-2" title="Gérer les champs (renommer, type, mapping Airtable)">
+              <Database size={15} className="text-brand-500" />
+              <span>Champs</span>
+            </Link>
             <TableConfigModal table="projects" />
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouveau projet
@@ -597,15 +366,23 @@ export default function Pipeline() {
             </button>
           </div>
         )}
+        {createdMonthFilter && (
+          <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg text-sm text-brand-700">
+            <span>Projets créés en {new Date(createdMonthFilter + '-15').toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })}</span>
+            <button onClick={() => setSearchParams({})} className="ml-auto flex items-center gap-1 text-xs text-brand-500 hover:text-brand-700">
+              <X size={13} /> Effacer
+            </button>
+          </div>
+        )}
         <DataTable
           table="projects"
           columns={COLUMNS_WITH_CUSTOM}
           data={displayedProjects}
           loading={loading}
           onRowClick={row => navigate(`/projects/${row.id}`)}
-          searchFields={['name', 'company_name', 'type']}
+          searchFields={['name', 'company_name', 'type', 'vendeur_label', 'nom_du_vendeur']}
           initialGroupBy={monthFilter ? 'status' : null}
-          forceAllView={!!monthFilter}
+          forceAllView={!!monthFilter || !!createdMonthFilter}
           disabledColumns={disabledCols}
           onAddCustomField={() => setCustomFieldModal({ editing: null })}
           customFieldsByColumn={customFieldsByColumn}

@@ -1,6 +1,7 @@
 import Stripe from 'stripe'
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
+import { recordEvent, classifyChange } from './subscriptionEvents.js'
 
 function getStripeKey() {
   const row = db.prepare(
@@ -211,8 +212,26 @@ export async function syncStripeSubscriptions() {
       }
 
       if (changes.length > 0) {
-        db.prepare('INSERT INTO subscription_events (id, subscription_id, event_date, event_type, details) VALUES (?,?,datetime(\'now\'),?,?)')
-          .run(uuid(), existingRow.id, 'update', JSON.stringify(changes))
+        const category = classifyChange({
+          prevStatus: prev.status, newStatus: status,
+          prevAmount: prev.amount_monthly, newAmount: amountMonthly,
+        })
+        // event_date : si l'event est une annulation, on prend cancel_date du
+        // sub Stripe (date réelle de l'annulation). Sinon, now (sync moment).
+        const eventDate = (category === 'churn' && cancelDate)
+          ? new Date(cancelDate).toISOString()
+          : new Date().toISOString()
+        await recordEvent({
+          subscriptionId: existingRow.id,
+          companyId: companyId || prev.company_id,
+          eventDate,
+          eventType: category === 'churn' ? 'cancel' : 'update',
+          category,
+          previousAmount: prev.amount_monthly,
+          newAmount: amountMonthly,
+          currency,
+          details: changes,
+        })
       }
 
       db.prepare(`
@@ -245,8 +264,24 @@ export async function syncStripeSubscriptions() {
         stripeUrl, customerId, customerEmail,
         intervalCount, intervalType
       )
-      db.prepare('INSERT INTO subscription_events (id, subscription_id, event_date, event_type, details) VALUES (?,?,?,?,?)')
-        .run(uuid(), newId, startDate || new Date().toISOString(), 'creation', JSON.stringify([`Création: ${amountMonthly.toFixed(2)} ${currency}/${intervalType}`]))
+      // Si le sub est créé déjà annulé (rare mais possible : import legacy,
+      // sub annulé immédiatement), on classe en 'churn' plutôt qu'en 'new'
+      // pour éviter un MRR delta positif qui serait faux.
+      const isAlreadyCanceled = status === 'canceled'
+      const eventDate = isAlreadyCanceled && cancelDate
+        ? new Date(cancelDate).toISOString()
+        : (startDate ? new Date(startDate).toISOString() : new Date().toISOString())
+      await recordEvent({
+        subscriptionId: newId,
+        companyId,
+        eventDate,
+        eventType: isAlreadyCanceled ? 'cancel' : 'creation',
+        category: isAlreadyCanceled ? 'churn' : 'new',
+        previousAmount: isAlreadyCanceled ? amountMonthly : null,
+        newAmount: isAlreadyCanceled ? null : amountMonthly,
+        currency,
+        details: [`Création: ${amountMonthly.toFixed(2)} ${currency}/${intervalType}`],
+      })
       created++
     }
   }
@@ -499,7 +534,12 @@ export async function syncStripeBalanceTransactions(payoutStripeId) {
           }
         }
         if (!qbTaxCode) {
-          const inferred = autoInferQbTaxCode(trObjs)
+          // N'inférer que sur les tax_rates ayant effectivement contribué un montant.
+          // Stripe Tax peut attacher des taux à 0 (ex. PST BC pour vendeur non-inscrit) :
+          // les inclure dans la somme des pourcentages fausse l'inférence (5 + 7 = 12 → null
+          // au lieu de TPS seule = 5 → '5').
+          const appliedTrObjs = trObjs.filter((_, i) => (taxDetails[i]?.amount || 0) > 0)
+          const inferred = autoInferQbTaxCode(appliedTrObjs.length ? appliedTrObjs : trObjs)
           if (inferred) {
             qbTaxCode = inferred
             const key = trIds.length > 1 ? combinedKey : trIds[0]

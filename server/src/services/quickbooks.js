@@ -561,6 +561,7 @@ async function loadAccountsCache() {
   _accountsCache = {
     byAcctNum: new Map(all.filter(a => a.AcctNum).map(a => [String(a.AcctNum), a.Id])),
     byName: new Map(all.map(a => [a.Name, a.Id])),
+    byId: new Map(all.map(a => [String(a.Id), { acctNum: a.AcctNum || null, name: a.Name }])),
   }
   return _accountsCache
 }
@@ -841,9 +842,10 @@ async function resolveQBStripeAccounts() {
   return out
 }
 
-// Vérifie qu'au moins un envoi (peu importe le statut) existe sur une commande
-// liée à la facture, soit directement (factures.order_id), soit via le projet
-// (orders.project_id = factures.project_id).
+// Vérifie que la facture est « envoyée » au sens comptable — soit via un envoi
+// physique sur une commande liée (factures.order_id ou via project), soit via le
+// flag is_sent_manual=1 que l'utilisateur peut activer pour les factures sans
+// matériel physique (services, factures de couverture, etc.).
 function factureHasLinkedShipment(factureId) {
   const r = db.prepare(`
     SELECT 1 AS ok
@@ -851,9 +853,12 @@ function factureHasLinkedShipment(factureId) {
     LEFT JOIN orders o_d ON o_d.id = f.order_id
     LEFT JOIN orders o_p ON o_p.project_id = f.project_id AND f.project_id IS NOT NULL
     WHERE f.id = ?
-      AND EXISTS (
-        SELECT 1 FROM shipments s
-        WHERE s.order_id = o_d.id OR s.order_id = o_p.id
+      AND (
+        f.is_sent_manual = 1
+        OR EXISTS (
+          SELECT 1 FROM shipments s
+          WHERE s.order_id = o_d.id OR s.order_id = o_p.id
+        )
       )
     LIMIT 1
   `).get(factureId)
@@ -1264,7 +1269,16 @@ export async function buildDepositFromPayout(payoutStripeId) {
     disputes: Math.round(disputeTotal * 100) / 100,
   }
 
-  return { deposit, summary, warnings, exchangeRate, deferredFactures }
+  // Pour le Aperçu — résoudre acctNum/name de chaque ligne via le cache (déjà
+  // chargé par resolveQBStripeAccounts ci-dessus). Tableau parallèle à deposit.Line
+  // pour ne pas polluer la payload envoyée à QB.
+  const accountsCache = await loadAccountsCache()
+  const lineAccounts = lines.map(l => {
+    const id = l.DepositLineDetail?.AccountRef?.value
+    return id ? (accountsCache.byId.get(String(id)) || null) : null
+  })
+
+  return { deposit, summary, warnings, exchangeRate, deferredFactures, lineAccounts }
 }
 
 export async function pushDepositFromPayout(payoutStripeId) {
@@ -1274,7 +1288,70 @@ export async function pushDepositFromPayout(payoutStripeId) {
 
   const { deposit, summary, warnings, exchangeRate, deferredFactures } = await buildDepositFromPayout(payoutStripeId)
   const result = await qbPost('/deposit', deposit)
-  const qbId = result.Deposit.Id
+  let created = result.Deposit
+  const qbId = created.Id
+
+  // Reconcile per-line tax rounding : QB peut arrondir TPS/TVQ séparément ou en
+  // combiné, en half-up ou banker, ce qui produit un écart de ±0,01 à ±0,03 entre
+  // sum(line.Amount) + QB_taxes et le payout réel. Le code n'est pas exposé par
+  // l'API : on relit TotalAmt persisté et on patche le Deposit avec une ligne
+  // d'ajustement si écart. Le résultat : TotalAmt = payout.amount au cent près.
+  //
+  // ⚠️ La réponse POST /deposit peut renvoyer un TotalAmt différent du persisté
+  // (observé en prod : POST = 15194.26, GET ultérieur = 15194.27). On force donc
+  // un GET après POST pour avoir le total réel et le SyncToken courant.
+  const expectedTotal = Math.round(payout.amount * 100) / 100
+  let persistedTotal
+  let syncToken = created.SyncToken
+  let persistedLines = created.Line || []
+  try {
+    const verify = await qbGet(`/deposit/${qbId}`)
+    persistedTotal = Math.round(Number(verify.Deposit.TotalAmt || 0) * 100) / 100
+    syncToken = verify.Deposit.SyncToken
+    persistedLines = verify.Deposit.Line || persistedLines
+  } catch (e) {
+    persistedTotal = Math.round(Number(created.TotalAmt || 0) * 100) / 100
+    warnings.push(`Lecture Deposit après push échouée — fallback sur TotalAmt POST: ${e.message}`)
+  }
+  const delta = Math.round((expectedTotal - persistedTotal) * 100) / 100
+  console.log(`[push-deposit] payout=${payoutStripeId} expected=${expectedTotal} persisted=${persistedTotal} delta=${delta}`)
+  if (Math.abs(delta) >= 0.01) {
+    const accounts = await resolveQBStripeAccounts()
+    const adjustmentLine = {
+      Amount: delta,
+      DetailType: 'DepositLineDetail',
+      DepositLineDetail: {
+        AccountRef: { value: accounts.fees },
+        TaxCodeRef: { value: '3' },     // Exonéré Achats — 0% pour ne rien recalculer
+        TaxApplicableOn: 'Purchase',
+      },
+      Description: `Ajustement d'arrondi taxes (${delta >= 0 ? '+' : ''}${delta.toFixed(2)})`,
+    }
+    try {
+      // Sparse update : Id + SyncToken obligatoires, Line remplace l'array complet.
+      // QB exige aussi DepositToAccountRef, TxnDate, CurrencyRef en sparse update
+      // (validé empiriquement — ValidationFault 2020 sinon). On évite les champs
+      // read-only (TotalAmt, MetaData…) qui font rejeter la requête.
+      const updateBody = {
+        Id: qbId,
+        SyncToken: syncToken,
+        sparse: true,
+        DepositToAccountRef: created.DepositToAccountRef,
+        TxnDate: created.TxnDate,
+        CurrencyRef: created.CurrencyRef,
+        ...(created.ExchangeRate ? { ExchangeRate: created.ExchangeRate } : {}),
+        ...(created.GlobalTaxCalculation ? { GlobalTaxCalculation: created.GlobalTaxCalculation } : {}),
+        ...(created.PrivateNote ? { PrivateNote: created.PrivateNote } : {}),
+        Line: [...persistedLines, adjustmentLine],
+      }
+      const updated = await qbPost('/deposit', updateBody)
+      created = updated.Deposit
+      console.log(`[push-deposit] payout=${payoutStripeId} adjustment ${delta.toFixed(2)} appliqué — nouveau TotalAmt=${created.TotalAmt}`)
+    } catch (e) {
+      warnings.push(`Ajustement d'arrondi de ${delta.toFixed(2)} non appliqué — Deposit reste à ${totalAmt.toFixed(2)} (vs payout ${expectedTotal.toFixed(2)}): ${e.message}`)
+    }
+  }
+
   db.prepare("UPDATE stripe_payouts SET qb_deposit_id=?, qb_pushed_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE stripe_id=?")
     .run(qbId, payoutStripeId)
 
@@ -1796,7 +1873,7 @@ async function _postRefundJE({ paymentId, amount, currency, exchangeRate, txnDat
 // quand le deposit sera poussé, buildDepositFromPayout choisira directement le
 // compte 40000 (Ventes) puisque le shipment sera déjà lié — la vente est donc
 // constatée par la ligne du dépôt, pas par une JE séparée.
-function factureHasPendingStripeDeposit(factureId) {
+export function factureHasPendingStripeDeposit(factureId) {
   const r = db.prepare(`
     SELECT 1 AS ok
     FROM factures f

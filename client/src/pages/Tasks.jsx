@@ -146,7 +146,7 @@ export default function Tasks() {
           data={tasks}
           loading={loading}
           onRowClick={(row) => setEditing(row)}
-          searchFields={['title', 'company_name', 'contact_name']}
+          searchFields={['title', 'company_name', 'contact_name', 'assigned_name', 'ticket_title']}
           onBulkDelete={async (ids) => {
             await undoableDelete({
               table: 'tasks',

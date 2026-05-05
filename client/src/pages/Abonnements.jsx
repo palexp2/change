@@ -17,6 +17,15 @@ function fmtCad(n) {
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
 }
 
+function fmtMonth(ym) {
+  if (!ym || typeof ym !== 'string' || ym.length < 7) return '—'
+  const [y, m] = ym.split('-')
+  const d = new Date(Number(y), Number(m) - 1, 1)
+  if (isNaN(d.getTime())) return ym
+  const label = d.toLocaleDateString('fr-CA', { year: 'numeric', month: 'long' })
+  return label.charAt(0).toUpperCase() + label.slice(1)
+}
+
 
 const STATUS_COLORS = {
   // Stripe (anglais)
@@ -89,6 +98,7 @@ const RENDERS = {
     : <span className="text-slate-400">—</span>,
   amount_cad: row => <span className="font-medium text-slate-700">{fmtCad(row.amount_cad)}</span>,
   start_date: row => <span className="text-slate-500">{fmtDate(row.start_date)}</span>,
+  start_month: row => <span className="text-slate-500">{fmtMonth(row.start_month)}</span>,
   end_date:   row => <span className="text-slate-500">{fmtDate(row.end_date)}</span>,
   stripe_url: row => row.stripe_url
     ? <a href={row.stripe_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1 text-purple-600 hover:underline text-xs"><ExternalLink size={12} /> Stripe</a>
@@ -179,7 +189,7 @@ export default function Abonnements() {
           columns={COLUMNS}
           data={abonnements}
           loading={loading}
-          searchFields={['company_name']}
+          searchFields={['company_name', 'rachat']}
           onRowClick={setSelected}
         />
       </div>

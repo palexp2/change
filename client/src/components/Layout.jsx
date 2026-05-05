@@ -8,7 +8,7 @@ import {
   ShoppingBag, Truck, RotateCcw, FileText, RefreshCw, Wrench,
   Barcode, MessageSquare, CheckSquare,
   Receipt, ReceiptText, Landmark, Users, Banknote, Contact, BookOpen,
-  ArrowLeftRight, CreditCard, Clock, Tag, Wallet
+  ArrowLeftRight, CreditCard, Clock, Tag, Wallet, Mail
 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
@@ -66,6 +66,7 @@ const defaultNavItems = [
     { to: '/tasks',        icon: CheckSquare,   label: 'Tâches' },
     { to: '/tickets',      icon: LifeBuoy,      label: 'Billets' },
     { to: '/interactions', icon: MessageSquare, label: 'Interactions' },
+    { to: '/relance-qualification', icon: Mail, label: 'Relances qualification' },
   ]},
   { group: 'Envois', icon: Truck, items: [
     { to: '/orders',   icon: ShoppingCart, label: 'Commandes' },

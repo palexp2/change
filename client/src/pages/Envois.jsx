@@ -217,7 +217,7 @@ export default function Envois() {
           data={displayedEnvois}
           loading={loading}
           onRowClick={row => navigate(`/envois/${row.id}`)}
-          searchFields={['order_number', 'tracking_number', 'company_name', 'carrier']}
+          searchFields={['order_number', 'tracking_number', 'company_name', 'carrier', 'pays']}
         />
       </div>
 

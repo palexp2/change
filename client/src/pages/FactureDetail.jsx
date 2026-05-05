@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
+import { Link, useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, X, Download, ExternalLink, Send, Hourglass, AlertCircle, CheckCircle2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
@@ -8,6 +8,7 @@ import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import { SendPaymentLinkModal } from '../components/SendPaymentLinkModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import FacturePaymentsSection from '../components/FacturePaymentsSection.jsx'
+import FactureAccountingSection from '../components/FactureAccountingSection.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 
 
@@ -494,23 +495,39 @@ export default function FactureDetail() {
           )}
         </div>
 
-        {/* Pending invoice line items */}
-        {facture.source === 'pending' && Array.isArray(facture.items) && facture.items.length > 0 && (
-          <div className="bg-white rounded-xl border border-slate-200 mt-5 p-5">
+        {/* Lignes de la facture — 1 par produit (Stripe items ou pending items) */}
+        {Array.isArray(facture.items) && facture.items.length > 0 && (
+          <div className="bg-white rounded-xl border border-slate-200 mt-5 p-5" data-testid="facture-items">
             <h2 className="text-sm font-semibold text-slate-900 mb-3">Lignes de la facture</h2>
             <table className="w-full text-sm">
               <thead className="text-xs text-slate-400 uppercase tracking-wide">
-                <tr><th className="text-left pb-2">Description</th><th className="text-right pb-2 w-16">Qté</th><th className="text-right pb-2 w-32">Prix unit.</th><th className="text-right pb-2 w-32">Total</th></tr>
+                <tr>
+                  <th className="text-left pb-2">Produit</th>
+                  <th className="text-left pb-2">Description</th>
+                  <th className="text-right pb-2 w-16">Qté</th>
+                  <th className="text-right pb-2 w-32">Prix unit.</th>
+                  <th className="text-right pb-2 w-32">Total</th>
+                </tr>
               </thead>
               <tbody>
-                {facture.items.map((it, i) => (
-                  <tr key={i} className="border-t border-slate-100">
-                    <td className="py-2 text-slate-700">{it.description}</td>
-                    <td className="py-2 text-right">{it.qty}</td>
-                    <td className="py-2 text-right">{fmtMoney(Number(it.unit_price), facture.currency)}</td>
-                    <td className="py-2 text-right">{fmtMoney(Number(it.qty) * Number(it.unit_price), facture.currency)}</td>
-                  </tr>
-                ))}
+                {facture.items.map((it, i) => {
+                  const qty = Number(it.qty) || 0
+                  const unit = it.unit_price != null ? Number(it.unit_price) : null
+                  const total = it.total != null ? Number(it.total) : (unit != null ? qty * unit : null)
+                  return (
+                    <tr key={it.id || i} className="border-t border-slate-100">
+                      <td className="py-2 text-slate-700">
+                        {it.product_id
+                          ? <Link to={`/products/${it.product_id}`} className="text-brand-600 hover:underline">{it.product_name || it.product_sku || '—'}</Link>
+                          : <span className="text-slate-400">—</span>}
+                      </td>
+                      <td className="py-2 text-slate-700">{it.description || <span className="text-slate-400">—</span>}</td>
+                      <td className="py-2 text-right tabular-nums">{qty}</td>
+                      <td className="py-2 text-right tabular-nums">{unit != null ? fmtMoney(unit, facture.currency) : '—'}</td>
+                      <td className="py-2 text-right tabular-nums">{total != null ? fmtMoney(total, facture.currency) : '—'}</td>
+                    </tr>
+                  )
+                })}
               </tbody>
             </table>
           </div>
@@ -521,6 +538,14 @@ export default function FactureDetail() {
           factureId={id}
           factureCurrency={facture.currency || 'CAD'}
           factureIsPaid={facture.status === 'Payé' || facture.status === 'Payée' || (facture.balance_due != null && Number(facture.balance_due) <= 0 && Number(facture.total_amount) > 0)}
+        />
+
+        <FactureAccountingSection
+          facture={facture}
+          onChanged={async () => {
+            const fresh = await api.factures.get(id)
+            setFacture(fresh)
+          }}
         />
 
         {/* Tech responses (paid Stripe invoices only) */}

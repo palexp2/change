@@ -33,37 +33,6 @@ export const TABLE_LABELS = {
   bom_items:      'BOM',
 }
 
-export const TABLE_ALL_LABEL = {
-  achats_fournisseurs:   'Tous les achats fournisseurs',
-  tasks:          'Toutes les tâches',
-  companies:      'Toutes les entreprises',
-  contacts:       'Tous les contacts',
-  projects:       'Tous les projets',
-  products:       'Tous les produits',
-  orders:         'Toutes les commandes',
-  interactions:   'Toutes les interactions',
-  tickets:        'Tous les billets',
-  purchases:      'Tous les achats',
-  serial_numbers: 'Tous les numéros de série',
-  retours:        'Tous les retours',
-  factures:       'Toutes les factures',
-  abonnements:    'Tous les abonnements',
-  assemblages:    'Tous les assemblages',
-  shipments:      'Tous les envois',
-  employees:      'Tous les employés',
-  paies:          'Toutes les paies',
-  paie_items:     'Tous les items de paie',
-  stock_movements: "Tous les mouvements",
-  journal_entries: 'Toutes les écritures',
-  stripe_payouts: 'Tous les payouts',
-  stripe_invoice_items: 'Tous les items vendus',
-  automations:    'Toutes les automations',
-  soumissions:    'Toutes les soumissions',
-  catalog:        'Tout le catalogue',
-  users:          'Tous les utilisateurs',
-  bom_items:      'Tous les composants',
-}
-
 // Chaque entrée : { id, label, field, type?, options?, sortable?, filterable?, groupable?, defaultVisible? }
 // type: 'text' (défaut) | 'number' | 'date' | 'boolean' | 'single_select'
 export const TABLE_COLUMN_META = {
@@ -112,7 +81,7 @@ export const TABLE_COLUMN_META = {
     { id: 'close_date',     label: 'Date de clôture',  field: 'close_date',  type: 'date' },
     { id: 'refusal_reason', label: 'Raison du refus',  field: 'refusal_reason', defaultVisible: false },
     { id: 'notes',          label: 'Notes',            field: 'notes',       defaultVisible: false },
-    { id: 'created_at',     label: 'Créé le',          field: 'created_at',  type: 'date', defaultVisible: false },
+    { id: 'creation',       label: 'Créé le',          field: 'creation',    type: 'date', defaultVisible: false },
     { id: 'updated_at',     label: 'Modifié le',       field: 'updated_at',  type: 'date', defaultVisible: false },
   ],
 
@@ -201,6 +170,7 @@ export const TABLE_COLUMN_META = {
     { id: 'rachat',       label: 'Rachat',     field: 'rachat', defaultVisible: false },
     { id: 'amount_cad',   label: 'Montant (CAD)', field: 'amount_cad', type: 'number' },
     { id: 'start_date',   label: 'Début',      field: 'start_date', type: 'date' },
+    { id: 'start_month',  label: 'Mois de début', field: 'start_month' },
     { id: 'end_date',     label: 'Fin',        field: 'end_date',   type: 'date', defaultVisible: false },
     { id: 'stripe_url',   label: 'Stripe',     field: 'stripe_url', defaultVisible: false, sortable: false },
   ],

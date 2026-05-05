@@ -7,6 +7,7 @@ import Login from './pages/Login.jsx'
 import Setup from './pages/Setup.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Pipeline from './pages/Pipeline.jsx'
+import ProjectFields from './pages/ProjectFields.jsx'
 import Orders from './pages/Orders.jsx'
 import OrderDetail from './pages/OrderDetail.jsx'
 import Products from './pages/Products.jsx'
@@ -35,6 +36,7 @@ import EnvoisDetail from './pages/EnvoisDetail.jsx'
 import Automations from './pages/Automations.jsx'
 import AutomationDetail from './pages/AutomationDetail.jsx'
 import Tasks from './pages/Tasks.jsx'
+import RelanceQualification from './pages/RelanceQualification.jsx'
 import Agent from './pages/Agent.jsx'
 import AchatsFournisseurs from './pages/AchatsFournisseurs.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
@@ -73,11 +75,13 @@ function AppRoutes() {
 
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/pipeline" element={<ProtectedRoute><Pipeline /></ProtectedRoute>} />
+      <Route path="/projects/fields" element={<ProtectedRoute adminOnly><ProjectFields /></ProtectedRoute>} />
       <Route path="/orders" element={<ProtectedRoute><Orders /></ProtectedRoute>} />
       <Route path="/orders/:id" element={<ProtectedRoute><OrderDetail /></ProtectedRoute>} />
       <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
       <Route path="/products/:id" element={<ProtectedRoute><ProductDetail /></ProtectedRoute>} />
       <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
+      <Route path="/relance-qualification" element={<ProtectedRoute><RelanceQualification /></ProtectedRoute>} />
       <Route path="/tickets" element={<ProtectedRoute><Tickets /></ProtectedRoute>} />
       <Route path="/tickets/:id" element={<ProtectedRoute><TicketDetail /></ProtectedRoute>} />
       <Route path="/interactions" element={<ProtectedRoute><Interactions /></ProtectedRoute>} />

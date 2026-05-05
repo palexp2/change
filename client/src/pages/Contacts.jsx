@@ -142,7 +142,7 @@ export default function Contacts() {
           data={contacts}
           loading={loading}
           onRowClick={row => navigate(`/contacts/${row.id}`)}
-          searchFields={['first_name', 'last_name', 'email', 'phone']}
+          searchFields={['first_name', 'last_name', 'email', 'phone', 'mobile', 'company_name']}
           onBulkDelete={async (ids) => {
             await undoableDelete({
               table: 'contacts',

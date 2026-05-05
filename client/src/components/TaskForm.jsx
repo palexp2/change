@@ -154,6 +154,7 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
             value={form.company_id || ''}
             options={companies}
             labelFn={c => c.name}
+            getHref={c => `/companies/${c.id}`}
             placeholder="Entreprise"
             onChange={setKey('company_id')}
           />
@@ -165,6 +166,7 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
             value={form.contact_id || ''}
             options={contacts}
             labelFn={c => `${c.first_name || ''} ${c.last_name || ''}`.trim()}
+            getHref={c => `/contacts/${c.id}`}
             placeholder="Contact"
             onChange={setKey('contact_id')}
           />

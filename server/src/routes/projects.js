@@ -129,12 +129,17 @@ router.post('/', (req, res) => {
   if (!name) return res.status(400).json({ error: 'Name is required' });
 
   const id = uuidv4();
+  // `creation` est le champ canonique de date de création (originellement importé d'Airtable).
+  // On le remplit aussi pour les projets créés nativement dans l'ERP afin que le même champ
+  // soit utilisable uniformément (graphiques, filtres, affichage) — voir aussi le backfill
+  // dans schema.js pour les anciennes lignes ayant `creation IS NULL`.
+  const nowIso = new Date().toISOString();
   db.prepare(
-    `INSERT INTO projects (id, name, company_id, contact_id, type, status, probability, value_cad, monthly_cad, nb_greenhouses, close_date, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO projects (id, name, company_id, contact_id, type, status, probability, value_cad, monthly_cad, nb_greenhouses, close_date, notes, creation)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(id, name, company_id || null, contact_id || null,
     type || null, status || 'Ouvert', probability || 0, value_cad || 0, monthly_cad || 0,
-    nb_greenhouses || 0, close_date || null, notes || null);
+    nb_greenhouses || 0, close_date || null, notes || null, nowIso);
 
   const project = db.prepare(
     `SELECT p.*, c.name as company_name FROM projects p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?`

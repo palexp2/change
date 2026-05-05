@@ -84,6 +84,25 @@ router.post('/factures/:id/clear-deferred-revenue', (req, res) => {
   res.json({ ok: true })
 })
 
+// POST /api/admin/factures/:id/clear-revenue-recognition
+// Symétrique de clear-deferred-revenue : efface les colonnes de constat de vente
+// (revenue_recognized_at, revenue_recognized_je_id) quand la JE QB référencée a
+// été supprimée ou éditée manuellement. Ne touche pas QB et ne touche pas aux
+// colonnes deferred_revenue_*.
+router.post('/factures/:id/clear-revenue-recognition', (req, res) => {
+  const f = db.prepare('SELECT id, revenue_recognized_at FROM factures WHERE id=?').get(req.params.id)
+  if (!f) return res.status(404).json({ error: 'Facture introuvable' })
+  if (!f.revenue_recognized_at) return res.json({ ok: true, already_clean: true })
+  db.prepare(`
+    UPDATE factures
+    SET revenue_recognized_at = NULL,
+        revenue_recognized_je_id = NULL,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = ?
+  `).run(req.params.id)
+  res.json({ ok: true })
+})
+
 // GET /api/admin/users
 router.get('/users', (req, res) => {
   const users = db.prepare(`

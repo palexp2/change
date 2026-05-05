@@ -4,6 +4,7 @@ import Stripe from 'stripe'
 import db from '../db/database.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
+import { recordEvent, classifyChange } from '../services/subscriptionEvents.js'
 
 const router = Router()
 
@@ -19,6 +20,136 @@ function getWebhookSecret() {
     "SELECT value FROM connector_config WHERE connector='stripe' AND key='webhook_secret'"
   ).get()
   return row?.value || null
+}
+
+// Map Stripe subscription status → ERP enum (cf. mapStatus dans services/stripe.js)
+function mapSubStatus(s) {
+  const m = {
+    active: 'active', past_due: 'past_due', canceled: 'canceled', trialing: 'trialing',
+    unpaid: 'past_due', incomplete: 'past_due', incomplete_expired: 'canceled', paused: 'canceled',
+  }
+  return m[s] || 'canceled'
+}
+
+// Calcule le MRR mensuel d'un sub Stripe en additionnant ses items, normalisé
+// au mois selon l'interval. Retourne { amountMonthly, currency }.
+function computeMonthly(sub) {
+  const items = sub.items?.data ?? []
+  const firstPrice = items[0]?.price
+  const currency = (firstPrice?.currency ?? 'cad').toUpperCase()
+  const intervalType = firstPrice?.recurring?.interval ?? 'month'
+  let amountMonthly = 0
+  for (const item of items) {
+    const p = item?.price
+    const unitAmt = (p?.unit_amount ?? 0) / 100
+    const qty = item?.quantity ?? 1
+    const iType = p?.recurring?.interval ?? 'month'
+    let monthlyPart = unitAmt * qty
+    if (iType === 'year') monthlyPart = monthlyPart / 12
+    else if (iType === 'week') monthlyPart = monthlyPart * 4.333
+    amountMonthly += monthlyPart
+  }
+  return { amountMonthly, currency, intervalType }
+}
+
+// Traite un webhook customer.subscription.{created,updated,deleted}.
+// 1. Upsert dans la table subscriptions (même logique que la sync polling).
+// 2. Enregistre un subscription_event classifié, idempotent via stripe_event_id.
+async function handleSubscriptionWebhook(event) {
+  const sub = event.data.object
+  const previous = event.data.previous_attributes || {}
+  const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer?.id
+  const companyId = customerId
+    ? db.prepare('SELECT id FROM companies WHERE stripe_customer_id=? LIMIT 1').get(customerId)?.id || null
+    : null
+
+  const { amountMonthly, currency, intervalType } = computeMonthly(sub)
+  const status = mapSubStatus(sub.status)
+  const startDate = sub.start_date ? new Date(sub.start_date * 1000).toISOString().split('T')[0] : null
+  const cancelDate = sub.canceled_at ? new Date(sub.canceled_at * 1000).toISOString().split('T')[0] : null
+  const trialEndDate = sub.trial_end ? new Date(sub.trial_end * 1000).toISOString().split('T')[0] : null
+  const stripeUrl = `https://dashboard.stripe.com/subscriptions/${sub.id}`
+
+  const existing = db.prepare('SELECT * FROM subscriptions WHERE stripe_id=?').get(sub.id)
+  let subRowId
+  let prevAmount = null
+  let prevStatus = null
+  if (existing) {
+    subRowId = existing.id
+    prevAmount = existing.amount_monthly
+    prevStatus = existing.status
+    db.prepare(`
+      UPDATE subscriptions SET
+        company_id=COALESCE(?,company_id),
+        status=?, amount_monthly=?, currency=?,
+        start_date=?, cancel_date=?, trial_end_date=?,
+        stripe_url=?, customer_id=?,
+        interval_type=?
+      WHERE id=?
+    `).run(
+      companyId, status, amountMonthly, currency,
+      startDate, cancelDate, trialEndDate,
+      stripeUrl, customerId,
+      intervalType,
+      subRowId,
+    )
+  } else {
+    subRowId = randomUUID()
+    db.prepare(`
+      INSERT INTO subscriptions (
+        id, company_id, stripe_id, status, amount_monthly, currency,
+        start_date, cancel_date, trial_end_date, stripe_url, customer_id,
+        interval_type
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    `).run(
+      subRowId, companyId, sub.id, status, amountMonthly, currency,
+      startDate, cancelDate, trialEndDate, stripeUrl, customerId,
+      intervalType,
+    )
+  }
+
+  // Classification de l'événement
+  let category, eventType, eventDate, prevAmountForEvent, newAmountForEvent
+  if (event.type === 'customer.subscription.deleted' || (status === 'canceled' && prevStatus !== 'canceled')) {
+    category = 'churn'
+    eventType = 'cancel'
+    eventDate = cancelDate ? new Date(cancelDate).toISOString() : new Date(event.created * 1000).toISOString()
+    prevAmountForEvent = prevAmount ?? amountMonthly
+    newAmountForEvent = null
+  } else if (event.type === 'customer.subscription.created') {
+    category = status === 'canceled' ? 'churn' : 'new'
+    eventType = category === 'churn' ? 'cancel' : 'creation'
+    eventDate = startDate ? new Date(startDate).toISOString() : new Date(event.created * 1000).toISOString()
+    prevAmountForEvent = category === 'churn' ? amountMonthly : null
+    newAmountForEvent = category === 'churn' ? null : amountMonthly
+  } else {
+    // updated — compare prev/new pour détecter upgrade/downgrade/reactivation/other
+    category = classifyChange({
+      prevStatus, newStatus: status,
+      prevAmount, newAmount: amountMonthly,
+    })
+    eventType = 'update'
+    eventDate = new Date(event.created * 1000).toISOString()
+    prevAmountForEvent = prevAmount
+    newAmountForEvent = amountMonthly
+    // Si rien de notable n'a changé (montant identique, statut identique), skip
+    if (category === 'other' && Math.abs((prevAmount || 0) - amountMonthly) < 0.01 && prevStatus === status) {
+      return
+    }
+  }
+
+  await recordEvent({
+    subscriptionId: subRowId,
+    companyId: companyId || existing?.company_id,
+    eventDate,
+    eventType,
+    category,
+    previousAmount: prevAmountForEvent,
+    newAmount: newAmountForEvent,
+    currency,
+    details: { stripe_event_type: event.type, previous_attributes: previous },
+    stripeEventId: event.id,
+  })
 }
 
 function mapStripeInvoiceStatus(s) {
@@ -58,9 +189,15 @@ async function upsertFactureFromStripeInvoice(invoice) {
   const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer?.id || null)
   const companyId = findCompanyByStripeCustomerId(stripeCustomerId)
 
-  // Resolve subscription
+  // Resolve subscription. Stripe API ≥ 2024-09 : la subscription est exposée
+  // via invoice.parent.subscription_details.subscription. L'ancien champ
+  // invoice.subscription est undefined dans les versions récentes — on le
+  // garde en fallback pour la compatibilité événements anciens.
   let subscriptionId = null
-  const stripeSub = typeof invoice.subscription === 'string' ? invoice.subscription : invoice.subscription?.id
+  const subFromParent = invoice.parent?.subscription_details?.subscription
+  const subFromTopLevel = invoice.subscription
+  const subRaw = subFromTopLevel || subFromParent || null
+  const stripeSub = typeof subRaw === 'string' ? subRaw : (subRaw?.id || null)
   if (stripeSub) {
     const subRow = db.prepare('SELECT id FROM subscriptions WHERE stripe_id=?').get(stripeSub)
     if (subRow) subscriptionId = subRow.id
@@ -384,6 +521,36 @@ async function handleWebhook(req, res) {
       triggerData: { stripe_event: event.type, session_id: session.id, pending_invoice_id: pendingId, stripe_invoice_id: stripeInvoiceId },
     })
     return res.json({ received: true, pending_invoice_id: pendingId, stripe_invoice_id: stripeInvoiceId })
+  }
+
+  // customer.subscription.* — alimente le journal des événements
+  // d'abonnement (panel "Mouvements d'abonnements" du dashboard). On
+  // upsert d'abord la subscription via la même logique que la sync
+  // polling, puis on enregistre l'événement classifié.
+  const SUBSCRIPTION_EVENTS = new Set([
+    'customer.subscription.created',
+    'customer.subscription.updated',
+    'customer.subscription.deleted',
+  ])
+  if (SUBSCRIPTION_EVENTS.has(event.type)) {
+    try {
+      await handleSubscriptionWebhook(event)
+      logSystemRun('sys_stripe_invoice_paid', {
+        status: 'success',
+        result: `${event.type} ${event.data.object.id}`,
+        duration_ms: Date.now() - started,
+        triggerData: { stripe_event: event.type, subscription_id: event.data.object.id },
+      })
+    } catch (e) {
+      console.error(`[stripe-webhook] ${event.type} error:`, e.message)
+      logSystemRun('sys_stripe_invoice_paid', {
+        status: 'error',
+        error: e.message,
+        duration_ms: Date.now() - started,
+        triggerData: { stripe_event: event.type, subscription_id: event.data.object?.id },
+      })
+    }
+    return res.json({ received: true, subscription_id: event.data.object.id })
   }
 
   // Sync the factures table for any meaningful invoice lifecycle event so that

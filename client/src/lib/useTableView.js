@@ -44,7 +44,6 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
   const [adminConfig, setAdminConfig] = useState(null)
   const [dynamicFields, setDynamicFields] = useState([])
 
-  const [allViewSortOrder, setAllViewSortOrder] = useState(-1)
   const [reloadKey, setReloadKey] = useState(0)
 
   // Reload when views are updated via TableConfigModal
@@ -61,7 +60,6 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
       .then(({ config, pills, dynamicFields: df }) => {
         setViews(pills)
         setAdminConfig(config)
-        setAllViewSortOrder(config.all_view_sort_order ?? -1)
         setDynamicFields(df || [])
         const currentViewId = activeViewId
         const currentView = pills.find(p => p.id === currentViewId)
@@ -69,20 +67,14 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
           setSorts(currentView.sort?.length > 0 ? currentView.sort : (config.default_sort || []))
           setFilters(currentView.filters || [])
         } else if (pills.length > 0 && !forceAllView) {
-          // Restore last selected view from localStorage, or fall back to first by sort_order
+          // Restore last selected view from localStorage, or fall back to first by sort_order.
+          // Legacy `savedId === 'null'` (ancienne vue « Tous » retirée) → première pill.
           const savedId = localStorage.getItem(`erp_lastView_${table}`)
-          const savedView = savedId && pills.find(p => p.id === savedId)
-          // savedId === 'null' means user explicitly chose "Tous"
-          if (savedId === 'null') {
-            setActiveViewIdRaw(null)
-            setSorts(config.default_sort?.length > 0 ? config.default_sort : [])
-            setFilters([])
-          } else {
-            const targetView = savedView || [...pills].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))[0]
-            setActiveViewIdRaw(targetView.id)
-            setSorts(targetView.sort?.length > 0 ? targetView.sort : (config.default_sort || []))
-            setFilters(targetView.filters || [])
-          }
+          const savedView = (savedId && savedId !== 'null') ? pills.find(p => p.id === savedId) : null
+          const targetView = savedView || [...pills].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))[0]
+          setActiveViewIdRaw(targetView.id)
+          setSorts(targetView.sort?.length > 0 ? targetView.sort : (config.default_sort || []))
+          setFilters(targetView.filters || [])
         } else {
           setActiveViewIdRaw(null)
           setSorts(config.default_sort?.length > 0 ? config.default_sort : [])
@@ -136,6 +128,17 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
     return [...columns, ...extra]
   }, [columns, dynamicFields])
 
+  // Map<column_name, def> pour le clic-droit du DataTable (modifier type / supprimer).
+  // Inclut toutes les defs Airtable, native_* incluses — la décision de protéger
+  // une colonne se fait côté serveur (system + frozen).
+  const airtableFieldsByColumn = useMemo(() => {
+    const m = new Map()
+    for (const f of dynamicFields) {
+      if (f.def_id) m.set(f.field, { id: f.def_id, label: f.label, type: f.type, options: f.options, column_name: f.field })
+    }
+    return m
+  }, [dynamicFields])
+
   const viewVisibleColumns = useMemo(() => {
     if (activeView?.visible_columns?.length > 0) return activeView.visible_columns
     if (activeViewId === null) {
@@ -149,6 +152,7 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
   }, [activeView, activeViewId, adminConfig, allColumns, table])
 
   const viewGroupBy = activeView?.group_by || null
+  const viewGroupOrder = activeView?.group_order || null
 
   const filteredData = useMemo(() => {
     let result = data
@@ -168,12 +172,11 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
     return result
   }, [data, search, searchFields, filters, sorts, userName, allColumns])
 
-  function reorderViews(newViews, newAllViewSortOrder) {
-    const realViews = newViews.filter(v => v.id !== null).map((v, i) => ({ ...v, sort_order: i }))
+  function reorderViews(newViews) {
+    const realViews = newViews.map((v, i) => ({ ...v, sort_order: i }))
     setViews(realViews)
-    if (newAllViewSortOrder !== undefined) setAllViewSortOrder(newAllViewSortOrder)
     const order = realViews.map((v, i) => ({ id: v.id, sort_order: i }))
-    api.views.reorderPills(table, order, newAllViewSortOrder).catch(() => {})
+    api.views.reorderPills(table, order).catch(() => {})
   }
 
   return {
@@ -184,15 +187,16 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
     filters, setFilters,
     search, setSearch,
     views,
-    allViewSortOrder,
     reorderViews,
     activeViewId,
     setActiveViewId,
     activeView,
     viewVisibleColumns,
     viewGroupBy,
+    viewGroupOrder,
     allColumns,
     dynamicFields,
+    airtableFieldsByColumn,
     columnWidths: adminConfig?.column_widths || {},
     bulkDeleteEnabled: adminConfig?.bulk_delete_enabled === true,
   }

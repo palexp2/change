@@ -145,6 +145,21 @@ Tout champ qui référence un record d'une autre table (ex. `company_id`, `conta
 
 S'applique aux formulaires, aux fiches détail, et aux colonnes de `DataTable` affichant des noms de records liés (`company_name`, `contact_name`, `product_name`…). Pour ces colonnes, utiliser un `render` custom qui produit un `<Link>` vers la fiche cible.
 
+### Règle de design — confirmation des side effects
+Toute action utilisateur qui déclenche un **side effect** (au-delà de la simple persistance de l'enregistrement édité) doit afficher une **modale de confirmation** listant explicitement chaque side effect avant exécution. L'utilisateur doit pouvoir lire le détail de ce qui va se passer, puis confirmer ou annuler.
+
+Sont considérés comme side effects, entre autres :
+- Envoi d'un email, SMS ou notification (interne ou externe)
+- Création/mise à jour d'un enregistrement dans un système tiers (Stripe, QuickBooks, HubSpot, Airtable, Gmail…)
+- Génération et envoi d'un document (facture, soumission, bon de livraison, reçu)
+- Encaissement, remboursement, ou tout mouvement monétaire
+- Création d'enregistrements liés en cascade (ex. création d'une commande qui génère une facture, une tâche, ou déclenche une expédition)
+- Toute action irréversible ou difficilement réversible
+
+Exemple : si la création d'une commande envoie un email de confirmation au client et crée une facture dans Stripe, la modale doit lister ces deux side effects (« Un email de confirmation sera envoyé à `client@example.com` », « Une facture Stripe de 1234,56 $ sera créée ») avant que l'utilisateur ne valide.
+
+À l'inverse, les actions purement locales (édition d'un champ autosauvegardé, changement de vue, filtrage) n'ont pas de side effect externe et ne nécessitent pas de modale.
+
 ## Agent tasks (système interne)
 
 Les tâches de l'agent ERP sont persistées dans `agent-tasks.json` à la racine du projet (écriture atomique `.tmp` + rename). Un sous-process agent peut créer des sous-tâches via `POST /api/agent/tasks/internal` avec header `X-Agent-Secret: $AGENT_INTERNAL_SECRET` — cet endpoint **n'est pas protégé par JWT**.

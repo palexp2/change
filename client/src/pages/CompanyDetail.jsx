@@ -555,6 +555,141 @@ function OnboardingResponsesPanel({ responses }) {
   )
 }
 
+function QualificationCallsPanel({ calls }) {
+  // Auto-ouvre le plus récent (calls est trié DESC par date côté serveur).
+  const [expanded, setExpanded] = useState(() => calls.length ? new Set([calls[0].id]) : new Set())
+  function toggle(id) {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+  if (!calls.length) return <div className="card p-10 text-center text-slate-400">Aucun appel de qualification</div>
+
+  function parseList(v) {
+    if (!v) return []
+    try { const p = JSON.parse(v); return Array.isArray(p) ? p : [] } catch { return [] }
+  }
+  function Field({ label, children }) {
+    return (
+      <div>
+        <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">{label}</div>
+        <div className="text-slate-700 whitespace-pre-wrap">{children || <span className="text-slate-400">—</span>}</div>
+      </div>
+    )
+  }
+  function Pills({ values }) {
+    if (!values.length) return <span className="text-slate-400">—</span>
+    return (
+      <div className="flex flex-wrap gap-1.5">
+        {values.map((v, i) => (
+          <span key={i} className="inline-flex text-xs font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">{v}</span>
+        ))}
+      </div>
+    )
+  }
+  function Section({ title, children }) {
+    return (
+      <div>
+        <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 pb-1 border-b border-slate-100">{title}</div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{children}</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      {calls.map(c => {
+        const isOpen = expanded.has(c.id)
+        const headline = c.summary && c.summary !== 'N/A' ? c.summary : (c.farm_description ? c.farm_description.split('\n')[0] : 'Appel de qualification')
+        const statusBadge = c.status
+          ? <span className="inline-flex text-xs font-medium px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">{c.status}</span>
+          : null
+        return (
+          <div key={c.id} className="card overflow-hidden">
+            <button
+              onClick={() => toggle(c.id)}
+              className="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50 text-left"
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <ChevronDown size={16} className={`text-slate-400 transition-transform ${isOpen ? '' : '-rotate-90'}`} />
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-slate-900 truncate">{headline}</div>
+                  <div className="text-xs text-slate-500">
+                    {c.call_date ? fmtDate(c.call_date) : fmtDate(c.airtable_created_at)}
+                    {c.assignee ? ` · ${c.assignee}` : ''}
+                    {c.company_name_raw ? ` · saisi sous "${c.company_name_raw}"` : ''}
+                  </div>
+                </div>
+              </div>
+              {statusBadge}
+            </button>
+            {isOpen && (
+              <div className="border-t border-slate-100 p-4 space-y-5 text-sm">
+                <Section title="Entreprise">
+                  <Field label="Description de la ferme">{c.farm_description}</Field>
+                  <Field label="Employés">
+                    {c.has_employees == null
+                      ? '—'
+                      : c.has_employees ? `Oui${c.employees_count ? ` (${c.employees_count})` : ''}` : 'Non'}
+                  </Field>
+                  <Field label="Modèles d'affaires"><Pills values={parseList(c.business_models)} /></Field>
+                  <Field label="Gestion actuelle">{c.current_management}{c.management_effective ? ` · ${c.management_effective}` : ''}</Field>
+                  {(c.is_charity || c.can_issue_charity_receipt) && (
+                    <Field label="Organisme charitable">
+                      {c.is_charity ? 'Oui' : 'Non'}
+                      {c.can_issue_charity_receipt ? ' · peut émettre un reçu' : ''}
+                    </Field>
+                  )}
+                </Section>
+
+                <Section title="Défis & motivation">
+                  <Field label="Principaux défis">{c.challenges}</Field>
+                  <Field label="Depuis combien de temps">{c.challenge_duration}</Field>
+                  <Field label="Impact financier">{c.challenge_financial_impact}</Field>
+                  <Field label="Objectifs court terme">{c.short_term_goals}</Field>
+                  <Field label="Motivation aujourd'hui">{c.motivation_today}</Field>
+                  <Field label="Pourquoi maintenant">{c.motivation_why_now}</Field>
+                  <Field label="Importance des défis (1-5)">{c.importance_score}</Field>
+                  <Field label="Prêt à résoudre (1-5)">{c.readiness_score}</Field>
+                </Section>
+
+                <Section title="Budget & décision">
+                  <Field label="Budget alloué">{c.has_budget}{c.budget_amount ? ` · ${c.budget_amount}` : ''}</Field>
+                  <Field label="Échéance">{c.timeline}</Field>
+                  <Field label="Décideur">{c.decision_maker_name}{c.decision_maker_role ? ` · ${c.decision_maker_role}` : ''}</Field>
+                  <Field label="Rôle dans l'entreprise"><Pills values={parseList(c.role_in_company)} /></Field>
+                </Section>
+
+                {(c.grows_tomatoes || parseList(c.tomato_season_months).length || parseList(c.pain_points).length) && (
+                  <Section title="Tomates & points douloureux">
+                    <Field label="Cultive des tomates">{c.grows_tomatoes}</Field>
+                    <Field label="Mois de saison"><Pills values={parseList(c.tomato_season_months)} /></Field>
+                    <Field label="Points douloureux"><Pills values={parseList(c.pain_points)} /></Field>
+                  </Section>
+                )}
+
+                {(c.summary || c.next_steps || c.notes) && (
+                  <Section title="Résumé & suivi">
+                    <Field label="Résumé">{c.summary}</Field>
+                    <Field label="Décision & follow-up">{c.next_steps}</Field>
+                    <Field label="Notes">{c.notes}</Field>
+                  </Section>
+                )}
+
+                <div className="text-xs text-slate-400 pt-2 border-t border-slate-100">
+                  Source : Airtable « Communication interne » · record {c.airtable_record_id}
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function CompanyDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -603,6 +738,7 @@ export default function CompanyDetail() {
   const [editingAdresse, setEditingAdresse] = useState(null)
   const [adresseForm, setAdresseForm] = useState({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' })
   const [onboardingResponses, setOnboardingResponses] = useState([])
+  const [qualificationCalls, setQualificationCalls] = useState([])
   async function load() {
     setLoading(true)
     try {
@@ -619,6 +755,7 @@ export default function CompanyDetail() {
   useEffect(() => {
     api.adresses.list({ company_id: id, limit: 'all' }).then(r => setAdresses(r.data || [])).catch(() => {})
     api.companies.onboardingResponses(id).then(r => setOnboardingResponses(r.data || [])).catch(() => {})
+    api.qualificationCalls.byCompany(id).then(r => setQualificationCalls(r.data || [])).catch(() => {})
   }, [id])
 
   useEffect(() => {
@@ -737,7 +874,7 @@ export default function CompanyDetail() {
     return <Layout><div className="p-6 text-slate-500">Entreprise introuvable.</div></Layout>
   }
 
-  const tabs = ['info', 'contacts', 'interactions', 'projets', 'commandes', 'envois', 'retours', 'support', 'numéros de série', 'factures', 'abonnements', 'tâches', ...(company.quickbooks_vendor_id ? ['achats'] : []), ...(onboardingResponses.length > 0 ? ['onboarding'] : [])]
+  const tabs = ['info', 'contacts', 'interactions', 'projets', 'commandes', 'envois', 'retours', 'support', 'numéros de série', 'factures', 'abonnements', 'tâches', ...(company.quickbooks_vendor_id ? ['achats'] : []), ...(onboardingResponses.length > 0 ? ['onboarding'] : []), ...(qualificationCalls.length > 0 ? ['qualification'] : [])]
 
   return (
     <Layout>
@@ -816,7 +953,7 @@ export default function CompanyDetail() {
           <div className="w-44 flex-shrink-0">
             <nav className="flex flex-col gap-0.5">
               {tabs.map(t => {
-                const tabLabel = t === 'info' ? 'Informations' : t === 'interactions' ? 'Interactions' : t === 'numéros de série' ? 'N° de série' : t === 'achats' ? 'Achats fourn.' : t === 'retours' ? 'Retours (RMA)' : t === 'onboarding' ? 'Onboarding' : t.charAt(0).toUpperCase() + t.slice(1)
+                const tabLabel = t === 'info' ? 'Informations' : t === 'interactions' ? 'Interactions' : t === 'numéros de série' ? 'N° de série' : t === 'achats' ? 'Achats fourn.' : t === 'retours' ? 'Retours (RMA)' : t === 'onboarding' ? 'Onboarding' : t === 'qualification' ? 'Qualification call' : t.charAt(0).toUpperCase() + t.slice(1)
                 const counts = {
                   contacts: company.contacts?.length,
                   projets: company.projects?.length,
@@ -831,6 +968,7 @@ export default function CompanyDetail() {
                   achats: achatsTotal || undefined,
                   retours: (tab === 'retours' ? retours.length : company.returns_count) || undefined,
                   onboarding: onboardingResponses.length || undefined,
+                  qualification: qualificationCalls.length || undefined,
                 }
                 const count = counts[t]
                 return (
@@ -1393,6 +1531,10 @@ export default function CompanyDetail() {
         {/* Retours (RMA) Tab */}
         {tab === 'onboarding' && (
           <OnboardingResponsesPanel responses={onboardingResponses} />
+        )}
+
+        {tab === 'qualification' && (
+          <QualificationCallsPanel calls={qualificationCalls} />
         )}
 
         {tab === 'retours' && (

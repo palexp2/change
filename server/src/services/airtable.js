@@ -9,36 +9,36 @@ import { broadcastAll } from './realtime.js'
 import { evaluateFieldRules } from './fieldRuleEngine.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
 
-// Auto-create missing columns in SQLite table (all added as TEXT — safe default)
-const _ensuredTables = new Map() // table → Set<col>
-function ensureColumns(table, columns) {
-  if (!_ensuredTables.has(table)) {
-    _ensuredTables.set(table, new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name)))
+// Cache live SQLite columns per table — read once at module level, refreshed
+// only when an UPDATE/INSERT references an unknown column (rare, indicates a
+// hardcoded field_map drift vs schema.js).
+const _tableCols = new Map() // table → Set<col>
+function tableColumns(table, refresh = false) {
+  if (refresh || !_tableCols.has(table)) {
+    _tableCols.set(table, new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name)))
   }
-  const existing = _ensuredTables.get(table)
-  for (const col of columns) {
-    if (!existing.has(col)) {
-      db.prepare(`ALTER TABLE ${table} ADD COLUMN ${col} TEXT`).run()
-      existing.add(col)
-      console.log(`🔧 Auto-created column ${table}.${col}`)
-    }
-  }
+  return _tableCols.get(table)
 }
 
 /**
  * Dynamic upsert: INSERT or UPDATE a record based on airtable_id.
- * Automatically creates missing columns in the target table.
+ * Drops payload keys that don't have a matching column (no schema mutation).
  * @param {string} table - SQLite table name
  * @param {string} airtableId - Airtable record ID
  * @param {Object} payload - column→value map (null values are preserved)
  * @returns {'imported'|'updated'}
  */
 function upsertRecord(table, airtableId, payload) {
-  const keys = Object.keys(payload)
-  ensureColumns(table, keys)
+  const cols = tableColumns(table)
+  const keys = Object.keys(payload).filter(k => cols.has(k))
+  const dropped = Object.keys(payload).filter(k => !cols.has(k))
+  if (dropped.length) {
+    console.warn(`⚠️  ${table}: payload keys ignorées (colonne inexistante): ${dropped.join(', ')}`)
+  }
 
   const existing = db.prepare(`SELECT id FROM ${table} WHERE airtable_id=?`).get(airtableId)
   if (existing) {
+    if (!keys.length) return 'updated'
     const set = keys.map(k => `${k}=?`).join(', ')
     db.prepare(`UPDATE ${table} SET ${set}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
       .run(...keys.map(k => payload[k] ?? null), existing.id)

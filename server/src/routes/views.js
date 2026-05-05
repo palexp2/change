@@ -41,12 +41,12 @@ router.get('/:table', requireAuth, (req, res) => {
   ).get(table)
 
   const pills = db.prepare(
-    'SELECT id, label, color, filters, visible_columns, sort, group_by, collapsed_groups, sort_order FROM table_view_pills WHERE table_name=? ORDER BY sort_order, created_at'
+    'SELECT id, label, color, filters, visible_columns, sort, group_by, group_order, collapsed_groups, sort_order FROM table_view_pills WHERE table_name=? ORDER BY sort_order, created_at'
   ).all(table)
 
   // Dynamic fields from Airtable auto-sync (deduplicate by label, prefer non-native over native)
   const rawFields = db.prepare(
-    'SELECT airtable_field_id, column_name, airtable_field_name, display_label, field_type, options, sort_order FROM airtable_field_defs WHERE erp_table=? ORDER BY sort_order'
+    'SELECT id, airtable_field_id, column_name, airtable_field_name, display_label, field_type, options, sort_order FROM airtable_field_defs WHERE erp_table=? ORDER BY sort_order'
   ).all(table)
   const seenLabels = new Map()
   for (const f of rawFields) {
@@ -67,6 +67,8 @@ router.get('/:table', requireAuth, (req, res) => {
     options: JSON.parse(f.options || '{}'),
     sort_order: f.sort_order,
     dynamic: true,
+    // Métadonnées pour l'édition de la colonne (PATCH/DELETE depuis le clic-droit du DataTable).
+    def_id: f.id,
   }))
 
   res.json({
@@ -162,7 +164,7 @@ router.post('/:table/pills', requireAdmin, (req, res) => {
 router.patch('/:table/pills/reorder', requireAdmin, (req, res) => {
   if (!validateTable(req, res)) return
   const { table } = req.params
-  const { order, all_view_sort_order } = req.body
+  const { order } = req.body
   if (!Array.isArray(order)) return res.status(400).json({ error: 'Un tableau est requis' })
 
   const update = db.prepare(
@@ -170,16 +172,6 @@ router.patch('/:table/pills/reorder', requireAdmin, (req, res) => {
   )
   const updateAll = db.transaction(() => {
     for (const { id, sort_order } of order) update.run(sort_order, id, table)
-    if (all_view_sort_order !== undefined) {
-      const existing = db.prepare('SELECT id FROM table_view_configs WHERE table_name=?').get(table)
-      if (existing) {
-        db.prepare("UPDATE table_view_configs SET all_view_sort_order=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE table_name=?")
-          .run(all_view_sort_order, table)
-      } else {
-        db.prepare('INSERT INTO table_view_configs (id, table_name, visible_columns, default_sort, all_view_sort_order) VALUES (?,?,?,?,?)')
-          .run(uuidv4(), table, '[]', '[]', all_view_sort_order)
-      }
-    }
   })
   updateAll()
 
@@ -206,6 +198,7 @@ router.put('/:table/pills/:id', requireAuth, (req, res) => {
   if (body.visible_columns !== undefined) { updates.push('visible_columns = ?'); values.push(JSON.stringify(body.visible_columns)) }
   if (body.sort !== undefined)            { updates.push('sort = ?');            values.push(JSON.stringify(body.sort)) }
   if ('group_by' in body)                 { updates.push('group_by = ?');        values.push(body.group_by) }
+  if ('group_order' in body)              { updates.push('group_order = ?');     values.push(body.group_order) }
   if (body.collapsed_groups !== undefined){ updates.push('collapsed_groups = ?'); values.push(JSON.stringify(body.collapsed_groups)) }
   if (body.sort_order !== undefined)      { updates.push('sort_order = ?');      values.push(body.sort_order) }
 
@@ -226,6 +219,11 @@ router.delete('/:table/pills/:id', requireAdmin, (req, res) => {
     'SELECT id FROM table_view_pills WHERE id=? AND table_name=?'
   ).get(id, table)
   if (!pill) return res.status(404).json({ error: 'Vue introuvable' })
+
+  // Garde-fou : on doit garder au moins une vue par table, sinon l'utilisateur
+  // se retrouve sans onglet (la vue virtuelle « Tous » a été retirée).
+  const remaining = db.prepare('SELECT COUNT(*) as c FROM table_view_pills WHERE table_name=?').get(table).c
+  if (remaining <= 1) return res.status(400).json({ error: 'Impossible de supprimer la dernière vue' })
 
   db.prepare('DELETE FROM table_view_pills WHERE id=?').run(id)
   res.json({ ok: true })

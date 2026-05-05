@@ -15,7 +15,7 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
   const [loading, setLoading] = useState(true)
   const [companies, setCompanies] = useState([])
   const [savingCompany, setSavingCompany] = useState(false)
-  const [localAbo, setLocalAbo] = useState(abonnement)
+  const [localAbo, setLocalAbo] = useState(null)
 
   useEffect(() => {
     setLocalAbo(abonnement)
@@ -35,20 +35,25 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
     api.companies.lookup().then(setCompanies).catch(() => setCompanies([]))
   }, [])
 
+  if (!abonnement) return null
+
+  // Pendant le render qui suit le changement de prop `abonnement`, le useEffect
+  // qui met à jour localAbo n'a pas encore tourné — on retombe sur la prop
+  // pour éviter un crash sur localAbo null ou désynchronisé d'un autre record.
+  const aboState = (localAbo && localAbo.id === abonnement.id) ? localAbo : abonnement
+
   async function handleCompanyChange(newCompanyId) {
     setSavingCompany(true)
     try {
-      await api.abonnements.patch(localAbo.id, { company_id: newCompanyId || null })
+      await api.abonnements.patch(aboState.id, { company_id: newCompanyId || null })
       const co = newCompanyId ? companies.find(c => c.id === newCompanyId) : null
-      const updated = { ...localAbo, company_id: newCompanyId || null, company_name: co?.name || null }
+      const updated = { ...aboState, company_id: newCompanyId || null, company_name: co?.name || null }
       setLocalAbo(updated)
       onChange?.(updated)
     } finally {
       setSavingCompany(false)
     }
   }
-
-  if (!abonnement) return null
 
   return (
     <Modal isOpen onClose={onClose} title="Détails de l'abonnement" size="xl">
@@ -58,7 +63,7 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
             <div className="text-sm text-slate-500 mb-1">Entreprise</div>
             <LinkedRecordField
               name="company_id"
-              value={localAbo.company_id}
+              value={aboState.company_id}
               options={companies}
               labelFn={c => c.name}
               getHref={c => `/companies/${c.id}`}

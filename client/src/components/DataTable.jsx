@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ChevronRight, ChevronDown, Trash2, Plus, Edit2 } from 'lucide-react'
+import { ChevronRight, ChevronDown, Trash2, Plus, Edit2, Layers, Filter, ArrowUp, ArrowDown, EyeOff } from 'lucide-react'
 import { useTableView } from '../lib/useTableView.js'
 import { ViewToolbar } from './ViewToolbar.jsx'
-import { TABLE_ALL_LABEL } from '../lib/tableDefs.js'
+import { defaultOpForType } from './FilterRow.jsx'
 import api from '../lib/api.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useConfirm } from './ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import AirtableFieldEditModal from './AirtableFieldEditModal.jsx'
 
 export function fmtPhone(val) {
   if (!val) return ''
@@ -116,11 +117,13 @@ export function DataTable({
 }) {
   const [visibleCols, setVisibleCols] = useState([])
   const [groupBy, setGroupBy] = useState(initialGroupBy)
+  const [groupOrder, setGroupOrder] = useState(null) // null | 'asc' | 'desc' | 'default'
   const [collapsedGroups, setCollapsedGroups] = useState(new Set())
   const [colWidths, setColWidths] = useState({})
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [deleting, setDeleting] = useState(false)
-  const [colMenu, setColMenu] = useState(null) // { x, y, field } pour right-click menu
+  const [colMenu, setColMenu] = useState(null) // { x, y, source: 'custom'|'airtable', field } pour right-click menu
+  const [airtableEditField, setAirtableEditField] = useState(null) // field passé à AirtableFieldEditModal
   // Tracks previously seen custom-field column ids so we can auto-show newly
   // created fields in the active view (the user vient de créer le champ, on
   // suppose qu'ils veulent le voir tout de suite).
@@ -129,7 +132,7 @@ export function DataTable({
   const { addToast } = useToast()
 
   const view = useTableView({ table, columns, data, searchFields, forceAllView })
-  const { filteredData, configReady, allColumns, bulkDeleteEnabled } = view
+  const { filteredData, configReady, allColumns, bulkDeleteEnabled, airtableFieldsByColumn } = view
   const selectionActive = bulkDeleteEnabled && typeof onBulkDelete === 'function'
   // Use allColumns (hardcoded + dynamic Airtable fields) everywhere
   const mergedColumns = allColumns || columns
@@ -170,6 +173,7 @@ export function DataTable({
     if (!forceAllView) {
       const newGroupBy = view.viewGroupBy
       setGroupBy(newGroupBy)
+      setGroupOrder(view.viewGroupOrder)
       prevGroupByRef.current = newGroupBy
       // Restore collapsed groups from localStorage
       try {
@@ -349,8 +353,35 @@ export function DataTable({
       if (!groups.has(key)) groups.set(key, [])
       groups.get(key).push(row)
     }
+    // Détermine l'ordre des groupes selon `groupOrder`.
+    // null/'default' → ordre des `options` du champ si défini (utile pour les
+    //   single_select métier comme statuts), sinon tri alphabétique croissant.
+    // 'asc'/'desc' → tri alphabétique forcé (case+accent insensible).
+    const groupCol = mergedColumns.find(c => c.field === groupBy)
+    const hasOptions = Array.isArray(groupCol?.options) && groupCol.options.length > 0
+    const cmpAlpha = (a, b) => a.localeCompare(b, 'fr', { sensitivity: 'base', numeric: true })
+    let keys = [...groups.keys()]
+    if (groupOrder === 'asc') {
+      keys.sort(cmpAlpha)
+    } else if (groupOrder === 'desc') {
+      keys.sort(cmpAlpha).reverse()
+    } else if (hasOptions) {
+      // Mode défaut quand options définies : suit l'ordre des options ; les clés
+      // hors options sont rejetées en queue, triées alpha entre elles.
+      const orderIdx = new Map(groupCol.options.map((o, i) => [String(o), i]))
+      keys.sort((a, b) => {
+        const ia = orderIdx.has(a) ? orderIdx.get(a) : Number.MAX_SAFE_INTEGER
+        const ib = orderIdx.has(b) ? orderIdx.get(b) : Number.MAX_SAFE_INTEGER
+        if (ia !== ib) return ia - ib
+        return cmpAlpha(a, b)
+      })
+    } else {
+      // Mode défaut sans options : tri alpha croissant
+      keys.sort(cmpAlpha)
+    }
     const flat = []
-    for (const [key, rows] of groups) {
+    for (const key of keys) {
+      const rows = groups.get(key)
       const collapsed = collapsedGroups.has(key)
       const sums = {}
       if (numberColumns.length > 0) {
@@ -367,7 +398,7 @@ export function DataTable({
       if (!collapsed) flat.push(...rows)
     }
     return flat
-  }, [filteredData, groupBy, collapsedGroups, numberColumns])
+  }, [filteredData, groupBy, groupOrder, collapsedGroups, numberColumns, mergedColumns])
 
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
@@ -406,14 +437,13 @@ export function DataTable({
         search={view.search} setSearch={view.setSearch}
         searchFields={searchFields}
         views={view.views}
-        allViewSortOrder={view.allViewSortOrder}
         onReorderViews={view.reorderViews}
         activeViewId={view.activeViewId}
         setActiveViewId={view.setActiveViewId}
-        tableLabel={TABLE_ALL_LABEL[table] || 'Tous'}
         processedCount={filteredData.length}
         visibleCols={visibleCols} setVisibleCols={setVisibleCols}
         groupBy={groupBy} setGroupBy={setGroupBy}
+        groupOrder={groupOrder} setGroupOrder={setGroupOrder}
         onCollapseAll={collapseAll} onExpandAll={expandAll}
         data={data}
         disabledColumns={disabledColumns}
@@ -463,6 +493,8 @@ export function DataTable({
             )}
             {visibleColumns.map(col => {
               const customField = customFieldsByColumn?.get(col.field) || customFieldsByColumn?.get(col.id)
+              const airtableField = !customField && (airtableFieldsByColumn?.get(col.field) || airtableFieldsByColumn?.get(col.id))
+              const editable = customField || airtableField
               return (
                 <div
                   key={col.id}
@@ -472,12 +504,18 @@ export function DataTable({
                   onDrop={handleColDrop}
                   onDragEnd={handleColDragEnd}
                   onDragLeave={() => setDragOverCol(prev => prev === col.id ? null : prev)}
-                  onContextMenu={customField ? (e) => {
+                  onContextMenu={(e) => {
                     e.preventDefault()
-                    setColMenu({ x: e.clientX, y: e.clientY, field: customField })
-                  } : undefined}
+                    setColMenu({
+                      x: e.clientX,
+                      y: e.clientY,
+                      col,
+                      source: customField ? 'custom' : (airtableField ? 'airtable' : null),
+                      field: editable || null,
+                    })
+                  }}
                   className="relative px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide leading-tight break-words select-none cursor-grab active:cursor-grabbing"
-                  title={customField ? 'Clic-droit pour modifier ou supprimer' : undefined}
+                  title="Clic-droit pour grouper, filtrer, trier ou cacher"
                 >
                   {col.label}
                   {dragOverCol === col.id && dragColRef.current && dragColRef.current !== col.id && (
@@ -504,28 +542,113 @@ export function DataTable({
             )}
           </div>
 
-          {colMenu && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setColMenu(null)} onContextMenu={e => { e.preventDefault(); setColMenu(null) }} />
-              <div
-                className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-lg py-1 min-w-[160px]"
-                style={{ top: colMenu.y, left: colMenu.x }}
-              >
-                <button
-                  onClick={() => { onEditCustomField?.(colMenu.field); setColMenu(null) }}
-                  className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 text-left"
+          {colMenu && (() => {
+            const c = colMenu.col
+            const canGroup = c?.groupable !== false && c?.field
+            const canSort = c?.sortable !== false && c?.field
+            const canFilter = c?.filterable !== false && c?.field
+            const itemCls = 'flex items-center gap-2 w-full px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 text-left'
+            return (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setColMenu(null)} onContextMenu={e => { e.preventDefault(); setColMenu(null) }} />
+                <div
+                  className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-lg py-1 min-w-[200px]"
+                  style={{ top: colMenu.y, left: colMenu.x }}
                 >
-                  <Edit2 size={13} /> Modifier
-                </button>
-                <button
-                  onClick={() => { onDeleteCustomField?.(colMenu.field); setColMenu(null) }}
-                  className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 text-left"
-                >
-                  <Trash2 size={13} /> Supprimer
-                </button>
-              </div>
-            </>
-          )}
+                  {canGroup && (
+                    <button onClick={() => { setGroupBy(c.field); setColMenu(null) }} className={itemCls}>
+                      <Layers size={13} /> Grouper par cette colonne
+                    </button>
+                  )}
+                  {canFilter && (
+                    <button
+                      onClick={() => {
+                        const op = defaultOpForType(c.type)
+                        const newRule = { field: c.field, op, value: '' }
+                        const cur = view.filters
+                        const nextFilters = (cur && cur.rules)
+                          ? { ...cur, rules: [...cur.rules, newRule] }
+                          : (Array.isArray(cur) ? [...cur, newRule] : [newRule])
+                        view.setFilters(nextFilters)
+                        window.dispatchEvent(new CustomEvent('datatable:open-panel', { detail: { table, panel: 'filter' } }))
+                        setColMenu(null)
+                      }}
+                      className={itemCls}
+                    >
+                      <Filter size={13} /> Filtrer cette colonne
+                    </button>
+                  )}
+                  {canSort && (
+                    <button onClick={() => { view.setSorts([{ field: c.field, dir: 'asc' }]); setColMenu(null) }} className={itemCls}>
+                      <ArrowUp size={13} /> Trier croissant
+                    </button>
+                  )}
+                  {canSort && (
+                    <button onClick={() => { view.setSorts([{ field: c.field, dir: 'desc' }]); setColMenu(null) }} className={itemCls}>
+                      <ArrowDown size={13} /> Trier décroissant
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setVisibleCols(prev => prev.filter(id => id !== c.id))
+                      setColMenu(null)
+                    }}
+                    className={itemCls}
+                  >
+                    <EyeOff size={13} /> Cacher cette colonne
+                  </button>
+                  {colMenu.source && (
+                    <>
+                      <div className="my-1 border-t border-slate-100" />
+                      <button
+                        onClick={() => {
+                          if (colMenu.source === 'airtable') setAirtableEditField(colMenu.field)
+                          else onEditCustomField?.(colMenu.field)
+                          setColMenu(null)
+                        }}
+                        className={itemCls}
+                      >
+                        <Edit2 size={13} /> {colMenu.source === 'airtable' ? 'Modifier le type' : 'Modifier le champ'}
+                      </button>
+                      <button
+                        onClick={async () => {
+                          const f = colMenu.field
+                          const src = colMenu.source
+                          setColMenu(null)
+                          if (src === 'airtable') {
+                            const ok = await confirm(`Supprimer la colonne "${f.label}" ? Cette action est irréversible — la colonne et toutes ses données seront perdues.`)
+                            if (!ok) return
+                            try {
+                              await api.airtableFields.delete(f.id)
+                              addToast({ message: 'Colonne supprimée', type: 'success' })
+                              window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
+                            } catch (e) {
+                              addToast({ message: e.message || 'Erreur', type: 'error' })
+                            }
+                          } else {
+                            onDeleteCustomField?.(f)
+                          }
+                        }}
+                        className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 text-left"
+                      >
+                        <Trash2 size={13} /> Supprimer le champ
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
+            )
+          })()}
+
+          <AirtableFieldEditModal
+            isOpen={!!airtableEditField}
+            field={airtableEditField}
+            onClose={() => setAirtableEditField(null)}
+            onSaved={() => {
+              setAirtableEditField(null)
+              window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
+            }}
+          />
 
           {loading ? (
             <div className="flex items-center justify-center text-slate-400 text-sm py-12">

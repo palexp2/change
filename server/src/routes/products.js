@@ -6,6 +6,7 @@ import { buildPartialUpdate } from '../utils/partialUpdate.js';
 import { buildPurchaseOrderPdf, fetchOrishaLogo } from '../services/purchaseOrderPdf.js';
 import { sendEmail as sendGmail } from '../services/gmail.js';
 import { insertPurchasesFromPo } from '../services/purchaseOrder.js';
+import { emitEntity } from '../services/realtimeEmitters.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -82,7 +83,9 @@ router.post('/', (req, res) => {
     unit_cost || 0, price_cad || 0, stock_qty || 0, min_stock || 0, order_qty || 0,
     supplier || null, procurement_type || null, weight_lbs || 0, notes || null);
 
-  res.status(201).json(db.prepare('SELECT * FROM products WHERE id = ?').get(id));
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
+  emitEntity('product', 'created', id, product, req.user?.id);
+  res.status(201).json(product);
 });
 
 // PUT /api/products/:id — partial update
@@ -110,7 +113,9 @@ router.put('/:id', (req, res) => {
       .run(...values, req.params.id);
   }
 
-  res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id));
+  const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
+  res.json(updated);
 });
 
 // POST /api/products/:id/stock — adjust stock
@@ -148,7 +153,9 @@ router.post('/:id/stock', (req, res) => {
   });
   run();
 
-  res.json(db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id));
+  const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
+  res.json(updated);
 });
 
 // GET /api/products/:id/purchase-order/prefill
@@ -369,6 +376,7 @@ router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Product not found' });
   db.prepare("UPDATE products SET active=0, deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);
+  emitEntity('product', 'deleted', req.params.id, { id: req.params.id }, req.user?.id);
   res.json({ message: 'Deleted' });
 });
 

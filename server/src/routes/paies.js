@@ -3,6 +3,18 @@ import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { importTimesheetsForPaie } from '../services/paieTimesheetImport.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
+
+function buildPaieListRow(id) {
+  return db.prepare(`
+    SELECT p.*,
+      (SELECT COUNT(*) FROM paie_items WHERE paie_id = p.id) AS items_count,
+      (SELECT SUM(regular_hours) FROM paie_items WHERE paie_id = p.id) AS total_regular_hours,
+      (SELECT SUM(COALESCE(regular_hours,0) * COALESCE(hourly_rate,0)) FROM paie_items WHERE paie_id = p.id) AS total_regular_amount
+    FROM paies p
+    WHERE p.id = ?
+  `).get(id)
+}
 
 const router = Router()
 router.use(requireAuth)
@@ -146,6 +158,7 @@ router.post('/', (req, res) => {
   }
 
   const paie = db.prepare('SELECT * FROM paies WHERE id=?').get(id)
+  emitEntity('paie', 'created', id, buildPaieListRow(id), req.user?.id)
   res.status(201).json({ ...paie, items_created: itemIds, timesheet_import: importResult })
 })
 
@@ -155,6 +168,7 @@ router.post('/:id/import-timesheets', (req, res) => {
   if (!paie) return res.status(404).json({ error: 'Not found' })
   try {
     const result = importTimesheetsForPaie(req.params.id)
+    emitEntity('paie', 'updated', req.params.id, buildPaieListRow(req.params.id), req.user?.id)
     res.json(result)
   } catch (e) {
     console.error('Import feuilles de temps:', e)
@@ -171,7 +185,9 @@ router.patch('/:id', (req, res) => {
     if (key in req.body) { fields.push(`${key}=?`); params.push(req.body[key] ?? null) }
   }
   db.prepare(`UPDATE paies SET ${fields.join(',')} WHERE id=?`).run(...params, req.params.id)
-  res.json(db.prepare('SELECT * FROM paies WHERE id=?').get(req.params.id))
+  const updated = db.prepare('SELECT * FROM paies WHERE id=?').get(req.params.id)
+  emitEntity('paie', 'updated', req.params.id, buildPaieListRow(req.params.id), req.user?.id)
+  res.json(updated)
 })
 
 router.delete('/:id', (req, res) => {
@@ -192,6 +208,7 @@ router.delete('/:id', (req, res) => {
   })
   try {
     tx(req.params.id)
+    emitEntity('paie', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
     res.json({ ok: true })
   } catch (err) {
     console.error('paies DELETE failed', { id: req.params.id, error: err.message })

@@ -6,6 +6,7 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 const STATUS_COLORS = { 'Commandé': 'blue', 'Reçu partiellement': 'yellow', 'Reçu': 'green', 'Annulé': 'red' }
@@ -146,6 +147,11 @@ export default function PurchaseDetail() {
       .catch(() => setPurchase(null))
       .finally(() => setLoading(false))
   }, [id])
+
+  useRealtimeChannel(id ? `purchase:${id}` : null, (msg) => {
+    if (msg.type === 'purchase:updated') setPurchase(p => p ? { ...p, ...msg.payload } : p)
+    else if (msg.type === 'purchase:deleted') navigate('/purchases')
+  })
 
   async function saveField(key, value) {
     setFieldSaving(s => ({ ...s, [key]: true }))

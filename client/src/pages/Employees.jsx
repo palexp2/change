@@ -9,6 +9,7 @@ import { Modal } from '../components/Modal.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 
 function bool(row, key) {
   return row[key] ? <span className="text-green-600">✓</span> : <span className="text-slate-300">—</span>
@@ -231,6 +232,7 @@ export default function Employees() {
   }, [addToast])
 
   useEffect(() => { load() }, [load])
+  useEntityListRealtime('employee', setEmployees)
 
   function handleCreated(emp) {
     setShowNew(false)

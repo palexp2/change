@@ -4,9 +4,23 @@ import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { pushTaskFireAndForget } from '../services/hubspotSync.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
+import { emitEntity } from '../services/realtimeEmitters.js';
 
 const router = Router();
 router.use(requireAuth);
+
+function buildTaskRow(id) {
+  return db.prepare(
+    `SELECT t.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name,
+       u.name as assigned_name, tk.title as ticket_title
+     FROM tasks t
+     LEFT JOIN companies c ON t.company_id = c.id
+     LEFT JOIN contacts ct ON t.contact_id = ct.id
+     LEFT JOIN users u ON t.assigned_to = u.id
+     LEFT JOIN tickets tk ON t.ticket_id = tk.id
+     WHERE t.id = ?`
+  ).get(id)
+}
 
 // Keyword catalog (personnalisable)
 router.get('/keywords/list', (req, res) => {
@@ -121,16 +135,9 @@ router.post('/', (req, res) => {
 
   pushTaskFireAndForget(id);
 
-  res.status(201).json(db.prepare(
-    `SELECT t.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name, u.name as assigned_name,
-       tk.title as ticket_title
-     FROM tasks t
-     LEFT JOIN companies c ON t.company_id = c.id
-     LEFT JOIN contacts ct ON t.contact_id = ct.id
-     LEFT JOIN users u ON t.assigned_to = u.id
-     LEFT JOIN tickets tk ON t.ticket_id = tk.id
-     WHERE t.id = ?`
-  ).get(id));
+  const task = buildTaskRow(id)
+  emitEntity('task', 'created', id, task, req.user?.id);
+  res.status(201).json(task);
 });
 
 // PUT /api/tasks/:id — partial update
@@ -154,15 +161,9 @@ router.put('/:id', (req, res) => {
 
   pushTaskFireAndForget(req.params.id);
 
-  res.json(db.prepare(
-    `SELECT t.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name, u.name as assigned_name,
-       tk.title as ticket_title
-     FROM tasks t LEFT JOIN companies c ON t.company_id = c.id
-     LEFT JOIN contacts ct ON t.contact_id = ct.id
-     LEFT JOIN users u ON t.assigned_to = u.id
-     LEFT JOIN tickets tk ON t.ticket_id = tk.id
-     WHERE t.id = ?`
-  ).get(req.params.id));
+  const updated = buildTaskRow(req.params.id)
+  emitEntity('task', 'updated', req.params.id, updated, req.user?.id);
+  res.json(updated);
 });
 
 // PATCH /api/tasks/:id/status
@@ -179,6 +180,8 @@ router.patch('/:id/status', (req, res) => {
 
   pushTaskFireAndForget(req.params.id);
 
+  const updated = buildTaskRow(req.params.id)
+  emitEntity('task', 'updated', req.params.id, updated, req.user?.id);
   res.json(db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id));
 });
 
@@ -188,6 +191,7 @@ router.delete('/:id', (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Task not found' });
   db.prepare("UPDATE tasks SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);
   pushTaskFireAndForget(req.params.id);
+  emitEntity('task', 'deleted', req.params.id, { id: req.params.id }, req.user?.id);
   res.json({ ok: true });
 });
 

@@ -10,6 +10,7 @@ import {
   syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges,
   syncAssemblages, syncStockMovements,
 } from './airtable.js'
+import { syncFactureLinksFromWebhook } from './factureLinks.js'
 
 const APP_URL = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
 const NOTIFICATION_URL = `${APP_URL}/erp/api/connectors/airtable/webhook-ping`
@@ -31,6 +32,10 @@ const SYNC_FNS = {
   serial_changes: syncSerialStateChanges,
   assemblages: syncAssemblages,
   stock_movements: syncStockMovements,
+  // Factures : pas de re-sync complet (le sync Airtable a été déconnecté).
+  // On ne capte que les changements de liens projet/commande, et seulement
+  // pour les factures déjà connues côté Stripe.
+  factures: syncFactureLinksFromWebhook,
 }
 
 // Per-module local tables used to snapshot records before/after sync for diff display.

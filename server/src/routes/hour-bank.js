@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -52,7 +53,9 @@ router.post('/', (req, res) => {
     INSERT INTO hour_bank_entries (id, employee_id, date, hours, source, notes)
     VALUES (?, ?, ?, ?, 'manual', ?)
   `).run(id, employee_id, date, Number(hours), notes || null)
-  res.status(201).json(db.prepare('SELECT * FROM hour_bank_entries WHERE id = ?').get(id))
+  const row = db.prepare('SELECT * FROM hour_bank_entries WHERE id = ?').get(id)
+  emitEntity('hour_bank_entry', 'created', id, row, req.user?.id)
+  res.status(201).json(row)
 })
 
 const PATCHABLE = new Set(['hours', 'date', 'notes'])
@@ -76,13 +79,16 @@ router.patch('/entry/:id', (req, res) => {
   updates.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
   params.push(req.params.id)
   db.prepare(`UPDATE hour_bank_entries SET ${updates.join(', ')} WHERE id = ?`).run(...params)
-  res.json(db.prepare('SELECT * FROM hour_bank_entries WHERE id = ?').get(req.params.id))
+  const updated = db.prepare('SELECT * FROM hour_bank_entries WHERE id = ?').get(req.params.id)
+  emitEntity('hour_bank_entry', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
 })
 
 router.delete('/entry/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM hour_bank_entries WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
   db.prepare(`UPDATE hour_bank_entries SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(req.params.id)
+  emitEntity('hour_bank_entry', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ success: true })
 })
 

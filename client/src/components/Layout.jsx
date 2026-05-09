@@ -14,6 +14,7 @@ import { useAuth } from '../lib/auth.jsx'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
 import { api } from '../lib/api.js'
 import { prefetch } from '../lib/prefetch.js'
+import { connect as realtimeConnect, disconnect as realtimeDisconnect } from '../lib/realtime.js'
 import { Modal } from './Modal.jsx'
 import { GlobalSearch as CRMSearch } from './GlobalSearch.jsx'
 
@@ -36,6 +37,7 @@ const NAV_PREFETCH = {
   '/tickets':       () => api.tickets.list({ limit: 'all', page: 1 }),
   '/tasks':         () => api.tasks.list({ limit: 'all' }),
   '/abonnements':   () => api.abonnements.list({ limit: 'all', page: 1 }),
+  '/abonnements/mouvements': () => api.abonnements.events({ limit: 'all', page: 1 }),
 }
 
 // Short delay so sweeping the mouse across the sidebar doesn't trigger a
@@ -77,6 +79,7 @@ const defaultNavItems = [
     { to: '/factures',              icon: FileText,   label: 'Factures clients' },
     { to: '/items-vendus',          icon: Tag,        label: 'Items vendus' },
     { to: '/abonnements',           icon: RefreshCw,  label: 'Abonnements' },
+    { to: '/abonnements/mouvements', icon: RefreshCw, label: "Mouvements d'abonnements" },
     { to: '/achats-fournisseurs',   icon: Receipt,    label: 'Achats fournisseurs' },
     { to: '/sale-receipts',         icon: ReceiptText,label: 'Extraction de données' },
     { to: '/stripe-payouts',        icon: CreditCard, label: 'Stripe Payouts' },
@@ -447,38 +450,12 @@ export function Layout({ children }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [navigate])
 
-  // WebSocket global — notifications
-  // Désactivé : nginx n'a pas de location /ws (ni /erp/ws) pour router l'upgrade
-  // vers le backend, donc toutes les tentatives tombent en 404 et rebouclent
-  // toutes les 5s. À réactiver quand la conf nginx aura un proxy WebSocket.
+  // WebSocket global — connexion + reconnexion gérées par lib/realtime.js.
+  // CustomEvents back-compat (agent:task:*, sync:progress) sont re-dispatchés
+  // par la lib pour ne pas casser les écouteurs existants.
   useEffect(() => {
-    if (!import.meta.env.VITE_REALTIME_ENABLED) return
-    const token = localStorage.getItem('erp_token')
-    if (!token) return
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-    let ws
-    let retryTimeout
-    function connect() {
-      ws = new WebSocket(`${protocol}//${window.location.host}/ws`)
-      ws.onopen = () => ws.send(JSON.stringify({ type: 'auth', token }))
-      ws.onmessage = (event) => {
-        try {
-          const msg = JSON.parse(event.data)
-          if (msg.type === 'agent:task:updated') {
-            window.dispatchEvent(new CustomEvent('agent:task:updated', { detail: msg.task }))
-          }
-          if (msg.type === 'agent:task:stream') {
-            window.dispatchEvent(new CustomEvent('agent:task:stream', { detail: msg }))
-          }
-          if (msg.type === 'sync:progress') {
-            window.dispatchEvent(new CustomEvent('sync:progress', { detail: msg }))
-          }
-        } catch {}
-      }
-      ws.onclose = () => { retryTimeout = setTimeout(connect, 5000) }
-    }
-    connect()
-    return () => { ws?.close(); clearTimeout(retryTimeout) }
+    realtimeConnect()
+    return () => realtimeDisconnect()
   }, [])
 
   const roleLabel = { admin: 'Admin', sales: 'Ventes', support: 'Support', ops: 'Opérations' }

@@ -10,6 +10,7 @@ import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import FacturePaymentsSection from '../components/FacturePaymentsSection.jsx'
 import FactureAccountingSection from '../components/FactureAccountingSection.jsx'
 import { fmtDate } from '../lib/formatDate.js'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 
 
 function fmtMoney(n, currency = 'CAD') {
@@ -134,6 +135,11 @@ export default function FactureDetail() {
       .catch(() => setFacture(null))
       .finally(() => setLoading(false))
   }, [id])
+
+  useRealtimeChannel(id ? `facture:${id}` : null, (msg) => {
+    if (msg.type === 'facture:updated') setFacture(f => f ? { ...f, ...msg.payload } : f)
+    else if (msg.type === 'facture:deleted') navigate('/factures')
+  })
 
   useEffect(() => {
     api.companies.lookup().then(setCompanies).catch(() => setCompanies([]))
@@ -447,44 +453,13 @@ export default function FactureDetail() {
           </div>
 
 
-          {/* Montants */}
-          <div className="grid grid-cols-3 gap-4 p-5">
-            <div>
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Avant taxes</p>
-              <p className="text-sm font-medium text-slate-700">{fmtMoney(
-                facture.montant_avant_taxes != null ? parseFloat(facture.montant_avant_taxes) : facture.amount_before_tax_cad,
-                facture.currency,
-              )}</p>
-            </div>
-            <div>
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Total</p>
-              <p className="text-sm font-medium text-slate-700">{fmtMoney(facture.total_amount, facture.currency)}</p>
-            </div>
-            <div>
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Solde dû</p>
-              <p className={`text-sm font-medium ${facture.balance_due > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                {fmtMoney(facture.balance_due, facture.currency)}
-              </p>
-            </div>
+          {/* Solde dû */}
+          <div className="p-5">
+            <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Solde dû</p>
+            <p className={`text-sm font-medium ${facture.balance_due > 0 ? 'text-red-600' : 'text-green-600'}`}>
+              {fmtMoney(facture.balance_due, facture.currency)}
+            </p>
           </div>
-
-          {/* Taxes — split par juridiction (TPS / TVQ / HST / etc.) */}
-          {Array.isArray(facture.taxes) && facture.taxes.length > 0 && (
-            <div className="px-5 pb-5">
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Taxes</p>
-              <div className="rounded-lg border border-slate-200 bg-slate-50 divide-y divide-slate-200">
-                {facture.taxes.map((t, i) => (
-                  <div key={i} className="flex items-center justify-between px-3 py-1.5 text-sm">
-                    <span className="text-slate-700">
-                      {t.name}
-                      {t.percentage != null && <span className="text-slate-400 ml-1">({t.percentage}%)</span>}
-                    </span>
-                    <span className="font-medium text-slate-700 tabular-nums">{fmtMoney(t.amount, facture.currency)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* Notes */}
           {facture.notes && (
@@ -495,8 +470,8 @@ export default function FactureDetail() {
           )}
         </div>
 
-        {/* Lignes de la facture — 1 par produit (Stripe items ou pending items) */}
-        {Array.isArray(facture.items) && facture.items.length > 0 && (
+        {/* Lignes de la facture — 1 par produit (Stripe items ou pending items) + sommaires */}
+        {((Array.isArray(facture.items) && facture.items.length > 0) || facture.total_amount != null || (Array.isArray(facture.taxes) && facture.taxes.length > 0)) && (
           <div className="bg-white rounded-xl border border-slate-200 mt-5 p-5" data-testid="facture-items">
             <h2 className="text-sm font-semibold text-slate-900 mb-3">Lignes de la facture</h2>
             <table className="w-full text-sm">
@@ -510,7 +485,7 @@ export default function FactureDetail() {
                 </tr>
               </thead>
               <tbody>
-                {facture.items.map((it, i) => {
+                {(facture.items || []).map((it, i) => {
                   const qty = Number(it.qty) || 0
                   const unit = it.unit_price != null ? Number(it.unit_price) : null
                   const total = it.total != null ? Number(it.total) : (unit != null ? qty * unit : null)
@@ -528,6 +503,37 @@ export default function FactureDetail() {
                     </tr>
                   )
                 })}
+                {Array.isArray(facture.discounts) && facture.discounts.map((d, i) => (
+                  <tr key={`disc-${i}`} className="border-t border-slate-100 text-slate-700">
+                    <td className="py-2" colSpan={2}>Rabais{d.label ? ` : ${d.label}` : ''}</td>
+                    <td className="py-2"></td>
+                    <td className="py-2"></td>
+                    <td className="py-2 text-right tabular-nums">−{fmtMoney(d.amount, facture.currency)}</td>
+                  </tr>
+                ))}
+                {/* Sous-total avant taxes */}
+                <tr className="border-t-2 border-slate-200 text-slate-700" data-testid="facture-line-subtotal">
+                  <td className="pt-3 pb-2 font-medium" colSpan={4}>Avant taxes</td>
+                  <td className="pt-3 pb-2 text-right tabular-nums font-medium">{fmtMoney(
+                    facture.montant_avant_taxes != null ? parseFloat(facture.montant_avant_taxes) : facture.amount_before_tax_cad,
+                    facture.currency,
+                  )}</td>
+                </tr>
+                {/* Taxes — split par juridiction (TPS / TVQ / HST / etc.) */}
+                {Array.isArray(facture.taxes) && facture.taxes.map((t, i) => (
+                  <tr key={`tax-${i}`} className="border-t border-slate-100 text-slate-700" data-testid="facture-line-tax">
+                    <td className="py-2" colSpan={4}>
+                      {t.name}
+                      {t.percentage != null && <span className="text-slate-400 ml-1">({t.percentage}%)</span>}
+                    </td>
+                    <td className="py-2 text-right tabular-nums">{fmtMoney(t.amount, facture.currency)}</td>
+                  </tr>
+                ))}
+                {/* Total */}
+                <tr className="border-t-2 border-slate-300 text-slate-900" data-testid="facture-line-total">
+                  <td className="pt-2 pb-1 font-semibold" colSpan={4}>Total</td>
+                  <td className="pt-2 pb-1 text-right tabular-nums font-semibold">{fmtMoney(facture.total_amount, facture.currency)}</td>
+                </tr>
               </tbody>
             </table>
           </div>

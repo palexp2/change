@@ -11,6 +11,7 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useAuth } from '../lib/auth.jsx'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 
 
@@ -294,6 +295,11 @@ export default function ContactDetail() {
     api.auth.users().then(setUsers).catch(() => {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
+
+  useRealtimeChannel(id ? `contact:${id}` : null, (msg) => {
+    if (msg.type === 'contact:updated') setContact(c => c ? { ...c, ...msg.payload } : c)
+    else if (msg.type === 'contact:deleted') navigate('/contacts')
+  })
 
   async function saveField(key, value) {
     setFieldSaving(s => ({ ...s, [key]: true }))

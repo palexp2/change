@@ -9,6 +9,7 @@ import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { VendorSelect } from '../components/VendorSelect.jsx'
 import { LineItemsTable } from '../components/LineItemsTable.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -332,6 +333,8 @@ export default function AchatsFournisseurs() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEntityListRealtime('achat_fournisseur', setRows)
 
   useEffect(() => {
     const openId = searchParams.get('id')

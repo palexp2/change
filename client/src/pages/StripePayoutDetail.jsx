@@ -209,6 +209,19 @@ export default function StripePayoutDetail() {
 
   const alreadyPushed = !!payout.qb_deposit_id
 
+  // Stable sort by type so rows of the same kind sit together. Order follows
+  // TX_TYPE_LABELS keys (Vente → Remboursement → Frais → …); unknown types go last.
+  const TYPE_ORDER = Object.keys(TX_TYPE_LABELS)
+  const typeRank = (t) => {
+    const i = TYPE_ORDER.indexOf(t)
+    return i === -1 ? TYPE_ORDER.length : i
+  }
+  const sortedTransactions = [...transactions].sort((a, b) => {
+    const d = typeRank(a.type) - typeRank(b.type)
+    if (d !== 0) return d
+    return (a.created_date || '').localeCompare(b.created_date || '')
+  })
+
   return (
     <Layout>
       <div className="p-6 max-w-6xl mx-auto">
@@ -365,7 +378,7 @@ export default function StripePayoutDetail() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {transactions.map(bt => {
+                  {sortedTransactions.map(bt => {
                     const feeTaxGst = bt.fee_tax_gst || 0
                     const feeTaxQst = bt.fee_tax_qst || 0
                     const invoiceTaxGst = bt.invoice_tax_gst || 0

@@ -8,6 +8,9 @@ import { postRevenueRecognitionJE, reconcileFactureRevenueRecognition, factureHa
 import { logSystemRun } from '../services/systemAutomations.js'
 import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { computeCanadaTaxes } from '../services/taxes.js'
+import { CATEGORIES as SUBSCRIPTION_EVENT_CATEGORIES, emitSubscriptionEvent, detectRachatForChurn, backfillRachatDetection } from '../services/subscriptionEvents.js'
+import { requireAdmin } from '../middleware/auth.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
 
 // Calcule les taxes d'une facture (tableau {name, percentage, amount}).
 // Stratégie :
@@ -183,7 +186,9 @@ router.post('/adresses', (req, res) => {
   db.prepare(`INSERT INTO adresses (id, line1, city, province, postal_code, country, address_type, company_id, contact_id, language)
     VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(id, line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, company_id||null, contact_id||null, language||null)
-  res.json(db.prepare('SELECT * FROM adresses WHERE id = ?').get(id))
+  const adr = db.prepare('SELECT * FROM adresses WHERE id = ?').get(id)
+  emitEntity('adresse', 'created', id, adr, req.user?.id)
+  res.json(adr)
 })
 
 router.put('/adresses/:id', (req, res) => {
@@ -191,11 +196,14 @@ router.put('/adresses/:id', (req, res) => {
   db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, address_type=?, contact_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ?`)
     .run(line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, contact_id||null, req.params.id)
-  res.json(db.prepare('SELECT * FROM adresses WHERE id = ?').get(req.params.id))
+  const adr = db.prepare('SELECT * FROM adresses WHERE id = ?').get(req.params.id)
+  emitEntity('adresse', 'updated', req.params.id, adr, req.user?.id)
+  res.json(adr)
 })
 
 router.delete('/adresses/:id', (req, res) => {
   db.prepare('DELETE FROM adresses WHERE id = ?').run(req.params.id)
+  emitEntity('adresse', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })
 })
 
@@ -327,7 +335,7 @@ router.get('/factures', (req, res) => {
              LEFT JOIN orders op ON op.project_id = f.project_id AND f.project_id IS NOT NULL
              WHERE sh.order_id = od.id OR sh.order_id = op.id
            ) AS has_linked_shipment
-    FROM factures f
+    FROM factures_v f
     LEFT JOIN companies co ON f.company_id = co.id
     LEFT JOIN projects p ON f.project_id = p.id
     LEFT JOIN orders o ON f.order_id = o.id
@@ -388,7 +396,7 @@ router.get('/factures', (req, res) => {
   res.json({ data: sliced, total, page: parseInt(page), limit: parseInt(limit) })
 })
 
-router.get('/factures/:id', (req, res) => {
+router.get('/factures/:id', async (req, res) => {
   const row = db.prepare(`
     SELECT f.*, co.name as company_name, p.name as project_name,
       o.order_number, o.id as order_id_resolved,
@@ -401,7 +409,7 @@ router.get('/factures/:id', (req, res) => {
         LEFT JOIN orders op ON op.project_id = f.project_id AND f.project_id IS NOT NULL
         WHERE sh.order_id = od.id OR sh.order_id = op.id
       ) AS has_linked_shipment
-    FROM factures f
+    FROM factures_v f
     LEFT JOIN companies co ON f.company_id = co.id
     LEFT JOIN projects p ON f.project_id = p.id
     LEFT JOIN orders o ON f.order_id = o.id
@@ -428,7 +436,7 @@ router.get('/factures/:id', (req, res) => {
     // Résumé du dernier paiement "in" (méthode + date) pour affichage en tête.
     // 1. On regarde d'abord la table `payments` (saisies hors-Stripe ou backfill).
     // 2. Si rien, fallback sur `stripe_balance_transactions` filtré sur cette
-    //    facture (charges Stripe — type='charge' ou reporting_category liée).
+    //    facture (charges Stripe — type IN ('charge','payment')).
     const paymentsAgg = db.prepare(`
       SELECT COUNT(*) AS n FROM payments WHERE facture_id = ? AND direction = 'in'
     `).get(req.params.id)
@@ -459,13 +467,13 @@ router.get('/factures/:id', (req, res) => {
         // factures payées avant l'ajout de paid_at.
         const stripeAgg = db.prepare(`
           SELECT COUNT(*) AS n FROM stripe_balance_transactions
-          WHERE stripe_invoice_id = ? AND type = 'charge'
+          WHERE stripe_invoice_id = ? AND type IN ('charge','payment')
         `).get(row.invoice_id)
         paymentsInCount = stripeAgg?.n || 0
         if (paymentsInCount > 0) {
           const bt = db.prepare(`
             SELECT amount, currency, created_date FROM stripe_balance_transactions
-            WHERE stripe_invoice_id = ? AND type = 'charge'
+            WHERE stripe_invoice_id = ? AND type IN ('charge','payment')
             ORDER BY created_date DESC LIMIT 1
           `).get(row.invoice_id)
           lastPaymentIn = {
@@ -511,6 +519,42 @@ router.get('/factures/:id', (req, res) => {
       product_name: r.product_name,
       product_sku: r.product_sku,
     }))
+    // Rabais (coupons Stripe). Récupérés en live depuis Stripe — non stockés en DB.
+    // total_discount_amounts donne les montants par discount appliqué à la facture.
+    let discounts = []
+    if (row.invoice_id) {
+      const key = getStripeKey()
+      if (key) {
+        try {
+          const stripe = new Stripe(key)
+          // Stripe API ≥ 2024 : le coupon est sous discount.source.coupon.
+          // Stripe limite l'expand à 4 niveaux donc on expand discounts (la
+          // collection au niveau invoice) et on rejoint avec total_discount_amounts.
+          const inv = await stripe.invoices.retrieve(row.invoice_id, {
+            expand: ['discounts.source.coupon'],
+          })
+          const couponByDiscountId = {}
+          for (const dd of inv.discounts || []) {
+            if (typeof dd === 'object' && dd?.id) {
+              couponByDiscountId[dd.id] = dd.source?.coupon || dd.coupon || null
+            }
+          }
+          discounts = (inv.total_discount_amounts || [])
+            .filter(d => d.amount > 0)
+            .map(d => {
+              const discountId = typeof d.discount === 'string' ? d.discount : d.discount?.id
+              const coupon = (discountId && couponByDiscountId[discountId])
+                || (typeof d.discount === 'object' ? (d.discount?.source?.coupon || d.discount?.coupon || null) : null)
+              return {
+                amount: d.amount / 100,
+                label: coupon?.name || coupon?.id || 'Rabais',
+              }
+            })
+        } catch (e) {
+          console.error(`Stripe discount fetch failed for ${row.invoice_id}:`, e.message)
+        }
+      }
+    }
     return res.json({
       ...row,
       source: 'stripe',
@@ -522,6 +566,7 @@ router.get('/factures/:id', (req, res) => {
       payments_in_count: paymentsInCount,
       is_sent: row.has_linked_shipment === 1 || row.is_sent_manual === 1,
       items,
+      discounts,
     })
   }
   // Fall back to pending_invoices for unpaid drafts/sent
@@ -700,6 +745,7 @@ router.patch('/factures/:id', (req, res) => {
     LEFT JOIN orders o ON f.order_id = o.id
     WHERE f.id = ?
   `).get(req.params.id)
+  emitEntity('facture', 'updated', req.params.id, row, req.user?.id)
   res.json(row)
 })
 
@@ -792,6 +838,153 @@ function findRachatCandidate(companyId, cancelDate, usdRate) {
   return best
 }
 
+// GET /api/projets/abonnement-events — liste plate de tous les events
+// d'abonnement (creation/update/cancel/...) avec joins sur subscription
+// + company. Utilisée par la page Mouvements d'abonnements.
+//
+// Filtres optionnels : ?category, ?event_type, ?company_id, ?subscription_id.
+// Pagination : ?limit=all pour tout charger ; sinon ?page&limit (défaut 50).
+//
+// company_id résolu via COALESCE(e.company_id, s.company_id) — certains events
+// legacy ont e.company_id null alors que l'abonnement parent est rattaché.
+router.get('/abonnement-events', (req, res) => {
+  const { category, event_type, company_id, subscription_id, page = 1, limit = 50 } = req.query
+  const limitAll = limit === 'all'
+  const limitVal = limitAll ? -1 : parseInt(limit)
+  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+
+  let where = 'WHERE 1=1'
+  const params = []
+  if (category)        { where += ' AND e.category = ?';        params.push(category) }
+  if (event_type)      { where += ' AND e.event_type = ?';      params.push(event_type) }
+  if (subscription_id) { where += ' AND e.subscription_id = ?'; params.push(subscription_id) }
+  if (company_id)      { where += ' AND COALESCE(e.company_id, s.company_id) = ?'; params.push(company_id) }
+
+  const total = db.prepare(`
+    SELECT COUNT(*) AS c
+    FROM subscription_events e
+    LEFT JOIN subscriptions s ON e.subscription_id = s.id
+    ${where}
+  `).get(...params).c
+
+  const rows = db.prepare(`
+    SELECT
+      e.id, e.event_date, e.event_type, e.category,
+      e.previous_amount_cad, e.new_amount_cad, e.amount_cad_delta,
+      e.currency, e.created_at, e.subscription_id,
+      COALESCE(e.company_id, s.company_id) AS company_id,
+      s.stripe_id AS stripe_subscription_id,
+      co.name AS company_name,
+      e.rachat_status, e.rachat_order_id, e.rachat_checked_at,
+      o.order_number AS rachat_order_number
+    FROM subscription_events e
+    LEFT JOIN subscriptions s ON e.subscription_id = s.id
+    LEFT JOIN companies co ON co.id = COALESCE(e.company_id, s.company_id)
+    LEFT JOIN orders o ON o.id = e.rachat_order_id
+    ${where}
+    ORDER BY e.event_date DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, limitVal, offset)
+
+  res.json({ data: rows, total, page: parseInt(page), limit: limitAll ? 'all' : parseInt(limit) })
+})
+
+// PATCH /api/projets/abonnement-events/:id/rachat
+// Met à jour manuellement le statut de rachat d'un event de churn et
+// optionnellement la commande candidate. Side effect : émet un realtime
+// `subscription_event:updated` pour rafraîchir les UI.
+router.patch('/abonnement-events/:id/rachat', (req, res) => {
+  const ev = db.prepare(
+    'SELECT id, subscription_id, category FROM subscription_events WHERE id=?'
+  ).get(req.params.id)
+  if (!ev) return res.status(404).json({ error: 'Événement introuvable' })
+  if (ev.category !== 'churn') {
+    return res.status(400).json({ error: 'Le rachat ne s\'applique qu\'aux events de churn' })
+  }
+
+  const { status, order_id } = req.body || {}
+  const VALID_STATUSES = [null, 'probable', 'confirmed', 'none']
+  if (status !== undefined && !VALID_STATUSES.includes(status)) {
+    return res.status(400).json({ error: `status doit être null, 'probable', 'confirmed' ou 'none'` })
+  }
+  if (order_id !== undefined && order_id !== null) {
+    const exists = db.prepare('SELECT id FROM orders WHERE id=? AND deleted_at IS NULL').get(order_id)
+    if (!exists) return res.status(400).json({ error: 'order_id introuvable' })
+  }
+
+  const updates = []
+  const params = []
+  if (status !== undefined) { updates.push('rachat_status=?'); params.push(status) }
+  if (order_id !== undefined) { updates.push('rachat_order_id=?'); params.push(order_id) }
+  // Marque comme checked dès qu'un user touche au statut.
+  updates.push('rachat_checked_at=?')
+  params.push(new Date().toISOString())
+
+  params.push(req.params.id)
+  db.prepare(`UPDATE subscription_events SET ${updates.join(', ')} WHERE id=?`).run(...params)
+  emitSubscriptionEvent('updated', req.params.id, ev.subscription_id, req.user?.id)
+  res.json({ ok: true })
+})
+
+// GET /api/projets/abonnement-events/:id/rachat-candidates
+// Liste les commandes du même client passées dans les 12 mois après le churn,
+// ordonnées par date ASC. Permet à l'utilisateur de choisir manuellement la
+// commande qui correspond au rachat.
+router.get('/abonnement-events/:id/rachat-candidates', (req, res) => {
+  const ev = db.prepare(`
+    SELECT e.id, e.event_date, e.category,
+           COALESCE(e.company_id, s.company_id) AS company_id
+    FROM subscription_events e
+    LEFT JOIN subscriptions s ON e.subscription_id = s.id
+    WHERE e.id = ?
+  `).get(req.params.id)
+  if (!ev) return res.status(404).json({ error: 'Événement introuvable' })
+  if (ev.category !== 'churn') return res.json({ data: [] })
+  if (!ev.company_id) return res.json({ data: [] })
+
+  const eventDateOnly = String(ev.event_date).slice(0, 10)
+  // Fallback created_at car date_commande est souvent NULL en prod (legacy).
+  const rows = db.prepare(`
+    SELECT
+      o.id, o.order_number, o.status,
+      COALESCE(o.date_commande, substr(o.created_at, 1, 10)) AS effective_date,
+      o.date_commande,
+      (SELECT COALESCE(SUM(oi.qty * oi.unit_cost), 0)
+       FROM order_items oi WHERE oi.order_id = o.id) AS total_value
+    FROM orders o
+    WHERE o.company_id = ?
+      AND o.deleted_at IS NULL
+      AND COALESCE(o.is_subscription, 0) = 0
+      AND COALESCE(o.date_commande, substr(o.created_at, 1, 10)) IS NOT NULL
+      AND COALESCE(o.date_commande, substr(o.created_at, 1, 10)) >= ?
+      AND COALESCE(o.date_commande, substr(o.created_at, 1, 10)) <= date(?, '+12 months')
+    ORDER BY effective_date ASC
+  `).all(ev.company_id, eventDateOnly, eventDateOnly)
+
+  res.json({ data: rows })
+})
+
+// POST /api/projets/abonnement-events/backfill-rachat (admin)
+// Repasse la détection sur tous les churns. Utile après un changement de
+// critère ou un import massif d'historiques.
+router.post('/abonnement-events/backfill-rachat', requireAdmin, (req, res) => {
+  const result = backfillRachatDetection()
+  res.json(result)
+})
+
+// POST /api/projets/abonnement-events/:id/detect-rachat
+// Re-déclenche manuellement la détection auto pour un event spécifique. Utile
+// si l'event a été créé avant que la fonctionnalité existe ou si une nouvelle
+// commande aurait pu changer le résultat.
+router.post('/abonnement-events/:id/detect-rachat', (req, res) => {
+  const ev = db.prepare('SELECT id, subscription_id, category FROM subscription_events WHERE id=?').get(req.params.id)
+  if (!ev) return res.status(404).json({ error: 'Événement introuvable' })
+  if (ev.category !== 'churn') return res.status(400).json({ error: 'Catégorie != churn' })
+  detectRachatForChurn(req.params.id)
+  emitSubscriptionEvent('updated', req.params.id, ev.subscription_id, req.user?.id)
+  res.json({ ok: true })
+})
+
 router.get('/abonnements', (req, res) => {
   const { company_id, status, page = 1, limit = 50 } = req.query
   const limitAll = limit === 'all'
@@ -852,9 +1045,12 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
   try {
     const stripe = new Stripe(key)
 
-    // Fetch subscription with line items expanded
+    // Fetch subscription with line items expanded.
+    // Stripe API ≥ 2024 : `subscription.discount` (singulier) est déprécié au
+    // profit de `subscription.discounts` (tableau), où chaque discount a une
+    // `source: { coupon: 'xxx', type: 'coupon' }`. L'expand passe par source.
     const sub = await stripe.subscriptions.retrieve(row.stripe_id, {
-      expand: ['items.data.price.product', 'discount.coupon'],
+      expand: ['items.data.price.product', 'discounts.source.coupon'],
     })
 
     const items = sub.items.data.map(si => ({
@@ -875,16 +1071,25 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
     ).all(row.id)
 
     const history = localEvents.map(ev => ({
+      id: ev.id,
       date: ev.event_date,
       type: ev.event_type,
-      changes: JSON.parse(ev.details || '[]'),
+      category: ev.category,
+      currency: ev.currency,
+      previous_amount_cad: ev.previous_amount_cad,
+      new_amount_cad: ev.new_amount_cad,
+      amount_cad_delta: ev.amount_cad_delta,
     }))
 
-    // Fetch invoices with line items for this subscription
+    // Fetch invoices with line items for this subscription. Stripe API ≥ 2024 :
+    // le coupon est sous discount.source.coupon. Stripe limite l'expand à 4
+    // niveaux donc on expand `data.discounts.source.coupon` (la collection au
+    // niveau invoice) et on rejoint avec `total_discount_amounts` par ID de
+    // discount pour récupérer le label par ligne d'amount.
     const invoices = await stripe.invoices.list({
       subscription: row.stripe_id,
       limit: 24,
-      expand: ['data.lines'],
+      expand: ['data.lines', 'data.discounts.source.coupon'],
     })
 
     const findLocalFacture = db.prepare(
@@ -893,9 +1098,30 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
 
     const invoiceHistory = invoices.data.map(inv => {
       const local = inv.number ? findLocalFacture.get(inv.number, inv.id) : findLocalFacture.get(null, inv.id)
+      // Total avant taxes (après remises). Fallback vers subtotal_excluding_tax
+      // puis subtotal pour les vieilles factures où total_excluding_tax peut être null.
+      const amountCents = inv.total_excluding_tax ?? inv.subtotal_excluding_tax ?? inv.subtotal ?? 0
+      // Map { discount_id → coupon } construite depuis inv.discounts expandé.
+      const couponByDiscountId = {}
+      for (const dd of inv.discounts || []) {
+        if (typeof dd === 'object' && dd?.id) {
+          couponByDiscountId[dd.id] = dd.source?.coupon || dd.coupon || null
+        }
+      }
+      const discounts = (inv.total_discount_amounts || [])
+        .filter(d => d.amount > 0)
+        .map(d => {
+          const discountId = typeof d.discount === 'string' ? d.discount : d.discount?.id
+          const coupon = (discountId && couponByDiscountId[discountId])
+            || (typeof d.discount === 'object' ? (d.discount?.source?.coupon || d.discount?.coupon || null) : null)
+          return {
+            amount: d.amount / 100,
+            label: coupon?.name || coupon?.id || 'Rabais',
+          }
+        })
       return {
         date: new Date(inv.created * 1000).toISOString(),
-        amount: inv.amount_paid / 100,
+        amount: amountCents / 100,
         currency: inv.currency?.toUpperCase(),
         status: inv.status,
         pdf: inv.invoice_pdf,
@@ -907,13 +1133,16 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
           quantity: li.quantity,
           proration: li.proration || false,
         })),
+        discounts,
       }
     })
 
-    const discount = sub.discount ? {
-      name: sub.discount.coupon.name || sub.discount.coupon.id,
-      percent_off: sub.discount.coupon.percent_off,
-      amount_off: sub.discount.coupon.amount_off ? sub.discount.coupon.amount_off / 100 : null,
+    // Premier discount actif sur la subscription (pattern Stripe API récent).
+    const subCoupon = sub.discounts?.[0]?.source?.coupon
+    const discount = subCoupon ? {
+      name: subCoupon.name || subCoupon.id,
+      percent_off: subCoupon.percent_off,
+      amount_off: subCoupon.amount_off ? subCoupon.amount_off / 100 : null,
     } : null
 
     res.json({ items, history, invoices: invoiceHistory, discount })
@@ -947,7 +1176,83 @@ router.patch('/abonnements/:id', (req, res) => {
   if (updates.length) {
     params.push(req.params.id)
     db.prepare(`UPDATE subscriptions SET ${updates.join(', ')} WHERE id=?`).run(...params)
+    const sub = db.prepare(`SELECT s.*, co.name as company_name FROM subscriptions s LEFT JOIN companies co ON s.company_id = co.id WHERE s.id = ?`).get(req.params.id)
+    emitEntity('subscription', 'updated', req.params.id, sub, req.user?.id)
   }
+  res.json({ ok: true })
+})
+
+// Édition manuelle d'une entrée d'historique d'abonnement.
+router.patch('/abonnements/:id/events/:eventId', (req, res) => {
+  const ev = db.prepare(
+    'SELECT id FROM subscription_events WHERE id=? AND subscription_id=?'
+  ).get(req.params.eventId, req.params.id)
+  if (!ev) return res.status(404).json({ error: 'Événement introuvable' })
+
+  const updates = []
+  const params = []
+  if (Object.prototype.hasOwnProperty.call(req.body, 'event_date')) {
+    const d = req.body.event_date
+    if (!d || typeof d !== 'string') return res.status(400).json({ error: 'event_date invalide' })
+    const parsed = new Date(d)
+    if (Number.isNaN(parsed.getTime())) return res.status(400).json({ error: 'event_date invalide' })
+    updates.push('event_date=?')
+    params.push(parsed.toISOString())
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'event_type')) {
+    const t = req.body.event_type
+    if (!t || typeof t !== 'string') return res.status(400).json({ error: 'event_type invalide' })
+    updates.push('event_type=?')
+    params.push(t)
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'category')) {
+    const cat = req.body.category
+    if (cat !== null && !SUBSCRIPTION_EVENT_CATEGORIES.includes(cat)) {
+      return res.status(400).json({ error: `category doit être null ou parmi : ${SUBSCRIPTION_EVENT_CATEGORIES.join(', ')}` })
+    }
+    updates.push('category=?')
+    params.push(cat)
+    // event_type est devenu redondant avec category (UI à colonne unique). On
+    // les garde alignés en DB pour faciliter la suppression future de la
+    // colonne event_type.
+    if (cat) {
+      updates.push('event_type=?')
+      params.push(cat)
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'currency')) {
+    const cur = req.body.currency
+    if (cur !== null && (typeof cur !== 'string' || !/^[A-Z]{3}$/.test(cur))) {
+      return res.status(400).json({ error: 'currency doit être null ou un code ISO 3 lettres majuscules' })
+    }
+    updates.push('currency=?')
+    params.push(cur)
+  }
+  for (const field of ['previous_amount_cad', 'new_amount_cad', 'amount_cad_delta']) {
+    if (Object.prototype.hasOwnProperty.call(req.body, field)) {
+      const v = req.body[field]
+      if (v !== null && (typeof v !== 'number' || !Number.isFinite(v))) {
+        return res.status(400).json({ error: `${field} doit être null ou un nombre` })
+      }
+      updates.push(`${field}=?`)
+      params.push(v)
+    }
+  }
+  if (!updates.length) return res.json({ ok: true })
+
+  params.push(req.params.eventId)
+  db.prepare(`UPDATE subscription_events SET ${updates.join(', ')} WHERE id=?`).run(...params)
+  emitSubscriptionEvent('updated', req.params.eventId, req.params.id, req.user?.id)
+  res.json({ ok: true })
+})
+
+router.delete('/abonnements/:id/events/:eventId', (req, res) => {
+  const ev = db.prepare(
+    'SELECT id FROM subscription_events WHERE id=? AND subscription_id=?'
+  ).get(req.params.eventId, req.params.id)
+  if (!ev) return res.status(404).json({ error: 'Événement introuvable' })
+  db.prepare('DELETE FROM subscription_events WHERE id=?').run(req.params.eventId)
+  emitSubscriptionEvent('deleted', req.params.eventId, req.params.id, req.user?.id)
   res.json({ ok: true })
 })
 
@@ -1129,6 +1434,7 @@ router.post('/factures/:id/recognize-revenue', async (req, res) => {
       LEFT JOIN orders o ON f.order_id = o.id
       WHERE f.id = ?
     `).get(req.params.id)
+    if (fresh) emitEntity('facture', 'updated', req.params.id, fresh, req.user?.id)
     res.json({ ...out, facture: fresh })
   } catch (e) {
     res.status(400).json({ error: e.message || 'Erreur lors de la création du Journal Entry' })

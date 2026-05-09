@@ -842,11 +842,10 @@ export function initSchema() {
     'ALTER TABLE table_view_pills ADD COLUMN group_by TEXT DEFAULT NULL',
     "ALTER TABLE table_view_pills ADD COLUMN group_order TEXT DEFAULT NULL",
     // subscription_events — colonnes structurées pour le panel "Mouvements
-    // d'abonnements" du dashboard. La structure historique (event_type/details)
-    // reste, on enrichit avec : company_id (cache pour groupements), montants
-    // delta + devise, stripe_event_id (idempotence des webhooks), category
-    // (renormalisation des event_type vers les catégories du dashboard :
-    // 'new' / 'churn' / 'upgrade' / 'downgrade' / 'reactivation' / 'other').
+    // d'abonnements" du dashboard et la page Mouvements. Catégories actuelles :
+    // 'creation' / 'upgrade' / 'downgrade' / 'churn' / 'reactivation'.
+    // event_type est conservé en DB mais devenu redondant avec category (UI
+    // à colonne unique) ; on les écrit identiques dans les nouveaux events.
     "ALTER TABLE subscription_events ADD COLUMN company_id TEXT REFERENCES companies(id)",
     "ALTER TABLE subscription_events ADD COLUMN category TEXT",
     "ALTER TABLE subscription_events ADD COLUMN amount_cad_delta REAL",
@@ -857,6 +856,17 @@ export function initSchema() {
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_subscription_events_stripe_event_id ON subscription_events(stripe_event_id) WHERE stripe_event_id IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_subscription_events_date ON subscription_events(event_date)",
     "CREATE INDEX IF NOT EXISTS idx_subscription_events_company ON subscription_events(company_id)",
+    // Migration unique catégories : 'new' → 'creation', supprime 'other' et
+    // les events sans catégorie (legacy pré-enrichissement, transitions
+    // active↔past_due qui ne sont plus enregistrées). Idempotent (sans effet
+    // au 2e démarrage).
+    "UPDATE subscription_events SET category = 'creation' WHERE category = 'new'",
+    "UPDATE subscription_events SET event_type = category WHERE category IN ('creation','upgrade','downgrade','churn','reactivation') AND (event_type IS NULL OR event_type != category)",
+    "DELETE FROM subscription_events WHERE category = 'other' OR category IS NULL",
+    // Ancien champ texte libre `details` (array JSON de strings + payload diagnostic
+    // webhook). Retiré : les colonnes structurées category/previous_amount_cad/
+    // new_amount_cad/amount_cad_delta/currency couvrent l'info utile.
+    "ALTER TABLE subscription_events DROP COLUMN details",
     "ALTER TABLE table_view_configs ADD COLUMN column_widths TEXT DEFAULT '{}'",
     // delivery address on orders and shipments
     'ALTER TABLE orders ADD COLUMN address_id TEXT REFERENCES adresses(id)',
@@ -1315,6 +1325,38 @@ export function initSchema() {
 
   try { db.exec("ALTER TABLE tasks ADD COLUMN keywords TEXT DEFAULT '[]'") } catch {}
   try { db.exec("ALTER TABLE tasks ADD COLUMN deleted_at TEXT") } catch {}
+
+  // ── Subscription events — détection de "rachat" après churn ──────────────
+  // Quand un client se désabonne (category='churn'), il arrive qu'il achète
+  // l'équipement à la place plutôt que de continuer la location. Les colonnes
+  // ci-dessous tracent ce cas : rachat_status (NULL=non vérifié, 'probable'=auto
+  // détecté, 'confirmed'=confirmé manuel, 'none'=pas de rachat), rachat_order_id
+  // pointe sur la commande candidate, rachat_checked_at = dernier passage de la
+  // détection auto. Cf. logique dans services/subscriptionEvents.js.
+  try { db.exec("ALTER TABLE subscription_events ADD COLUMN rachat_status TEXT") } catch {}
+  try { db.exec("ALTER TABLE subscription_events ADD COLUMN rachat_order_id TEXT REFERENCES orders(id)") } catch {}
+  try { db.exec("ALTER TABLE subscription_events ADD COLUMN rachat_checked_at TEXT") } catch {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_subscription_events_rachat_status ON subscription_events(rachat_status) WHERE rachat_status IS NOT NULL") } catch {}
+
+  // Snapshots des items d'abonnement avant / après l'événement. JSON arrays
+  // de { stripe_item_id, stripe_price_id, stripe_product_id, name, quantity,
+  // unit_amount, currency, recurring_interval }. Permet à l'UI "Mouvements
+  // d'abonnements" d'afficher immédiatement les produits ajoutés/retirés sur
+  // un upgrade/downgrade — sans dépendre de la facturation suivante.
+  try { db.exec("ALTER TABLE subscription_events ADD COLUMN items_before_json TEXT") } catch {}
+  try { db.exec("ALTER TABLE subscription_events ADD COLUMN items_after_json TEXT") } catch {}
+
+  // Miroir de l'état courant des items par abonnement, mis à jour à chaque
+  // webhook / polling. Source de vérité pour le snapshot "before" lors du
+  // recordEvent suivant (le payload webhook ne contient que l'état nouveau).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS subscription_current_items (
+      subscription_id TEXT PRIMARY KEY REFERENCES subscriptions(id),
+      items_json TEXT NOT NULL,
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+  `)
+
   try { db.exec("ALTER TABLE tasks ADD COLUMN hubspot_task_id TEXT") } catch {}
   try { db.exec("ALTER TABLE tasks ADD COLUMN last_hubspot_sync TEXT") } catch {}
   try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_hubspot_id ON tasks(hubspot_task_id) WHERE hubspot_task_id IS NOT NULL") } catch {}
@@ -1655,6 +1697,19 @@ export function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_custom_fields_table ON custom_fields(erp_table) WHERE deleted_at IS NULL;
   `)
 
+  // Champs custom — extensions formule / lookup.
+  // kind = 'data' : colonne réelle ALTER TABLE ADD COLUMN (l'existant)
+  // kind = 'formula' : expression SQLite stockée, exposée via la VUE <table>_v
+  //   (pas de colonne physique sur la table source — la vue calcule à la lecture)
+  // kind = 'lookup' : pareil que formula mais via un JOIN FK → table cible
+  // result_type pilote l'affichage côté client (text/number/date)
+  try { db.exec("ALTER TABLE custom_fields ADD COLUMN kind TEXT NOT NULL DEFAULT 'data'") } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN formula_expr TEXT') } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN lookup_fk TEXT') } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN lookup_target_table TEXT') } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN lookup_target_column TEXT') } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN result_type TEXT') } catch {}
+
   // Legacy tickets.slack_notified_hardware column — superseded by automation_rule_fires.
   // Drop it once the field_rule engine has taken over.
   if (db.pragma('table_info(tickets)').some(c => c.name === 'slack_notified_hardware')) {
@@ -1762,6 +1817,8 @@ export function initSchema() {
     );
     CREATE INDEX IF NOT EXISTS idx_sbt_payout ON stripe_balance_transactions(payout_stripe_id);
     CREATE INDEX IF NOT EXISTS idx_sbt_type ON stripe_balance_transactions(type);
+    CREATE INDEX IF NOT EXISTS idx_sbt_source ON stripe_balance_transactions(source_id);
+    CREATE INDEX IF NOT EXISTS idx_sbt_invoice ON stripe_balance_transactions(stripe_invoice_id);
   `)
 
   // Stripe invoice line items — un row par ligne de facture Stripe (option C : pas dédupé).
@@ -2078,6 +2135,33 @@ export function initSchema() {
       cfg?.default_sort || '[]',
       null, '[]', 0,
     )
+  }
+
+  // Migration `mois_du_document` → champ formule custom_fields.
+  // L'ancienne colonne physique sur `factures` était populée par certains
+  // chemins (Airtable sync, refunds backfill) mais pas par le webhook Stripe
+  // moderne — résultat : 131 factures avec NULL alors que la valeur est
+  // trivialement dérivable de document_date. La nouvelle approche : la
+  // formule vit dans custom_fields, exposée via la VUE factures_v.
+  try {
+    const factCols = db.pragma('table_info(factures)').map(c => c.name)
+    if (factCols.includes('mois_du_document')) {
+      db.exec('ALTER TABLE factures DROP COLUMN mois_du_document')
+      console.log('✅ Factures: dropped mois_du_document column (migré en formule)')
+    }
+    // Insertion idempotente du champ formule (si déjà présent, skip)
+    const exists = db.prepare(
+      `SELECT 1 FROM custom_fields WHERE erp_table='factures' AND column_name='cf_mois_du_document' AND deleted_at IS NULL`
+    ).get()
+    if (!exists) {
+      db.prepare(`
+        INSERT INTO custom_fields (id, erp_table, name, column_name, type, kind, formula_expr, result_type, sort_order)
+        VALUES (?, 'factures', 'Mois du document', 'cf_mois_du_document', 'text', 'formula', 'substr(document_date, 1, 7)', 'text', 0)
+      `).run(randomUUID())
+      console.log('✅ Factures: champ formule cf_mois_du_document créé')
+    }
+  } catch (e) {
+    console.warn('⚠️  Migration mois_du_document:', e.message)
   }
 
   console.log('Database schema initialized');

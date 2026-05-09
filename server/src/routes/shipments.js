@@ -10,9 +10,22 @@ import * as postmark from 'postmark'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { getAutomationFrom } from '../services/postmarkConfig.js'
 import { recognizeRevenueForOrder } from '../services/quickbooks.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
 
 const router = Router()
 router.use(requireAuth)
+
+function buildShipmentRow(id) {
+  return db.prepare(`
+    SELECT s.*, o.order_number, o.company_id, c.name as company_name, ${ADDRESS_COLS}
+    FROM shipments s
+    LEFT JOIN orders o ON s.order_id = o.id
+    LEFT JOIN companies c ON o.company_id = c.id
+    LEFT JOIN adresses a ON s.address_id = a.id
+    LEFT JOIN contacts ct ON a.contact_id = ct.id
+    WHERE s.id = ?
+  `).get(id)
+}
 
 const ADDRESS_COLS = `
   s.address_id,
@@ -130,16 +143,8 @@ router.post('/', (req, res) => {
   `).run(id, order_id, tracking_number || null, carrier || null,
     status || 'À envoyer', shipped_at || null, notes || null, address_id || null, pays || null)
 
-  const created = db.prepare(`
-    SELECT s.*, o.order_number, o.company_id, c.name as company_name, ${ADDRESS_COLS}
-    FROM shipments s
-    LEFT JOIN orders o ON s.order_id = o.id
-    LEFT JOIN companies c ON o.company_id = c.id
-    LEFT JOIN adresses a ON s.address_id = a.id
-    LEFT JOIN contacts ct ON a.contact_id = ct.id
-    WHERE s.id = ?
-  `).get(id)
-
+  const created = buildShipmentRow(id)
+  emitEntity('shipment', 'created', id, created, req.user?.id)
   res.status(201).json(created)
 })
 
@@ -206,16 +211,8 @@ router.patch('/:id', (req, res) => {
     }
   }
 
-  const updated = db.prepare(`
-    SELECT s.*, o.order_number, o.company_id, c.name as company_name, ${ADDRESS_COLS}
-    FROM shipments s
-    LEFT JOIN orders o ON s.order_id = o.id
-    LEFT JOIN companies c ON o.company_id = c.id
-    LEFT JOIN adresses a ON s.address_id = a.id
-    LEFT JOIN contacts ct ON a.contact_id = ct.id
-    WHERE s.id = ?
-  `).get(req.params.id)
-
+  const updated = buildShipmentRow(req.params.id)
+  emitEntity('shipment', 'updated', req.params.id, updated, req.user?.id)
   res.json(updated)
 })
 
@@ -728,6 +725,7 @@ router.delete('/:id', (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Envoi introuvable' })
 
   db.prepare("UPDATE shipments SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id)
+  emitEntity('shipment', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ success: true })
 })
 

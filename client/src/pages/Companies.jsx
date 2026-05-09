@@ -10,6 +10,7 @@ import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 
 const TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin',
   'Agriculture urbaine', 'Cannabis', 'Particulier', 'Distributeur', 'Partenaire',
@@ -139,6 +140,17 @@ export default function Companies() {
   }, [farmProvince, shippingProvince])
 
   useEffect(() => { load() }, [load])
+
+  useRealtimeChannel('companies:list', (msg) => {
+    if (msg.type === 'company:created') {
+      if (farmProvince || shippingProvince) return // province-filtered view: defer
+      setCompanies(prev => prev.some(c => c.id === msg.payload.id) ? prev : [msg.payload, ...prev])
+    } else if (msg.type === 'company:updated') {
+      setCompanies(prev => prev.map(c => c.id === msg.payload.id ? { ...c, ...msg.payload } : c))
+    } else if (msg.type === 'company:deleted') {
+      setCompanies(prev => prev.filter(c => c.id !== msg.payload.id))
+    }
+  })
 
   async function handleCreate(form) {
     await api.companies.create(form)

@@ -4,6 +4,7 @@ import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 function fmtCad(n) {
@@ -418,6 +419,8 @@ export default function SaleReceipts() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEntityListRealtime('sale_receipt', setReceipts)
 
   // Refresh selected receipt when it's in processing state
   useEffect(() => {

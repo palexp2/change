@@ -9,6 +9,7 @@ import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 
@@ -164,6 +165,8 @@ export default function Envois() {
     api.orders.lookup().then(setOrders).catch(() => {})
     api.adresses.lookup().then(setAdresses).catch(() => {})
   }, [])
+
+  useEntityListRealtime('shipment', setEnvois)
 
   async function handleCreate(form) {
     const envoi = await api.shipments.create(form)

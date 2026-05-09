@@ -11,6 +11,7 @@ import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import TaskForm from '../components/TaskForm.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 
@@ -94,6 +95,8 @@ export default function Tasks() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEntityListRealtime('task', setTasks)
 
   useEffect(() => {
     api.auth.users().then(u => setUsers(u || [])).catch(() => {})

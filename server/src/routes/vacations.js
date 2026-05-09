@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -41,7 +42,9 @@ router.post('/', (req, res) => {
     paid === 0 || paid === false ? 0 : 1,
     notes || null,
   )
-  res.status(201).json(db.prepare('SELECT * FROM vacations WHERE id = ?').get(id))
+  const row = db.prepare('SELECT * FROM vacations WHERE id = ?').get(id)
+  emitEntity('vacation', 'created', id, row, req.user?.id)
+  res.status(201).json(row)
 })
 
 const PATCHABLE = new Set(['start_date', 'end_date', 'paid', 'notes'])
@@ -66,13 +69,16 @@ router.patch('/:id', (req, res) => {
   updates.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
   params.push(req.params.id)
   db.prepare(`UPDATE vacations SET ${updates.join(', ')} WHERE id = ?`).run(...params)
-  res.json(db.prepare('SELECT * FROM vacations WHERE id = ?').get(req.params.id))
+  const updated = db.prepare('SELECT * FROM vacations WHERE id = ?').get(req.params.id)
+  emitEntity('vacation', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
 })
 
 router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM vacations WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
   db.prepare('DELETE FROM vacations WHERE id = ?').run(req.params.id)
+  emitEntity('vacation', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })
 })
 

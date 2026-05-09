@@ -3,7 +3,8 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Truck, Package, FileText, X,
   GripVertical, Copy, Check, Trash2, ScanBarcode, Boxes,
-  MapPin, Clock, ChevronDown, ChevronRight, AlertCircle
+  MapPin, Clock, ChevronDown, ChevronRight, AlertCircle, ExternalLink,
+  Key, Terminal as TerminalIcon
 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
@@ -11,6 +12,7 @@ import { Badge, orderStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { fmtDate } from '../lib/formatDate.js'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
 
@@ -636,6 +638,37 @@ export default function OrderDetail() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [id])
 
+  // Realtime: another tab/user mutates this order → merge into local state.
+  // Item events (`order:item:*`) need full-record refetch for bulk/reorder
+  // because the payload doesn't carry enough; for simple created/updated/
+  // deleted we mutate `items` in place.
+  useRealtimeChannel(id ? `order:${id}` : null, (msg) => {
+    if (msg.type === 'order:updated') {
+      setOrder(o => o ? { ...o, ...msg.payload } : o)
+    } else if (msg.type === 'order:deleted') {
+      navigate('/orders')
+    } else if (msg.type === 'order:item:created') {
+      setOrder(o => {
+        if (!o) return o
+        if ((o.items || []).some(i => i.id === msg.payload.id)) return o
+        return { ...o, items: [...(o.items || []), { ...msg.payload, serials: [] }] }
+      })
+    } else if (msg.type === 'order:item:updated') {
+      setOrder(o => {
+        if (!o) return o
+        return { ...o, items: (o.items || []).map(i => i.id === msg.payload.id ? { ...i, ...msg.payload } : i) }
+      })
+    } else if (msg.type === 'order:item:deleted') {
+      setOrder(o => {
+        if (!o) return o
+        return { ...o, items: (o.items || []).filter(i => i.id !== msg.payload.id) }
+      })
+    } else if (msg.type === 'order:item:bulk_updated' || msg.type === 'order:item:reordered') {
+      // Payload doesn't include the full new item set — refetch.
+      load()
+    }
+  })
+
   async function handleDeleteItem(itemId) {
     await api.orders.deleteItem(id, itemId)
     setOrder(o => ({ ...o, items: o.items.filter(i => i.id !== itemId) }))
@@ -830,6 +863,21 @@ export default function OrderDetail() {
                   </Link>
                 </React.Fragment>
               ))}
+              {order.central_controllers?.map(cc => (
+                <React.Fragment key={cc.address}>
+                  <span className="text-slate-300">·</span>
+                  <a
+                    href={`https://app.orisha.io/#admin/${encodeURIComponent(cc.address)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={cc.serial ? `Contrôleur ${cc.serial} · adresse ${cc.address}` : `Adresse ${cc.address}`}
+                    className="inline-flex items-center gap-1 text-brand-600 hover:underline"
+                  >
+                    <ExternalLink size={12} />
+                    {order.central_controllers.length === 1 ? 'Ouvrir dans Orisha' : `Orisha ${cc.address}`}
+                  </a>
+                </React.Fragment>
+              ))}
               <span className="text-slate-300">·</span>
               <span>Créée le {fmtDate(order.created_at)}</span>
               {order.date_commande && <><span className="text-slate-300">·</span><span>Commande du {fmtDate(order.date_commande)}</span></>}
@@ -1008,6 +1056,65 @@ export default function OrderDetail() {
             </tbody>
           </table>
         </div>
+
+        {/* Permissions section — items JWT de la commande + contrôleurs du client */}
+        {(() => {
+          const jwtItems = (order.items || []).filter(i => i.product_type === 'JWT')
+          if (jwtItems.length === 0) return null
+          const controllers = order.central_controllers || []
+          return (
+            <div className="card mb-4">
+              <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-slate-200 flex-wrap">
+                <div className="flex items-center gap-2">
+                  <Key size={16} className="text-slate-400" />
+                  <h2 className="font-semibold text-slate-900">Permissions ({jwtItems.length})</h2>
+                </div>
+                <div className="flex flex-col items-end gap-1.5">
+                  {controllers.length === 0 ? (
+                    <span className="text-xs text-slate-400 italic">Aucun contrôleur opérationnel</span>
+                  ) : (
+                    controllers.map(cc => (
+                      <div key={cc.address} className="flex items-center gap-2 text-sm">
+                        <span className="text-slate-500">Contrôleur</span>
+                        <span className="font-mono text-slate-800">{cc.address}</span>
+                        <a
+                          href={`orisha-config://configure?controller=${encodeURIComponent(cc.address)}`}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-brand-50 text-brand-700 hover:bg-brand-100 text-xs font-medium border border-brand-200"
+                          title={`Ouvrir le terminal pour configurer ${cc.address}`}
+                        >
+                          <TerminalIcon size={12} />
+                          Configurer
+                        </a>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-100 bg-slate-50">
+                    <th className="text-left px-5 py-3 text-xs font-semibold text-slate-500">Permission</th>
+                    <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">SKU</th>
+                    <th className="text-center px-3 py-3 text-xs font-semibold text-slate-500 w-16">Qté</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {jwtItems.map(item => (
+                    <tr key={item.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                      <td className="px-5 py-2.5">
+                        {item.product_id
+                          ? <Link to={`/products/${item.product_id}`} className="text-slate-900 hover:text-brand-600 hover:underline">{item.product_name || 'Produit inconnu'}</Link>
+                          : <span className="text-slate-900">{item.product_name || 'Produit inconnu'}</span>}
+                      </td>
+                      <td className="px-3 py-2.5 hidden sm:table-cell font-mono text-xs text-slate-500">{item.sku || '—'}</td>
+                      <td className="px-3 py-2.5 text-center font-bold text-slate-900">{item.qty}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )
+        })()}
 
         {/* Shipments section */}
         <div className="card mb-4">

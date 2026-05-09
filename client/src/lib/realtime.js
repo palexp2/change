@@ -1,0 +1,153 @@
+// Singleton WebSocket client for the ERP realtime channel.
+//
+// Wire protocol (mirrors server/src/services/realtime.js):
+//   client → server : { type: 'auth', token }                          // first message
+//                     { type: 'subscribe' | 'unsubscribe', channel }
+//   server → client : { type: 'auth:success' }
+//                     { type: 'subscribed', channel }
+//                     { type: '<entity>:<verb>', channel, payload, actorUserId, ts }
+//                     { type: 'sync:progress' | 'agent:task:updated' | 'agent:task:stream', ... }
+//
+// Re-emits legacy global events as window CustomEvent for back-compat with
+// the previous Layout.jsx wiring (taskRunner, sync progress).
+
+const WS_PATH = '/erp/ws'
+const RECONNECT_BASE_MS = 1000
+const RECONNECT_MAX_MS = 30000
+
+const state = {
+  ws: null,
+  authed: false,
+  reconnectAttempts: 0,
+  reconnectTimer: null,
+  /** @type {Map<string, Set<(msg: any) => void>>} */
+  channelHandlers: new Map(),
+  pendingSubscribes: new Set(),
+}
+
+function token() {
+  return localStorage.getItem('erp_token')
+}
+
+function isOpen() {
+  return state.ws && state.ws.readyState === 1 // WebSocket.OPEN
+}
+
+function send(obj) {
+  if (!isOpen()) return false
+  try {
+    state.ws.send(JSON.stringify(obj))
+    return true
+  } catch { return false }
+}
+
+function flushSubscriptions() {
+  for (const ch of state.channelHandlers.keys()) send({ type: 'subscribe', channel: ch })
+  state.pendingSubscribes.clear()
+}
+
+function scheduleReconnect() {
+  if (state.reconnectTimer) return
+  const delay = Math.min(RECONNECT_BASE_MS * Math.pow(2, state.reconnectAttempts), RECONNECT_MAX_MS)
+  state.reconnectAttempts++
+  state.reconnectTimer = setTimeout(() => {
+    state.reconnectTimer = null
+    open()
+  }, delay)
+}
+
+function open() {
+  if (state.ws && state.ws.readyState <= 1) return // already opening or open
+  const t = token()
+  if (!t) return
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const ws = new WebSocket(`${protocol}//${window.location.host}${WS_PATH}`)
+  state.ws = ws
+
+  ws.onopen = () => {
+    state.reconnectAttempts = 0
+    ws.send(JSON.stringify({ type: 'auth', token: t }))
+  }
+
+  ws.onmessage = (ev) => {
+    let msg
+    try { msg = JSON.parse(ev.data) } catch { return }
+
+    if (msg.type === 'auth:success') {
+      state.authed = true
+      flushSubscriptions()
+      return
+    }
+    if (msg.type === 'subscribed') return // ack — nothing to do
+
+    // Back-compat global events
+    if (msg.type === 'agent:task:updated') {
+      window.dispatchEvent(new CustomEvent('agent:task:updated', { detail: msg.task }))
+      return
+    }
+    if (msg.type === 'agent:task:stream') {
+      window.dispatchEvent(new CustomEvent('agent:task:stream', { detail: msg }))
+      return
+    }
+    if (msg.type === 'sync:progress') {
+      window.dispatchEvent(new CustomEvent('sync:progress', { detail: msg }))
+      return
+    }
+
+    // Channel-routed event
+    if (msg.channel && state.channelHandlers.has(msg.channel)) {
+      const handlers = state.channelHandlers.get(msg.channel)
+      for (const fn of handlers) {
+        try { fn(msg) } catch (e) { console.error('realtime handler error', e) }
+      }
+    }
+  }
+
+  ws.onclose = () => {
+    state.authed = false
+    state.ws = null
+    if (token()) scheduleReconnect()
+  }
+
+  ws.onerror = () => {} // close will fire next
+}
+
+export function connect() {
+  if (typeof import.meta !== 'undefined' && !import.meta.env.VITE_REALTIME_ENABLED) return
+  open()
+}
+
+export function disconnect() {
+  if (state.reconnectTimer) { clearTimeout(state.reconnectTimer); state.reconnectTimer = null }
+  state.channelHandlers.clear()
+  if (state.ws) {
+    try { state.ws.close() } catch {}
+    state.ws = null
+  }
+  state.authed = false
+}
+
+/**
+ * Subscribe to a channel. Returns an unsubscribe function.
+ * Safe to call before connect — subscriptions are sent once authed.
+ */
+export function subscribe(channel, handler) {
+  let set = state.channelHandlers.get(channel)
+  if (!set) {
+    set = new Set()
+    state.channelHandlers.set(channel, set)
+    if (state.authed) send({ type: 'subscribe', channel })
+    else state.pendingSubscribes.add(channel)
+  }
+  set.add(handler)
+
+  return () => {
+    const s = state.channelHandlers.get(channel)
+    if (!s) return
+    s.delete(handler)
+    if (s.size === 0) {
+      state.channelHandlers.delete(channel)
+      send({ type: 'unsubscribe', channel })
+    }
+  }
+}

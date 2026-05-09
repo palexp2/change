@@ -11,6 +11,7 @@ import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 
 const RENDERS = {
   full_name: row => (
@@ -115,6 +116,8 @@ export default function Contacts() {
   useEffect(() => {
     api.companies.lookup().then(setCompanies).catch(() => {})
   }, [])
+
+  useEntityListRealtime('contact', setContacts)
 
   async function handleCreate(form) {
     await api.contacts.create(form)

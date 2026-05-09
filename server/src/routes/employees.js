@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -57,7 +58,9 @@ router.post('/', (req, res) => {
   const vals = [id, ...ALLOWED.filter(k => k in req.body).map(k => req.body[k] ?? null)]
   const placeholders = cols.map(() => '?').join(',')
   db.prepare(`INSERT INTO employees (${cols.join(',')}) VALUES (${placeholders})`).run(...vals)
-  res.status(201).json(db.prepare('SELECT * FROM employees WHERE id=?').get(id))
+  const row = db.prepare('SELECT * FROM employees WHERE id=?').get(id)
+  emitEntity('employee', 'created', id, row, req.user?.id)
+  res.status(201).json(row)
 })
 
 router.patch('/:id', (req, res) => {
@@ -71,13 +74,16 @@ router.patch('/:id', (req, res) => {
   }
 
   db.prepare(`UPDATE employees SET ${fields.join(',')} WHERE id=?`).run(...params, req.params.id)
-  res.json(db.prepare('SELECT * FROM employees WHERE id=?').get(req.params.id))
+  const updated = db.prepare('SELECT * FROM employees WHERE id=?').get(req.params.id)
+  emitEntity('employee', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
 })
 
 router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM employees WHERE id=?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
   db.prepare('DELETE FROM employees WHERE id=?').run(req.params.id)
+  emitEntity('employee', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })
 })
 

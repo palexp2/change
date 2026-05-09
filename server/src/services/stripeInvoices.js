@@ -1,5 +1,6 @@
 import db from '../db/database.js'
 import Stripe from 'stripe'
+import { emitCompany } from './realtimeEmitters.js'
 
 function getStripeKey() {
   const row = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'").get()
@@ -37,6 +38,7 @@ export async function ensureStripeCustomer(stripe, companyId) {
   })
   db.prepare('UPDATE companies SET stripe_customer_id=?, updated_at=strftime(\'%Y-%m-%dT%H:%M:%fZ\', \'now\') WHERE id=?')
     .run(created.id, companyId)
+  emitCompany('updated', companyId, null)
   return created.id
 }
 

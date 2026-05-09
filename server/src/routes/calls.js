@@ -9,6 +9,22 @@ import db from '../db/database.js'
 import { enqueueTranscription } from '../services/whisper.js'
 import { getDriveClient } from '../connectors/google.js'
 import { normalizeToUtcIso } from '../utils/datetime.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
+
+function buildCallRow(callId) {
+  return db.prepare(`
+    SELECT ca.*, i.contact_id, i.company_id, i.user_id, i.timestamp, i.direction AS interaction_direction,
+           c.name AS company_name,
+           ct.first_name AS contact_first_name, ct.last_name AS contact_last_name,
+           u.name AS user_name
+    FROM calls ca
+    JOIN interactions i ON ca.interaction_id = i.id
+    LEFT JOIN companies c ON i.company_id = c.id
+    LEFT JOIN contacts ct ON i.contact_id = ct.id
+    LEFT JOIN users u ON i.user_id = u.id
+    WHERE ca.id = ?
+  `).get(callId)
+}
 
 const router = Router()
 
@@ -118,6 +134,7 @@ router.post('/ftp-ingest', requireFtpSecret, upload.single('recording'), async (
   enqueueTranscription(callId, filePath).catch(console.error)
 
   console.log(`📞 FTP ingest: ${origName} → vendeur=${ftp_username}, contact=${resolvedContactId || 'non résolu'}`)
+  emitEntity('call', 'created', callId, buildCallRow(callId), null)
   res.status(201).json({ id: callId, interaction_id: interactionId, contact_matched: !!resolvedContactId })
 })
 
@@ -150,6 +167,7 @@ router.post('/upload', requireAuth, upload.single('recording'), async (req, res)
   const filePath = join(uploadsDir, req.file.filename)
   enqueueTranscription(callId, filePath).catch(console.error)
 
+  emitEntity('call', 'created', callId, buildCallRow(callId), req.user?.id)
   res.status(201).json({ id: callId, interaction_id: interactionId })
 })
 

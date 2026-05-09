@@ -4,6 +4,7 @@ import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
 import { getActiveCustomColumns } from './custom-fields.js';
+import { emitEntity } from '../services/realtimeEmitters.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -144,6 +145,7 @@ router.post('/', (req, res) => {
   const project = db.prepare(
     `SELECT p.*, c.name as company_name FROM projects p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?`
   ).get(id);
+  emitEntity('project', 'created', id, project, req.user?.id);
   res.status(201).json(project);
 });
 
@@ -165,7 +167,9 @@ router.put('/:id', (req, res) => {
       .run(...values, req.params.id);
   }
 
-  res.json(db.prepare('SELECT p.*, c.name as company_name FROM projects p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?').get(req.params.id));
+  const updated = db.prepare('SELECT p.*, c.name as company_name FROM projects p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?').get(req.params.id)
+  emitEntity('project', 'updated', req.params.id, updated, req.user?.id);
+  res.json(updated);
 });
 
 // PATCH /api/projects/:id/status
@@ -179,6 +183,8 @@ router.patch('/:id/status', (req, res) => {
   }
   db.prepare(`UPDATE projects SET status=?, refusal_reason=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
     .run(status, refusal_reason || null, req.params.id);
+  const updated = db.prepare('SELECT p.*, c.name as company_name FROM projects p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?').get(req.params.id)
+  emitEntity('project', 'updated', req.params.id, updated, req.user?.id);
   res.json({ message: 'Status updated' });
 });
 
@@ -187,6 +193,7 @@ router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM projects WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Project not found' });
   db.prepare("UPDATE projects SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);
+  emitEntity('project', 'deleted', req.params.id, { id: req.params.id }, req.user?.id);
   res.json({ message: 'Deleted' });
 });
 

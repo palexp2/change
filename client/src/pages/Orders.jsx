@@ -11,6 +11,7 @@ import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 
 
 const RENDERS = {
@@ -111,6 +112,19 @@ export default function Orders() {
     api.companies.lookup().then(setCompanies).catch(() => {})
     api.admin.listUsers().then(setUsers).catch(() => {})
   }, [])
+
+  useRealtimeChannel('orders:list', (msg) => {
+    // No self-event filter: the same user can be in multiple tabs, and the
+    // merges below are idempotent (created skips dup ids, updated is a
+    // shallow merge, deleted filters by id).
+    if (msg.type === 'order:created') {
+      setOrders(prev => prev.some(o => o.id === msg.payload.id) ? prev : [msg.payload, ...prev])
+    } else if (msg.type === 'order:updated') {
+      setOrders(prev => prev.map(o => o.id === msg.payload.id ? { ...o, ...msg.payload } : o))
+    } else if (msg.type === 'order:deleted') {
+      setOrders(prev => prev.filter(o => o.id !== msg.payload.id))
+    }
+  })
 
   async function handleCreate(form) {
     const order = await api.orders.create(form)

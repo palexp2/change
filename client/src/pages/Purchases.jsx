@@ -7,6 +7,7 @@ import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 const STATUS_COLORS = { 'Commandé': 'blue', 'Reçu partiellement': 'yellow', 'Reçu': 'green', 'Annulé': 'red' }
@@ -62,6 +63,8 @@ export default function Purchases() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEntityListRealtime('purchase', setPurchases)
 
   return (
     <Layout>

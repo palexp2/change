@@ -7,6 +7,13 @@ import { spawnSync } from 'child_process'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { pushSaleReceiptToQB } from '../services/quickbooks.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
+
+function fetchSaleReceiptRow(id) {
+  const row = db.prepare('SELECT * FROM sale_receipts WHERE id=?').get(id)
+  if (!row) return null
+  return { ...row, items: JSON.parse(row.items || '[]') }
+}
 
 const router = Router()
 router.use(requireAuth)
@@ -142,6 +149,9 @@ router.post('/upload', upload.single('file'), async (req, res) => {
     VALUES (?, ?, ?, ?, 'processing', ?)
   `).run(id, req.file.filename, req.file.originalname, ext, req.user.id)
 
+  const created = fetchSaleReceiptRow(id)
+  if (created) emitEntity('sale_receipt', 'created', id, created, req.user?.id)
+
   // Return immediately, process async
   res.status(201).json({ id, status: 'processing' })
 
@@ -174,10 +184,14 @@ router.post('/upload', upload.single('file'), async (req, res) => {
       JSON.stringify(extracted),
       id
     )
+    const updated = fetchSaleReceiptRow(id)
+    if (updated) emitEntity('sale_receipt', 'updated', id, updated, req.user?.id)
   } catch (err) {
     console.error('Receipt extraction error:', err.message)
     db.prepare(`UPDATE sale_receipts SET status='error', error_message=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
       .run(err.message, id)
+    const errored = fetchSaleReceiptRow(id)
+    if (errored) emitEntity('sale_receipt', 'updated', id, errored, req.user?.id)
   }
 })
 
@@ -198,6 +212,8 @@ router.post('/:id/push-to-qb', async (req, res) => {
   try {
     const { expenseAccountId, paymentAccountId, vendorId, newVendorName } = req.body
     const qbId = await pushSaleReceiptToQB(req.params.id, { expenseAccountId, paymentAccountId, vendorId, newVendorName })
+    const updated = fetchSaleReceiptRow(req.params.id)
+    if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
     res.json({ ok: true, quickbooks_id: qbId })
   } catch (e) {
     res.status(400).json({ error: e.message })
@@ -215,6 +231,7 @@ router.delete('/:id', (req, res) => {
 
   db.prepare('DELETE FROM sale_receipts WHERE id=?')
     .run(req.params.id)
+  emitEntity('sale_receipt', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })
 })
 

@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { parseDurationToMinutes } from '../services/duration.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -111,7 +112,9 @@ router.post('/day', (req, res) => {
   if (req.user.id === target) {
     db.prepare('UPDATE users SET timesheet_default_mode = ? WHERE id = ?').run(mode, req.user.id)
   }
-  res.status(201).json(loadDayWithEntries(id))
+  const created = loadDayWithEntries(id)
+  emitEntity('timesheet', 'created', id, created, req.user?.id)
+  res.status(201).json(created)
 })
 
 const DAY_PATCHABLE = new Set(['mode', 'start_time', 'end_time', 'break_minutes'])
@@ -154,7 +157,9 @@ router.patch('/day/:id', (req, res) => {
   if (req.body && typeof req.body.mode === 'string' && ALLOWED_MODES.has(req.body.mode) && req.user.id === day.user_id) {
     db.prepare('UPDATE users SET timesheet_default_mode = ? WHERE id = ?').run(req.body.mode, req.user.id)
   }
-  res.json(loadDayWithEntries(req.params.id))
+  const updated = loadDayWithEntries(req.params.id)
+  emitEntity('timesheet', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
 })
 
 // DELETE /api/timesheets/day/:id — soft delete (aligné avec le reste de l'app)
@@ -163,6 +168,7 @@ router.delete('/day/:id', (req, res) => {
   if (!day) return res.status(404).json({ error: 'Not found' })
   if (!resolveTargetUserId(req, day.user_id)) return res.status(403).json({ error: 'Accès refusé' })
   db.prepare(`UPDATE timesheet_days SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(req.params.id)
+  emitEntity('timesheet', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ success: true })
 })
 
@@ -193,7 +199,9 @@ router.post('/day/:dayId/entries', (req, res) => {
     mins,
     rsde ? 1 : 0,
   )
-  res.status(201).json(loadDayWithEntries(req.params.dayId))
+  const updated = loadDayWithEntries(req.params.dayId)
+  emitEntity('timesheet', 'updated', req.params.dayId, updated, req.user?.id)
+  res.status(201).json(updated)
 })
 
 const ENTRY_PATCHABLE = new Set(['description', 'activity_code_id', 'company_id', 'duration_minutes', 'rsde', 'sort_order'])
@@ -237,7 +245,9 @@ router.patch('/entries/:id', (req, res) => {
   updates.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
   params.push(req.params.id)
   db.prepare(`UPDATE timesheet_entries SET ${updates.join(', ')} WHERE id = ?`).run(...params)
-  res.json(loadDayWithEntries(entry.day_id))
+  const updated = loadDayWithEntries(entry.day_id)
+  emitEntity('timesheet', 'updated', entry.day_id, updated, req.user?.id)
+  res.json(updated)
 })
 
 // DELETE /api/timesheets/entries/:id — hard delete (les entrées sont des sous-lignes)
@@ -251,7 +261,9 @@ router.delete('/entries/:id', (req, res) => {
   if (!entry) return res.status(404).json({ error: 'Not found' })
   if (!resolveTargetUserId(req, entry.user_id)) return res.status(403).json({ error: 'Accès refusé' })
   db.prepare('DELETE FROM timesheet_entries WHERE id = ?').run(req.params.id)
-  res.json(loadDayWithEntries(entry.day_id))
+  const updated = loadDayWithEntries(entry.day_id)
+  emitEntity('timesheet', 'updated', entry.day_id, updated, req.user?.id)
+  res.json(updated)
 })
 
 export default router

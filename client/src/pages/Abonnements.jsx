@@ -9,6 +9,7 @@ import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 
@@ -134,6 +135,8 @@ export default function Abonnements() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEntityListRealtime('subscription', setAbonnements)
 
   const syncStripe = async () => {
     setSyncing(true)

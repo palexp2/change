@@ -145,11 +145,13 @@ app.use('/api/product-images', express.static(path.join(process.cwd(), process.e
 app.use('/api/attachments', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'attachments')))
 
 import { ensureNativeFieldDefs } from './services/airtableAutoSync.js'
+import { regenerateAllViews } from './services/customFieldsView.js'
 
 initSchema()
 seedSellableProducts()
 seedSystemAutomations()
 runPurge()
+regenerateAllViews()
 
 // Register native fields in airtable_field_defs so they appear in views/filters
 ensureNativeFieldDefs([

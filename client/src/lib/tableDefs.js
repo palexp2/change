@@ -17,6 +17,7 @@ export const TABLE_LABELS = {
   retours:        'Retours',
   factures:       'Factures',
   abonnements:    'Abonnements',
+  abonnement_events: "Mouvements d'abonnements",
   assemblages:    'Assemblages',
   shipments:      'Envois',
   employees:      'Employés',
@@ -173,6 +174,18 @@ export const TABLE_COLUMN_META = {
     { id: 'start_month',  label: 'Mois de début', field: 'start_month' },
     { id: 'end_date',     label: 'Fin',        field: 'end_date',   type: 'date', defaultVisible: false },
     { id: 'stripe_url',   label: 'Stripe',     field: 'stripe_url', defaultVisible: false, sortable: false },
+  ],
+
+  abonnement_events: [
+    { id: 'event_date',          label: 'Date',           field: 'event_date',     type: 'date' },
+    { id: 'category',            label: 'Mouvement',      field: 'category',       type: 'single_select', options: ['creation', 'upgrade', 'downgrade', 'churn', 'reactivation'] },
+    { id: 'company_name',        label: 'Entreprise',     field: 'company_name' },
+    { id: 'subscription_link',   label: 'Abonnement',     field: 'stripe_subscription_id', sortable: false, filterable: false, groupable: false },
+    { id: 'amount_cad_delta',    label: 'Δ MRR (CAD)',    field: 'amount_cad_delta', type: 'number' },
+    { id: 'rachat',              label: 'Rachat',         field: 'rachat_status', type: 'single_select', options: ['probable', 'confirmed', 'none'], sortable: false },
+    { id: 'previous_amount_cad', label: 'Avant (CAD)',    field: 'previous_amount_cad', type: 'number', defaultVisible: false },
+    { id: 'new_amount_cad',      label: 'Après (CAD)',    field: 'new_amount_cad', type: 'number', defaultVisible: false },
+    { id: 'currency',            label: 'Devise',         field: 'currency', type: 'single_select', options: ['CAD', 'USD'], defaultVisible: false },
   ],
 
   assemblages: [

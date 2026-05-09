@@ -6,6 +6,14 @@ import db from '../db/database.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
 import { requireAuth } from '../middleware/auth.js'
 import { qbGet, qbAttachmentDownloadUrl } from '../connectors/quickbooks.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
+
+const ACHAT_LIST_SELECT = `
+  SELECT a.*, u.name as created_by_name
+  FROM achats_fournisseurs a
+  LEFT JOIN users u ON a.created_by = u.id
+  WHERE a.id = ?
+`
 
 const router = Router()
 router.use(requireAuth)
@@ -84,7 +92,9 @@ router.post('/', (req, res) => {
     status || defaultStatus, notes || null, lines || null, req.user.id
   )
 
-  res.status(201).json(db.prepare('SELECT * FROM achats_fournisseurs WHERE id = ?').get(id))
+  const created = db.prepare(ACHAT_LIST_SELECT).get(id)
+  emitEntity('achat_fournisseur', 'created', id, created, req.user?.id)
+  res.status(201).json(created)
 })
 
 router.put('/:id', (req, res) => {
@@ -112,7 +122,9 @@ router.put('/:id', (req, res) => {
       .run(...values, req.params.id)
   }
 
-  res.json(db.prepare('SELECT * FROM achats_fournisseurs WHERE id = ?').get(req.params.id))
+  const updated = db.prepare(ACHAT_LIST_SELECT).get(req.params.id)
+  if (setClause) emitEntity('achat_fournisseur', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
 })
 
 router.patch('/:id/status', (req, res) => {
@@ -120,6 +132,8 @@ router.patch('/:id/status', (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Not found' })
   db.prepare(`UPDATE achats_fournisseurs SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
     .run(req.body.status, req.params.id)
+  const updated = db.prepare(ACHAT_LIST_SELECT).get(req.params.id)
+  emitEntity('achat_fournisseur', 'updated', req.params.id, updated, req.user?.id)
   res.json({ ok: true })
 })
 
@@ -127,6 +141,7 @@ router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM achats_fournisseurs WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
   db.prepare('DELETE FROM achats_fournisseurs WHERE id = ?').run(req.params.id)
+  emitEntity('achat_fournisseur', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })
 })
 

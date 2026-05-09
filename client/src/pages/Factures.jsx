@@ -7,7 +7,12 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import { CustomFieldModal } from '../components/CustomFieldModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
+import { useCustomFields } from '../lib/useCustomFields.js'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 
 function fmtCad(n) {
@@ -78,6 +83,8 @@ const COLUMNS = TABLE_COLUMN_META.factures.map(meta => ({ ...meta, render: RENDE
 export default function Factures() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
+  const { addToast } = useToast()
+  const confirm = useConfirm()
   // Drilldown depuis le dashboard « Encaissements Stripe » :
   //   month=YYYY-MM filtre sur le mois de document_date (date de facturation)
   //   type=service|achat filtre sur la présence d'un abonnement lié
@@ -88,6 +95,14 @@ export default function Factures() {
 
   const [factures, setFactures] = useState([])
   const [loading, setLoading] = useState(true)
+  const { fields: customFields, reload: reloadCustomFields } = useCustomFields('factures')
+  const [customFieldModal, setCustomFieldModal] = useState(null) // { editing: field|null }
+
+  const customFieldsByColumn = useMemo(() => {
+    const m = new Map()
+    for (const f of customFields) m.set(f.column_name, f)
+    return m
+  }, [customFields])
 
   const load = useCallback(async () => {
     await loadProgressive(
@@ -98,12 +113,26 @@ export default function Factures() {
 
   useEffect(() => { load() }, [load])
 
+  useEntityListRealtime('facture', setFactures)
+
+  async function handleDeleteCustomField(field) {
+    if (!(await confirm(`Supprimer le champ "${field.name}" ? Restaurable depuis la corbeille.`))) return
+    try {
+      await api.customFields.delete(field.id)
+      addToast({ message: 'Champ supprimé', type: 'success' })
+      await reloadCustomFields()
+      load()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  }
+
   const displayedFactures = useMemo(() => {
     if (!month && !typeFilter) return factures
     return factures.filter(f => {
       if (month) {
         if (!f.document_date || !f.document_date.startsWith(month)) return false
-        // Cohérent avec le widget « Ventes et abonnements » : factures Stripe
+        // Cohérent avec les widgets « Ventes » / « Abonnements » : factures Stripe
         // payées + remboursements Stripe du même mois (peu importe leur type
         // exact, l'utilisateur veut voir les déductions à côté des ventes).
         const isPaidSale = f.sync_source === 'Factures Stripe' && f.status === 'Payé'
@@ -123,6 +152,28 @@ export default function Factures() {
       return true
     })
   }, [factures, month, typeFilter])
+
+  // Colonnes finales = COLUMNS hardcodées + champs custom dynamiques.
+  // Pour les formules / lookups, le serveur retourne déjà la valeur calculée
+  // dans `cf_<column_name>`, donc le render est juste un texte.
+  const COLUMNS_WITH_CUSTOM = useMemo(() => {
+    const customCols = customFields.map(f => ({
+      id: f.column_name,
+      label: f.name,
+      field: f.column_name,
+      type: f.result_type === 'date' ? 'date' : (f.result_type === 'number' || f.type === 'number' ? 'number' : 'text'),
+      groupable: true,
+      sortable: true,
+      filterable: true,
+      render: row => {
+        const v = row[f.column_name]
+        if (v == null || v === '') return <span className="text-slate-400">—</span>
+        if (f.result_type === 'date') return <span className="text-slate-500">{fmtDate(v)}</span>
+        return <span className="text-slate-700">{v}</span>
+      },
+    }))
+    return [...COLUMNS, ...customCols]
+  }, [customFields])
 
   const filterLabel = (() => {
     if (!month && !typeFilter) return null
@@ -166,13 +217,25 @@ export default function Factures() {
 
         <DataTable
           table="factures"
-          columns={COLUMNS}
+          columns={COLUMNS_WITH_CUSTOM}
           data={displayedFactures}
           searchFields={['document_number', 'company_name', 'project_name', 'order_number']}
           loading={loading}
           onRowClick={row => navigate(`/factures/${row.id}`)}
+          customFieldsByColumn={customFieldsByColumn}
+          onAddCustomField={() => setCustomFieldModal({ editing: null })}
+          onEditCustomField={(field) => setCustomFieldModal({ editing: field })}
+          onDeleteCustomField={handleDeleteCustomField}
         />
       </div>
+
+      <CustomFieldModal
+        isOpen={!!customFieldModal}
+        onClose={() => setCustomFieldModal(null)}
+        erpTable="factures"
+        editing={customFieldModal?.editing || null}
+        onSaved={async () => { await reloadCustomFields(); load() }}
+      />
     </Layout>
   )
 }

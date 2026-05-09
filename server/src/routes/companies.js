@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { getCentralControllers } from '../utils/centralController.js';
+import { emitCompany } from '../services/realtimeEmitters.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -124,6 +125,7 @@ router.post('/', (req, res) => {
     website || null, address || null, city || null, province || null, country || 'Canada', notes || null,
     currency || 'CAD', language || null);
 
+  emitCompany('created', id, req.user?.id);
   res.status(201).json(db.prepare('SELECT * FROM companies WHERE id = ?').get(id));
 });
 
@@ -151,6 +153,7 @@ router.put('/:id', (req, res) => {
     sets.push("updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')");
     params.push(req.params.id);
     db.prepare(`UPDATE companies SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+    emitCompany('updated', req.params.id, req.user?.id);
   }
 
   res.json(db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id));
@@ -225,6 +228,7 @@ router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM companies WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Company not found' });
   db.prepare("UPDATE companies SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);
+  emitCompany('deleted', req.params.id, req.user?.id);
   res.json({ message: 'Deleted' });
 });
 

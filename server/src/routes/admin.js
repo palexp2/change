@@ -8,6 +8,7 @@ import { execSync } from 'child_process';
 import os from 'os';
 import Stripe from 'stripe';
 import { postInvoicePaidJE, stripeInvoiceNetHtCents } from '../services/quickbooks.js';
+import { emitEntity } from '../services/realtimeEmitters.js';
 
 const router = Router();
 router.use(requireAdmin);
@@ -26,6 +27,7 @@ router.post('/factures/backfill-paid-at', async (req, res) => {
     SELECT id, invoice_id, status, balance_due
     FROM factures
     WHERE invoice_id IS NOT NULL
+      AND invoice_id LIKE 'in\\_%' ESCAPE '\\'
       AND paid_at IS NULL
       AND (status = 'Payé' OR status = 'Payée')
     ORDER BY COALESCE(document_date, created_at) DESC
@@ -101,6 +103,60 @@ router.post('/factures/:id/clear-revenue-recognition', (req, res) => {
     WHERE id = ?
   `).run(req.params.id)
   res.json({ ok: true })
+})
+
+// POST /api/admin/factures/cleanup-supprimees
+// Supprime définitivement les factures avec status='Supprimé' (factures Stripe
+// brouillon/void synchronisées qui n'ont jamais été finalisées). Refuse de
+// toucher une ligne qui aurait un paiement, un stripe_invoice_item, ou un état
+// comptable (deferred/recognized/paid) — dans ces cas, le cleanup signale
+// l'orphelin au lieu de l'effacer silencieusement.
+router.post('/factures/cleanup-supprimees', (req, res) => {
+  const candidates = db.prepare(`
+    SELECT id FROM factures WHERE status = 'Supprimé'
+  `).all()
+  if (candidates.length === 0) return res.json({ deleted: 0, skipped: [] })
+
+  const ids = candidates.map(c => c.id)
+  const placeholders = ids.map(() => '?').join(',')
+
+  const blocked = new Map() // id → reasons[]
+  const addReason = (id, reason) => {
+    if (!blocked.has(id)) blocked.set(id, [])
+    blocked.get(id).push(reason)
+  }
+
+  for (const row of db.prepare(`SELECT facture_id FROM payments WHERE facture_id IN (${placeholders})`).all(...ids)) {
+    addReason(row.facture_id, 'has payment')
+  }
+  for (const row of db.prepare(`SELECT facture_id FROM stripe_invoice_items WHERE facture_id IN (${placeholders})`).all(...ids)) {
+    addReason(row.facture_id, 'has stripe_invoice_item')
+  }
+  for (const row of db.prepare(`
+    SELECT id FROM factures
+    WHERE id IN (${placeholders})
+      AND (revenue_recognized_at IS NOT NULL
+        OR deferred_revenue_at IS NOT NULL
+        OR paid_at IS NOT NULL)
+  `).all(...ids)) {
+    addReason(row.id, 'accounting state set')
+  }
+
+  const deletable = ids.filter(id => !blocked.has(id))
+  const skipped = [...blocked.entries()].map(([id, reasons]) => ({ id, reasons }))
+
+  const result = db.transaction(() => {
+    if (deletable.length === 0) return 0
+    const delPlaceholders = deletable.map(() => '?').join(',')
+    const r = db.prepare(`DELETE FROM factures WHERE id IN (${delPlaceholders})`).run(...deletable)
+    return r.changes
+  })()
+
+  for (const id of deletable) {
+    emitEntity('facture', 'deleted', id, { id }, req.user?.id)
+  }
+
+  res.json({ deleted: result, skipped })
 })
 
 // GET /api/admin/users

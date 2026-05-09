@@ -9,6 +9,7 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { fmtDate } from '../lib/formatDate.js'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 
 
 function fmtCurrency(v) {
@@ -649,6 +650,11 @@ export default function EnvoisDetail() {
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [id])
+
+  useRealtimeChannel(id ? `shipment:${id}` : null, (msg) => {
+    if (msg.type === 'shipment:updated') setEnvoi(e => e ? { ...e, ...msg.payload } : e)
+    else if (msg.type === 'shipment:deleted') navigate('/envois')
+  })
 
   async function handleCancelPickup() {
     if (!(await confirm('Annuler le ramassage planifié ?'))) return

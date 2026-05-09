@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/database.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { getUsdCadRate } from '../services/fx.js';
+import { diffSnapshots, enrichItemsWithErpProductId } from '../services/subscriptionItemsSnapshot.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -110,6 +111,21 @@ router.get('/', (req, res) => {
       AND COALESCE(close_date, updated_at) >= date('now', '-12 months')
     GROUP BY month, type
     ORDER BY month, type
+  `).all();
+
+  // Tickets created by month — last 24 months (current year + previous year for YoY comparison).
+  // On retourne le compte de billets et la somme des durées (minutes) bucketés par mois UTC,
+  // pour permettre au front d'alterner entre les deux métriques sans seconde requête.
+  const ticketsByMonth = db.prepare(`
+    SELECT
+      strftime('%Y-%m', created_at) AS month,
+      COUNT(*) AS count,
+      COALESCE(SUM(CAST(duration_minutes AS INTEGER)), 0) AS minutes
+    FROM tickets
+    WHERE created_at IS NOT NULL
+      AND created_at >= date('now', 'start of month', '-24 months')
+    GROUP BY month
+    ORDER BY month ASC
   `).all();
 
   // Weekly support quality stats (last 16 weeks, week starts Sunday)
@@ -490,6 +506,7 @@ router.get('/', (req, res) => {
     },
     closingByMonth,
     projectsCreatedByMonth,
+    ticketsByMonth,
     weeklyShipments,
     weeklySupportStats,
     geoClients,
@@ -521,13 +538,17 @@ router.get('/', (req, res) => {
 //   3. Sinon, profil du client : si toutes ses factures Stripe sont des
 //      abonnements → service ; sinon → achat (cas par défaut, plus fréquent).
 // Bucketing par mois sur document_date. Filtre Stripe encaissés :
-// sync_source='Factures Stripe' + status='Payé'. Hors taxes : amount_before_tax_cad
-// porte le subtotal HT (en monnaie native). USD converti au taux BoC du jour
-// du document_date.
+// sync_source='Factures Stripe' + status='Payé'. Hors taxes : on lit
+// `montant_avant_taxes` (string) — c'est l'unique champ HT garanti en monnaie
+// native pour toutes les sources de sync. `amount_before_tax_cad` est mixte
+// (CAD home pour les factures importées d'Airtable, natif pour celles via
+// webhook Stripe seul) et n'est pas fiable. USD converti au taux BoC à la
+// date d'arrivée du payout (cohérent avec le push QB Deposit), fallback sur
+// le document_date.
 router.get('/stripe-revenue', async (req, res) => {
   const sales = db.prepare(`
-    SELECT id, currency, amount_before_tax_cad, document_date,
-           subscription_id
+    SELECT id, currency, montant_avant_taxes, document_date,
+           subscription_id, paid_charge_id, paid_payment_intent, invoice_id
     FROM factures
     WHERE sync_source = 'Factures Stripe'
       AND status = 'Payé'
@@ -537,24 +558,69 @@ router.get('/stripe-revenue', async (req, res) => {
 
   // Remboursements legacy stockés comme factures
   const refundFactures = db.prepare(`
-    SELECT id, currency, ABS(COALESCE(amount_before_tax_cad, 0)) AS amount,
-           document_date, subscription_id, company_id
+    SELECT id, currency, ABS(COALESCE(CAST(montant_avant_taxes AS REAL), 0)) AS amount,
+           document_date, subscription_id, company_id, invoice_id
     FROM factures
     WHERE sync_source = 'Remboursements Stripe'
       AND document_date IS NOT NULL
       AND document_date >= date('now', 'start of month', '-23 months')
-      AND COALESCE(amount_before_tax_cad, 0) != 0
+      AND COALESCE(CAST(montant_avant_taxes AS REAL), 0) != 0
   `).all();
 
   // Remboursements modernes (webhook charge.refunded → table payments)
   const refundPayments = db.prepare(`
     SELECT p.id, p.received_at AS document_date, p.amount, p.currency,
-           f.subscription_id
+           p.stripe_refund_id, f.subscription_id
     FROM payments p
     JOIN factures f ON f.id = p.facture_id
     WHERE p.stripe_refund_id IS NOT NULL
       AND p.received_at >= date('now', 'start of month', '-23 months')
   `).all();
+
+  // Lookups payout — même conventions que le drilldown ci-dessous : pour une
+  // vente on tente charge_id → invoice_id → payment_intent ; pour un
+  // remboursement legacy on cherche par refund_id (stocké dans factures.invoice_id);
+  // pour un remboursement moderne on cherche par stripe_refund_id sur payments.
+  const aggLookupPayoutByCharge = db.prepare(
+    "SELECT payout_stripe_id FROM stripe_balance_transactions WHERE source_id=? AND type IN ('charge','payment')"
+  );
+  const aggLookupPayoutByInvoice = db.prepare(
+    "SELECT payout_stripe_id FROM stripe_balance_transactions WHERE stripe_invoice_id=? AND type IN ('charge','payment') ORDER BY created_date DESC LIMIT 1"
+  );
+  // Map<payment_intent_id → payout_stripe_id> — préchargée une fois par requête.
+  // payment_intent n'a pas de colonne dédiée dans stripe_balance_transactions
+  // (il vit dans `raw.source.payment_intent`), donc le fallback historique
+  // utilisait `raw LIKE '%pi_xxx%'` ce qui faisait un full scan + LIKE par
+  // ligne. Pour ~2000 ventes sans match charge/invoice, ça représentait ~12s.
+  // Un seul scan + json_extract en C suffit (~50ms) et le reste devient O(1).
+  const aggPayoutByPI = new Map();
+  for (const r of db.prepare(
+    "SELECT payout_stripe_id, json_extract(raw, '$.source.payment_intent') AS pi FROM stripe_balance_transactions WHERE type IN ('charge','payment') AND payout_stripe_id IS NOT NULL"
+  ).all()) {
+    if (r.pi && !aggPayoutByPI.has(r.pi)) aggPayoutByPI.set(r.pi, r.payout_stripe_id);
+  }
+  const aggLookupPayoutByRefund = db.prepare(
+    "SELECT payout_stripe_id FROM stripe_balance_transactions WHERE source_id=? AND type IN ('refund','payment_refund')"
+  );
+  const aggLookupPayoutArrival = db.prepare('SELECT arrival_date FROM stripe_payouts WHERE stripe_id=?');
+
+  function payoutArrivalForSale(r) {
+    let pid = null;
+    if (r.paid_charge_id) pid = aggLookupPayoutByCharge.get(r.paid_charge_id)?.payout_stripe_id || null;
+    if (!pid && r.invoice_id) pid = aggLookupPayoutByInvoice.get(r.invoice_id)?.payout_stripe_id || null;
+    if (!pid && r.paid_payment_intent) pid = aggPayoutByPI.get(r.paid_payment_intent) || null;
+    return pid ? (aggLookupPayoutArrival.get(pid)?.arrival_date || null) : null;
+  }
+  function payoutArrivalForRefundFacture(r) {
+    if (!r.invoice_id) return null;
+    const pid = aggLookupPayoutByRefund.get(r.invoice_id)?.payout_stripe_id || null;
+    return pid ? (aggLookupPayoutArrival.get(pid)?.arrival_date || null) : null;
+  }
+  function payoutArrivalForRefundPayment(r) {
+    if (!r.stripe_refund_id) return null;
+    const pid = aggLookupPayoutByRefund.get(r.stripe_refund_id)?.payout_stripe_id || null;
+    return pid ? (aggLookupPayoutArrival.get(pid)?.arrival_date || null) : null;
+  }
 
   const rateCache = new Map();
   async function rateFor(date) {
@@ -575,7 +641,7 @@ router.get('/stripe-revenue', async (req, res) => {
       AND sync_source = 'Factures Stripe'
       AND status = 'Payé'
       AND currency = ?
-      AND ABS(COALESCE(amount_before_tax_cad, 0) - ?) < 0.5
+      AND ABS(COALESCE(CAST(montant_avant_taxes AS REAL), 0) - ?) < 0.5
       AND document_date <= ?
     ORDER BY document_date DESC
     LIMIT 1
@@ -603,13 +669,17 @@ router.get('/stripe-revenue', async (req, res) => {
   const byMonth = {}; // { 'YYYY-MM': { service: 0, achat: 0 } }
   function bucket(m) { if (!byMonth[m]) byMonth[m] = { service: 0, achat: 0 }; return byMonth[m]; }
 
+  // Convention : taux BoC à la date d'arrivée du payout lié si dispo, sinon
+  // fallback sur le document_date (taux historique au moment de la facturation).
+  // Cohérent avec le drilldown /stripe-revenue/factures et le push QB Deposit.
   for (const r of sales) {
     const month = (r.document_date || '').slice(0, 7);
     if (!month) continue;
-    const native = r.amount_before_tax_cad || 0;
+    const native = parseFloat(r.montant_avant_taxes) || 0;
     let cadAmount = native;
     if ((r.currency || 'CAD').toUpperCase() === 'USD') {
-      const rate = await rateFor(r.document_date.slice(0, 10));
+      const rateDate = payoutArrivalForSale(r) || r.document_date.slice(0, 10);
+      const rate = await rateFor(rateDate);
       cadAmount = native * rate;
     }
     const b = bucket(month);
@@ -622,7 +692,8 @@ router.get('/stripe-revenue', async (req, res) => {
     if (!month) continue;
     let cadAmount = r.amount;
     if ((r.currency || 'CAD').toUpperCase() === 'USD') {
-      const rate = await rateFor(r.document_date.slice(0, 10));
+      const rateDate = payoutArrivalForRefundFacture(r) || r.document_date.slice(0, 10);
+      const rate = await rateFor(rateDate);
       cadAmount = r.amount * rate;
     }
     const type = classifyRefund(r);
@@ -635,7 +706,8 @@ router.get('/stripe-revenue', async (req, res) => {
     if (!month) continue;
     let cadAmount = r.amount;
     if ((r.currency || 'CAD').toUpperCase() === 'USD') {
-      const rate = await rateFor(r.document_date.slice(0, 10));
+      const rateDate = payoutArrivalForRefundPayment(r) || r.document_date.slice(0, 10);
+      const rate = await rateFor(rateDate);
       cadAmount = r.amount * rate;
     }
     const type = r.subscription_id ? 'service' : 'achat';
@@ -651,6 +723,285 @@ router.get('/stripe-revenue', async (req, res) => {
   })).sort((a, b) => a.month.localeCompare(b.month));
 
   res.json({ byMonth: result });
+});
+
+// GET /api/dashboard/stripe-revenue/factures?month=YYYY-MM&type=service|achat
+// Liste détaillée pour le drilldown du widget « Abonnements » / « Ventes » :
+// factures Stripe payées du mois + remboursements legacy stockés comme factures.
+// Retourne, par ligne : devise originale, montant natif, montant CAD converti
+// au taux BoC du document_date, et arrival_date du payout associé (NULL si
+// pas encore versé / introuvable).
+router.get('/stripe-revenue/factures', async (req, res) => {
+  const { month, type } = req.query;
+  if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+    return res.status(400).json({ error: 'month requis au format YYYY-MM' });
+  }
+  if (type && type !== 'service' && type !== 'achat') {
+    return res.status(400).json({ error: 'type doit être service ou achat' });
+  }
+
+  // Montants HT en devise native via `montant_avant_taxes` (string toujours en
+  // monnaie native, peu importe la source de sync). Pour les remboursements,
+  // on prend la valeur absolue (peut être négative en DB).
+  // f.subscription_id stocke soit l'UUID ERP soit le Stripe ID (`sub_xxx`)
+  // selon la source de la facture — on joint sur les deux pour récupérer
+  // l'intervalle de récurrence (mensuel / annuel) côté abonnement.
+  const rows = db.prepare(`
+    SELECT f.id, f.document_number, f.document_date, f.status,
+           f.company_id, c.name AS company_name,
+           f.currency, f.montant_avant_taxes, f.subscription_id, f.sync_source,
+           f.invoice_id, f.paid_charge_id, f.paid_payment_intent,
+           s.interval_type
+    FROM factures f
+    LEFT JOIN companies c ON f.company_id = c.id
+    LEFT JOIN subscriptions s
+      ON f.subscription_id IS NOT NULL
+      AND (s.id = f.subscription_id OR s.stripe_id = f.subscription_id)
+    WHERE f.sync_source IN ('Factures Stripe', 'Remboursements Stripe')
+      AND f.document_date IS NOT NULL
+      AND substr(f.document_date, 1, 7) = ?
+    ORDER BY f.document_date DESC, f.document_number DESC
+  `).all(month);
+
+  // Même filtre que le widget : Stripe payées + remboursements. Pour les
+  // ventes payées, on filtre directement par `subscription_id`. Pour les
+  // remboursements, on applique la même heuristique de classification que
+  // l'agrégat /stripe-revenue (matchOrig sur facture d'origine, fallback
+  // companyProfile) — sans ça, les remboursements de service apparaissaient
+  // dans le drilldown achat (et inversement) et la somme du drilldown
+  // divergeait du total de la barre.
+  const matchOrigStmt = db.prepare(`
+    SELECT subscription_id
+    FROM factures
+    WHERE company_id = ?
+      AND sync_source = 'Factures Stripe'
+      AND status = 'Payé'
+      AND currency = ?
+      AND ABS(COALESCE(CAST(montant_avant_taxes AS REAL), 0) - ?) < 0.5
+      AND document_date <= ?
+    ORDER BY document_date DESC
+    LIMIT 1
+  `);
+  const companyProfileStmt = db.prepare(`
+    SELECT
+      SUM(CASE WHEN subscription_id IS NOT NULL THEN 1 ELSE 0 END) AS sub_count,
+      SUM(CASE WHEN subscription_id IS NULL THEN 1 ELSE 0 END) AS order_count
+    FROM factures
+    WHERE company_id = ?
+      AND sync_source = 'Factures Stripe'
+      AND status = 'Payé'
+  `);
+  function classifyRefundForDrilldown(r) {
+    if (r.subscription_id) return 'service';
+    if (!r.company_id) return 'achat';
+    const orig = matchOrigStmt.get(r.company_id, (r.currency || 'CAD').toUpperCase(), Math.abs(parseFloat(r.montant_avant_taxes) || 0), r.document_date);
+    if (orig) return orig.subscription_id ? 'service' : 'achat';
+    const prof = companyProfileStmt.get(r.company_id);
+    if (prof && (prof.sub_count || 0) > 0 && (prof.order_count || 0) === 0) return 'service';
+    return 'achat';
+  }
+
+  const filtered = rows.filter(r => {
+    const isPaidSale = r.sync_source === 'Factures Stripe' && r.status === 'Payé';
+    const isRefund = r.sync_source === 'Remboursements Stripe';
+    if (!isPaidSale && !isRefund) return false;
+    if (!type) return true;
+    if (isPaidSale) {
+      if (type === 'service') return !!r.subscription_id;
+      if (type === 'achat') return !r.subscription_id;
+    }
+    if (isRefund) return classifyRefundForDrilldown(r) === type;
+    return true;
+  });
+
+  const rateCache = new Map();
+  async function rateFor(date) {
+    if (!date) return 1;
+    const key = date.slice(0, 10);
+    if (rateCache.has(key)) return rateCache.get(key);
+    let r = null;
+    try { r = await getUsdCadRate(key); } catch { r = null; }
+    const v = r || 1;
+    rateCache.set(key, v);
+    return v;
+  }
+
+  // Payout lookups — distincts selon vente vs remboursement.
+  // Pour les ventes : charge_id → invoice_id → payment_intent.
+  // Pour les remboursements legacy : `invoice_id` du facture stocke le refund_id.
+  const lookupPayoutByCharge = db.prepare(
+    "SELECT payout_stripe_id FROM stripe_balance_transactions WHERE source_id=? AND type IN ('charge','payment')"
+  );
+  const lookupPayoutByInvoice = db.prepare(
+    "SELECT payout_stripe_id FROM stripe_balance_transactions WHERE stripe_invoice_id=? AND type IN ('charge','payment') ORDER BY created_date DESC LIMIT 1"
+  );
+  // Map préchargée pour le lookup par payment_intent — voir l'agrégat
+  // /stripe-revenue plus haut pour la justification (raw LIKE → 12s sur 2k ventes).
+  const payoutByPI = new Map();
+  for (const r of db.prepare(
+    "SELECT payout_stripe_id, json_extract(raw, '$.source.payment_intent') AS pi FROM stripe_balance_transactions WHERE type IN ('charge','payment') AND payout_stripe_id IS NOT NULL"
+  ).all()) {
+    if (r.pi && !payoutByPI.has(r.pi)) payoutByPI.set(r.pi, r.payout_stripe_id);
+  }
+  const lookupPayoutByRefund = db.prepare(
+    "SELECT payout_stripe_id FROM stripe_balance_transactions WHERE source_id=? AND type IN ('refund','payment_refund')"
+  );
+  const lookupPayout = db.prepare('SELECT arrival_date FROM stripe_payouts WHERE stripe_id=?');
+
+  const result = [];
+  for (const r of filtered) {
+    const currency = (r.currency || 'CAD').toUpperCase();
+    // `montant_avant_taxes` (string) = subtotal HT en monnaie native, fiable
+    // pour toutes les sources de sync. Pour les remboursements, on retourne
+    // un montant négatif pour que la somme du drilldown reproduise directement
+    // le net agrégé affiché dans le chart (sans flip de signe côté client).
+    const rawNative = parseFloat(r.montant_avant_taxes) || 0;
+    const native = r.sync_source === 'Remboursements Stripe' ? -Math.abs(rawNative) : rawNative;
+
+    let payoutId = null;
+    if (r.sync_source === 'Remboursements Stripe') {
+      if (r.invoice_id) {
+        payoutId = lookupPayoutByRefund.get(r.invoice_id)?.payout_stripe_id || null;
+      }
+    } else {
+      if (r.paid_charge_id) {
+        payoutId = lookupPayoutByCharge.get(r.paid_charge_id)?.payout_stripe_id || null;
+      }
+      if (!payoutId && r.invoice_id) {
+        payoutId = lookupPayoutByInvoice.get(r.invoice_id)?.payout_stripe_id || null;
+      }
+      if (!payoutId && r.paid_payment_intent) {
+        payoutId = payoutByPI.get(r.paid_payment_intent) || null;
+      }
+    }
+
+    let payoutArrivalDate = null;
+    if (payoutId) {
+      payoutArrivalDate = lookupPayout.get(payoutId)?.arrival_date || null;
+    }
+
+    // Préférer le taux BoC à la date d'arrivée du payout (cohérent avec le push
+    // QB Deposit, cf. services/quickbooks.js:buildDepositFromPayout). Fallback
+    // sur le document_date si pas de payout lié — taux historique au moment de
+    // la facturation, comportement antérieur préservé.
+    let cad = native;
+    if (currency === 'USD') {
+      const rateDate = payoutArrivalDate || r.document_date;
+      const rate = await rateFor(rateDate);
+      cad = native * rate;
+    }
+
+    result.push({
+      id: r.id,
+      document_number: r.document_number,
+      document_date: r.document_date,
+      status: r.status,
+      company_id: r.company_id,
+      company_name: r.company_name,
+      currency,
+      amount_native: Math.round(native * 100) / 100,
+      amount_cad: Math.round(cad * 100) / 100,
+      payout_arrival_date: payoutArrivalDate,
+      payout_stripe_id: payoutId,
+      sync_source: r.sync_source,
+      subscription_id: r.subscription_id,
+      interval_type: r.interval_type || null,
+    });
+  }
+
+  // Remboursements modernes (table `payments` avec stripe_refund_id) — bucketés
+  // par received_at. Le widget les soustrait de la barre du mois ; on doit les
+  // refléter ici pour rester aligné avec le total agrégé. Marqués
+  // sync_source='Remboursements Stripe' pour réutiliser la convention de signe.
+  const refundPayments = db.prepare(`
+    SELECT p.id, p.received_at, p.amount, p.currency, p.amount_cad,
+           p.stripe_refund_id, p.facture_id,
+           f.subscription_id, f.company_id,
+           c.name AS company_name,
+           s.interval_type
+    FROM payments p
+    JOIN factures f ON f.id = p.facture_id
+    LEFT JOIN companies c ON f.company_id = c.id
+    LEFT JOIN subscriptions s
+      ON f.subscription_id IS NOT NULL
+      AND (s.id = f.subscription_id OR s.stripe_id = f.subscription_id)
+    WHERE p.stripe_refund_id IS NOT NULL
+      AND substr(p.received_at, 1, 7) = ?
+  `).all(month);
+
+  const filteredRefundPayments = refundPayments.filter(r => {
+    if (type === 'service' && !r.subscription_id) return false;
+    if (type === 'achat' && r.subscription_id) return false;
+    return true;
+  });
+
+  for (const r of filteredRefundPayments) {
+    const currency = (r.currency || 'CAD').toUpperCase();
+    // Convention de signe : remboursements négatifs pour que la somme du
+    // drilldown reproduise directement le net agrégé du chart.
+    const nativeAbs = Math.abs(Number(r.amount) || 0);
+
+    let payoutId = null;
+    if (r.stripe_refund_id) {
+      payoutId = lookupPayoutByRefund.get(r.stripe_refund_id)?.payout_stripe_id || null;
+    }
+    let payoutArrivalDate = null;
+    if (payoutId) {
+      payoutArrivalDate = lookupPayout.get(payoutId)?.arrival_date || null;
+    }
+
+    // Préférer le taux BoC à la date d'arrivée du payout — même règle que la
+    // boucle factures ci-dessus. Sans payout lié, on reprend la valeur stockée
+    // sur le payment (`amount_cad`, calculée au moment du push QB) si elle
+    // existe, sinon fallback sur le received_at.
+    let cadAbs;
+    if (payoutArrivalDate) {
+      cadAbs = nativeAbs;
+      if (currency === 'USD') {
+        const rate = await rateFor(payoutArrivalDate);
+        cadAbs = nativeAbs * rate;
+      }
+    } else {
+      cadAbs = Number(r.amount_cad);
+      if (cadAbs) {
+        cadAbs = Math.abs(cadAbs);
+      } else {
+        cadAbs = nativeAbs;
+        if (currency === 'USD') {
+          const rate = await rateFor(r.received_at);
+          cadAbs = nativeAbs * rate;
+        }
+      }
+    }
+
+    result.push({
+      // id pointe sur la facture parent pour que le lien /factures/:id
+      // fonctionne (le payment.id ne correspond à aucune route).
+      id: r.facture_id,
+      document_number: r.stripe_refund_id || '—',
+      document_date: r.received_at,
+      status: 'Remboursement',
+      company_id: r.company_id,
+      company_name: r.company_name,
+      currency,
+      amount_native: -Math.round(nativeAbs * 100) / 100,
+      amount_cad: -Math.round(cadAbs * 100) / 100,
+      payout_arrival_date: payoutArrivalDate,
+      payout_stripe_id: payoutId,
+      sync_source: 'Remboursements Stripe',
+      subscription_id: r.subscription_id,
+      interval_type: r.interval_type || null,
+    });
+  }
+
+  // Tri final : par date desc, puis numéro desc.
+  result.sort((a, b) => {
+    const d = (b.document_date || '').localeCompare(a.document_date || '');
+    if (d !== 0) return d;
+    return (b.document_number || '').localeCompare(a.document_number || '');
+  });
+
+  res.json({ data: result });
 });
 
 // GET /api/dashboard/goal
@@ -685,15 +1036,16 @@ router.put('/goal', requireAdmin, (req, res) => {
 
 // GET /api/dashboard/subscription-events
 // Retourne les événements d'abonnement classifiés par mois et catégorie pour
-// le panel "Mouvements d'abonnements". Catégories couvertes (scope MVP) :
-//   new      — nouveaux abonnements
-//   churn    — annulations
-//   winback  — création où la même entreprise a déjà eu un churn antérieur
+// le panel "Mouvements d'abonnements". Catégories :
+//   creation  — nouveaux abonnements (inclut les réactivations)
+//   upgrade   — augmentation du MRR sur un abonnement existant
+//   downgrade — diminution du MRR sur un abonnement existant
+//   churn     — annulations
 //
 // Le Net MRR par mois est inclus comme `net_mrr_delta_cad`.
 //
 // Réponse : { months: [{ month: 'YYYY-MM', categories: {...}, net_mrr_delta_cad }] }
-//   où categories[cat] = { count, total_amount_cad, items: [{ event_id, company_id, company_name, sub_id, amount_cad_delta, event_date, details }] }
+//   où categories[cat] = { count, total_amount_cad, items: [{ event_id, company_id, company_name, sub_id, amount_cad_delta, event_date }] }
 router.get('/subscription-events', (req, res) => {
   const months = parseInt(req.query.months || '12')
   const startMonth = req.query.start_month || null  // optional: 'YYYY-MM'
@@ -708,34 +1060,28 @@ router.get('/subscription-events', (req, res) => {
     cutoff = d.toISOString()
   }
 
-  // 1. Tous les events depuis cutoff, joints aux noms d'entreprise et stripe_id du sub
+  // 1. Tous les events depuis cutoff, joints aux noms d'entreprise et stripe_id du sub.
+  // company_id est résolu via COALESCE(e.company_id, s.company_id) : certains events
+  // legacy ont e.company_id NULL alors que l'abonnement parent est bien rattaché.
   const events = db.prepare(`
     SELECT
-      e.id, e.subscription_id, e.company_id, e.event_date, e.event_type,
+      e.id, e.subscription_id, e.event_date, e.event_type,
       e.category, e.amount_cad_delta, e.previous_amount_cad, e.new_amount_cad,
-      e.currency, e.details,
-      s.stripe_id, s.amount_monthly,
-      co.name AS company_name
+      e.currency,
+      COALESCE(e.company_id, s.company_id) AS company_id,
+      s.stripe_id, s.amount_monthly, s.interval_type, s.interval_count,
+      co.name AS company_name,
+      e.rachat_status, e.rachat_order_id,
+      e.items_before_json, e.items_after_json,
+      o.order_number AS rachat_order_number
     FROM subscription_events e
     LEFT JOIN subscriptions s ON e.subscription_id = s.id
-    LEFT JOIN companies co ON e.company_id = co.id
+    LEFT JOIN companies co ON co.id = COALESCE(e.company_id, s.company_id)
+    LEFT JOIN orders o ON o.id = e.rachat_order_id
     WHERE e.event_date >= ?
-      AND e.category IN ('new', 'churn')
+      AND e.category IN ('creation', 'churn', 'reactivation', 'upgrade', 'downgrade')
     ORDER BY e.event_date ASC
   `).all(cutoff)
-
-  // 2. Pour la catégorie 'winback', on a besoin de savoir si la company avait
-  // déjà eu un churn AVANT l'event 'new'. On fait une seule requête pour
-  // récupérer la date du premier churn de chaque company.
-  const firstChurnByCompany = {}
-  for (const r of db.prepare(`
-    SELECT company_id, MIN(event_date) AS first_churn
-    FROM subscription_events
-    WHERE category = 'churn' AND company_id IS NOT NULL
-    GROUP BY company_id
-  `).all()) {
-    if (r.company_id) firstChurnByCompany[r.company_id] = r.first_churn
-  }
 
   // 3. Bucket par mois et catégorie
   const monthsMap = new Map()  // month → { categories: {cat: {count, total, items}}, net }
@@ -744,14 +1090,143 @@ router.get('/subscription-events', (req, res) => {
       monthsMap.set(month, {
         month,
         categories: {
-          new:     { count: 0, total_amount_cad: 0, items: [] },
-          churn:   { count: 0, total_amount_cad: 0, items: [] },
-          winback: { count: 0, total_amount_cad: 0, items: [] },
+          creation:  { count: 0, total_amount_cad: 0, items: [] },
+          upgrade:   { count: 0, total_amount_cad: 0, items: [] },
+          downgrade: { count: 0, total_amount_cad: 0, items: [] },
+          churn:     { count: 0, total_amount_cad: 0, items: [] },
         },
         net_mrr_delta_cad: 0,
       })
     }
     return monthsMap.get(month)
+  }
+
+  // 3b. Timeline de factures par abonnement → utilisée à la fois pour
+  //     (a) creation/churn          : produits de la dernière facture (état courant)
+  //     (b) upgrade/downgrade       : diff entre facture juste avant et facture juste
+  //         après le `event_date` — ne montre que les produits ajoutés / dont le
+  //         montant a augmenté (upgrade), retirés / dont le montant a baissé (downgrade).
+  // Note : factures.subscription_id contient soit l'UUID ERP soit le Stripe ID
+  // (`sub_xxx`), selon la source de la facture. On joint via subscriptions
+  // pour couvrir les deux cas. On filtre `proration=0` pour ne garder que les
+  // lignes de l'état récurrent (sans les crédits/charges de proration générés
+  // au moment du changement, qui pollueraient le diff).
+  const subIds = [...new Set(events.map(e => e.subscription_id).filter(Boolean))]
+  const timelineBySubId = {}     // sub_id → [{ dateKey, factureId, items: [...] }] sorted asc
+  const productsBySubId = {}     // sub_id → produits de la dernière facture (creation / churn)
+  if (subIds.length > 0) {
+    const placeholders = subIds.map(() => '?').join(',')
+    const invoiceItems = db.prepare(`
+      SELECT
+        s.id AS erp_sub_id,
+        f.id AS facture_id,
+        f.document_date,
+        f.created_at AS facture_created_at,
+        COALESCE(p.name_fr, sii.description) AS product_name,
+        p.id AS product_id,
+        sii.quantity,
+        sii.unit_amount,
+        sii.amount,
+        sii.rowid AS sii_rowid
+      FROM subscriptions s
+      JOIN factures f
+        ON f.subscription_id = s.id
+        OR (s.stripe_id IS NOT NULL AND f.subscription_id = s.stripe_id)
+      JOIN stripe_invoice_items sii ON sii.facture_id = f.id
+      LEFT JOIN products p ON p.id = sii.product_id
+      WHERE s.id IN (${placeholders})
+        AND sii.proration = 0
+      ORDER BY s.id, COALESCE(f.document_date, f.created_at, '') ASC, sii.rowid
+    `).all(...subIds)
+
+    // Construit la timeline : chaque facture devient un bucket d'items.
+    for (const row of invoiceItems) {
+      const k = row.erp_sub_id
+      const dateKey = row.document_date || (row.facture_created_at ? String(row.facture_created_at).slice(0, 10) : '')
+      if (!timelineBySubId[k]) timelineBySubId[k] = []
+      let bucket = timelineBySubId[k][timelineBySubId[k].length - 1]
+      if (!bucket || bucket.factureId !== row.facture_id) {
+        bucket = { dateKey, factureId: row.facture_id, items: [] }
+        timelineBySubId[k].push(bucket)
+      }
+      if (row.product_name) {
+        bucket.items.push({
+          product_id: row.product_id || null,
+          product_name: row.product_name,
+          quantity: row.quantity ?? 1,
+          unit_amount: row.unit_amount,
+          amount: row.amount,
+        })
+      }
+    }
+
+    // Produits de la dernière facture par sub (pour creation / churn).
+    for (const subId of Object.keys(timelineBySubId)) {
+      const tl = timelineBySubId[subId]
+      const last = tl[tl.length - 1]
+      if (!last) continue
+      productsBySubId[subId] = last.items.map(it => ({
+        product_id: it.product_id, product_name: it.product_name, quantity: it.quantity,
+      }))
+    }
+  }
+
+  // Match key pour comparer un produit d'une facture à l'autre. On préfère
+  // l'id (résiste aux renommages), avec fallback sur le nom.
+  function productMatchKey(it) {
+    return it.product_id ? `id:${it.product_id}` : `name:${it.product_name || ''}`
+  }
+
+  // Calcule la liste des produits affectés par un upgrade ou downgrade en
+  // diffant la facture juste avant l'event_date avec celle juste après.
+  // Retourne null si pas de timeline pour ce sub (= aucune facture connue).
+  function diffProductsForEvent(subId, eventDate, direction) {
+    const tl = timelineBySubId[subId]
+    if (!tl || tl.length === 0) return null
+    const evKey = String(eventDate).slice(0, 10)
+    let beforeBucket = null
+    let afterBucket = null
+    for (const b of tl) {
+      if ((b.dateKey || '') < evKey) beforeBucket = b
+      else if (afterBucket == null) afterBucket = b
+    }
+    // Si on n'a aucune facture après l'event (ex. event = dernière action sur
+    // un sub annulé), fallback sur la dernière facture connue avant — sans
+    // ça on n'a rien à comparer.
+    if (!afterBucket) afterBucket = beforeBucket
+    if (!afterBucket) return []
+    const before = beforeBucket?.items || []
+    const after = afterBucket.items || []
+    const beforeMap = new Map(before.map(it => [productMatchKey(it), it]))
+    const afterMap = new Map(after.map(it => [productMatchKey(it), it]))
+    const out = []
+    function lineAmount(it) {
+      // unit_amount × quantity tel que stocké en cents — comparaison relative
+      // suffisante (jamais retourné au client, sert juste au sign).
+      return (Number(it.unit_amount) || 0) * (Number(it.quantity) || 1)
+    }
+    if (direction === 'upgrade') {
+      // Produits ajoutés (présents dans after, absents dans before) ou dont
+      // le montant a augmenté.
+      for (const [k, it] of afterMap) {
+        const prev = beforeMap.get(k)
+        if (!prev || lineAmount(it) > lineAmount(prev) + 0.5) {
+          out.push({ product_id: it.product_id, product_name: it.product_name, quantity: it.quantity })
+        }
+      }
+    } else {
+      // Downgrade : produits retirés (présents dans before, absents dans
+      // after) ou dont le montant a baissé.
+      for (const [k, prev] of beforeMap) {
+        const it = afterMap.get(k)
+        if (!it) {
+          out.push({ product_id: prev.product_id, product_name: prev.product_name, quantity: prev.quantity })
+        } else if (lineAmount(it) < lineAmount(prev) - 0.5) {
+          out.push({ product_id: it.product_id, product_name: it.product_name, quantity: it.quantity })
+        }
+      }
+    }
+    return out
   }
 
   for (const e of events) {
@@ -768,22 +1243,55 @@ router.get('/subscription-events', (req, res) => {
       previous_amount_cad: e.previous_amount_cad,
       new_amount_cad: e.new_amount_cad,
       currency: e.currency,
+      interval_type: e.interval_type || null,
+      interval_count: e.interval_count || null,
+      products: productsBySubId[e.subscription_id] || [],
+      // Rachat info — pertinent pour churn uniquement, mais on l'inclut
+      // toujours pour homogénéité client. NULL = non vérifié.
+      rachat_status: e.rachat_status || null,
+      rachat_order_id: e.rachat_order_id || null,
+      rachat_order_number: e.rachat_order_number || null,
     }
-    // Net MRR : tous les events 'new' et 'churn' contribuent
+    // Net MRR : tous les events de mouvement contribuent
     if (e.amount_cad_delta != null) bucket.net_mrr_delta_cad += e.amount_cad_delta
 
-    if (e.category === 'new') {
-      // Win-back ? company avait déjà eu un churn AVANT cette date
-      const firstChurn = e.company_id ? firstChurnByCompany[e.company_id] : null
-      const isWinback = firstChurn && firstChurn < e.event_date
-      const cat = isWinback ? 'winback' : 'new'
-      bucket.categories[cat].count++
-      bucket.categories[cat].total_amount_cad += (e.amount_cad_delta || 0)
-      bucket.categories[cat].items.push(item)
+    if (e.category === 'creation' || e.category === 'reactivation') {
+      // Toute création (initiale ou réactivation) tombe dans 'creation'.
+      bucket.categories.creation.count++
+      bucket.categories.creation.total_amount_cad += (e.amount_cad_delta || 0)
+      bucket.categories.creation.items.push(item)
     } else if (e.category === 'churn') {
       bucket.categories.churn.count++
       bucket.categories.churn.total_amount_cad += (e.amount_cad_delta || 0)
       bucket.categories.churn.items.push(item)
+    } else if (e.category === 'upgrade' || e.category === 'downgrade') {
+      // Préférence : diff entre snapshots items_before_json/items_after_json
+      // (capturés au moment du webhook → reflète l'état immédiatement après
+      // le changement, sans dépendre du cycle de facturation suivant).
+      // Fallback : diff entre facture avant/après l'event_date (legacy events
+      // sans snapshot).
+      let diff = null
+      let parsedBefore = null
+      let parsedAfter = null
+      try {
+        if (e.items_before_json) parsedBefore = JSON.parse(e.items_before_json)
+        if (e.items_after_json) parsedAfter = JSON.parse(e.items_after_json)
+      } catch {}
+      if (parsedBefore || parsedAfter) {
+        const snapDiff = diffSnapshots(parsedBefore || [], parsedAfter || [], e.category)
+        const enriched = enrichItemsWithErpProductId(snapDiff)
+        diff = enriched.map(it => ({
+          product_id: it.product_id || null,
+          product_name: it.name || null,
+          quantity: it.quantity ?? 1,
+        }))
+      } else {
+        diff = diffProductsForEvent(e.subscription_id, e.event_date, e.category)
+      }
+      if (diff != null) item.products = diff
+      bucket.categories[e.category].count++
+      bucket.categories[e.category].total_amount_cad += (e.amount_cad_delta || 0)
+      bucket.categories[e.category].items.push(item)
     }
   }
 

@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -60,7 +61,9 @@ router.post('/', (req, res) => {
     active === false ? 0 : 1,
     payable === false ? 0 : 1,
   )
-  res.status(201).json(db.prepare('SELECT * FROM activity_codes WHERE id = ?').get(id))
+  const row = db.prepare('SELECT * FROM activity_codes WHERE id = ?').get(id)
+  emitEntity('activity_code', 'created', id, row, req.user?.id)
+  res.status(201).json(row)
 })
 
 const PATCHABLE = new Set(['name', 'description', 'active', 'payable'])
@@ -86,7 +89,9 @@ router.patch('/:id', (req, res) => {
   updates.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
   params.push(req.params.id)
   db.prepare(`UPDATE activity_codes SET ${updates.join(', ')} WHERE id = ?`).run(...params)
-  res.json(db.prepare('SELECT * FROM activity_codes WHERE id = ?').get(req.params.id))
+  const updated = db.prepare('SELECT * FROM activity_codes WHERE id = ?').get(req.params.id)
+  emitEntity('activity_code', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
 })
 
 // DELETE — soft delete (cohérent avec le reste de l'app)
@@ -94,6 +99,7 @@ router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM activity_codes WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
   db.prepare(`UPDATE activity_codes SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(req.params.id)
+  emitEntity('activity_code', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ success: true })
 })
 

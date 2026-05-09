@@ -5,6 +5,13 @@ import db from '../db/database.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
 import { recordEvent, classifyChange } from '../services/subscriptionEvents.js'
+import { upsertFromInvoiceLines } from '../services/stripeInvoiceItems.js'
+import {
+  extractItemsFromStripeSub,
+  getCurrentItemsSnapshot,
+  setCurrentItemsSnapshot,
+} from '../services/subscriptionItemsSnapshot.js'
+import { computeMonthlyNet } from '../services/subscriptionMonthly.js'
 
 const router = Router()
 
@@ -31,37 +38,43 @@ function mapSubStatus(s) {
   return m[s] || 'canceled'
 }
 
-// Calcule le MRR mensuel d'un sub Stripe en additionnant ses items, normalisé
-// au mois selon l'interval. Retourne { amountMonthly, currency }.
+// Calcule le MRR mensuel d'un sub Stripe — APRÈS rabais, AVANT taxes.
+// Délègue au helper partagé pour garantir la cohérence avec la sync polling.
+// Cf. subscriptionMonthly.js pour le détail (préfère latest_invoice.total_excluding_tax,
+// fallback sur somme items × qty − rabais).
 function computeMonthly(sub) {
-  const items = sub.items?.data ?? []
-  const firstPrice = items[0]?.price
-  const currency = (firstPrice?.currency ?? 'cad').toUpperCase()
-  const intervalType = firstPrice?.recurring?.interval ?? 'month'
-  let amountMonthly = 0
-  for (const item of items) {
-    const p = item?.price
-    const unitAmt = (p?.unit_amount ?? 0) / 100
-    const qty = item?.quantity ?? 1
-    const iType = p?.recurring?.interval ?? 'month'
-    let monthlyPart = unitAmt * qty
-    if (iType === 'year') monthlyPart = monthlyPart / 12
-    else if (iType === 'week') monthlyPart = monthlyPart * 4.333
-    amountMonthly += monthlyPart
-  }
-  return { amountMonthly, currency, intervalType }
+  return computeMonthlyNet(sub)
 }
 
 // Traite un webhook customer.subscription.{created,updated,deleted}.
 // 1. Upsert dans la table subscriptions (même logique que la sync polling).
 // 2. Enregistre un subscription_event classifié, idempotent via stripe_event_id.
 async function handleSubscriptionWebhook(event) {
-  const sub = event.data.object
-  const previous = event.data.previous_attributes || {}
+  let sub = event.data.object
   const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer?.id
   const companyId = customerId
     ? db.prepare('SELECT id FROM companies WHERE stripe_customer_id=? LIMIT 1').get(customerId)?.id || null
     : null
+
+  // Le payload du webhook ne contient pas latest_invoice expandé — or notre
+  // helper computeMonthlyNet préfère cette source pour avoir le montant net
+  // (après rabais, avant taxes) cohérent avec la sync polling. Si on ne fait
+  // pas ce retrieve, le webhook retombe sur le fallback "items × qty − rabais"
+  // qui peut diverger d'un montant taxé (cf. incident Cabru 2026-05-08).
+  // On ignore les events 'deleted' — pas besoin du montant pour un churn.
+  if (event.type !== 'customer.subscription.deleted') {
+    const key = getStripeKey()
+    if (key) {
+      try {
+        const stripe = new Stripe(key)
+        sub = await stripe.subscriptions.retrieve(sub.id, {
+          expand: ['latest_invoice', 'items.data.price', 'discounts.source.coupon'],
+        })
+      } catch (e) {
+        console.warn(`[stripe-webhook] retrieve sub ${sub.id} failed, falling back to payload:`, e.message)
+      }
+    }
+  }
 
   const { amountMonthly, currency, intervalType } = computeMonthly(sub)
   const status = mapSubStatus(sub.status)
@@ -108,48 +121,60 @@ async function handleSubscriptionWebhook(event) {
     )
   }
 
-  // Classification de l'événement
-  let category, eventType, eventDate, prevAmountForEvent, newAmountForEvent
+  // Classification de l'événement. category=null → pas un mouvement à
+  // enregistrer (ex. transition active↔past_due, modification neutre).
+  let category, eventDate, prevAmountForEvent, newAmountForEvent
   if (event.type === 'customer.subscription.deleted' || (status === 'canceled' && prevStatus !== 'canceled')) {
     category = 'churn'
-    eventType = 'cancel'
     eventDate = cancelDate ? new Date(cancelDate).toISOString() : new Date(event.created * 1000).toISOString()
     prevAmountForEvent = prevAmount ?? amountMonthly
     newAmountForEvent = null
   } else if (event.type === 'customer.subscription.created') {
-    category = status === 'canceled' ? 'churn' : 'new'
-    eventType = category === 'churn' ? 'cancel' : 'creation'
+    // Si le sub arrive déjà annulé (rare : import/sub annulé immédiatement),
+    // on n'enregistre pas d'event — il n'y a pas de mouvement MRR à tracer.
+    if (status === 'canceled') return
+    category = 'creation'
     eventDate = startDate ? new Date(startDate).toISOString() : new Date(event.created * 1000).toISOString()
-    prevAmountForEvent = category === 'churn' ? amountMonthly : null
-    newAmountForEvent = category === 'churn' ? null : amountMonthly
+    prevAmountForEvent = null
+    newAmountForEvent = amountMonthly
   } else {
-    // updated — compare prev/new pour détecter upgrade/downgrade/reactivation/other
+    // updated — compare prev/new pour détecter upgrade/downgrade/reactivation
     category = classifyChange({
       prevStatus, newStatus: status,
       prevAmount, newAmount: amountMonthly,
     })
-    eventType = 'update'
+    if (!category) return
     eventDate = new Date(event.created * 1000).toISOString()
     prevAmountForEvent = prevAmount
     newAmountForEvent = amountMonthly
-    // Si rien de notable n'a changé (montant identique, statut identique), skip
-    if (category === 'other' && Math.abs((prevAmount || 0) - amountMonthly) < 0.01 && prevStatus === status) {
-      return
-    }
   }
+
+  // Snapshots des items : "before" depuis le miroir (état d'avant ce webhook),
+  // "after" calculé depuis le payload Stripe. Pour churn, on ne stocke pas
+  // d'after (sub annulé). Pour creation, pas de before.
+  const itemsBeforeSnap = (category === 'creation') ? [] : (getCurrentItemsSnapshot(subRowId) || [])
+  const itemsAfterSnap = (category === 'churn') ? [] : extractItemsFromStripeSub(sub)
 
   await recordEvent({
     subscriptionId: subRowId,
     companyId: companyId || existing?.company_id,
     eventDate,
-    eventType,
+    eventType: category,
     category,
     previousAmount: prevAmountForEvent,
     newAmount: newAmountForEvent,
     currency,
-    details: { stripe_event_type: event.type, previous_attributes: previous },
     stripeEventId: event.id,
+    itemsBefore: itemsBeforeSnap,
+    itemsAfter: itemsAfterSnap,
   })
+
+  // Met à jour le miroir avec l'état nouveau (servira de "before" au prochain
+  // event). Pour churn on conserve l'ancien snapshot tel quel — utile si le
+  // sub est réactivé plus tard.
+  if (category !== 'churn') {
+    setCurrentItemsSnapshot(subRowId, itemsAfterSnap)
+  }
 }
 
 function mapStripeInvoiceStatus(s) {
@@ -591,6 +616,32 @@ async function handleWebhook(req, res) {
     const customerName = invoice.customer_name || invoice.customer_email || null
     const customerEmail = invoice.customer_email || null
     const factureInfo = await upsertFactureFromStripeInvoice(invoice)
+
+    // Upsert idempotent des lignes de facture dans stripe_invoice_items.
+    // Indispensable pour que le panel "Mouvements d'abonnements" du dashboard
+    // affiche les produits associés (jointure factures → stripe_invoice_items).
+    // Si lines.has_more=true (sub avec >10 items), on fetch via listLineItems
+    // pour récupérer la totalité — sinon on utilise les lignes inline (moins
+    // d'API calls). Erreurs loggées mais non bloquantes pour le webhook.
+    if (factureInfo?.id) {
+      try {
+        let lines = invoice.lines?.data || []
+        if (invoice.lines?.has_more) {
+          const stripe = new Stripe(secretKey)
+          const allLines = []
+          for await (const ln of stripe.invoices.listLineItems(invoice.id, { limit: 100, expand: ['data.price'] })) {
+            allLines.push(ln)
+          }
+          lines = allLines
+        }
+        if (lines.length > 0) {
+          const r = upsertFromInvoiceLines(factureInfo.id, invoice.id, lines)
+          console.log(`  ↳ stripe_invoice_items: ${r.inserted} inséré(s), ${r.updated} maj`)
+        }
+      } catch (e) {
+        console.error(`❌ upsertFromInvoiceLines ${invoice.id}:`, e.message)
+      }
+    }
 
     // Pas de pose comptable QB ici : le revenu est constaté au payout (lundi)
     // via pushDepositFromPayout. Le constat de vente final pour les commandes

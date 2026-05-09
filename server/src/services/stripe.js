@@ -2,6 +2,12 @@ import Stripe from 'stripe'
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { recordEvent, classifyChange } from './subscriptionEvents.js'
+import {
+  extractItemsFromStripeSub,
+  getCurrentItemsSnapshot,
+  setCurrentItemsSnapshot,
+} from './subscriptionItemsSnapshot.js'
+import { computeMonthlyNet } from './subscriptionMonthly.js'
 
 function getStripeKey() {
   const row = db.prepare(
@@ -126,14 +132,14 @@ export async function syncStripeSubscriptions() {
   const allSubs = []
   for await (const sub of stripe.subscriptions.list({
     limit: 100,
-    expand: ['data.customer', 'data.items.data.price', 'data.latest_invoice'],
+    expand: ['data.customer', 'data.items.data.price.product', 'data.latest_invoice'],
   })) {
     allSubs.push(sub)
   }
   for await (const sub of stripe.subscriptions.list({
     status: 'canceled',
     limit: 100,
-    expand: ['data.customer', 'data.items.data.price', 'data.latest_invoice'],
+    expand: ['data.customer', 'data.items.data.price.product', 'data.latest_invoice'],
   })) {
     allSubs.push(sub)
   }
@@ -156,34 +162,13 @@ export async function syncStripeSubscriptions() {
     ).get(sub.id)
     if (!companyId && existingRow?.company_id) companyId = existingRow.company_id
 
-    // Price / interval info — sum ALL items (subscriptions can have multiple line items)
-    const items = sub.items?.data ?? []
-    const firstPrice = items[0]?.price
-    const currency = (firstPrice?.currency ?? 'cad').toUpperCase()
-    const intervalType = firstPrice?.recurring?.interval ?? 'month'
+    // Montant mensuel : APRÈS rabais, AVANT taxes — source unique partagée
+    // avec le webhook (cf. subscriptionMonthly.js). Sans ce helper, sync polling
+    // et webhook divergeaient : la sync utilisait latestInvoice.total (taxes
+    // incluses), le webhook sommait items.unit_amount × qty (sans rabais).
+    const firstPrice = sub.items?.data?.[0]?.price
     const intervalCount = firstPrice?.recurring?.interval_count ?? 1
-
-    // Use latest invoice total (includes discounts) when available, fall back to summing items
-    const latestInvoice = typeof sub.latest_invoice === 'object' ? sub.latest_invoice : null
-    let amountMonthly
-    if (latestInvoice && latestInvoice.total != null) {
-      amountMonthly = latestInvoice.total / 100
-      // Normalize to monthly if interval is not month
-      if (intervalType === 'year') amountMonthly = amountMonthly / 12
-      else if (intervalType === 'week') amountMonthly = amountMonthly * 4.333
-    } else {
-      amountMonthly = 0
-      for (const item of items) {
-        const p = item?.price
-        const unitAmt = (p?.unit_amount ?? 0) / 100
-        const qty = item?.quantity ?? 1
-        const iType = p?.recurring?.interval ?? 'month'
-        let monthlyPart = unitAmt * qty
-        if (iType === 'year') monthlyPart = monthlyPart / 12
-        else if (iType === 'week') monthlyPart = monthlyPart * 4.333
-        amountMonthly += monthlyPart
-      }
-    }
+    const { amountMonthly, currency, intervalType } = computeMonthlyNet(sub)
 
     const status = mapStatus(sub.status)
     const startDate = sub.start_date
@@ -198,40 +183,38 @@ export async function syncStripeSubscriptions() {
     const stripeUrl = `https://dashboard.stripe.com/subscriptions/${sub.id}`
 
     if (existingRow) {
-      // Detect changes and log them
       const prev = db.prepare('SELECT * FROM subscriptions WHERE id=?').get(existingRow.id)
-      const changes = []
-      if (prev.status !== status) changes.push(`Statut: ${prev.status} → ${status}`)
-      if (Math.abs((prev.amount_monthly || 0) - amountMonthly) > 0.01) changes.push(`Montant: ${(prev.amount_monthly || 0).toFixed(2)} → ${amountMonthly.toFixed(2)} ${currency}`)
-      if (prev.cancel_date !== cancelDate) {
-        if (!prev.cancel_date && cancelDate) changes.push(`Annulé le ${cancelDate}`)
-        else if (prev.cancel_date && !cancelDate) changes.push('Annulation retirée')
-      }
-      if (prev.interval_type !== intervalType || prev.interval_count !== intervalCount) {
-        changes.push(`Intervalle: ${prev.interval_count || 1} ${prev.interval_type || 'month'} → ${intervalCount} ${intervalType}`)
-      }
-
-      if (changes.length > 0) {
-        const category = classifyChange({
-          prevStatus: prev.status, newStatus: status,
-          prevAmount: prev.amount_monthly, newAmount: amountMonthly,
-        })
-        // event_date : si l'event est une annulation, on prend cancel_date du
-        // sub Stripe (date réelle de l'annulation). Sinon, now (sync moment).
+      const category = classifyChange({
+        prevStatus: prev.status, newStatus: status,
+        prevAmount: prev.amount_monthly, newAmount: amountMonthly,
+      })
+      const newItemsSnap = extractItemsFromStripeSub(sub)
+      // category=null → changement non significatif (statut active↔past_due
+      // sans delta, etc.) : pas d'event mais on persiste quand même l'UPDATE.
+      if (category) {
         const eventDate = (category === 'churn' && cancelDate)
           ? new Date(cancelDate).toISOString()
           : new Date().toISOString()
+        const itemsBeforeSnap = (category === 'creation') ? [] : (getCurrentItemsSnapshot(existingRow.id) || [])
+        const itemsAfterSnap = (category === 'churn') ? [] : newItemsSnap
         await recordEvent({
           subscriptionId: existingRow.id,
           companyId: companyId || prev.company_id,
           eventDate,
-          eventType: category === 'churn' ? 'cancel' : 'update',
+          eventType: category,
           category,
           previousAmount: prev.amount_monthly,
           newAmount: amountMonthly,
           currency,
-          details: changes,
+          itemsBefore: itemsBeforeSnap,
+          itemsAfter: itemsAfterSnap,
         })
+      }
+      // Met à jour le miroir avec l'état courant Stripe (sauf si le sub est
+      // annulé : on garde le dernier état actif pour pouvoir le réutiliser
+      // en cas de réactivation).
+      if (status !== 'canceled') {
+        setCurrentItemsSnapshot(existingRow.id, newItemsSnap)
       }
 
       db.prepare(`
@@ -264,24 +247,27 @@ export async function syncStripeSubscriptions() {
         stripeUrl, customerId, customerEmail,
         intervalCount, intervalType
       )
-      // Si le sub est créé déjà annulé (rare mais possible : import legacy,
-      // sub annulé immédiatement), on classe en 'churn' plutôt qu'en 'new'
-      // pour éviter un MRR delta positif qui serait faux.
-      const isAlreadyCanceled = status === 'canceled'
-      const eventDate = isAlreadyCanceled && cancelDate
-        ? new Date(cancelDate).toISOString()
-        : (startDate ? new Date(startDate).toISOString() : new Date().toISOString())
-      await recordEvent({
-        subscriptionId: newId,
-        companyId,
-        eventDate,
-        eventType: isAlreadyCanceled ? 'cancel' : 'creation',
-        category: isAlreadyCanceled ? 'churn' : 'new',
-        previousAmount: isAlreadyCanceled ? amountMonthly : null,
-        newAmount: isAlreadyCanceled ? null : amountMonthly,
-        currency,
-        details: [`Création: ${amountMonthly.toFixed(2)} ${currency}/${intervalType}`],
-      })
+      // Si le sub arrive déjà annulé (import legacy, sub annulé immédiatement),
+      // on n'enregistre aucun event — il n'y a pas de mouvement MRR à tracer.
+      // Le sub reste en DB pour l'historique mais n'apparaît pas dans les
+      // mouvements d'abonnements.
+      const newItemsSnap = extractItemsFromStripeSub(sub)
+      if (status !== 'canceled') {
+        const eventDate = startDate ? new Date(startDate).toISOString() : new Date().toISOString()
+        await recordEvent({
+          subscriptionId: newId,
+          companyId,
+          eventDate,
+          eventType: 'creation',
+          category: 'creation',
+          previousAmount: null,
+          newAmount: amountMonthly,
+          currency,
+          itemsBefore: [],
+          itemsAfter: newItemsSnap,
+        })
+        setCurrentItemsSnapshot(newId, newItemsSnap)
+      }
       created++
     }
   }
@@ -665,10 +651,15 @@ export async function syncAllPayoutsBalanceTransactions({ onlyMissing = true, li
   return { payoutsProcessed: payouts.length, created, updated, errors }
 }
 
-// Derives a document number for a refund row. Prefers the original invoice's
-// document_number (from the factures table, matched via bt.stripe_invoice_id);
-// falls back to bt.invoice_number if the original facture isn't found locally.
-// Suffix "-R" so the UI can distinguish refunds from invoices at a glance.
+// Derives a document number for a refund row in priority order :
+//   1. bt.stripe_invoice_id      → numéro de la facture d'origine via factures.invoice_id
+//   2. raw.source.charge         → factures.paid_charge_id ou invoice_id (legacy AT)
+//   3. raw.source.payment_intent → factures.paid_payment_intent
+//   4. bt.invoice_number         → fallback texte porté par le BT lui-même
+// 1 cible les refunds sur Invoices Stripe ; 2-3 rattrapent les paiements directs
+// (Checkout, payment links, charges PaymentIntent) où Stripe n'attache pas
+// d'Invoice — sans ces fallbacks, ces refunds restent sans numéro.
+// Suffixe "-R" pour distinguer le refund de la facture d'origine.
 function deriveRefundDocNumber(bt) {
   if (bt.stripe_invoice_id) {
     const orig = db.prepare(
@@ -676,17 +667,68 @@ function deriveRefundDocNumber(bt) {
     ).get(bt.stripe_invoice_id)
     if (orig?.document_number) return `${orig.document_number}-R`
   }
+  let parentCharge = null, parentPI = null
+  try {
+    const raw = JSON.parse(bt.raw || '{}')
+    parentCharge = raw?.source?.charge || null
+    parentPI = raw?.source?.payment_intent || null
+  } catch {}
+  if (parentCharge) {
+    const orig = db.prepare(
+      'SELECT document_number FROM factures WHERE (paid_charge_id=? OR invoice_id=?) AND document_number IS NOT NULL LIMIT 1'
+    ).get(parentCharge, parentCharge)
+    if (orig?.document_number) return `${orig.document_number}-R`
+  }
+  if (parentPI) {
+    const orig = db.prepare(
+      'SELECT document_number FROM factures WHERE paid_payment_intent=? AND document_number IS NOT NULL LIMIT 1'
+    ).get(parentPI)
+    if (orig?.document_number) return `${orig.document_number}-R`
+  }
   if (bt.invoice_number) return `${bt.invoice_number}-R`
   return null
 }
 
+// Pour un refund, Stripe ne renvoie pas le HT séparément — `bt.amount` est le
+// brut TTC remboursé en monnaie native. On dérive le HT en appliquant le ratio
+// HT/TTC de la facture d'origine, calculé en monnaie native uniquement
+// (montant_avant_taxes vs total_amount) — ne PAS utiliser amount_before_tax_cad
+// au numérateur car il est en CAD et mélangerait les devises pour les factures
+// USD. Fallback : soustraction des taxes du BT (correct pour refund complet),
+// puis le brut tel quel si aucune info disponible.
+function computeRefundHt(bt, refundAmount) {
+  if (bt.stripe_invoice_id) {
+    const orig = db.prepare(
+      `SELECT total_amount, montant_avant_taxes FROM factures
+       WHERE invoice_id = ? AND total_amount > 0
+       LIMIT 1`
+    ).get(bt.stripe_invoice_id)
+    if (orig && Number(orig.total_amount) > 0) {
+      const origNativeHt = parseFloat(orig.montant_avant_taxes)
+      if (Number.isFinite(origNativeHt) && origNativeHt > 0) {
+        const ratio = origNativeHt / Number(orig.total_amount)
+        return Math.round(refundAmount * ratio * 100) / 100
+      }
+    }
+  }
+  const taxFullInvoice = Math.abs(bt.invoice_tax_gst || 0) + Math.abs(bt.invoice_tax_qst || 0)
+  if (taxFullInvoice > 0 && refundAmount > taxFullInvoice) {
+    return Math.round((refundAmount - taxFullInvoice) * 100) / 100
+  }
+  return refundAmount
+}
+
 // Backfills the factures table from refund balance_transactions already synced.
 // - One facture per refund (invoice_id = re_xxx, status = 'Remboursement')
-// - Skips if a facture already exists with same invoice_id + sync_source
-//   (but still patches document_number if it was missing on the existing row)
-// - Does NOT touch existing Airtable refund rows (different invoice_id format = ch_xxx)
-// Note: amount_before_tax_cad is set to total_amount since BT doesn't carry the tax
-// breakdown — refine later by fetching the original invoice if needed.
+// - Dedup multi-clé : un même refund peut exister à la fois comme ligne native
+//   (invoice_id = re_xxx) et comme ligne héritée d'Airtable (invoice_id = ch_xxx,
+//   le charge parent). On résout les 4 cas :
+//     1. Native déjà présente               → idempotent (patch document_number si manquant,
+//                                             auto-heal du HT si stocké à tort en TTC)
+//     2. AT seule (ch_xxx)                  → promote : UPDATE invoice_id → re_xxx,
+//                                             garde airtable_id (la sync AT préserve la promotion)
+//     3. Native + AT séparées (doublon)     → merge : DELETE la ligne AT, garde la native
+//     4. Aucune                              → INSERT classique
 export function backfillRefundsToFactures({ dryRun = false } = {}) {
   const refundBts = db.prepare(`
     SELECT id, stripe_id, source_id, amount, fee, currency, stripe_invoice_id, invoice_number,
@@ -699,29 +741,18 @@ export function backfillRefundsToFactures({ dryRun = false } = {}) {
   let created = 0
   let skipped = 0
   let patched = 0
+  let promoted = 0
+  let mergedDups = 0
   let unmatched = 0
   const details = []
+
+  const findRow = db.prepare(
+    "SELECT id, document_number, airtable_id, amount_before_tax_cad, total_amount FROM factures WHERE invoice_id=? AND sync_source='Remboursements Stripe'"
+  )
 
   for (const bt of refundBts) {
     const refundId = bt.source_id
     if (!refundId) { skipped++; continue }
-
-    const existing = db.prepare(
-      "SELECT id, document_number FROM factures WHERE invoice_id=? AND sync_source='Remboursements Stripe'"
-    ).get(refundId)
-    if (existing) {
-      if (!existing.document_number) {
-        const docNum = deriveRefundDocNumber(bt)
-        if (docNum && !dryRun) {
-          db.prepare(
-            `UPDATE factures SET document_number=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`
-          ).run(docNum, existing.id)
-        }
-        if (docNum) patched++
-      }
-      skipped++
-      continue
-    }
 
     let chargeId = null
     try {
@@ -729,6 +760,73 @@ export function backfillRefundsToFactures({ dryRun = false } = {}) {
       chargeId = raw?.source?.charge || null
     } catch {}
 
+    const nativeRow = findRow.get(refundId)
+    const atRow = chargeId ? findRow.get(chargeId) : null
+    const refundAmount = Math.abs(bt.amount || 0)
+    const refundHt = computeRefundHt(bt, refundAmount)
+    const docNumber = deriveRefundDocNumber(bt)
+
+    // Cas 3 : doublon — native + AT pour le même refund. On garde la native
+    // (champs payout-aware mieux résolus) et on supprime la copie AT.
+    if (nativeRow && atRow && nativeRow.id !== atRow.id) {
+      if (!dryRun) {
+        db.prepare('DELETE FROM factures WHERE id=?').run(atRow.id)
+      }
+      mergedDups++
+      details.push({ refund_id: refundId, charge_id: chargeId, action: 'merged_dup', kept: nativeRow.id, deleted_at_id: atRow.id, deleted_airtable_id: atRow.airtable_id })
+      continue
+    }
+
+    // Cas 1 : native déjà là — idempotent, patch document_number si manquant.
+    // Auto-heal : si amount_before_tax_cad a été stocké à tort en TTC (bug
+    // historique : amount_before_tax_cad == total_amount alors que la facture
+    // d'origine a un HT < TTC), on le recalcule.
+    if (nativeRow) {
+      const needsDocPatch = !nativeRow.document_number && docNumber
+      const currentHt = Number(nativeRow.amount_before_tax_cad) || 0
+      const needsHtPatch =
+        Number(nativeRow.total_amount) > 0
+        && Math.abs(currentHt - refundHt) > 0.01
+      if ((needsDocPatch || needsHtPatch) && !dryRun) {
+        db.prepare(
+          `UPDATE factures SET
+             document_number=COALESCE(?, document_number),
+             amount_before_tax_cad=?,
+             montant_avant_taxes=?,
+             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+           WHERE id=?`
+        ).run(docNumber, refundHt, String(refundHt), nativeRow.id)
+      }
+      if (needsDocPatch) patched++
+      skipped++
+      continue
+    }
+
+    // Cas 2 : seule la ligne AT (ch_xxx) existe → promotion. On bascule
+    // invoice_id sur re_xxx, on rafraîchit montants/numéro depuis le BT, et
+    // on conserve airtable_id : la sync AT (services/airtable.js) ne ré-écrit
+    // pas un invoice_id déjà en re_%.
+    if (atRow) {
+      if (!dryRun) {
+        db.prepare(`
+          UPDATE factures SET
+            invoice_id=?,
+            document_number=COALESCE(document_number, ?),
+            amount_before_tax_cad=?,
+            montant_avant_taxes=?,
+            total_amount=CASE WHEN COALESCE(total_amount,0)=0 THEN ? ELSE total_amount END,
+            balance_due=0,
+            lien_stripe=?,
+            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          WHERE id=?
+        `).run(refundId, docNumber, refundHt, String(refundHt), refundAmount, `https://dashboard.stripe.com/refunds/${refundId}`, atRow.id)
+      }
+      promoted++
+      details.push({ refund_id: refundId, charge_id: chargeId, action: 'promoted', facture_id: atRow.id, airtable_id: atRow.airtable_id })
+      continue
+    }
+
+    // Cas 4 : aucune ligne — INSERT classique.
     let companyId = null
     if (bt.stripe_customer_id) {
       const co = db.prepare('SELECT id FROM companies WHERE stripe_customer_id=?').get(bt.stripe_customer_id)
@@ -744,11 +842,8 @@ export function backfillRefundsToFactures({ dryRun = false } = {}) {
       subscriptionId = fact?.subscription_id || null
     }
 
-    const refundAmount = Math.abs(bt.amount || 0)
     const docDate = bt.created_date ? bt.created_date.slice(0, 10) : null
-    const moisDoc = docDate ? docDate.slice(0, 7) : null
     const annee = docDate ? docDate.slice(0, 4) : null
-    const docNumber = deriveRefundDocNumber(bt)
 
     if (dryRun) {
       created++
@@ -762,22 +857,22 @@ export function backfillRefundsToFactures({ dryRun = false } = {}) {
         id, invoice_id, company_id, document_number, document_date,
         status, currency, amount_before_tax_cad, total_amount, balance_due,
         subscription_id, sync_source, customer_id, lien_stripe,
-        date_equivalente, mois_du_document, annee_de_facturation,
+        date_equivalente, annee_de_facturation,
         montant_avant_taxes,
         created_at, updated_at
-      ) VALUES (?,?,?,?,?,'Remboursement',?,?,?,0,?,'Remboursements Stripe',?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ) VALUES (?,?,?,?,?,'Remboursement',?,?,?,0,?,'Remboursements Stripe',?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     `).run(
       id, refundId, companyId, docNumber, docDate,
-      bt.currency || 'CAD', refundAmount, refundAmount,
+      bt.currency || 'CAD', refundHt, refundAmount,
       subscriptionId, bt.stripe_customer_id,
       `https://dashboard.stripe.com/refunds/${refundId}`,
-      bt.created_date, moisDoc, annee,
-      String(refundAmount)
+      bt.created_date, annee,
+      String(refundHt)
     )
     created++
     details.push({ refund_id: refundId, charge_id: chargeId, amount: refundAmount, company_id: companyId, document_number: docNumber, facture_id: id })
   }
 
-  console.log(`✅ Backfill remboursements: ${created} créés, ${patched} numéros patchés, ${skipped} skip, ${unmatched} sans company sur ${refundBts.length}`)
-  return { total: refundBts.length, created, patched, skipped, unmatched, details: details.slice(0, 50) }
+  console.log(`✅ Backfill remboursements: ${created} créés, ${promoted} promus AT→native, ${mergedDups} doublons fusionnés, ${patched} numéros patchés, ${skipped} skip, ${unmatched} sans company sur ${refundBts.length}`)
+  return { total: refundBts.length, created, promoted, mergedDups, patched, skipped, unmatched, details: details.slice(0, 50) }
 }

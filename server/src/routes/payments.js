@@ -32,10 +32,11 @@ router.get('/facture/:factureId', (req, res) => {
   // Ajoute les URLs profondes QB + le payout pour chaque ligne. Stratégies de
   // matching balance_transaction (du plus précis au plus large) :
   //   1. stripe_balance_tx_id (lien direct sur la ligne payments réelle)
-  //   2. stripe_charge_id     → bt.source_id
-  //   3. stripe_invoice_id    → bt.stripe_invoice_id (sparse mais exact)
-  //   4. payment_intent       → LIKE sur bt.raw (match les charges abonnement
-  //      où invoice n'est pas linké directement mais où le PI est dans le raw)
+  //   2. Pour direction='out' (refund) : source_id = stripe_refund_id, type IN
+  //      ('refund','payment_refund'). Pas de fallback sur stripe_charge_id —
+  //      sinon on tombe sur la BT du paiement initial, dans un payout antérieur.
+  //   3. Pour direction='in'  : source_id = stripe_charge_id, puis fallbacks
+  //      par invoice_id / payment_intent (raw LIKE).
   for (const r of rows) {
     r.qb_payment_url = r.qb_payment_id ? qbEntityUrl('salesreceipt', r.qb_payment_id) : null
     r.qb_journal_entry_url = r.qb_journal_entry_id ? qbEntityUrl('journal', r.qb_journal_entry_id) : null
@@ -44,14 +45,24 @@ router.get('/facture/:factureId', (req, res) => {
       if (r.stripe_balance_tx_id) {
         bt = db.prepare('SELECT payout_stripe_id FROM stripe_balance_transactions WHERE stripe_id=?').get(r.stripe_balance_tx_id)
       }
-      if (!bt && r.stripe_charge_id) {
-        bt = db.prepare('SELECT payout_stripe_id FROM stripe_balance_transactions WHERE source_id=?').get(r.stripe_charge_id)
-      }
-      if (!bt && factureInvoiceId) {
-        bt = db.prepare("SELECT payout_stripe_id FROM stripe_balance_transactions WHERE stripe_invoice_id=? AND type='charge' ORDER BY created_date DESC LIMIT 1").get(factureInvoiceId)
-      }
-      if (!bt && facturePaymentIntent) {
-        bt = db.prepare("SELECT payout_stripe_id FROM stripe_balance_transactions WHERE type='charge' AND raw LIKE ? ORDER BY created_date DESC LIMIT 1").get('%' + facturePaymentIntent + '%')
+      if (r.direction === 'out') {
+        if (!bt && r.stripe_refund_id) {
+          bt = db.prepare(
+            "SELECT payout_stripe_id FROM stripe_balance_transactions WHERE source_id=? AND type IN ('refund','payment_refund')"
+          ).get(r.stripe_refund_id)
+        }
+      } else {
+        if (!bt && r.stripe_charge_id) {
+          bt = db.prepare(
+            "SELECT payout_stripe_id FROM stripe_balance_transactions WHERE source_id=? AND type IN ('charge','payment')"
+          ).get(r.stripe_charge_id)
+        }
+        if (!bt && factureInvoiceId) {
+          bt = db.prepare("SELECT payout_stripe_id FROM stripe_balance_transactions WHERE stripe_invoice_id=? AND type IN ('charge','payment') ORDER BY created_date DESC LIMIT 1").get(factureInvoiceId)
+        }
+        if (!bt && facturePaymentIntent) {
+          bt = db.prepare("SELECT payout_stripe_id FROM stripe_balance_transactions WHERE type IN ('charge','payment') AND raw LIKE ? ORDER BY created_date DESC LIMIT 1").get('%' + facturePaymentIntent + '%')
+        }
       }
       r.payout_stripe_id = bt?.payout_stripe_id || null
     }
@@ -83,10 +94,10 @@ router.get('/facture/:factureId', (req, res) => {
         payoutId = db.prepare('SELECT payout_stripe_id FROM stripe_balance_transactions WHERE source_id=?').get(f.paid_charge_id)?.payout_stripe_id || null
       }
       if (!payoutId && factureInvoiceId) {
-        payoutId = db.prepare("SELECT payout_stripe_id FROM stripe_balance_transactions WHERE stripe_invoice_id=? AND type='charge' ORDER BY created_date DESC LIMIT 1").get(factureInvoiceId)?.payout_stripe_id || null
+        payoutId = db.prepare("SELECT payout_stripe_id FROM stripe_balance_transactions WHERE stripe_invoice_id=? AND type IN ('charge','payment') ORDER BY created_date DESC LIMIT 1").get(factureInvoiceId)?.payout_stripe_id || null
       }
       if (!payoutId && f.paid_payment_intent) {
-        payoutId = db.prepare("SELECT payout_stripe_id FROM stripe_balance_transactions WHERE type='charge' AND raw LIKE ? ORDER BY created_date DESC LIMIT 1").get('%' + f.paid_payment_intent + '%')?.payout_stripe_id || null
+        payoutId = db.prepare("SELECT payout_stripe_id FROM stripe_balance_transactions WHERE type IN ('charge','payment') AND raw LIKE ? ORDER BY created_date DESC LIMIT 1").get('%' + f.paid_payment_intent + '%')?.payout_stripe_id || null
       }
       rows.push({
         id: `synthetic:stripe:${f.id}`,

@@ -7,6 +7,9 @@ import PDFDocument from 'pdfkit';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
+import { emitOrder, emitOrderItem } from '../services/realtimeEmitters.js';
+import { getCentralControllers } from '../utils/centralController.js';
+import { rescanRachatForCompany } from '../services/subscriptionEvents.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -83,7 +86,7 @@ router.get('/:id', (req, res) => {
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
   const items = db.prepare(
-    `SELECT oi.*, pr.name_fr as product_name, pr.name_en as product_name_en, pr.sku, pr.image_url as product_image, pr.stock_qty as product_stock, pr.location as product_location
+    `SELECT oi.*, pr.name_fr as product_name, pr.name_en as product_name_en, pr.sku, pr.image_url as product_image, pr.stock_qty as product_stock, pr.location as product_location, pr.type as product_type
      FROM order_items oi
      LEFT JOIN products pr ON oi.product_id = pr.id
      WHERE oi.order_id = ?
@@ -112,7 +115,9 @@ router.get('/:id', (req, res) => {
      ORDER BY document_date ASC`
   ).all(req.params.id, order.project_id, order.project_id);
 
-  res.json({ ...order, items: itemsWithSerials, shipments, factures });
+  const central_controllers = getCentralControllers(order.company_id);
+
+  res.json({ ...order, items: itemsWithSerials, shipments, factures, central_controllers });
 });
 
 // POST /api/orders
@@ -156,6 +161,10 @@ router.post('/', (req, res) => {
     `SELECT oi.*, pr.name_fr as product_name, pr.sku FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.order_id = ?`
   ).all(id);
 
+  emitOrder('created', id, req.user?.id);
+  // Une nouvelle commande peut être le rachat d'un churn récent du même
+  // client — re-scanne les churns sans rachat des 12 derniers mois.
+  if (order?.company_id) { try { rescanRachatForCompany(order.company_id) } catch {} }
   res.status(201).json({ ...order, items: orderItems });
 });
 
@@ -176,7 +185,12 @@ router.put('/:id', (req, res) => {
       .run(...values, req.params.id);
   }
 
-  res.json(db.prepare('SELECT o.*, c.name as company_name, p.name as project_name FROM orders o LEFT JOIN companies c ON o.company_id = c.id LEFT JOIN projects p ON o.project_id = p.id WHERE o.id = ?').get(req.params.id));
+  emitOrder('updated', req.params.id, req.user?.id);
+  const updated = db.prepare('SELECT o.*, c.name as company_name, p.name as project_name FROM orders o LEFT JOIN companies c ON o.company_id = c.id LEFT JOIN projects p ON o.project_id = p.id WHERE o.id = ?').get(req.params.id);
+  // Une modif de commande (date, company, ou items en cascade) peut affecter
+  // l'éligibilité comme rachat — re-scan best-effort.
+  if (updated?.company_id) { try { rescanRachatForCompany(updated.company_id) } catch {} }
+  res.json(updated);
 });
 
 // PATCH /api/orders/:id/status
@@ -215,6 +229,7 @@ router.patch('/:id/status', (req, res) => {
       .run(status, req.params.id);
   }
 
+  emitOrder('updated', req.params.id, req.user?.id);
   res.json({ message: 'Status updated', status });
 });
 
@@ -248,7 +263,9 @@ router.post('/:id/shipments', (req, res) => {
   });
   run();
 
-  res.status(201).json(db.prepare('SELECT * FROM shipments WHERE id = ?').get(id));
+  const shipment = db.prepare('SELECT * FROM shipments WHERE id = ?').get(id);
+  emitOrderItem('bulk_updated', req.params.id, { shipment, item_ids }, req.user?.id);
+  res.status(201).json(shipment);
 });
 
 // POST /api/orders/:id/items — add item to existing order
@@ -268,7 +285,9 @@ router.post('/:id/items', (req, res) => {
   ).run(itemId, req.params.id, product_id || null, qty || 1, cost || 0, item_type || 'Facturable', notes || null);
 
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(req.params.id);
-  res.status(201).json(db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId));
+  const newItem = db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId);
+  emitOrderItem('created', req.params.id, newItem, req.user?.id);
+  res.status(201).json(newItem);
 });
 
 // PATCH /api/orders/:id/items/reorder
@@ -280,6 +299,7 @@ router.patch('/:id/items/reorder', (req, res) => {
   for (const { id, sort_order } of req.body) {
     stmt.run(sort_order, id, req.params.id);
   }
+  emitOrderItem('reordered', req.params.id, { items: req.body }, req.user?.id);
   res.json({ ok: true });
 });
 
@@ -296,7 +316,9 @@ router.patch('/:id/items/:itemId', (req, res) => {
   if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
   db.prepare(`UPDATE order_items SET ${updates.join(', ')} WHERE id=? AND order_id=?`).run(...values, req.params.itemId, req.params.id);
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
-  res.json(db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?').get(req.params.itemId));
+  const item = db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?').get(req.params.itemId);
+  emitOrderItem('updated', req.params.id, item, req.user?.id);
+  res.json(item);
 });
 
 // POST /api/orders/:id/items/:itemId/duplicate
@@ -309,7 +331,9 @@ router.post('/:id/items/:itemId/duplicate', (req, res) => {
   db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes, sort_order) VALUES (?,?,?,?,?,?,?,?)')
     .run(newId, req.params.id, item.product_id, item.qty, item.unit_cost, item.item_type, item.notes, (item.sort_order || 0) + 1);
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
-  res.status(201).json(db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?').get(newId));
+  const dup = db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?').get(newId);
+  emitOrderItem('created', req.params.id, dup, req.user?.id);
+  res.status(201).json(dup);
 });
 
 // DELETE /api/orders/:id/items/:itemId
@@ -317,6 +341,7 @@ router.delete('/:id/items/:itemId', (req, res) => {
   const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
   db.prepare('DELETE FROM order_items WHERE id = ? AND order_id = ?').run(req.params.itemId, req.params.id);
+  emitOrderItem('deleted', req.params.id, { id: req.params.itemId }, req.user?.id);
   res.json({ message: 'Item deleted' });
 });
 
@@ -352,6 +377,7 @@ router.post('/:id/scan', (req, res) => {
       ).get(req.params.id, serial.product_id)
       if (!item) return res.json({ type: 'serial', action: 'not_in_order', serial })
       const updated = pickItem(item, serial)
+      emitOrderItem('updated', req.params.id, updated, req.user?.id)
       return res.json({ type: 'serial', action: 'picked', serial, item: updated })
     }
 
@@ -362,6 +388,7 @@ router.post('/:id/scan', (req, res) => {
       ).get(req.params.id, product.id)
       if (!item) return res.json({ type: 'sku', action: 'not_in_order', product })
       const updated = pickItem(item, null)
+      emitOrderItem('updated', req.params.id, updated, req.user?.id)
       return res.json({ type: 'sku', action: 'picked', product, item: updated })
     }
 
@@ -394,6 +421,7 @@ router.post('/:id/scan', (req, res) => {
 
     db.prepare('UPDATE serial_numbers SET order_item_id = ? WHERE id = ?').run(item.id, serial.id)
     db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id)
+    emitOrderItem(action === 'added' ? 'created' : 'updated', req.params.id, item, req.user?.id)
     return res.json({ type: 'serial', action, serial, item })
   }
 
@@ -417,6 +445,7 @@ router.post('/:id/scan', (req, res) => {
     }
 
     db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id)
+    emitOrderItem(action === 'added' ? 'created' : 'updated', req.params.id, item, req.user?.id)
     return res.json({ type: 'sku', action, product, item })
   }
 
@@ -428,6 +457,7 @@ router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Order not found' });
   db.prepare("UPDATE orders SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);
+  emitOrder('deleted', req.params.id, req.user?.id);
   res.json({ message: 'Deleted' });
 });
 
@@ -557,6 +587,7 @@ router.post('/:id/bon-livraison', async (req, res) => {
   const relPath = `bons-livraison/${filename}`;
   db.prepare(`UPDATE orders SET bon_livraison_path = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(relPath, req.params.id);
 
+  emitOrder('updated', req.params.id, req.user?.id);
   res.json({ bon_livraison_path: relPath, url: `/api/bons-livraison/${filename}` });
 });
 

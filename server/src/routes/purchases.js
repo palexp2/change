@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -97,6 +98,7 @@ router.patch('/:id', (req, res) => {
     LEFT JOIN companies c ON p.supplier_company_id = c.id
     WHERE p.id = ?
   `).get(req.params.id)
+  emitEntity('purchase', 'updated', req.params.id, updated, req.user?.id)
   res.json(updated)
 })
 
@@ -104,6 +106,7 @@ router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM purchases WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
   db.prepare('DELETE FROM purchases WHERE id = ?').run(req.params.id)
+  emitEntity('purchase', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ success: true })
 })
 

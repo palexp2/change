@@ -6,6 +6,21 @@ import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import PDFDocument from 'pdfkit'
+import { emitEntity } from '../services/realtimeEmitters.js'
+
+// Reuse the LIST query shape so realtime payload matches what the
+// soumissions list page consumes (Soumissions.jsx).
+const SOUMISSION_LIST_SELECT = `
+  SELECT s.*,
+    p.name as project_name,
+    co.name as company_name,
+    c.first_name || ' ' || c.last_name as contact_name
+  FROM soumissions s
+  LEFT JOIN projects p ON s.project_id = p.id
+  LEFT JOIN companies co ON s.company_id = co.id
+  LEFT JOIN contacts c ON s.contact_id = c.id
+  WHERE s.id = ?
+`
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = Router()
@@ -347,10 +362,9 @@ router.post('/soumissions', async (req, res) => {
     console.error('PDF generation error:', e)
   }
 
-  res.json(db.prepare(`
-    SELECT s.*, co.name as company_name FROM soumissions s
-    LEFT JOIN companies co ON s.company_id = co.id WHERE s.id = ?
-  `).get(id))
+  const created = db.prepare(SOUMISSION_LIST_SELECT).get(id)
+  emitEntity('soumission', 'created', id, created, req.user?.id)
+  res.json(created)
 })
 
 router.put('/soumissions/:id', async (req, res) => {
@@ -397,7 +411,9 @@ router.put('/soumissions/:id', async (req, res) => {
     console.error('PDF regeneration error:', e)
   }
 
-  res.json(db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id))
+  const updated = db.prepare(SOUMISSION_LIST_SELECT).get(req.params.id)
+  emitEntity('soumission', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
 })
 
 router.delete('/soumissions/:id', (req, res) => {
@@ -406,6 +422,7 @@ router.delete('/soumissions/:id', (req, res) => {
   if (row.airtable_id) return res.status(400).json({ error: 'Cannot delete Airtable-synced soumission' })
   db.prepare("DELETE FROM document_items WHERE document_id = ? AND document_type = 'soumission'").run(req.params.id)
   db.prepare('DELETE FROM soumissions WHERE id = ?').run(req.params.id)
+  emitEntity('soumission', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   // Clean up PDF
   if (row.generated_pdf_path) {
     try {
@@ -507,7 +524,9 @@ router.post('/soumissions/:id/duplicate', async (req, res) => {
     console.error('PDF generation error (duplicate):', e)
   }
 
-  res.json(db.prepare('SELECT * FROM soumissions WHERE id = ?').get(newId))
+  const dupRow = db.prepare(SOUMISSION_LIST_SELECT).get(newId)
+  emitEntity('soumission', 'created', newId, dupRow, req.user?.id)
+  res.json(dupRow)
 })
 
 export default router

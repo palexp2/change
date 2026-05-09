@@ -167,6 +167,7 @@ export const api = {
     getGoal: () => get('/dashboard/goal'),
     updateGoal: (data) => put('/dashboard/goal', data),
     stripeRevenue: () => get('/dashboard/stripe-revenue'),
+    stripeRevenueFactures: (params = {}) => get('/dashboard/stripe-revenue/factures?' + new URLSearchParams(params)),
     subscriptionEvents: (params = {}) => get('/dashboard/subscription-events?' + new URLSearchParams(params)),
     topProducts: (params = {}) => get('/dashboard/top-products?' + new URLSearchParams(params)),
   },
@@ -290,8 +291,11 @@ export const api = {
   customFields: {
     list: (erpTable) => get(`/custom-fields/${erpTable}`),
     create: (erpTable, data) => post(`/custom-fields/${erpTable}`, data),
+    createFormula: (erpTable, data) => post(`/custom-fields/${erpTable}/formula`, data),
+    createLookup: (erpTable, data) => post(`/custom-fields/${erpTable}/lookup`, data),
     update: (id, data) => put(`/custom-fields/${id}`, data),
     delete: (id) => del(`/custom-fields/${id}`),
+    lookupMeta: (erpTable) => get(`/custom-fields/_meta/${erpTable}`),
   },
 
   // Airtable field defs (modification du type & suppression de la colonne via clic-droit)
@@ -407,6 +411,13 @@ export const api = {
     get: (id) => get(`/projets/abonnements/${id}`),
     stripeDetails: (id) => get(`/projets/abonnements/${id}/stripe-details`),
     patch: (id, body) => patch(`/projets/abonnements/${id}`, body),
+    eventPatch: (id, eventId, body) => patch(`/projets/abonnements/${id}/events/${eventId}`, body),
+    eventDelete: (id, eventId) => del(`/projets/abonnements/${id}/events/${eventId}`),
+    events: (params = {}) => get('/projets/abonnement-events?' + new URLSearchParams(params)),
+    eventRachatPatch: (eventId, body) => patch(`/projets/abonnement-events/${eventId}/rachat`, body),
+    eventRachatCandidates: (eventId) => get(`/projets/abonnement-events/${eventId}/rachat-candidates`),
+    eventDetectRachat: (eventId) => post(`/projets/abonnement-events/${eventId}/detect-rachat`),
+    backfillRachat: () => post('/projets/abonnement-events/backfill-rachat'),
   },
 
   // Catalog products

@@ -6,6 +6,7 @@ import db from '../db/database.js'
 import { getAccessToken, airtableFetch } from '../connectors/airtable.js'
 import { syncDynamicFields, updateDynamicFields } from './airtableAutoSync.js'
 import { broadcastAll } from './realtime.js'
+import { emitCompany, emitOrder } from './realtimeEmitters.js'
 import { evaluateFieldRules } from './fieldRuleEngine.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
 
@@ -200,9 +201,12 @@ export async function syncAirtable(changes = null) {
           if (existing) {
             db.prepare(`UPDATE companies SET name=?, phone=COALESCE(?,phone), email=COALESCE(?,email), website=COALESCE(?,website), address=COALESCE(?,address), city=COALESCE(?,city), province=COALESCE(?,province), country=COALESCE(?,country), type=COALESCE(?,type), lifecycle_phase=COALESCE(?,lifecycle_phase), notes=COALESCE(?,notes), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
               .run(name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), existing.id)
+            emitCompany('updated', existing.id, null)
           } else {
+            const newId = uuid()
             db.prepare('INSERT INTO companies (id, name, phone, email, website, address, city, province, country, type, lifecycle_phase, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-              .run(uuid(), name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), rec.id)
+              .run(newId, name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), rec.id)
+            emitCompany('created', newId, null)
             companiesImported++
           }
         }
@@ -382,12 +386,15 @@ export async function syncOrders(changes = null) {
         if (existing) {
           db.prepare(`UPDATE orders SET company_id=?, project_id=?, status=?, priority=?, notes=?, address_id=COALESCE(?,address_id), is_subscription=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
             .run(companyId, projectId, status, priority, notes, addressId, isSubscription, existing.id)
+          emitOrder('updated', existing.id, null)
           updated++
         } else {
           const rawNum = fm?.order_number ? parseInt(String(rec.fields[fm.order_number] ?? '').replace(/[^0-9]/g, '')) : NaN
           const orderNumber = isNaN(rawNum) || rawNum === 0 ? maxNum() + 1 : rawNum
+          const newId = uuid()
           db.prepare('INSERT INTO orders (id, order_number, company_id, project_id, status, priority, notes, address_id, airtable_id, is_subscription) VALUES (?,?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), orderNumber, companyId, projectId, status, priority, notes, addressId, rec.id, isSubscription)
+            .run(newId, orderNumber, companyId, projectId, status, priority, notes, addressId, rec.id, isSubscription)
+          emitOrder('created', newId, null)
           imported++
         }
       }
@@ -2066,10 +2073,17 @@ export async function syncFactures(changes = null) {
         const totalAmount = parseFloat(String(rec.fields[fm.total_amount] ?? 0).replace(/[^0-9.-]/g, '')) || 0
         const balanceDue = parseFloat(String(rec.fields[fm.balance_due] ?? 0).replace(/[^0-9.-]/g, '')) || 0
         const notes = getVal(rec.fields, fm.notes)
-        const existing = db.prepare('SELECT id FROM factures WHERE airtable_id=?').get(rec.id)
+        const existing = db.prepare('SELECT id, sync_source, invoice_id FROM factures WHERE airtable_id=?').get(rec.id)
         if (existing) {
+          // Préserve un invoice_id déjà promu en re_xxx (cas d'un remboursement
+          // Stripe rattaché par le backfill : Airtable porte ch_xxx, le backfill
+          // a basculé la ligne vers re_xxx pour le lookup payout/refund — ne pas
+          // ré-écraser).
+          const finalInvoiceId = (existing.sync_source === 'Remboursements Stripe' && /^re_/.test(existing.invoice_id || ''))
+            ? existing.invoice_id
+            : invoiceId
           db.prepare(`UPDATE factures SET company_id=?, project_id=?, order_id=?, invoice_id=?, document_number=?, document_date=?, due_date=?, status=?, currency=?, amount_before_tax_cad=?, total_amount=?, balance_due=?, notes=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-            .run(companyId, projectId, orderId, invoiceId, documentNumber, documentDate, dueDate, status, currency, amountBeforeTaxCad, totalAmount, balanceDue, notes, existing.id)
+            .run(companyId, projectId, orderId, finalInvoiceId, documentNumber, documentDate, dueDate, status, currency, amountBeforeTaxCad, totalAmount, balanceDue, notes, existing.id)
           updated++
         } else {
           db.prepare('INSERT INTO factures (id, airtable_id, company_id, project_id, order_id, invoice_id, document_number, document_date, due_date, status, currency, amount_before_tax_cad, total_amount, balance_due, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')

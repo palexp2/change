@@ -4,6 +4,7 @@ import { Plus } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -165,6 +166,10 @@ export default function Products() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // The Products list page filters server-side on `active=true` — skip events
+  // for inactive products so we don't accidentally show them.
+  useEntityListRealtime('product', setProducts, { predicate: p => p.active !== 0 })
 
   const COLUMNS = useMemo(() => TABLE_COLUMN_META.products, [])
 

@@ -17,6 +17,7 @@ import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useDisabledColumns } from '../lib/useDisabledColumns.js'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 function fmtCad(n) {
@@ -313,6 +314,11 @@ export default function ProjectDetail() {
       .catch(() => setProject(null))
       .finally(() => setLoading(false))
   }, [id])
+
+  useRealtimeChannel(id ? `project:${id}` : null, (msg) => {
+    if (msg.type === 'project:updated') setProject(p => p ? { ...p, ...msg.payload } : p)
+    else if (msg.type === 'project:deleted') navigate('/pipeline')
+  })
 
   useEffect(() => {
     api.projects.vendeurOptions()

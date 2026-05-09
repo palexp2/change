@@ -10,6 +10,7 @@ import { fmtDate } from '../lib/formatDate.js'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 
 function fmtCad(n) {
@@ -352,6 +353,8 @@ export default function Soumissions() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEntityListRealtime('soumission', setRows)
 
   return (
     <Layout>

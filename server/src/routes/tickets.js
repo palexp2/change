@@ -4,9 +4,24 @@ import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { getCentralControllers } from '../utils/centralController.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
+import { emitEntity } from '../services/realtimeEmitters.js';
 
 const router = Router();
 router.use(requireAuth);
+
+function buildTicketRow(id) {
+  const r = db.prepare(
+    `SELECT t.*, c.name as company_name, u.name as assigned_name,
+      ct.first_name || ' ' || ct.last_name as contact_name
+     FROM tickets t
+     LEFT JOIN companies c ON t.company_id = c.id
+     LEFT JOIN users u ON t.assigned_to = u.id
+     LEFT JOIN contacts ct ON t.contact_id = ct.id
+     WHERE t.id = ?`
+  ).get(id)
+  if (r) r.central_controllers = getCentralControllers(r.company_id)
+  return r
+}
 
 // GET /api/tickets/meta — distinct types & statuses
 router.get('/meta', (req, res) => {
@@ -91,10 +106,8 @@ router.post('/', (req, res) => {
   ).run(id, company_id || null, contact_id || null, assigned_to || null,
     title, description || null, response || null, type || null, status || 'Waiting on us', duration_minutes || 0);
 
-  const created = db.prepare(
-    `SELECT t.*, c.name as company_name, u.name as assigned_name FROM tickets t LEFT JOIN companies c ON t.company_id = c.id LEFT JOIN users u ON t.assigned_to = u.id WHERE t.id = ?`
-  ).get(id);
-  created.central_controllers = getCentralControllers(created.company_id);
+  const created = buildTicketRow(id);
+  emitEntity('ticket', 'created', id, created, req.user?.id);
   res.status(201).json(created);
 });
 
@@ -115,10 +128,8 @@ router.put('/:id', (req, res) => {
       .run(...values, req.params.id);
   }
 
-  const updated = db.prepare(
-    `SELECT t.*, c.name as company_name, u.name as assigned_name FROM tickets t LEFT JOIN companies c ON t.company_id = c.id LEFT JOIN users u ON t.assigned_to = u.id WHERE t.id = ?`
-  ).get(req.params.id);
-  updated.central_controllers = getCentralControllers(updated.company_id);
+  const updated = buildTicketRow(req.params.id);
+  emitEntity('ticket', 'updated', req.params.id, updated, req.user?.id);
   res.json(updated);
 });
 
@@ -131,6 +142,7 @@ router.patch('/:id/status', (req, res) => {
   if (!status) return res.status(400).json({ error: 'Status is required' });
   db.prepare(`UPDATE tickets SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
     .run(status, req.params.id);
+  emitEntity('ticket', 'updated', req.params.id, buildTicketRow(req.params.id), req.user?.id);
   res.json({ message: 'Status updated' });
 });
 
@@ -139,6 +151,7 @@ router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM tickets WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Ticket not found' });
   db.prepare('DELETE FROM tickets WHERE id = ?').run(req.params.id);
+  emitEntity('ticket', 'deleted', req.params.id, { id: req.params.id }, req.user?.id);
   res.json({ message: 'Deleted' });
 });
 

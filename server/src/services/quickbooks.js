@@ -3,6 +3,7 @@ import db from '../db/database.js'
 import { qbGet, qbPost } from '../connectors/quickbooks.js'
 import { getUsdCadRate } from './fx.js'
 import { getStripeClient } from './stripeInvoices.js'
+import { emitCompany } from './realtimeEmitters.js'
 
 function getQBConfig() {
   const rows = db.prepare("SELECT key, value FROM connector_config WHERE connector='quickbooks'").all()
@@ -38,6 +39,7 @@ async function findOrCreateVendor(vendorName) {
   if (existing) {
     db.prepare("UPDATE companies SET quickbooks_vendor_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
       .run(qbVendorId, existing.id)
+    emitCompany('updated', existing.id, null)
   } else {
     db.prepare(`
       INSERT OR IGNORE INTO companies (id, name, type, quickbooks_vendor_id)
@@ -158,6 +160,7 @@ function upsertVendorCompany(qbVendorId, vendorName) {
   if (byName) {
     db.prepare("UPDATE companies SET quickbooks_vendor_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
       .run(qbVendorId, byName.id)
+    emitCompany('updated', byName.id, null)
     return byName.id
   }
 
@@ -166,6 +169,7 @@ function upsertVendorCompany(qbVendorId, vendorName) {
     INSERT INTO companies (id, name, type, quickbooks_vendor_id)
     VALUES (?, ?, 'Fournisseur', ?)
   `).run(id, vendorName, qbVendorId)
+  emitCompany('created', id, null)
   return id
 }
 
@@ -601,6 +605,7 @@ async function resolveQbCustomerForFacture(factureId, currency = 'CAD') {
   const col = isUsd ? 'quickbooks_customer_id_usd' : 'quickbooks_customer_id'
   db.prepare(`UPDATE companies SET ${col} = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
     .run(qbCustomerId, row.company_id)
+  emitCompany('updated', row.company_id, null)
   return { id: qbCustomerId, name: row.name, currency: isUsd ? 'USD' : 'CAD' }
 }
 
@@ -1873,18 +1878,43 @@ async function _postRefundJE({ paymentId, amount, currency, exchangeRate, txnDat
 // quand le deposit sera poussé, buildDepositFromPayout choisira directement le
 // compte 40000 (Ventes) puisque le shipment sera déjà lié — la vente est donc
 // constatée par la ligne du dépôt, pas par une JE séparée.
+//
+// Deux états sont considérés comme « pending » :
+//   1. La balance_transaction est synchronisée mais le payout n'a pas encore
+//      été poussé en QB (qb_deposit_id NULL).
+//   2. Stripe a encaissé la facture (paid_charge_id posé par invoice.paid)
+//      mais aucune balance_transaction n'a encore été synchronisée. Stripe
+//      n'émet la BT qu'au settlement (T+0 → T+2), donc il existe une fenêtre
+//      où la facture est « payée Stripe-side » sans signal local. Sans cette
+//      garde, reconcileFactureRevenueRecognition postait Dr AR / Cr 40000,
+//      qui se faisait ensuite doubler par la ligne du futur deposit (40000
+//      direct car shipment lié + balance_due=0).
 export function factureHasPendingStripeDeposit(factureId) {
-  const r = db.prepare(`
+  const f = db.prepare(
+    'SELECT id, invoice_id, paid_charge_id FROM factures WHERE id = ?'
+  ).get(factureId)
+  if (!f || !f.invoice_id) return false
+
+  const pushed = db.prepare(`
     SELECT 1 AS ok
-    FROM factures f
-    JOIN stripe_balance_transactions bt ON bt.stripe_invoice_id = f.invoice_id
+    FROM stripe_balance_transactions bt
     JOIN stripe_payouts p ON p.stripe_id = bt.payout_stripe_id
-    WHERE f.id = ?
-      AND f.invoice_id IS NOT NULL
+    WHERE bt.stripe_invoice_id = ?
       AND p.qb_deposit_id IS NULL
     LIMIT 1
-  `).get(factureId)
-  return !!r
+  `).get(f.invoice_id)
+  if (pushed) return true
+
+  if (f.paid_charge_id) {
+    const synced = db.prepare(`
+      SELECT 1 AS ok FROM stripe_balance_transactions
+      WHERE stripe_invoice_id = ?
+      LIMIT 1
+    `).get(f.invoice_id)
+    if (!synced) return true
+  }
+
+  return false
 }
 
 // Réconcilie l'état "constat de vente" d'une facture. Idempotent et safe :

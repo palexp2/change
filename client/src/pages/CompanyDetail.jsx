@@ -8,12 +8,14 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge, phaseBadgeColor, orderStatusColor, ticketStatusColor, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { SubscriptionHistory } from '../components/SubscriptionHistory.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useAuth } from '../lib/auth.jsx'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 const PHASES = ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore']
@@ -22,6 +24,12 @@ const TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centr
 function fmtCad(n) {
   if (!n) return '$0'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
+}
+
+function fmtMoney(n, currency) {
+  if (n == null) return '—'
+  const cur = (currency || 'CAD').toUpperCase()
+  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: cur, maximumFractionDigits: 2 }).format(n)
 }
 
 function fieldTypeInput(type) {
@@ -752,6 +760,14 @@ export default function CompanyDetail() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [id])
 
+  useRealtimeChannel(id ? `company:${id}` : null, (msg) => {
+    if (msg.type === 'company:updated') {
+      setCompany(c => c ? { ...c, ...msg.payload } : c)
+    } else if (msg.type === 'company:deleted') {
+      navigate('/companies')
+    }
+  })
+
   useEffect(() => {
     api.adresses.list({ company_id: id, limit: 'all' }).then(r => setAdresses(r.data || [])).catch(() => {})
     api.companies.onboardingResponses(id).then(r => setOnboardingResponses(r.data || [])).catch(() => {})
@@ -1210,9 +1226,8 @@ export default function CompanyDetail() {
                     <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">N° document</th>
                     <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
                     <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Date</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Échéance</th>
-                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Total</th>
-                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Solde dû</th>
+                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Total HT</th>
+                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Devise</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1221,13 +1236,8 @@ export default function CompanyDetail() {
                       <td className="px-4 py-3 font-mono font-medium text-slate-900">{f.document_number || '—'}</td>
                       <td className="px-4 py-3 text-slate-600">{f.status || '—'}</td>
                       <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{fmtDate(f.document_date)}</td>
-                      <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(f.due_date)}</td>
-                      <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(f.total_cad)}</td>
-                      <td className="px-4 py-3 text-right font-medium">
-                        <span className={f.balance_due_cad > 0 ? 'text-red-600' : 'text-green-600'}>
-                          {fmtCad(f.balance_due_cad)}
-                        </span>
-                      </td>
+                      <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtMoney(f.amount_before_tax_cad, f.currency)}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-slate-600">{(f.currency || 'CAD').toUpperCase()}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1340,29 +1350,11 @@ export default function CompanyDetail() {
                       )}
                     </div>
 
-                    {/* Historique des changements */}
-                    {abonnementDetails.history.length > 0 && (
-                      <div>
-                        <h4 className="text-sm font-semibold text-slate-700 mb-2">Historique des changements</h4>
-                        <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
-                          {abonnementDetails.history.map((h, i) => (
-                            <div key={i} className="flex items-start gap-3 px-4 py-2.5 text-sm">
-                              <div className="flex-shrink-0 pt-0.5 w-28">
-                                <div className="text-xs text-slate-400">{fmtDate(h.date)}</div>
-                                <div className={`text-[10px] font-medium mt-0.5 ${h.type === 'creation' ? 'text-green-600' : 'text-amber-600'}`}>
-                                  {h.type === 'creation' ? 'Création' : 'Modification'}
-                                </div>
-                              </div>
-                              <div className="flex-1 space-y-0.5">
-                                {h.changes.map((c, j) => (
-                                  <div key={j} className="text-slate-600 text-sm">{typeof c === 'string' ? c : `${c.field}: ${c.from || ''} → ${c.to || ''}`}</div>
-                                ))}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
+                    <SubscriptionHistory
+                      subscriptionId={selectedAbonnement.id}
+                      history={abonnementDetails.history}
+                      onChanged={() => api.abonnements.stripeDetails(selectedAbonnement.id).then(setAbonnementDetails).catch(() => {})}
+                    />
 
                     {/* Factures récentes */}
                     {abonnementDetails.invoices.length > 0 && (

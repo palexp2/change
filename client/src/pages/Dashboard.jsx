@@ -1,16 +1,18 @@
-import { useState, useEffect, Fragment } from 'react'
+import { useState, useEffect, useRef, Fragment } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { ArrowRight, SlidersHorizontal, X, Check, Target, Trophy } from 'lucide-react'
+import { ArrowRight, SlidersHorizontal, X, Check, Target, Trophy, GripVertical, ChevronDown } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { GeoClientsMap } from '../components/GeoClientsMap.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { Modal } from '../components/Modal.jsx'
+import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 
 const WIDGET_DEFS = [
   { id: 'section_project_goal',     label: 'Objectif de projets',      group: 'Objectifs' },
-  { id: 'section_stripe_revenue',   label: 'Ventes et abonnements',    group: 'Graphiques' },
+  { id: 'section_stripe_subscriptions', label: 'Abonnements',          group: 'Graphiques' },
+  { id: 'section_stripe_sales',         label: 'Ventes',                group: 'Graphiques' },
   { id: 'section_subscription_events', label: 'Mouvements d\'abonnements', group: 'Graphiques' },
   { id: 'section_profitability',    label: 'Rentabilité',              group: 'Graphiques' },
   { id: 'section_replacement_rate', label: 'Taux de remplacement',     group: 'Graphiques' },
@@ -21,6 +23,7 @@ const WIDGET_DEFS = [
   { id: 'section_geo_map',       label: 'Carte des clients',     group: 'Graphiques' },
   { id: 'section_top_products', label: 'Meilleurs vendeurs',     group: 'Graphiques' },
   { id: 'section_inventory_valuation', label: 'Valeur de l\'inventaire', group: 'Inventaire' },
+  { id: 'section_tickets_monthly', label: 'Billets par mois',       group: 'Support' },
   { id: 'section_support_weekly', label: 'Amélioration du support', group: 'Support' },
 ]
 
@@ -38,34 +41,159 @@ function savePrefs(userId, prefs) {
   localStorage.setItem(`dashboard_prefs_${userId}`, JSON.stringify(prefs))
 }
 
+function loadCollapsed(userId) {
+  try {
+    const raw = localStorage.getItem(`dashboard_collapsed_${userId}`)
+    if (raw) return JSON.parse(raw) || {}
+  } catch {}
+  return {}
+}
+
+function saveCollapsed(userId, collapsed) {
+  localStorage.setItem(`dashboard_collapsed_${userId}`, JSON.stringify(collapsed))
+}
+
+function CollapsibleCard({ id, title, description, leadingIcon, action, collapsed, onToggle, testId, children }) {
+  const wrapperProps = {
+    'data-section-id': id,
+    className: `card p-5 ${collapsed ? 'mb-3' : 'mb-6'}`,
+  }
+  if (testId) wrapperProps['data-testid'] = testId
+  return (
+    <div {...wrapperProps}>
+      <div className={`flex items-start gap-2 ${collapsed ? '' : 'mb-4'}`}>
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? 'Déplier la section' : 'Replier la section'}
+          data-testid={`section-toggle-${id}`}
+          className="text-slate-400 hover:text-slate-700 hover:bg-slate-50 rounded p-0.5 -ml-1 mt-0.5 shrink-0 transition-colors"
+        >
+          <ChevronDown size={16} className={`transition-transform ${collapsed ? '-rotate-90' : ''}`} />
+        </button>
+        {leadingIcon ? <div className="shrink-0 mt-0.5">{leadingIcon}</div> : null}
+        <div className="flex-1 min-w-0">
+          <h2 className="font-semibold text-slate-900">{title}</h2>
+          {description && <p className="text-xs text-slate-400 mt-0.5">{description}</p>}
+        </div>
+        {action ? <div className="shrink-0">{action}</div> : null}
+      </div>
+      {!collapsed && children}
+    </div>
+  )
+}
+
+// Résout l'ordre d'affichage des sections : on part de l'ordre persisté
+// dans `prefs._order` (s'il existe), on filtre les ids inconnus, puis on
+// complète avec les widgets restants dans l'ordre canonique de WIDGET_DEFS
+// (pour que les widgets nouvellement ajoutés au code apparaissent à la fin
+// sans qu'on ait besoin de migrer les prefs des utilisateurs existants).
+function getOrderedIds(prefs) {
+  const allIds = WIDGET_DEFS.map(w => w.id)
+  const saved = Array.isArray(prefs?._order) ? prefs._order : []
+  const seen = new Set()
+  const result = []
+  for (const id of saved) {
+    if (allIds.includes(id) && !seen.has(id)) { result.push(id); seen.add(id) }
+  }
+  for (const id of allIds) {
+    if (!seen.has(id)) { result.push(id); seen.add(id) }
+  }
+  return result
+}
+
 function DashboardEditor({ prefs, onChange, onClose }) {
-  const groups = [...new Set(WIDGET_DEFS.map(w => w.group))]
+  const orderedIds = getOrderedIds(prefs)
+  const widgetById = Object.fromEntries(WIDGET_DEFS.map(w => [w.id, w]))
+  const dragIdRef = useRef(null)
+  const [dragOverId, setDragOverId] = useState(null)
+  const [dragOverSide, setDragOverSide] = useState(null)
+
+  function handleDragStart(e, id) {
+    dragIdRef.current = id
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move'
+      try { e.dataTransfer.setData('text/plain', id) } catch {}
+    }
+  }
+  function handleDragOver(e, id) {
+    if (!dragIdRef.current) return
+    e.preventDefault()
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
+    const rect = e.currentTarget.getBoundingClientRect()
+    const side = (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after'
+    if (dragOverId !== id) setDragOverId(id)
+    if (dragOverSide !== side) setDragOverSide(side)
+  }
+  function handleDrop(e, targetId) {
+    e.preventDefault()
+    const sourceId = dragIdRef.current
+    // Recalcule le côté ici plutôt que de dépendre de l'état (React batch les
+    // setState de handleDragOver, donc dragOverSide peut être stale au moment
+    // du drop — surtout si le drag a été simulé synchroniquement par un test).
+    const rect = e.currentTarget.getBoundingClientRect()
+    const side = (e.clientY - rect.top) < rect.height / 2 ? 'before' : 'after'
+    dragIdRef.current = null
+    setDragOverId(null)
+    setDragOverSide(null)
+    if (!sourceId || !targetId || sourceId === targetId) return
+    const next = orderedIds.filter(id => id !== sourceId)
+    let idx = next.indexOf(targetId)
+    if (idx === -1) return
+    if (side === 'after') idx += 1
+    next.splice(idx, 0, sourceId)
+    onChange({ ...prefs, _order: next })
+  }
+  function handleDragEnd() {
+    dragIdRef.current = null
+    setDragOverId(null)
+    setDragOverSide(null)
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-end p-4 pt-16 pointer-events-none">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-72 pointer-events-auto">
+      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-80 pointer-events-auto">
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
           <h3 className="font-semibold text-slate-900 text-sm">Personnaliser le dashboard</h3>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 p-1 rounded"><X size={14} /></button>
         </div>
-        <div className="p-4 space-y-4 max-h-[70vh] overflow-y-auto">
-          {groups.map(group => (
-            <div key={group}>
-              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">{group}</p>
-              <div className="space-y-1">
-                {WIDGET_DEFS.filter(w => w.group === group).map(w => (
-                  <label key={w.id} className="flex items-center gap-2.5 px-2 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={prefs[w.id] !== false}
-                      onChange={e => onChange({ ...prefs, [w.id]: e.target.checked })}
-                      className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-                    />
-                    <span className="text-sm text-slate-700">{w.label}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          ))}
+        <div className="px-4 py-2 border-b border-slate-100">
+          <p className="text-[11px] text-slate-400">Glisser pour réordonner · cocher pour afficher</p>
+        </div>
+        <div className="p-2 max-h-[70vh] overflow-y-auto" onDragEnd={handleDragEnd}>
+          <div className="space-y-0.5">
+            {orderedIds.map(id => {
+              const w = widgetById[id]
+              if (!w) return null
+              const isDragOver = dragOverId === id && dragIdRef.current && dragIdRef.current !== id
+              return (
+                <div
+                  key={id}
+                  data-testid={`dashboard-editor-row-${id}`}
+                  draggable
+                  onDragStart={e => handleDragStart(e, id)}
+                  onDragOver={e => handleDragOver(e, id)}
+                  onDrop={e => handleDrop(e, id)}
+                  className="relative flex items-center gap-2 px-2 py-1.5 rounded hover:bg-slate-50 cursor-move"
+                >
+                  {isDragOver && (
+                    <span className={`absolute left-1 right-1 h-0.5 bg-brand-500 pointer-events-none ${dragOverSide === 'before' ? 'top-0' : 'bottom-0'}`} />
+                  )}
+                  <GripVertical size={12} className="text-slate-300 shrink-0" />
+                  <input
+                    type="checkbox"
+                    checked={prefs[id] !== false}
+                    onChange={e => onChange({ ...prefs, [id]: e.target.checked })}
+                    onClick={e => e.stopPropagation()}
+                    className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                  />
+                  <span className="text-sm text-slate-700 truncate flex-1">{w.label}</span>
+                  <span className="text-[10px] text-slate-400 shrink-0 uppercase tracking-wide">{w.group}</span>
+                </div>
+              )
+            })}
+          </div>
         </div>
         <div className="px-4 py-3 border-t border-slate-100">
           <button onClick={onClose} className="w-full btn-primary btn-sm text-xs">
@@ -233,8 +361,13 @@ function roundedRectPath(x, y, w, h, rTL, rTR, rBR, rBL) {
 // rendered in two grays (pâle = service, foncé = achat) so the comparison bar
 // carries the same breakdown as the current year.
 // Backend converts USD → CAD at the document_date BoC rate, taxes excluded.
-function StripeRevenueChart({ data, onMonthClick }) {
+// `mode` controls which series are rendered : 'all' (stacked sub+vente),
+// 'subscription' (abonnements seuls) ou 'sale' (ventes seules).
+function StripeRevenueChart({ data, onMonthClick, mode = 'all' }) {
   const [tooltip, setTooltip] = useState(null)
+
+  const showService = mode === 'all' || mode === 'subscription'
+  const showAchat = mode === 'all' || mode === 'sale'
 
   const byMonth = {}
   for (const r of data || []) byMonth[r.month] = r
@@ -248,16 +381,20 @@ function StripeRevenueChart({ data, onMonthClick }) {
     const prevKey = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`
     const curr = byMonth[key] || { service: 0, achat: 0 }
     const prevRow = byMonth[prevKey] || { service: 0, achat: 0 }
+    const service = showService ? (curr.service || 0) : 0
+    const achat = showAchat ? (curr.achat || 0) : 0
+    const prevService = showService ? (prevRow.service || 0) : 0
+    const prevAchat = showAchat ? (prevRow.achat || 0) : 0
     months.push({
       key, prevKey,
       label: d.toLocaleDateString('fr-CA', { month: 'short' }),
       year: d.getFullYear(),
-      service: curr.service || 0,
-      achat: curr.achat || 0,
-      total: (curr.service || 0) + (curr.achat || 0),
-      prevService: prevRow.service || 0,
-      prevAchat: prevRow.achat || 0,
-      prevTotal: (prevRow.service || 0) + (prevRow.achat || 0),
+      service,
+      achat,
+      total: service + achat,
+      prevService,
+      prevAchat,
+      prevTotal: prevService + prevAchat,
     })
   }
 
@@ -297,9 +434,14 @@ function StripeRevenueChart({ data, onMonthClick }) {
 
   const hasAny = totalCurr > 0
   if (!hasAny) {
+    const emptyMsg = mode === 'subscription'
+      ? 'Aucun abonnement Stripe sur les 12 derniers mois'
+      : mode === 'sale'
+        ? 'Aucune vente Stripe sur les 12 derniers mois'
+        : 'Aucune vente ni abonnement Stripe sur les 12 derniers mois'
     return (
       <div className="flex items-center justify-center h-40 text-slate-300 text-sm">
-        Aucune vente ni abonnement Stripe sur les 12 derniers mois
+        {emptyMsg}
       </div>
     )
   }
@@ -308,10 +450,18 @@ function StripeRevenueChart({ data, onMonthClick }) {
     <div className="relative w-full">
       <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
         <div className="flex gap-4 text-xs text-slate-500 flex-wrap">
-          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-brand-500" /> Abonnement <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalService)}</span></span>
-          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-amber-500" /> Vente <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalAchat)}</span></span>
-          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-200" /> Abonnement an. préc.</span>
-          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-400" /> Vente an. préc.</span>
+          {showService && (
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-brand-500" /> Abonnement <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalService)}</span></span>
+          )}
+          {showAchat && (
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-amber-500" /> Vente <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalAchat)}</span></span>
+          )}
+          {showService && (
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-200" /> Abonnement an. préc.</span>
+          )}
+          {showAchat && (
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-400" /> Vente an. préc.</span>
+          )}
         </div>
         <span className="text-sm font-semibold text-slate-700">
           Total <span className="text-slate-900">{fmtMoney(totalCurr)}</span>
@@ -387,20 +537,27 @@ function StripeRevenueChart({ data, onMonthClick }) {
           const tx = Math.min(Math.max(tooltip.x, 95), W - 95)
           const ty = padT + 8
           const delta = m.prevTotal > 0 ? Math.round(((m.total - m.prevTotal) / m.prevTotal) * 100) : null
+          const lines = []
+          if (showService) lines.push({ label: 'Abonnement', color: '#21B14B', value: m.service })
+          if (showAchat) lines.push({ label: 'Vente', color: '#f59e0b', value: m.achat })
+          if (showService) lines.push({ label: 'Abonnement an. préc.', color: '#cbd5e1', value: m.prevService, prev: true })
+          if (showAchat) lines.push({ label: 'Vente an. préc.', color: '#94a3b8', value: m.prevAchat, prev: true })
+          const boxH = 28 + lines.length * 15 + (delta !== null ? 17 : 0)
           return (
             <g pointerEvents="none">
-              <rect x={tx - 90} y={ty - 4} width={180} height={104} rx="5" fill="#1e293b" opacity="0.93" />
+              <rect x={tx - 90} y={ty - 4} width={180} height={boxH} rx="5" fill="#1e293b" opacity="0.93" />
               <text x={tx} y={ty + 9} textAnchor="middle" fontSize="10" fill="#cbd5e1">{m.label} {m.year}</text>
-              <text x={tx - 80} y={ty + 25} textAnchor="start" fontSize="10" fill="#21B14B">Abonnement</text>
-              <text x={tx + 80} y={ty + 25} textAnchor="end" fontSize="11" fontWeight="bold" fill="white">{fmtMoney(m.service)}</text>
-              <text x={tx - 80} y={ty + 40} textAnchor="start" fontSize="10" fill="#f59e0b">Vente</text>
-              <text x={tx + 80} y={ty + 40} textAnchor="end" fontSize="11" fontWeight="bold" fill="white">{fmtMoney(m.achat)}</text>
-              <text x={tx - 80} y={ty + 58} textAnchor="start" fontSize="10" fill="#cbd5e1">Abonnement an. préc.</text>
-              <text x={tx + 80} y={ty + 58} textAnchor="end" fontSize="11" fontWeight="bold" fill="#cbd5e1">{fmtMoney(m.prevService)}</text>
-              <text x={tx - 80} y={ty + 73} textAnchor="start" fontSize="10" fill="#94a3b8">Vente an. préc.</text>
-              <text x={tx + 80} y={ty + 73} textAnchor="end" fontSize="11" fontWeight="bold" fill="#cbd5e1">{fmtMoney(m.prevAchat)}</text>
+              {lines.map((l, idx) => {
+                const ly = ty + 25 + idx * 15 + (l.prev && idx > 0 && !lines[idx - 1].prev ? 3 : 0)
+                return (
+                  <Fragment key={l.label}>
+                    <text x={tx - 80} y={ly} textAnchor="start" fontSize="10" fill={l.color}>{l.label}</text>
+                    <text x={tx + 80} y={ly} textAnchor="end" fontSize="11" fontWeight="bold" fill={l.prev ? '#cbd5e1' : 'white'}>{fmtMoney(l.value)}</text>
+                  </Fragment>
+                )
+              })}
               {delta !== null && (
-                <text x={tx} y={ty + 90} textAnchor="middle" fontSize="9" fill={delta >= 0 ? '#4ade80' : '#f87171'}>
+                <text x={tx} y={ty + 25 + lines.length * 15 + 8} textAnchor="middle" fontSize="9" fill={delta >= 0 ? '#4ade80' : '#f87171'}>
                   {delta >= 0 ? '+' : ''}{delta}% vs an. préc.
                 </text>
               )}
@@ -409,6 +566,184 @@ function StripeRevenueChart({ data, onMonthClick }) {
         })()}
       </svg>
       {onMonthClick && <p className="text-xs text-slate-400 text-right mt-1">Cliquer sur une portion pour voir les factures correspondantes</p>}
+    </div>
+  )
+}
+
+function fmtMoneyInCurrency(amount, currency) {
+  if (amount == null) return '—'
+  try {
+    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: (currency || 'CAD').toUpperCase(), maximumFractionDigits: 2 }).format(amount)
+  } catch {
+    return new Intl.NumberFormat('fr-CA', { maximumFractionDigits: 2 }).format(amount) + ' ' + (currency || '')
+  }
+}
+
+// Wrapper qui affiche la liste des factures correspondantes en bas du graphique
+// quand l'utilisateur clique sur un mois — sans quitter le dashboard.
+// Données fournies par /api/dashboard/stripe-revenue/factures : montant natif,
+// devise originale, montant CAD converti et date du payout associé (si payé).
+function StripeRevenueWithDrilldown({ data, mode = 'subscription' }) {
+  const [selected, setSelected] = useState(null) // { month, type }
+  const [cache, setCache] = useState({}) // key=`${type}:${month}` → array
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    if (!selected) return
+    const key = `${selected.type}:${selected.month}`
+    if (cache[key]) return
+    let cancelled = false
+    setLoading(true)
+    setError(null)
+    api.dashboard.stripeRevenueFactures({ month: selected.month, type: selected.type })
+      .then(res => { if (!cancelled) setCache(prev => ({ ...prev, [key]: res.data || [] })) })
+      .catch(e => { if (!cancelled) setError(e?.message || 'Erreur de chargement') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [selected, cache])
+
+  const handleMonthClick = (month, type) => {
+    setSelected(prev => prev && prev.month === month && prev.type === type ? null : { month, type })
+  }
+
+  const rows = selected ? (cache[`${selected.type}:${selected.month}`] || []) : []
+
+  const monthLabel = (() => {
+    if (!selected) return null
+    const [y, mo] = selected.month.split('-')
+    const d = new Date(Number(y), Number(mo) - 1, 1)
+    return d.toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })
+  })()
+
+  return (
+    <div>
+      <StripeRevenueChart data={data} mode={mode} onMonthClick={handleMonthClick} />
+      {selected && (
+        <div className="mt-4 pt-4 border-t border-slate-100" data-testid="stripe-revenue-drilldown">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-sm font-semibold text-slate-700">
+              {selected.type === 'service' ? 'Abonnements' : 'Ventes'} de {monthLabel}
+              {!loading && !error && (
+                <span className="text-slate-400 font-normal ml-2">
+                  · {rows.length} facture{rows.length !== 1 ? 's' : ''}
+                </span>
+              )}
+            </h3>
+            <button
+              onClick={() => setSelected(null)}
+              className="text-slate-400 hover:text-slate-600 p-1 rounded"
+              aria-label="Fermer la liste"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          {loading ? (
+            <div className="text-slate-400 text-sm py-4 text-center">Chargement…</div>
+          ) : error ? (
+            <div className="text-red-500 text-sm py-4 text-center">{error}</div>
+          ) : rows.length === 0 ? (
+            <div className="text-slate-400 text-sm py-4 text-center">Aucune facture pour ce mois</div>
+          ) : (
+            <div className="border border-slate-200 rounded-lg overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-xs font-medium uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Date</th>
+                    <th className="px-3 py-2 text-left">N°</th>
+                    <th className="px-3 py-2 text-left">Client</th>
+                    <th className="px-3 py-2 text-left">Statut</th>
+                    <th className="px-3 py-2 text-right whitespace-nowrap">Montant HT (orig.)</th>
+                    <th className="px-3 py-2 text-right whitespace-nowrap">Montant HT (CAD)</th>
+                    {selected.type === 'service' && (
+                      <th className="px-3 py-2 text-left">Intervalle</th>
+                    )}
+                    <th className="px-3 py-2 text-left whitespace-nowrap">Payout</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(f => {
+                    const isRefund = f.sync_source === 'Remboursements Stripe'
+                    const amountClass = isRefund
+                      ? 'px-3 py-2 text-right font-medium whitespace-nowrap text-rose-600'
+                      : 'px-3 py-2 text-right font-medium whitespace-nowrap'
+                    return (
+                      <tr key={f.id} className="border-t border-slate-100 hover:bg-slate-50">
+                        <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtDate(f.document_date)}</td>
+                        <td className="px-3 py-2 font-mono text-xs">
+                          <Link to={`/factures/${f.id}`} className="text-brand-600 hover:underline">
+                            {f.document_number || '—'}
+                          </Link>
+                        </td>
+                        <td className="px-3 py-2">
+                          {f.company_id ? (
+                            <Link to={`/companies/${f.company_id}`} className="text-brand-600 hover:underline">
+                              {f.company_name || '—'}
+                            </Link>
+                          ) : (
+                            <span className="text-slate-400">{f.company_name || '—'}</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2">
+                          {isRefund ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-rose-50 text-rose-700 border border-rose-200">
+                              Remboursement
+                            </span>
+                          ) : (
+                            <span className="text-slate-600">{f.status || '—'}</span>
+                          )}
+                        </td>
+                        <td className={amountClass} data-testid={isRefund ? `drilldown-refund-native-${f.id}` : undefined}>
+                          {fmtMoneyInCurrency(f.amount_native, f.currency)}
+                        </td>
+                        <td className={amountClass} data-testid={isRefund ? `drilldown-refund-cad-${f.id}` : undefined}>
+                          {fmtMoneyInCurrency(f.amount_cad, 'CAD')}
+                        </td>
+                        {selected.type === 'service' && (
+                          <td className="px-3 py-2" data-testid={`drilldown-interval-${f.id}`}>
+                            {f.interval_type === 'year' ? (
+                              <span className="text-amber-700">Annuel</span>
+                            ) : f.interval_type === 'month' ? (
+                              <span className="text-slate-600">Mensuel</span>
+                            ) : f.interval_type ? (
+                              <span className="text-slate-500">{f.interval_type}</span>
+                            ) : (
+                              <span className="text-slate-300">—</span>
+                            )}
+                          </td>
+                        )}
+                        <td className="px-3 py-2 text-slate-500 whitespace-nowrap">
+                          {f.payout_arrival_date ? (
+                            f.payout_stripe_id ? (
+                              <Link to={`/stripe-payouts/${f.payout_stripe_id}`} className="text-brand-600 hover:underline">
+                                {fmtDate(f.payout_arrival_date)}
+                              </Link>
+                            ) : (
+                              fmtDate(f.payout_arrival_date)
+                            )
+                          ) : ''}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+                <tfoot className="bg-slate-50 border-t-2 border-slate-200 text-xs font-semibold text-slate-700">
+                  <tr>
+                    <td className="px-3 py-2" colSpan={5}>
+                      Total net{rows.some(f => f.sync_source === 'Remboursements Stripe') ? ' (ventes − remboursements)' : ''}
+                    </td>
+                    <td className="px-3 py-2 text-right whitespace-nowrap" data-testid="drilldown-total-cad">
+                      {fmtMoneyInCurrency(rows.reduce((s, f) => s + (Number(f.amount_cad) || 0), 0), 'CAD')}
+                    </td>
+                    {selected.type === 'service' && <td />}
+                    <td />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -553,6 +888,191 @@ function ProjectsCreatedChart({ data, onMonthClick }) {
         })()}
       </svg>
       {onMonthClick && <p className="text-xs text-slate-400 text-right mt-1">Cliquer sur une barre pour voir les projets du mois</p>}
+    </div>
+  )
+}
+
+function TicketsMonthlyChart({ data }) {
+  const [tooltip, setTooltip] = useState(null)
+  const [metric, setMetric] = useState('count') // 'count' | 'minutes'
+
+  const buckets = {}
+  for (const r of data || []) buckets[r.month] = { count: r.count || 0, minutes: r.minutes || 0 }
+
+  const now = new Date()
+  // Fenêtre glissante : 12 derniers mois finissant par le mois courant
+  const months = []
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+    const y = d.getFullYear()
+    const mIdx = d.getMonth()
+    const key = `${y}-${String(mIdx + 1).padStart(2, '0')}`
+    const prevKey = `${y - 1}-${String(mIdx + 1).padStart(2, '0')}`
+    const curr = buckets[key] || { count: 0, minutes: 0 }
+    const prev = buckets[prevKey] || { count: 0, minutes: 0 }
+    months.push({
+      key, prevKey,
+      label: d.toLocaleDateString('fr-CA', { month: 'short' }),
+      yearLabel: y,
+      prevYearLabel: y - 1,
+      currCount: curr.count, prevCount: prev.count,
+      currMinutes: curr.minutes, prevMinutes: prev.minutes,
+      isCurrentMonth: i === 0,
+    })
+  }
+
+  const valKey = metric === 'count' ? 'currCount' : 'currMinutes'
+  const prevValKey = metric === 'count' ? 'prevCount' : 'prevMinutes'
+
+  const totalCurr = months.reduce((s, m) => s + m[valKey], 0)
+  const totalPrev = months.reduce((s, m) => s + m[prevValKey], 0)
+  const deltaPct = totalPrev > 0 ? Math.round(((totalCurr - totalPrev) / totalPrev) * 100) : null
+
+  const fmtMinutes = mins => {
+    if (!mins) return '0'
+    if (mins < 60) return `${mins}m`
+    const h = Math.floor(mins / 60)
+    const m = mins % 60
+    return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, '0')}`
+  }
+  const fmtVal = v => metric === 'count' ? String(v) : fmtMinutes(v)
+
+  const maxVal = Math.max(...months.flatMap(m => [m[valKey], m[prevValKey]]), 1)
+
+  const W = 600, H = 180
+  const padL = 40, padR = 8, padT = 12, padB = 28
+  const chartW = W - padL - padR
+  const chartH = H - padT - padB
+  const n = months.length
+  const groupW = chartW / n
+  const barW = Math.max(Math.floor((groupW - 6) / 2), 6)
+
+  const yPos = v => padT + chartH - (v / maxVal) * chartH
+  const groupCenter = i => padL + (i + 0.5) * groupW
+
+  const niceStep = (() => {
+    if (metric === 'count') {
+      if (maxVal <= 4) return 1
+      if (maxVal <= 10) return 2
+      if (maxVal <= 25) return 5
+      return Math.ceil(maxVal / 5)
+    }
+    if (maxVal <= 60) return Math.max(15, Math.ceil(maxVal / 4))
+    if (maxVal <= 240) return 60
+    if (maxVal <= 600) return 120
+    return Math.ceil(maxVal / 5 / 60) * 60
+  })()
+  const gridVals = []
+  for (let v = 0; v <= maxVal; v += niceStep) gridVals.push(v)
+  if (gridVals[gridVals.length - 1] < maxVal) gridVals.push(maxVal)
+
+  const hasAny = totalCurr + totalPrev > 0
+
+  const ToggleButtons = (
+    <div className="inline-flex bg-slate-100 rounded-md p-0.5">
+      <button
+        onClick={() => setMetric('count')}
+        data-testid="tickets-metric-count"
+        className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${metric === 'count' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+      >Billets</button>
+      <button
+        onClick={() => setMetric('minutes')}
+        data-testid="tickets-metric-minutes"
+        className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${metric === 'minutes' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+      >Temps de support</button>
+    </div>
+  )
+
+  if (!hasAny) {
+    return (
+      <div>
+        <div className="flex justify-end mb-3">{ToggleButtons}</div>
+        <div className="flex items-center justify-center h-40 text-slate-300 text-sm">
+          Pas encore de billets
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative w-full">
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
+        <div className="flex gap-4 text-xs text-slate-500 items-center">
+          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-brand-500" /> 12 derniers mois <span className="font-semibold text-slate-700 ml-1" data-testid="tickets-total-curr">{fmtVal(totalCurr)}</span></span>
+          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-300" /> 12 mois précédents <span className="font-semibold text-slate-700 ml-1" data-testid="tickets-total-prev">{fmtVal(totalPrev)}</span></span>
+          {deltaPct !== null && (
+            <span className={`text-sm font-semibold ${deltaPct >= 0 ? 'text-green-600' : 'text-red-500'}`}>
+              {deltaPct >= 0 ? '+' : ''}{deltaPct}%
+            </span>
+          )}
+        </div>
+        {ToggleButtons}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 200 }}>
+        {gridVals.map((v, gi) => (
+          <g key={gi}>
+            <line x1={padL} x2={W - padR} y1={yPos(v)} y2={yPos(v)} stroke={v === 0 ? '#cbd5e1' : '#f1f5f9'} strokeWidth={v === 0 ? 0.8 : 1} />
+            <text x={padL - 4} y={yPos(v) + 3.5} textAnchor="end" fontSize="9" fill="#94a3b8">{metric === 'count' ? v : fmtMinutes(v)}</text>
+          </g>
+        ))}
+        {months.map((m, i) => {
+          const cx = groupCenter(i)
+          const xPrev = cx - barW - 1
+          const xCurr = cx + 1
+          const vCurr = m[valKey]
+          const vPrev = m[prevValKey]
+          const hPrev = (vPrev / maxVal) * chartH
+          const hCurr = (vCurr / maxVal) * chartH
+          const isHovered = tooltip?.i === i
+          const showYear = i === 0 || months[i].yearLabel !== months[i - 1].yearLabel
+          return (
+            <g key={m.key}
+              data-testid={`tickets-month-${m.key}`}
+              onMouseEnter={() => setTooltip({ i, x: cx, m })}
+              onMouseLeave={() => setTooltip(null)}
+            >
+              <rect x={padL + i * groupW} y={0} width={groupW} height={H} fill="transparent" />
+              {vPrev > 0 && (
+                <rect x={xPrev} y={padT + chartH - hPrev} width={barW} height={hPrev} rx="2"
+                  fill={isHovered ? '#94a3b8' : '#cbd5e1'}
+                />
+              )}
+              {vCurr > 0 && (
+                <rect x={xCurr} y={padT + chartH - hCurr} width={barW} height={hCurr} rx="2"
+                  fill={isHovered ? '#1B8E3C' : '#21B14B'}
+                />
+              )}
+              <text x={cx} y={H - 14} textAnchor="middle" fontSize="9" fill={m.isCurrentMonth ? '#0f172a' : '#94a3b8'} fontWeight={m.isCurrentMonth ? '600' : 'normal'}>{m.label}</text>
+              {showYear && (
+                <text x={cx} y={H - 3} textAnchor="middle" fontSize="8" fill="#cbd5e1">{m.yearLabel}</text>
+              )}
+            </g>
+          )
+        })}
+        {tooltip && (() => {
+          const m = tooltip.m
+          const tx = Math.min(Math.max(tooltip.x, 80), W - 80)
+          const ty = padT + 8
+          const vCurr = m[valKey]
+          const vPrev = m[prevValKey]
+          const delta = vPrev > 0 ? Math.round(((vCurr - vPrev) / vPrev) * 100) : null
+          return (
+            <g pointerEvents="none">
+              <rect x={tx - 80} y={ty - 4} width={160} height={64} rx="5" fill="#1e293b" opacity="0.93" />
+              <text x={tx} y={ty + 9} textAnchor="middle" fontSize="10" fill="#cbd5e1">{m.label} {m.yearLabel}</text>
+              <text x={tx - 70} y={ty + 25} textAnchor="start" fontSize="10" fill="#21B14B">{m.yearLabel}</text>
+              <text x={tx + 70} y={ty + 25} textAnchor="end" fontSize="11" fontWeight="bold" fill="white">{fmtVal(vCurr)}</text>
+              <text x={tx - 70} y={ty + 40} textAnchor="start" fontSize="10" fill="#94a3b8">{m.prevYearLabel}</text>
+              <text x={tx + 70} y={ty + 40} textAnchor="end" fontSize="11" fontWeight="bold" fill="#cbd5e1">{fmtVal(vPrev)}</text>
+              {delta !== null && (
+                <text x={tx} y={ty + 55} textAnchor="middle" fontSize="9" fill={delta >= 0 ? '#4ade80' : '#f87171'}>
+                  {delta >= 0 ? '+' : ''}{delta}% YoY
+                </text>
+              )}
+            </g>
+          )
+        })()}
+      </svg>
     </div>
   )
 }
@@ -1675,6 +2195,22 @@ function fmtCad(n) {
 // avec montants et liens.
 function SubscriptionEventsPanel({ data }) {
   const [openMonth, setOpenMonth] = useState(null)
+  const [aboModal, setAboModal] = useState(null)
+  const [loadingAboId, setLoadingAboId] = useState(null)
+
+  async function openAbo(subscriptionId) {
+    if (!subscriptionId || loadingAboId) return
+    setLoadingAboId(subscriptionId)
+    try {
+      const sub = await api.abonnements.get(subscriptionId)
+      setAboModal(sub)
+    } catch {
+      // sub introuvable (purgé/non synchronisé) — silencieux côté UI
+    } finally {
+      setLoadingAboId(null)
+    }
+  }
+
   if (!data) return <div className="text-slate-400 text-sm">Chargement...</div>
   const months = data.months || []
   if (months.length === 0) {
@@ -1696,7 +2232,8 @@ function SubscriptionEventsPanel({ data }) {
             <th className="text-left py-2 pr-4 font-medium">Mois</th>
             <th className="text-right py-2 px-3 font-medium">Net MRR</th>
             <th className="text-right py-2 px-3 font-medium text-emerald-700">Nouveaux</th>
-            <th className="text-right py-2 px-3 font-medium text-amber-700">Win-back</th>
+            <th className="text-right py-2 px-3 font-medium text-blue-700">Upgrades</th>
+            <th className="text-right py-2 px-3 font-medium text-orange-700">Downgrades</th>
             <th className="text-right py-2 px-3 font-medium text-rose-700">Annulations</th>
             <th className="w-6"></th>
           </tr>
@@ -1719,23 +2256,31 @@ function SubscriptionEventsPanel({ data }) {
                     {net > 0 ? '+' : ''}{fmtCad(Math.abs(net) < 1 ? net : Math.round(net))}
                   </td>
                   <td className="py-2.5 px-3 text-right tabular-nums">
-                    <span className="text-emerald-700 font-medium">{cats.new.count}</span>
-                    {cats.new.total_amount_cad > 0 && <span className="text-slate-400 text-xs ml-1.5">+{fmtCad(cats.new.total_amount_cad)}</span>}
+                    {cats.creation.total_amount_cad > 0
+                      ? <span className="text-emerald-700 font-medium">+{fmtCad(cats.creation.total_amount_cad)}</span>
+                      : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="py-2.5 px-3 text-right tabular-nums">
-                    <span className="text-amber-700 font-medium">{cats.winback.count}</span>
-                    {cats.winback.total_amount_cad > 0 && <span className="text-slate-400 text-xs ml-1.5">+{fmtCad(cats.winback.total_amount_cad)}</span>}
+                    {cats.upgrade?.total_amount_cad > 0
+                      ? <span className="text-blue-700 font-medium">+{fmtCad(cats.upgrade.total_amount_cad)}</span>
+                      : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="py-2.5 px-3 text-right tabular-nums">
-                    <span className="text-rose-700 font-medium">{cats.churn.count}</span>
-                    {cats.churn.total_amount_cad < 0 && <span className="text-slate-400 text-xs ml-1.5">{fmtCad(cats.churn.total_amount_cad)}</span>}
+                    {cats.downgrade?.total_amount_cad < 0
+                      ? <span className="text-orange-700 font-medium">{fmtCad(cats.downgrade.total_amount_cad)}</span>
+                      : <span className="text-slate-300">—</span>}
+                  </td>
+                  <td className="py-2.5 px-3 text-right tabular-nums">
+                    {cats.churn.total_amount_cad < 0
+                      ? <span className="text-rose-700 font-medium">{fmtCad(cats.churn.total_amount_cad)}</span>
+                      : <span className="text-slate-300">—</span>}
                   </td>
                   <td className="text-slate-400 text-center">{isOpen ? '▾' : '▸'}</td>
                 </tr>
                 {isOpen && (
                   <tr>
-                    <td colSpan={6} className="bg-slate-50 px-4 py-3">
-                      <SubscriptionEventsDetail categories={cats} />
+                    <td colSpan={7} className="bg-slate-50 px-4 py-3">
+                      <SubscriptionEventsDetail categories={cats} onOpenAbo={openAbo} loadingAboId={loadingAboId} />
                     </td>
                   </tr>
                 )}
@@ -1744,16 +2289,29 @@ function SubscriptionEventsPanel({ data }) {
           })}
         </tbody>
       </table>
+      <AbonnementDetailModal
+        abonnement={aboModal}
+        onClose={() => setAboModal(null)}
+      />
     </div>
   )
 }
 
-function SubscriptionEventsDetail({ categories }) {
+// Couleurs des badges rachat — alignées avec lib/subscriptionEvents.js mais
+// inlinées ici pour limiter les imports croisés sur le panel dashboard.
+const RACHAT_BADGE_STYLE = {
+  probable:  { label: 'Rachat probable',  cls: 'bg-yellow-100 text-yellow-800' },
+  confirmed: { label: 'Rachat confirmé',  cls: 'bg-green-100 text-green-800' },
+  none:      { label: 'Pas de rachat',    cls: 'bg-slate-100 text-slate-600' },
+}
+
+function SubscriptionEventsDetail({ categories, onOpenAbo, loadingAboId }) {
   const sections = [
-    { key: 'new', label: 'Nouveaux abonnements', color: 'text-emerald-700' },
-    { key: 'winback', label: 'Win-back (rachats après annulation)', color: 'text-amber-700' },
+    { key: 'creation', label: 'Nouveaux abonnements', color: 'text-emerald-700' },
+    { key: 'upgrade', label: 'Upgrades', color: 'text-blue-700' },
+    { key: 'downgrade', label: 'Downgrades', color: 'text-orange-700' },
     { key: 'churn', label: 'Annulations', color: 'text-rose-700' },
-  ].filter(s => categories[s.key].count > 0)
+  ].filter(s => categories[s.key]?.count > 0)
 
   if (sections.length === 0) return <div className="text-xs text-slate-400">Aucun mouvement ce mois.</div>
 
@@ -1764,20 +2322,72 @@ function SubscriptionEventsDetail({ categories }) {
           <div className={`text-xs font-semibold uppercase tracking-wide mb-1.5 ${s.color}`}>
             {s.label} ({categories[s.key].count})
           </div>
-          <ul className="space-y-1">
-            {categories[s.key].items.map(it => (
-              <li key={it.event_id} className="flex items-center justify-between gap-2 text-xs">
-                {it.company_id
-                  ? <Link to={`/companies/${it.company_id}`} className="text-brand-600 hover:underline truncate">{it.company_name || '—'}</Link>
-                  : <span className="text-slate-400 truncate">— sans client</span>
-                }
-                <span className="text-slate-500 tabular-nums whitespace-nowrap">
-                  {it.amount_cad_delta != null
-                    ? (it.amount_cad_delta > 0 ? '+' : '') + fmtCad(it.amount_cad_delta)
-                    : '—'}
-                </span>
+          <ul className="space-y-2">
+            {categories[s.key].items.map(it => {
+              const label = it.company_name || (it.company_id ? '—' : '— sans client')
+              const isLoading = loadingAboId === it.subscription_id
+              return (
+              <li key={it.event_id} className="flex items-start justify-between gap-2 text-xs">
+                <div className="min-w-0">
+                  {it.subscription_id
+                    ? <button
+                        type="button"
+                        data-testid={`sub-event-open-${it.event_id}`}
+                        onClick={() => onOpenAbo?.(it.subscription_id)}
+                        disabled={isLoading}
+                        className="text-brand-600 hover:underline truncate block text-left disabled:opacity-50"
+                      >{label}</button>
+                    : it.company_id
+                      ? <Link to={`/companies/${it.company_id}`} className="text-brand-600 hover:underline truncate block">{label}</Link>
+                      : <span className="text-slate-400 truncate block">{label}</span>
+                  }
+                  {it.products && it.products.length > 0 && (
+                    <div className="text-slate-400 mt-0.5 leading-tight">
+                      {it.products.map((p, i) => (
+                        <span key={i}>
+                          {i > 0 && <span className="mx-1 text-slate-300">·</span>}
+                          <span>{p.product_name}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {s.key === 'churn' && it.rachat_status && RACHAT_BADGE_STYLE[it.rachat_status] && (
+                    <div className="mt-1 flex items-center gap-1.5 leading-tight" data-testid={`sub-event-rachat-${it.event_id}`}>
+                      <span className={`inline-flex items-center rounded-full font-medium text-[10px] px-1.5 py-0.5 ${RACHAT_BADGE_STYLE[it.rachat_status].cls}`}>
+                        {RACHAT_BADGE_STYLE[it.rachat_status].label}
+                      </span>
+                      {it.rachat_order_id && it.rachat_order_number && (it.rachat_status === 'probable' || it.rachat_status === 'confirmed') && (
+                        <Link
+                          to={`/orders/${it.rachat_order_id}`}
+                          data-testid={`sub-event-rachat-order-${it.event_id}`}
+                          className="text-[10px] text-brand-600 hover:underline tabular-nums"
+                        >#{it.rachat_order_number}</Link>
+                      )}
+                    </div>
+                  )}
+                </div>
+                <div className="flex flex-col items-end whitespace-nowrap pt-0.5">
+                  <span className="text-slate-500 tabular-nums">
+                    {it.amount_cad_delta != null
+                      ? (it.amount_cad_delta > 0 ? '+' : '') + fmtCad(it.amount_cad_delta)
+                      : '—'}
+                  </span>
+                  {it.interval_type && (
+                    <span
+                      data-testid={`sub-event-interval-${it.event_id}`}
+                      className={`text-[10px] mt-0.5 ${it.interval_type === 'year' ? 'text-amber-600' : 'text-slate-400'}`}
+                    >
+                      {it.interval_type === 'year'
+                        ? (it.amount_cad_delta != null
+                            ? `(${(it.amount_cad_delta * 12) > 0 ? '+' : ''}${fmtCad(it.amount_cad_delta * 12)}/an)`
+                            : 'Annuel')
+                        : 'Mensuel'}
+                    </span>
+                  )}
+                </div>
               </li>
-            ))}
+              )
+            })}
           </ul>
         </div>
       ))}
@@ -2056,6 +2666,7 @@ export default function Dashboard() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const [prefs, setPrefs] = useState(() => loadPrefs(user?.id || 'default'))
+  const [collapsed, setCollapsed] = useState(() => loadCollapsed(user?.id || 'default'))
 
   const refresh = () => {
     setLoading(true)
@@ -2073,7 +2684,191 @@ export default function Dashboard() {
     savePrefs(user?.id || 'default', newPrefs)
   }
 
+  function toggleCollapsed(id) {
+    setCollapsed(prev => {
+      const next = { ...prev, [id]: !prev[id] }
+      saveCollapsed(user?.id || 'default', next)
+      return next
+    })
+  }
+
   const show = (id) => prefs[id] !== false
+  const isCollapsed = (id) => collapsed[id] === true
+  const orderedIds = getOrderedIds(prefs)
+
+  // Map id → JSX. L'ordre d'affichage est piloté par `orderedIds`, pas par
+  // l'ordre déclaré ici — quand tu ajoutes une nouvelle section, ajoute-la
+  // aussi à WIDGET_DEFS pour qu'elle apparaisse dans le panneau de
+  // personnalisation et soit ordonnable.
+  const cardProps = (id, extra = {}) => ({
+    id,
+    collapsed: isCollapsed(id),
+    onToggle: () => toggleCollapsed(id),
+    ...extra,
+  })
+
+  const cards = {
+    section_project_goal: (
+      <CollapsibleCard
+        {...cardProps('section_project_goal')}
+        title="Objectif d'acquisition de projets"
+        description={`Nombre de projets créés entre le ${fmtDate(data?.projectGoal?.start_date)} et le ${fmtDate(data?.projectGoal?.end_date)}`}
+      >
+        <ProjectGoalWidget goal={data?.projectGoal} onEdit={() => setShowGoalEditor(true)} />
+      </CollapsibleCard>
+    ),
+    section_profitability: (
+      <CollapsibleCard
+        {...cardProps('section_profitability')}
+        title="Rentabilité des commandes"
+        description="Items facturables envoyés — 16 dernières semaines · Rolling 28 jours"
+      >
+        <ProfitabilityChart data={data?.weeklyProfitability} recentOrders={data?.recentShippedOrders} />
+      </CollapsibleCard>
+    ),
+    section_stripe_subscriptions: (
+      <CollapsibleCard
+        {...cardProps('section_stripe_subscriptions')}
+        title="Abonnements"
+        description="Encaissements Stripe d'abonnements sur les 12 derniers mois · remboursements déduits · USD converti au taux BoC du jour du document · taxes exclues · comparé au mois équivalent l'année précédente"
+      >
+        <StripeRevenueWithDrilldown
+          data={stripeRevenue?.byMonth}
+          mode="subscription"
+        />
+      </CollapsibleCard>
+    ),
+    section_stripe_sales: (
+      <CollapsibleCard
+        {...cardProps('section_stripe_sales')}
+        title="Ventes"
+        description="Encaissements Stripe de ventes ponctuelles sur les 12 derniers mois · remboursements déduits · USD converti au taux BoC du jour du document · taxes exclues · comparé au mois équivalent l'année précédente"
+      >
+        <StripeRevenueWithDrilldown
+          data={stripeRevenue?.byMonth}
+          mode="sale"
+        />
+      </CollapsibleCard>
+    ),
+    section_subscription_events: (
+      <CollapsibleCard
+        {...cardProps('section_subscription_events', { testId: 'section-subscription-events' })}
+        title="Mouvements d'abonnements"
+        description="Nouveaux abonnements, win-back (rachats après annulation), annulations et delta MRR net par mois — 12 derniers mois. Cliquer sur une ligne pour voir les entreprises concernées."
+      >
+        <SubscriptionEventsPanel data={subscriptionEvents} />
+      </CollapsibleCard>
+    ),
+    section_top_products: (
+      <CollapsibleCard
+        {...cardProps('section_top_products', { testId: 'section-top-products' })}
+        title="Meilleurs vendeurs"
+        description="Items vendus sur factures Stripe payées · classement par revenus (CAD) ou quantité · USD converti au taux BoC du jour"
+        leadingIcon={<Trophy size={18} className="text-amber-500" />}
+      >
+        <TopProductsPanel />
+      </CollapsibleCard>
+    ),
+    section_replacement_rate: (
+      <CollapsibleCard
+        {...cardProps('section_replacement_rate')}
+        title="Taux de remplacement"
+        description="Coût des pièces de remplacement envoyées — 12 derniers mois · Rolling 28 jours"
+      >
+        <ReplacementRateChart replacementRate={data?.replacementRate} />
+      </CollapsibleCard>
+    ),
+    section_projects_created: (
+      <CollapsibleCard
+        {...cardProps('section_projects_created')}
+        title="Projets créés par mois"
+        description={`Nombre de projets créés chaque mois — ${new Date().getFullYear()} vs ${new Date().getFullYear() - 1}`}
+      >
+        <ProjectsCreatedChart
+          data={data?.projectsCreatedByMonth}
+          onMonthClick={month => navigate(`/pipeline?createdMonth=${month}`)}
+        />
+      </CollapsibleCard>
+    ),
+    section_inventory_valuation: (
+      <CollapsibleCard
+        {...cardProps('section_inventory_valuation')}
+        title="Valeur de l'inventaire"
+        description="Pièces en stock (valeur unitaire) + numéros de série en inventaire (valeur de fabrication) par statut"
+      >
+        <InventoryValuationCard valuation={data?.inventory?.valuation} />
+      </CollapsibleCard>
+    ),
+    section_closing: (
+      <CollapsibleCard
+        {...cardProps('section_closing')}
+        title="Taux de closing"
+        description="Projets gagnés / (gagnés + perdus) par mois — 12 derniers mois · Cliquer sur un mois pour voir les projets"
+      >
+        <ClosingRateChart data={data?.closingByMonth} onMonthClick={month => navigate(`/pipeline?month=${month}`)} />
+      </CollapsibleCard>
+    ),
+    section_shipments: (
+      <CollapsibleCard
+        {...cardProps('section_shipments')}
+        title="Livraisons par semaine"
+        description="Colis envoyés — 16 dernières semaines"
+        action={
+          <Link to="/envois" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
+            Voir tous <ArrowRight size={14} />
+          </Link>
+        }
+      >
+        <ShipmentsWeeklyChart data={data?.weeklyShipments} />
+      </CollapsibleCard>
+    ),
+    section_shipping_costs: (
+      <CollapsibleCard
+        {...cardProps('section_shipping_costs')}
+        title="Coûts d'expédition"
+        description="Compte 65000 « Expédition, livraison et poste » — somme des 28 jours précédant chaque lundi"
+      >
+        <ShippingCostChart data={data?.weeklyShippingCosts} />
+      </CollapsibleCard>
+    ),
+    section_geo_map: (
+      <CollapsibleCard
+        {...cardProps('section_geo_map')}
+        title="Clients par région"
+        description="Basé sur la première adresse de livraison — cliquer pour filtrer"
+      >
+        <GeoClientsMap geoData={data?.geoClients || []} unplacedCount={data?.geoClientsUnplaced || 0} />
+      </CollapsibleCard>
+    ),
+    section_tickets_monthly: (
+      <CollapsibleCard
+        {...cardProps('section_tickets_monthly')}
+        title="Billets par mois"
+        description="12 derniers mois — comparé au mois correspondant de l'année précédente · Bascule entre nombre de billets et temps de support"
+        action={
+          <Link to="/tickets" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
+            Voir tickets <ArrowRight size={14} />
+          </Link>
+        }
+      >
+        <TicketsMonthlyChart data={data?.ticketsByMonth} />
+      </CollapsibleCard>
+    ),
+    section_support_weekly: (
+      <CollapsibleCard
+        {...cardProps('section_support_weekly')}
+        title="Amélioration du support"
+        description="Indicateurs par semaine — 16 dernières semaines"
+        action={
+          <Link to="/tickets" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
+            Voir tickets <ArrowRight size={14} />
+          </Link>
+        }
+      >
+        <SupportWeeklyTable data={data?.weeklySupportStats} />
+      </CollapsibleCard>
+    ),
+  }
 
   if (loading && !data) {
     return (
@@ -2105,179 +2900,11 @@ export default function Dashboard() {
           <DashboardEditor prefs={prefs} onChange={updatePrefs} onClose={() => setShowEditor(false)} />
         )}
 
-        {/* Project Goal */}
-        {show('section_project_goal') && (
-          <div className="card p-5 mb-6">
-            <div className="mb-4">
-              <h2 className="font-semibold text-slate-900">Objectif d'acquisition de projets</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Nombre de projets créés entre le {fmtDate(data?.projectGoal?.start_date)} et le {fmtDate(data?.projectGoal?.end_date)}</p>
-            </div>
-            <ProjectGoalWidget goal={data?.projectGoal} onEdit={() => setShowGoalEditor(true)} />
-          </div>
-        )}
-
-        {/* Profitability */}
-        {show('section_profitability') && (
-          <div className="card p-5 mb-6">
-            <div className="mb-4">
-              <h2 className="font-semibold text-slate-900">Rentabilité des commandes</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Items facturables envoyés — 16 dernières semaines · Rolling 28 jours</p>
-            </div>
-            <ProfitabilityChart data={data?.weeklyProfitability} recentOrders={data?.recentShippedOrders} />
-          </div>
-        )}
-
-        {/* Ventes et abonnements — last 12 months */}
-        {show('section_stripe_revenue') && (
-          <div className="card p-5 mb-6">
-            <div className="mb-4">
-              <h2 className="font-semibold text-slate-900">Ventes et abonnements</h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Encaissements Stripe sur les 12 derniers mois — abonnements vs ventes ponctuelles ·
-                remboursements déduits · USD converti au taux BoC du jour du document ·
-                taxes exclues · comparé au mois équivalent l'année précédente
-              </p>
-            </div>
-            <StripeRevenueChart
-              data={stripeRevenue?.byMonth}
-              onMonthClick={(month, type) => navigate(`/factures?month=${month}&type=${type}`)}
-            />
-          </div>
-        )}
-
-        {/* Mouvements d'abonnements */}
-        {show('section_subscription_events') && (
-          <div className="card p-5 mb-6" data-testid="section-subscription-events">
-            <div className="mb-4">
-              <h2 className="font-semibold text-slate-900">Mouvements d'abonnements</h2>
-              <p className="text-xs text-slate-400 mt-0.5">
-                Nouveaux abonnements, win-back (rachats après annulation), annulations et delta MRR net par mois — 12 derniers mois.
-                Cliquer sur une ligne pour voir les entreprises concernées.
-              </p>
-            </div>
-            <SubscriptionEventsPanel data={subscriptionEvents} />
-          </div>
-        )}
-
-        {/* Top products — best sellers */}
-        {show('section_top_products') && (
-          <div className="card p-5 mb-6" data-testid="section-top-products">
-            <div className="mb-4 flex items-center gap-2">
-              <Trophy size={18} className="text-amber-500" />
-              <div>
-                <h2 className="font-semibold text-slate-900">Meilleurs vendeurs</h2>
-                <p className="text-xs text-slate-400 mt-0.5">
-                  Items vendus sur factures Stripe payées · classement par revenus (CAD) ou quantité ·
-                  USD converti au taux BoC du jour
-                </p>
-              </div>
-            </div>
-            <TopProductsPanel />
-          </div>
-        )}
-
-        {/* Replacement rate */}
-        {show('section_replacement_rate') && (
-          <div className="card p-5 mb-6">
-            <div className="mb-4">
-              <h2 className="font-semibold text-slate-900">Taux de remplacement</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Coût des pièces de remplacement envoyées — 12 derniers mois · Rolling 28 jours</p>
-            </div>
-            <ReplacementRateChart replacementRate={data?.replacementRate} />
-          </div>
-        )}
-
-        {/* Projects created per month — YoY comparison */}
-        {show('section_projects_created') && (
-          <div className="card p-5 mb-6">
-            <div className="mb-4">
-              <h2 className="font-semibold text-slate-900">Projets créés par mois</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Nombre de projets créés chaque mois — {new Date().getFullYear()} vs {new Date().getFullYear() - 1}</p>
-            </div>
-            <ProjectsCreatedChart
-              data={data?.projectsCreatedByMonth}
-              onMonthClick={month => navigate(`/pipeline?createdMonth=${month}`)}
-            />
-          </div>
-        )}
-
-        {/* Inventory valuation */}
-        {show('section_inventory_valuation') && (
-          <div className="card p-5 mb-6">
-            <div className="mb-4">
-              <h2 className="font-semibold text-slate-900">Valeur de l'inventaire</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Pièces en stock (valeur unitaire) + numéros de série en inventaire (valeur de fabrication) par statut</p>
-            </div>
-            <InventoryValuationCard valuation={data?.inventory?.valuation} />
-          </div>
-        )}
-
-        {/* Closing rate chart */}
-        {show('section_closing') && (
-          <div className="card p-5 mb-6">
-            <div className="mb-4">
-              <h2 className="font-semibold text-slate-900">Taux de closing</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Projets gagnés / (gagnés + perdus) par mois — 12 derniers mois · Cliquer sur un mois pour voir les projets</p>
-            </div>
-            <ClosingRateChart data={data?.closingByMonth} onMonthClick={month => navigate(`/pipeline?month=${month}`)} />
-          </div>
-        )}
-
-        {/* Shipments weekly chart */}
-        {show('section_shipments') && (
-          <div className="card p-5 mb-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="font-semibold text-slate-900">Livraisons par semaine</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Colis envoyés — 16 dernières semaines</p>
-              </div>
-              <Link to="/envois" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
-                Voir tous <ArrowRight size={14} />
-              </Link>
-            </div>
-            <ShipmentsWeeklyChart data={data?.weeklyShipments} />
-          </div>
-        )}
-
-        {/* Shipping costs */}
-        {show('section_shipping_costs') && (
-          <div className="card p-5 mb-6">
-            <div className="mb-4">
-              <h2 className="font-semibold text-slate-900">Coûts d'expédition</h2>
-              <p className="text-xs text-slate-400 mt-0.5">Compte 65000 « Expédition, livraison et poste » — somme des 28 jours précédant chaque lundi</p>
-            </div>
-            <ShippingCostChart data={data?.weeklyShippingCosts} />
-          </div>
-        )}
-
-        {/* Geo clients map */}
-        {show('section_geo_map') && (
-          <div className="card p-5 mb-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="font-semibold text-slate-900">Clients par région</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Basé sur la première adresse de livraison — cliquer pour filtrer</p>
-              </div>
-            </div>
-            <GeoClientsMap geoData={data?.geoClients || []} unplacedCount={data?.geoClientsUnplaced || 0} />
-          </div>
-        )}
-
-        {/* Support weekly quality table */}
-        {show('section_support_weekly') && (
-          <div className="card p-5 mb-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="font-semibold text-slate-900">Amélioration du support</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Indicateurs par semaine — 16 dernières semaines</p>
-              </div>
-              <Link to="/tickets" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
-                Voir tickets <ArrowRight size={14} />
-              </Link>
-            </div>
-            <SupportWeeklyTable data={data?.weeklySupportStats} />
-          </div>
-        )}
+        {orderedIds.map(id => (
+          show(id) && cards[id]
+            ? <Fragment key={id}>{cards[id]}</Fragment>
+            : null
+        ))}
 
         <GoalEditorModal
           isOpen={showGoalEditor}

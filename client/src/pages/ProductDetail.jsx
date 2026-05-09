@@ -9,6 +9,7 @@ import { PurchaseOrderModal } from '../components/PurchaseOrderModal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useAuth } from '../lib/auth.jsx'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 
 
@@ -131,6 +132,11 @@ export default function ProductDetail() {
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [id])
+
+  useRealtimeChannel(id ? `product:${id}` : null, (msg) => {
+    if (msg.type === 'product:updated') setProduct(p => p ? { ...p, ...msg.payload } : p)
+    else if (msg.type === 'product:deleted') navigate('/products')
+  })
 
   useEffect(() => {
     if (tab === 'bom') {

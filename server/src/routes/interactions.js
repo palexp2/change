@@ -3,6 +3,36 @@ import { v4 as uuid } from 'uuid'
 import { requireAuth } from '../middleware/auth.js'
 import db from '../db/database.js'
 import { normalizeToUtcIso } from '../utils/datetime.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
+
+// Reuse the LIST query shape (lightweight, without heavy fields) so the
+// realtime payload matches what `Interactions.jsx` consumes in its table.
+const INTERACTION_LIST_SELECT = `
+  SELECT
+    i.*,
+    c.first_name || ' ' || c.last_name AS contact_name,
+    co.name AS company_name,
+    u.name AS user_name,
+    ca.id as call_id, ca.recording_path, ca.duration_seconds,
+    ca.transcription_status, ca.caller_number, ca.callee_number, ca.drive_filename, ca.drive_file_id,
+    ca.summary AS call_summary, ca.next_steps AS call_next_steps,
+    CASE
+      WHEN i.type='call' AND i.direction='out' THEN ca.callee_number
+      WHEN i.type='call' AND i.direction='in'  THEN ca.caller_number
+      WHEN i.type='call' THEN COALESCE(ca.callee_number, ca.caller_number)
+      ELSE NULL
+    END as phone_number,
+    e.subject, e.from_address, e.to_address, e.automated, e.open_count,
+    m.title AS meeting_title, m.duration_minutes
+  FROM interactions i
+  LEFT JOIN contacts c ON i.contact_id = c.id
+  LEFT JOIN companies co ON i.company_id = co.id
+  LEFT JOIN users u ON i.user_id = u.id
+  LEFT JOIN calls ca ON i.type='call' AND ca.interaction_id = i.id
+  LEFT JOIN emails e ON i.type='email' AND e.interaction_id = i.id
+  LEFT JOIN meetings m ON (i.type='meeting' OR i.type='note') AND m.interaction_id = i.id
+  WHERE i.id = ? AND i.deleted_at IS NULL
+`
 
 const router = Router()
 
@@ -135,6 +165,8 @@ router.post('/', requireAuth, (req, res) => {
       .run(uuid(), id, title || (type === 'note' ? 'Note' : null), url || null, duration_minutes || null, notes || null, attendees || null)
   }
 
+  const created = db.prepare(INTERACTION_LIST_SELECT).get(id)
+  if (created) emitEntity('interaction', 'created', id, created, req.user?.id)
   res.status(201).json({ id })
 })
 
@@ -143,6 +175,7 @@ router.delete('/:id', requireAuth, (req, res) => {
   const row = db.prepare('SELECT * FROM interactions WHERE id=?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   db.prepare("UPDATE interactions SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?").run(req.params.id)
+  emitEntity('interaction', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })
 })
 

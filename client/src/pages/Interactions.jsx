@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Phone, Mail, MessageSquare, Users, FileText } from 'lucide-react'
+import { Phone, Mail, MessageSquare, Users, FileText, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -9,7 +9,10 @@ import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDateTime } from '../lib/formatDate.js'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { useUndoableDelete } from '../lib/undoableDelete.js'
 
 const TYPE_ICONS = { call: Phone, email: Mail, sms: MessageSquare, meeting: Users, note: FileText }
 const TYPE_LABELS = { call: 'Appel', email: 'Courriel', sms: 'SMS', meeting: 'Réunion', note: 'Note' }
@@ -31,7 +34,7 @@ function fmtDuration(s) {
 
 // ─── Panneau de détail ────────────────────────────────────────────────────────
 
-function InteractionDetail({ item: stub, onNavigate }) {
+function InteractionDetail({ item: stub, onNavigate, onDelete }) {
   // The list endpoint omits heavy fields (body_text, transcript_formatted,
   // meeting_notes). Fetch the full record when the panel opens so the detail
   // view has everything it needs.
@@ -220,6 +223,17 @@ function InteractionDetail({ item: stub, onNavigate }) {
           Enregistré par <span className="text-slate-600 font-medium">{item.user_name}</span>
         </div>
       )}
+
+      {/* Actions */}
+      <div className="pt-3 border-t border-slate-100 flex justify-end">
+        <button
+          type="button"
+          onClick={() => onDelete(item)}
+          className="inline-flex items-center gap-1.5 text-sm text-red-500 hover:text-red-700 hover:underline"
+        >
+          <Trash2 size={14} /> Supprimer
+        </button>
+      </div>
     </div>
   )
 }
@@ -231,6 +245,8 @@ export default function Interactions() {
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null)
   const navigate = useNavigate()
+  const confirm = useConfirm()
+  const undoableDelete = useUndoableDelete()
 
   const load = useCallback(async () => {
     await loadProgressive(
@@ -242,6 +258,20 @@ export default function Interactions() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  useEntityListRealtime('interaction', setItems)
+
+  async function handleDelete(item) {
+    if (!(await confirm('Supprimer cette interaction ?'))) return
+    setSelected(null)
+    await undoableDelete({
+      table: 'interactions',
+      id: item.id,
+      deleteFn: () => api.interactions.delete(item.id),
+      label: 'Interaction supprimée',
+      onChange: load,
+    })
+  }
 
   const COLUMNS = useMemo(() => TABLE_COLUMN_META.interactions.map(meta => ({
     ...meta,
@@ -291,7 +321,16 @@ export default function Interactions() {
           data={items}
           loading={loading}
           onRowClick={setSelected}
-          searchFields={['contact_name', 'company_name', 'subject', 'callee_number']}
+          searchFields={['contact_name', 'company_name', 'subject', 'callee_number', 'meeting_title']}
+          onBulkDelete={async (ids) => {
+            await undoableDelete({
+              table: 'interactions',
+              ids,
+              deleteFn: () => Promise.all(ids.map(id => api.interactions.delete(id))),
+              label: `${ids.length} interaction${ids.length > 1 ? 's' : ''} supprimée${ids.length > 1 ? 's' : ''}`,
+              onChange: load,
+            })
+          }}
         />
       </div>
 
@@ -301,7 +340,7 @@ export default function Interactions() {
         title={selected ? (TYPE_LABELS[selected.type] || selected.type) : ''}
         size="lg"
       >
-        {selected && <InteractionDetail item={selected} onNavigate={path => { setSelected(null); navigate(path) }} />}
+        {selected && <InteractionDetail item={selected} onNavigate={path => { setSelected(null); navigate(path) }} onDelete={handleDelete} />}
       </Modal>
     </Layout>
   )

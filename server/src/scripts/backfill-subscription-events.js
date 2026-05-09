@@ -17,6 +17,7 @@
 import Stripe from 'stripe'
 import db from '../db/database.js'
 import { recordEvent, classifyChange } from '../services/subscriptionEvents.js'
+import { computeMonthlyNet } from '../services/subscriptionMonthly.js'
 import { v4 as uuid } from 'uuid'
 
 const APPLY = process.argv.includes('--apply')
@@ -42,22 +43,12 @@ function mapSubStatus(s) {
   return m[s] || 'canceled'
 }
 
+// Délègue au helper partagé pour la cohérence avec sync polling et webhook.
+// Le payload des events historiques Stripe ne contient pas latest_invoice
+// expandé : computeMonthlyNet retombe alors sur "items × qty − rabais" — déjà
+// plus juste que l'ancienne version qui ignorait les rabais.
 function computeMonthly(sub) {
-  const items = sub.items?.data ?? []
-  const firstPrice = items[0]?.price
-  const currency = (firstPrice?.currency ?? 'cad').toUpperCase()
-  let amountMonthly = 0
-  for (const item of items) {
-    const p = item?.price
-    const unitAmt = (p?.unit_amount ?? 0) / 100
-    const qty = item?.quantity ?? 1
-    const iType = p?.recurring?.interval ?? 'month'
-    let monthlyPart = unitAmt * qty
-    if (iType === 'year') monthlyPart = monthlyPart / 12
-    else if (iType === 'week') monthlyPart = monthlyPart * 4.333
-    amountMonthly += monthlyPart
-  }
-  return { amountMonthly, currency }
+  return computeMonthlyNet(sub)
 }
 
 async function main() {
@@ -125,29 +116,31 @@ async function main() {
         // si on n'a pas d'info sur l'ancien montant, on garde la valeur DB.
       }
 
-      let category, eventType, eventDate, prevAmountForEvent, newAmountForEvent
+      let category, eventDate, prevAmountForEvent, newAmountForEvent
       if (event.type === 'customer.subscription.deleted') {
         category = 'churn'
-        eventType = 'cancel'
         eventDate = cancelDate ? new Date(cancelDate).toISOString() : new Date(event.created * 1000).toISOString()
         prevAmountForEvent = prevAmount ?? amountMonthly
         newAmountForEvent = null
       } else if (event.type === 'customer.subscription.created') {
-        category = status === 'canceled' ? 'churn' : 'new'
-        eventType = category === 'churn' ? 'cancel' : 'creation'
-        eventDate = startDate ? new Date(startDate).toISOString() : new Date(event.created * 1000).toISOString()
-        prevAmountForEvent = category === 'churn' ? amountMonthly : null
-        newAmountForEvent = category === 'churn' ? null : amountMonthly
-      } else {
-        category = classifyChange({ prevStatus, newStatus: status, prevAmount, newAmount: amountMonthly })
-        eventType = 'update'
-        eventDate = new Date(event.created * 1000).toISOString()
-        prevAmountForEvent = prevAmount
-        newAmountForEvent = amountMonthly
-        if (category === 'other' && Math.abs((prevAmount || 0) - amountMonthly) < 0.01 && prevStatus === status) {
+        // Sub déjà annulé à la création (rare) → pas un mouvement à enregistrer.
+        if (status === 'canceled') {
           stats.skippedNoChange++
           continue
         }
+        category = 'creation'
+        eventDate = startDate ? new Date(startDate).toISOString() : new Date(event.created * 1000).toISOString()
+        prevAmountForEvent = null
+        newAmountForEvent = amountMonthly
+      } else {
+        category = classifyChange({ prevStatus, newStatus: status, prevAmount, newAmount: amountMonthly })
+        if (!category) {
+          stats.skippedNoChange++
+          continue
+        }
+        eventDate = new Date(event.created * 1000).toISOString()
+        prevAmountForEvent = prevAmount
+        newAmountForEvent = amountMonthly
       }
 
       stats.byCategory[category] = (stats.byCategory[category] || 0) + 1
@@ -157,12 +150,11 @@ async function main() {
           subscriptionId: subRow.id,
           companyId: companyId || subRow.company_id,
           eventDate,
-          eventType,
+          eventType: category,
           category,
           previousAmount: prevAmountForEvent,
           newAmount: newAmountForEvent,
           currency,
-          details: { stripe_event_type: event.type, previous_attributes: previous },
           stripeEventId: event.id,
         })
         if (result.inserted) stats.inserted++

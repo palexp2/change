@@ -51,10 +51,10 @@ describe('FactureDetail — Avant taxes en devise native', () => {
     const cad = Number(detail.amount_before_tax_cad)
 
     await page.goto(URL + '/factures/' + target.id, { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('text=Avant taxes', { timeout: 10000 })
+    await page.waitForSelector('[data-testid="facture-line-subtotal"]', { timeout: 10000 })
 
-    // Extract the Avant taxes cell value
-    const avantTaxesCell = page.locator('p', { hasText: /^Avant taxes$/ }).first().locator('xpath=following-sibling::p[1]')
+    // Extract the Avant taxes cell value (now a footer row in the items table)
+    const avantTaxesCell = page.locator('[data-testid="facture-line-subtotal"] td').last()
     const rendered = (await avantTaxesCell.innerText()).trim()
 
     // Parse the rendered currency string to a number

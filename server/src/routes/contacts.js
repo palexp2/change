@@ -4,9 +4,19 @@ import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { rematchCalls } from './calls.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
+import { emitEntity } from '../services/realtimeEmitters.js';
 
 const router = Router();
 router.use(requireAuth);
+
+function buildContactRow(id) {
+  return db.prepare(
+    `SELECT ct.*, c.name as company_name
+     FROM contacts ct
+     LEFT JOIN companies c ON ct.company_id = c.id
+     WHERE ct.id = ?`
+  ).get(id)
+}
 
 // GET /api/contacts/lookup — minimal list for dropdowns
 router.get('/lookup', (req, res) => {
@@ -83,6 +93,7 @@ router.post('/', (req, res) => {
 
   const contact = db.prepare('SELECT ct.*, c.name as company_name FROM contacts ct LEFT JOIN companies c ON ct.company_id = c.id WHERE ct.id = ?').get(id);
   if (phone || mobile) rematchCalls();
+  emitEntity('contact', 'created', id, contact, req.user?.id);
   res.status(201).json(contact);
 });
 
@@ -102,6 +113,7 @@ router.put('/:id', (req, res) => {
 
   const updated = db.prepare('SELECT ct.*, c.name as company_name FROM contacts ct LEFT JOIN companies c ON ct.company_id = c.id WHERE ct.id = ?').get(req.params.id);
   if (cols.includes('phone') || cols.includes('mobile')) rematchCalls();
+  emitEntity('contact', 'updated', req.params.id, updated, req.user?.id);
   res.json(updated);
 });
 
@@ -110,6 +122,7 @@ router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM contacts WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Contact not found' });
   db.prepare("UPDATE contacts SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);
+  emitEntity('contact', 'deleted', req.params.id, { id: req.params.id }, req.user?.id);
   res.json({ message: 'Deleted' });
 });
 

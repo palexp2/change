@@ -5,6 +5,7 @@ import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
@@ -39,6 +40,7 @@ export default function CodesActivite() {
   }, [includeInactive])
 
   useEffect(() => { load() }, [load])
+  useEntityListRealtime('activity_code', setCodes)
 
   // Liste de tous les users (admin endpoint requis car on veut pouvoir assigner même des
   // comptes inactifs — utile p. ex. après l'import historique de feuilles de temps).

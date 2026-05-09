@@ -7,6 +7,7 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { parseDurationToMinutes, formatMinutes, weekKey } from '../lib/duration.js'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
@@ -387,6 +388,12 @@ export default function FeuilleDeTemps() {
   }, [date, selectedUserId])
 
   useEffect(() => { loadDay() }, [loadDay])
+
+  useRealtimeChannel(day?.id ? `timesheet:${day.id}` : null, (msg) => {
+    const verb = msg.type?.split(':').slice(1).join(':')
+    if (verb === 'updated' && msg.payload) setDay(msg.payload)
+    else if (verb === 'deleted') setDay(null)
+  })
 
   // Charge 12 mois de feuilles : sert à la sidebar historique (filtrée à 12 semaines)
   // ET au cumul mensuel par code en bas de page.

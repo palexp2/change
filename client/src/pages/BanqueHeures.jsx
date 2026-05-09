@@ -5,6 +5,7 @@ import { Layout } from '../components/Layout.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate } from '../lib/formatDate.js'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
@@ -32,6 +33,9 @@ export default function BanqueHeures() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Aggregated balances — recharger sur tout changement d'entrée pour mettre à jour les soldes.
+  useRealtimeChannel('hour_bank_entry:list', () => { load() })
 
   async function toggleExpand(employeeId) {
     const next = !expanded[employeeId]

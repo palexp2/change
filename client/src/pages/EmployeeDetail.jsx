@@ -6,6 +6,7 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useRealtimeChannel, useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 
 const DEPARTMENTS = ['R&D', 'Opérations', 'Marketing']
 const GENDERS = ['Homme', 'Femme', 'Autre']
@@ -103,6 +104,16 @@ export default function EmployeeDetail() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [id])
   useEffect(() => () => clearTimeout(saveTimer.current), [])
+
+  useRealtimeChannel(id ? `employee:${id}` : null, (msg) => {
+    const verb = msg.type?.split(':').slice(1).join(':')
+    if (verb === 'updated' && msg.payload) {
+      setEmployee(prev => prev ? { ...prev, ...msg.payload } : msg.payload)
+      setForm(prev => prev ? normalize({ ...prev, ...msg.payload }) : prev)
+    } else if (verb === 'deleted') {
+      navigate('/employees')
+    }
+  })
 
   function change(key, val) {
     setForm(f => ({ ...f, [key]: val }))
@@ -272,6 +283,9 @@ function VacationsSection({ employeeId }) {
 
   useEffect(() => { load() }, [load])
   useEffect(() => () => { for (const t of Object.values(timers.current)) clearTimeout(t) }, [])
+
+  // Realtime: filtre sur l'employé courant (le canal global est partagé entre toutes les fiches).
+  useEntityListRealtime('vacation', setRows, { predicate: (p) => !p?.employee_id || p.employee_id === employeeId })
 
   function markSaving(id, on) {
     setSavingIds(prev => {

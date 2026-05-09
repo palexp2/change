@@ -13,6 +13,7 @@
 
 import * as postmark from 'postmark'
 import { v4 as uuidv4 } from 'uuid'
+import { emitCompany } from './realtimeEmitters.js'
 
 // Only shipments on or after this date are eligible. Bump this if you need to
 // include older customers; the flag + lifecycle_phase + order-count filters are
@@ -179,6 +180,7 @@ function recordSend(db, { row, subject, html, emailId, to, fromAddress }) {
     `).run(row.company_id)
   })
   tx()
+  emitCompany('updated', row.company_id, null)
   return { interactionId }
 }
 

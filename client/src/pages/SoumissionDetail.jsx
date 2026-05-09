@@ -7,6 +7,7 @@ import { Badge } from '../components/Badge.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 function fmtPrice(n, currency = 'CAD') {
@@ -81,6 +82,11 @@ export default function SoumissionDetail() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [id])
   useEffect(() => { if (editing) api.catalog.list().then(setCatalog).catch(console.error) }, [editing])
+
+  useRealtimeChannel(id ? `soumission:${id}` : null, (msg) => {
+    if (msg.type === 'soumission:updated') setSoumission(s => s ? { ...s, ...msg.payload } : s)
+    else if (msg.type === 'soumission:deleted') navigate('/soumissions')
+  })
 
   const isDraft = soumission?.status === 'Brouillon' && !soumission?.airtable_id
   const isFr = (editing ? form.language : soumission?.language) !== 'English'

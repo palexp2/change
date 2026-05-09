@@ -10,6 +10,7 @@ import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useDisabledColumns } from '../lib/useDisabledColumns.js'
 import { useCustomFields } from '../lib/useCustomFields.js'
@@ -219,6 +220,8 @@ export default function Pipeline() {
   useEffect(() => {
     api.companies.lookup().then(setCompanies).catch(() => {})
   }, [])
+
+  useEntityListRealtime('project', setProjects)
 
   // Filtre par mois si présent dans l'URL
   const displayedProjects = useMemo(() => {

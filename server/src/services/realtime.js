@@ -2,7 +2,8 @@ import { WebSocketServer } from 'ws'
 import jwt from 'jsonwebtoken'
 import { JWT_SECRET } from '../config/secrets.js'
 
-const clients = new Set()
+// Map<ws, { userId: string|null, channels: Set<string> }>
+const clients = new Map()
 
 export function createRealtimeServer(httpServer) {
   if (process.env.REALTIME_ENABLED !== 'true') {
@@ -10,7 +11,7 @@ export function createRealtimeServer(httpServer) {
     return
   }
 
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' })
+  const wss = new WebSocketServer({ server: httpServer, path: '/erp/ws' })
 
   wss.on('connection', (ws) => {
     let authenticated = false
@@ -20,17 +21,39 @@ export function createRealtimeServer(httpServer) {
     }, 5000)
 
     ws.on('message', (message) => {
+      let data
       try {
-        const data = JSON.parse(message.toString())
-        if (data.type === 'auth') {
-          jwt.verify(data.token, JWT_SECRET, { algorithms: ['HS256'] })
+        data = JSON.parse(message.toString())
+      } catch {
+        return // ignore non-JSON
+      }
+
+      if (data.type === 'auth') {
+        try {
+          const decoded = jwt.verify(data.token, JWT_SECRET, { algorithms: ['HS256'] })
           authenticated = true
           clearTimeout(authTimeout)
-          clients.add(ws)
+          clients.set(ws, { userId: decoded.id || decoded.userId || null, channels: new Set() })
           ws.send(JSON.stringify({ type: 'auth:success' }))
+        } catch {
+          ws.close(4002, 'Invalid token')
         }
-      } catch {
-        ws.close(4002, 'Invalid token')
+        return
+      }
+
+      if (!authenticated) return // ignore other messages until authed
+
+      const state = clients.get(ws)
+      if (!state) return
+
+      if (data.type === 'subscribe' && typeof data.channel === 'string') {
+        state.channels.add(data.channel)
+        ws.send(JSON.stringify({ type: 'subscribed', channel: data.channel }))
+        return
+      }
+      if (data.type === 'unsubscribe' && typeof data.channel === 'string') {
+        state.channels.delete(data.channel)
+        return
       }
     })
 
@@ -39,7 +62,7 @@ export function createRealtimeServer(httpServer) {
       clients.delete(ws)
     })
 
-    ws.on('error', () => {}) // Swallow per-socket errors
+    ws.on('error', () => {}) // swallow per-socket errors
 
     ws.isAlive = true
     ws.on('pong', () => { ws.isAlive = true })
@@ -56,21 +79,51 @@ export function createRealtimeServer(httpServer) {
 
   wss.on('close', () => clearInterval(heartbeat))
 
-  console.log('Realtime WebSocket: enabled on /ws')
+  console.log('Realtime WebSocket: enabled on /erp/ws')
 }
 
 /**
- * Broadcast a message to all connected clients.
- * Fire-and-forget — never throws.
+ * Send to every authenticated socket, regardless of channel subscriptions.
+ * Used for legacy global events (sync:progress, agent:task:*).
  */
-export function broadcast(message) {
+export function broadcastAll(message) {
   const json = JSON.stringify(message)
-  for (const ws of clients) {
+  for (const ws of clients.keys()) {
     try {
-      if (ws.readyState === 1) ws.send(json) // WebSocket.OPEN = 1
+      if (ws.readyState === 1) ws.send(json)
     } catch {}
   }
 }
 
-// Alias for backward compatibility — both do the same thing now
-export const broadcastAll = broadcast
+/**
+ * Send to sockets subscribed to `channel`. The wire message includes the
+ * channel so clients can route to the right handler when subscribed to many.
+ */
+export function broadcast(channel, message) {
+  const wire = JSON.stringify({ ...message, channel })
+  for (const [ws, state] of clients.entries()) {
+    if (!state.channels.has(channel)) continue
+    try {
+      if (ws.readyState === 1) ws.send(wire)
+    } catch {}
+  }
+}
+
+/**
+ * Send `message` to the union of sockets subscribed to any of `channels`.
+ * Each socket receives the message at most once, tagged with the first
+ * channel it was matched on (good enough for client-side routing).
+ */
+export function emit(channels, message) {
+  const list = Array.isArray(channels) ? channels : [channels]
+  for (const [ws, state] of clients.entries()) {
+    let matched = null
+    for (const ch of list) {
+      if (state.channels.has(ch)) { matched = ch; break }
+    }
+    if (!matched) continue
+    try {
+      if (ws.readyState === 1) ws.send(JSON.stringify({ ...message, channel: matched }))
+    } catch {}
+  }
+}

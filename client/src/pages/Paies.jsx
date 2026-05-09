@@ -8,6 +8,7 @@ import { Modal } from '../components/Modal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 
 function bool(row, key) {
   return row[key] ? <span className="text-green-600">✓</span> : <span className="text-slate-300">—</span>
@@ -424,6 +425,7 @@ export default function Paies() {
   }, [])
 
   useEffect(() => { load() }, [load])
+  useEntityListRealtime('paie', setPaies)
 
   function openCreate() {
     setEditing(null)

@@ -28,6 +28,7 @@ import Factures from './pages/Factures.jsx'
 import FactureDetail from './pages/FactureDetail.jsx'
 import ItemsVendus from './pages/ItemsVendus.jsx'
 import Abonnements from './pages/Abonnements.jsx'
+import AbonnementMouvements from './pages/AbonnementMouvements.jsx'
 import Assemblages from './pages/Assemblages.jsx'
 import ProjectDetail from './pages/ProjectDetail.jsx'
 import SoumissionDetail from './pages/SoumissionDetail.jsx'
@@ -98,6 +99,7 @@ function AppRoutes() {
       <Route path="/factures/:id" element={<ProtectedRoute><FactureDetail /></ProtectedRoute>} />
       <Route path="/items-vendus" element={<ProtectedRoute><ItemsVendus /></ProtectedRoute>} />
       <Route path="/abonnements" element={<ProtectedRoute><Abonnements /></ProtectedRoute>} />
+      <Route path="/abonnements/mouvements" element={<ProtectedRoute><AbonnementMouvements /></ProtectedRoute>} />
       <Route path="/assemblages" element={<ProtectedRoute><Assemblages /></ProtectedRoute>} />
       <Route path="/soumissions/:id" element={<ProtectedRoute><SoumissionDetail /></ProtectedRoute>} />
       <Route path="/envois" element={<ProtectedRoute><Envois /></ProtectedRoute>} />

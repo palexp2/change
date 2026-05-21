@@ -21,6 +21,19 @@ function validateTable(req, res) {
   return true
 }
 
+// group_by / group_order : stockés en TEXT. Format legacy = single field
+// (ex. 'category'). Format multi-niveau = JSON array (ex. '["month","category"]').
+// On essaie de parser comme JSON-array, sinon on garde la chaîne brute pour
+// rester compatible avec les vues existantes.
+function parseMaybeArray(val) {
+  if (val == null || val === '') return null
+  try {
+    const parsed = JSON.parse(val)
+    if (Array.isArray(parsed)) return parsed
+  } catch {}
+  return val
+}
+
 function parsePill(p) {
   return {
     ...p,
@@ -28,6 +41,8 @@ function parsePill(p) {
     visible_columns: JSON.parse(p.visible_columns || '[]'),
     sort: JSON.parse(p.sort || '[]'),
     collapsed_groups: JSON.parse(p.collapsed_groups || '[]'),
+    group_by: parseMaybeArray(p.group_by),
+    group_order: parseMaybeArray(p.group_order),
   }
 }
 
@@ -197,8 +212,19 @@ router.put('/:table/pills/:id', requireAuth, (req, res) => {
   if (body.filters !== undefined)         { updates.push('filters = ?');         values.push(JSON.stringify(body.filters)) }
   if (body.visible_columns !== undefined) { updates.push('visible_columns = ?'); values.push(JSON.stringify(body.visible_columns)) }
   if (body.sort !== undefined)            { updates.push('sort = ?');            values.push(JSON.stringify(body.sort)) }
-  if ('group_by' in body)                 { updates.push('group_by = ?');        values.push(body.group_by) }
-  if ('group_order' in body)              { updates.push('group_order = ?');     values.push(body.group_order) }
+  if ('group_by' in body) {
+    // Accepte string (legacy single-level) ou array (multi-niveau). Sérialise
+    // les arrays en JSON pour le stockage ; les strings restent telles quelles
+    // pour préserver les vues existantes.
+    const v = body.group_by
+    updates.push('group_by = ?')
+    values.push(Array.isArray(v) ? JSON.stringify(v) : v)
+  }
+  if ('group_order' in body) {
+    const v = body.group_order
+    updates.push('group_order = ?')
+    values.push(Array.isArray(v) ? JSON.stringify(v) : v)
+  }
   if (body.collapsed_groups !== undefined){ updates.push('collapsed_groups = ?'); values.push(JSON.stringify(body.collapsed_groups)) }
   if (body.sort_order !== undefined)      { updates.push('sort_order = ?');      values.push(body.sort_order) }
 

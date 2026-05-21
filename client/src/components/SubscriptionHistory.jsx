@@ -5,6 +5,7 @@ import { useConfirm } from './ConfirmProvider.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { CATEGORIES, CATEGORY_LABELS, CATEGORY_COLORS } from '../lib/subscriptionEvents.js'
 import { Badge } from './Badge.jsx'
+import { RachatPicker } from './RachatPicker.jsx'
 
 // Préserve la portion horaire du timestamp original quand l'utilisateur ne
 // modifie que la date — évite de tasser l'historique vers minuit UTC.
@@ -232,11 +233,14 @@ export function SubscriptionHistory({ subscriptionId, history, onChanged }) {
                   : <span className="text-[10px] text-slate-400">— aucun mouvement —</span>
                 }
               </div>
-              <div className="flex-1 space-y-0.5">
+              <div className="flex-1 space-y-1">
                 {h.amount_cad_delta != null && (
                   <div className="text-[10px] text-slate-400 mt-0.5 font-mono">
                     Δ MRR : {h.amount_cad_delta >= 0 ? '+' : ''}{h.amount_cad_delta.toFixed(2)} CAD
                   </div>
+                )}
+                {h.category === 'churn' && h.id && (
+                  <RachatPicker event={h} />
                 )}
               </div>
               {h.id && (

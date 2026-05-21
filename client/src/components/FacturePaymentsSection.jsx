@@ -1,8 +1,21 @@
-import { useState, useEffect } from 'react'
-import { Plus, ArrowDownCircle, ArrowUpCircle, AlertCircle, RefreshCw, ExternalLink } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { Plus, ArrowDownCircle, ArrowUpCircle, AlertCircle, RefreshCw, ExternalLink, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
+import { useAuth } from '../lib/auth.jsx'
 import { fmtDate } from '../lib/formatDate.js'
+import { Modal } from './Modal.jsx'
+import RawEditPanel from './RawEditPanel.jsx'
+
+const PAYMENT_GROUPS = [
+  { title: 'Identifiants', cols: ['id', 'facture_id', 'created_by'] },
+  { title: 'Type', cols: ['direction', 'method', 'currency'] },
+  { title: 'Montants', cols: ['amount', 'amount_cad', 'exchange_rate'] },
+  { title: 'Dates', cols: ['received_at', 'created_at', 'updated_at'] },
+  { title: 'Stripe', cols: ['stripe_balance_tx_id', 'stripe_charge_id', 'stripe_refund_id'] },
+  { title: 'QuickBooks', cols: ['qb_deposit_id', 'qb_journal_entry_id', 'qb_payment_id', 'qb_invoice_id'] },
+  { title: 'Notes', cols: ['notes'] },
+]
 
 function fmtMoney(n, currency = 'CAD') {
   if (n == null) return '—'
@@ -20,12 +33,24 @@ const METHOD_LABELS = {
 
 const MANUAL_METHODS = ['cheque', 'virement_bancaire', 'interac', 'comptant', 'autre']
 
-export default function FacturePaymentsSection({ factureId, factureCurrency = 'CAD', factureIsPaid = false }) {
+export default function FacturePaymentsSection({
+  factureId,
+  factureCurrency = 'CAD',
+  factureIsPaid = false,
+  facturePaidAt = null,
+  facturePaidChargeId = null,
+  facturePaidPaymentIntent = null,
+  factureTotalAmount = null,
+  onFactureChanged,
+}) {
+  const { user } = useAuth()
   const [payments, setPayments] = useState([])
   const [loading, setLoading] = useState(true)
   const [formOpen, setFormOpen] = useState(null) // null | 'in' | 'out'
   const [submitting, setSubmitting] = useState(false)
   const [err, setErr] = useState(null)
+  const [convertOpen, setConvertOpen] = useState(false)
+  const [converting, setConverting] = useState(false)
 
   // Form state
   const [method, setMethod] = useState('cheque')
@@ -33,10 +58,28 @@ export default function FacturePaymentsSection({ factureId, factureCurrency = 'C
   const [amount, setAmount] = useState('')
   const [currency, setCurrency] = useState(factureCurrency)
   const [notes, setNotes] = useState('')
+  const [skipQb, setSkipQb] = useState(false)
+
+  // Heuristique : paid_at posé sans aucune trace réelle d'un paiement Stripe
+  // (ni charge_id ni payment_intent). Cas typique : invoice Stripe marquée
+  // "paid out of band" → l'argent est entré ailleurs (Interac, virement, chèque).
+  // On expose alors un bouton admin pour réinitialiser l'état "payé" et saisir
+  // le vrai paiement.
+  // NB : Stripe pousse amount_paid = total (et non 0) pour les invoices
+  // marquées paid-out-of-band, donc on ne peut pas filtrer sur paid_amount.
+  // L'absence simultanée de charge_id ET de payment_intent suffit : un vrai
+  // paiement Stripe expose toujours au moins un des deux.
+  // On déclenche sur paid_at (et non sur factureIsPaid) parce que balance_due=0
+  // hérité d'un paiement Stripe précédent peut maintenir factureIsPaid=true même
+  // après reset — l'absence de paid_at est notre signal fiable de "déjà nettoyé".
+  const looksPaidOutOfBand = !!facturePaidAt
+    && !facturePaidChargeId
+    && !facturePaidPaymentIntent
+  const isAdmin = user?.role === 'admin'
 
   function reload() {
     setLoading(true)
-    api.payments.listForFacture(factureId)
+    return api.payments.listForFacture(factureId)
       .then(rows => setPayments(rows || []))
       .catch(() => setPayments([]))
       .finally(() => setLoading(false))
@@ -47,14 +90,42 @@ export default function FacturePaymentsSection({ factureId, factureCurrency = 'C
     reload()
   }, [factureId]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  function openForm(direction) {
-    setMethod('cheque')
-    setReceivedAt(new Date().toISOString().slice(0, 10))
-    setAmount('')
-    setCurrency(factureCurrency)
-    setNotes('')
+  function openForm(direction, opts = {}) {
+    setMethod(opts.method || 'cheque')
+    setReceivedAt(opts.receivedAt || new Date().toISOString().slice(0, 10))
+    setAmount(opts.amount != null ? String(opts.amount) : '')
+    setCurrency(opts.currency || factureCurrency)
+    setNotes(opts.notes || '')
+    setSkipQb(!!opts.skipQb)
     setErr(null)
     setFormOpen(direction)
+  }
+
+  async function confirmConvert() {
+    setConverting(true)
+    setErr(null)
+    try {
+      await api.admin.clearFacturePaidStatus(factureId)
+      setConvertOpen(false)
+      if (onFactureChanged) await onFactureChanged()
+      // Préremplit le formulaire avec la date et le total connus du Stripe.
+      // skipQb par défaut : si l'invoice a été marquée paid-out-of-band dans
+      // Stripe, l'encaissement réel est souvent déjà entré manuellement dans QB
+      // — l'utilisateur décoche s'il veut au contraire qu'on poste le Deposit.
+      const prefillDate = facturePaidAt ? facturePaidAt.slice(0, 10) : new Date().toISOString().slice(0, 10)
+      openForm('in', {
+        method: 'interac',
+        receivedAt: prefillDate,
+        amount: factureTotalAmount,
+        currency: factureCurrency,
+        skipQb: true,
+      })
+      reload()
+    } catch (e) {
+      setErr(e.message || 'Erreur lors de la conversion')
+    } finally {
+      setConverting(false)
+    }
   }
 
   async function submit() {
@@ -74,9 +145,10 @@ export default function FacturePaymentsSection({ factureId, factureCurrency = 'C
         amount: amt,
         currency,
         notes: notes.trim() || undefined,
+        skip_qb: skipQb || undefined,
       })
       setFormOpen(null)
-      if (res.qb_error) setErr(`Saisi mais JE QB échouée : ${res.qb_error}`)
+      if (res.qb_error) setErr(`Saisi mais écriture QB échouée : ${res.qb_error}`)
       reload()
     } catch (e) {
       setErr(e.message || 'Erreur')
@@ -126,6 +198,39 @@ export default function FacturePaymentsSection({ factureId, factureCurrency = 'C
           <AlertCircle size={12} /> {err}
         </div>
       )}
+
+      {looksPaidOutOfBand && isAdmin && (
+        <div className="px-5 py-3 border-b border-amber-100 bg-amber-50/60 flex items-start gap-2.5">
+          <AlertCircle size={14} className="text-amber-700 mt-0.5 flex-shrink-0" />
+          <div className="flex-1 text-xs text-amber-900">
+            <p className="font-medium">
+              Facture marquée payée par Stripe, mais sans détails de paiement
+              (montant Stripe à 0, pas de charge ni de payment intent).
+            </p>
+            <p className="mt-0.5 text-amber-800">
+              Si l'argent est entré hors Stripe (Interac, virement, chèque…),
+              réinitialise pour saisir le vrai paiement et générer la JE
+              d'encaissement dans QuickBooks.
+            </p>
+          </div>
+          <button
+            onClick={() => setConvertOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-800 bg-white hover:bg-amber-100 rounded-lg border border-amber-300"
+            data-testid="convert-to-off-stripe-btn"
+          >
+            <RotateCcw size={12} /> Convertir en paiement hors Stripe
+          </button>
+        </div>
+      )}
+
+      <ConvertConfirmModal
+        isOpen={convertOpen}
+        converting={converting}
+        facturePaidAt={facturePaidAt}
+        onCancel={() => setConvertOpen(false)}
+        onConfirm={confirmConvert}
+      />
+
 
       {formOpen && (
         <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/60">
@@ -186,6 +291,23 @@ export default function FacturePaymentsSection({ factureId, factureCurrency = 'C
               className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5"
             />
           </div>
+          {/* Skip QB : utile quand l'écriture comptable a déjà été posée
+              manuellement dans QuickBooks (ex. facture Stripe paid-out-of-band
+              dont l'encaissement Interac a été saisi à la main avant la
+              conversion). La row payments est créée pour la traçabilité ERP
+              mais aucun Deposit/JE n'est posté. */}
+          <div className="mt-3">
+            <label className="inline-flex items-center gap-2 text-xs text-slate-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={skipQb}
+                onChange={e => setSkipQb(e.target.checked)}
+                className="rounded border-slate-300"
+                data-testid="payment-skip-qb"
+              />
+              <span>Écriture déjà postée dans QuickBooks (ne pas re-poster)</span>
+            </label>
+          </div>
           <div className="mt-3 flex items-center justify-end gap-2">
             <button
               onClick={() => setFormOpen(null)}
@@ -209,10 +331,10 @@ export default function FacturePaymentsSection({ factureId, factureCurrency = 'C
         ) : (
           <div className="space-y-3">
             {incoming.length > 0 && (
-              <PaymentList title="Paiements reçus" rows={incoming} icon={ArrowDownCircle} colorClass="text-emerald-600" onRetryQb={retryQb} />
+              <PaymentList title="Paiements reçus" rows={incoming} icon={ArrowDownCircle} colorClass="text-emerald-600" onRetryQb={retryQb} isAdmin={isAdmin} onChanged={reload} />
             )}
             {outgoing.length > 0 && (
-              <PaymentList title="Remboursements émis" rows={outgoing} icon={ArrowUpCircle} colorClass="text-rose-600" onRetryQb={retryQb} />
+              <PaymentList title="Remboursements émis" rows={outgoing} icon={ArrowUpCircle} colorClass="text-rose-600" onRetryQb={retryQb} isAdmin={isAdmin} onChanged={reload} />
             )}
           </div>
         )}
@@ -221,7 +343,382 @@ export default function FacturePaymentsSection({ factureId, factureCurrency = 'C
   )
 }
 
-function PaymentList({ title, rows, icon: Icon, colorClass, onRetryQb }) {
+function ConvertConfirmModal({ isOpen, converting, facturePaidAt, onCancel, onConfirm }) {
+  if (!isOpen) return null
+  return (
+    <Modal isOpen={true} onClose={onCancel} title="Convertir en paiement hors Stripe" size="md">
+      <div className="text-sm text-slate-700 space-y-3">
+        <p>Cette action effectue les opérations locales suivantes :</p>
+        <ul className="list-disc pl-5 space-y-1.5">
+          <li>
+            Remise à <strong>NULL</strong> de <code>paid_at</code>{facturePaidAt ? ` (actuellement ${fmtDate(facturePaidAt)})` : ''},
+            <code> paid_amount</code>, <code>paid_charge_id</code>, <code>paid_payment_intent</code>.
+          </li>
+          <li>
+            Le <strong>statut</strong> de la facture repasse de <em>Payé</em> à <em>À payer</em> ou <em>En retard</em> (selon la date d'échéance).
+          </li>
+          <li>
+            Ouverture du formulaire de saisie d'un paiement hors Stripe. Par
+            défaut, la case <em>« Écriture déjà postée dans QuickBooks »</em>
+            sera cochée — l'encaissement réel est souvent déjà entré
+            manuellement quand la facture a été marquée payée hors Stripe.
+            Décoche-la pour poster un <strong>Deposit</strong> dans QuickBooks
+            (<em>Dr Banque / Cr 12000</em>).
+          </li>
+        </ul>
+        <p className="text-xs text-slate-500">
+          Aucune action n'est faite côté Stripe ou QuickBooks à cette étape —
+          uniquement la mise à jour des colonnes locales de la facture.
+        </p>
+      </div>
+      <div className="flex justify-end gap-3 mt-6">
+        <button
+          onClick={onCancel}
+          disabled={converting}
+          className="px-3 py-1.5 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg disabled:opacity-50"
+        >
+          Annuler
+        </button>
+        <button
+          onClick={onConfirm}
+          disabled={converting}
+          className="px-3 py-1.5 text-sm font-medium text-white bg-amber-600 hover:bg-amber-700 rounded-lg disabled:opacity-50"
+          data-testid="convert-to-off-stripe-confirm"
+        >
+          {converting ? 'Conversion…' : 'Confirmer la conversion'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// Cellule QB pour les payments qb_skipped (écriture déjà saisie manuellement
+// dans QB). Permet à un admin de rattacher l'id du Deposit/JE/SalesReceipt
+// créé à la main, ce qui transforme la cellule en lien cliquable vers QB
+// (et préserve l'historique côté ERP).
+const QB_LINK_TYPES = [
+  { value: 'qb_deposit_id', label: 'Deposit', prefix: 'DEP' },
+  { value: 'qb_journal_entry_id', label: 'Journal Entry', prefix: 'JE' },
+  { value: 'qb_payment_id', label: 'Sales Receipt', prefix: 'SR' },
+]
+function fmtMoneyShort(n, currency = 'CAD') {
+  if (n == null || !Number.isFinite(Number(n))) return ''
+  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency, maximumFractionDigits: 0 }).format(n)
+}
+function QbSkippedCell({ payment, isAdmin, onChanged }) {
+  const [editing, setEditing] = useState(false)
+  const [col, setCol] = useState('qb_deposit_id')
+  const [qbId, setQbId] = useState('')
+  const [creditAcctId, setCreditAcctId] = useState('')
+  const [creditAcctName, setCreditAcctName] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [err, setErr] = useState(null)
+  const [suggestions, setSuggestions] = useState(null) // null = pas encore chargé, [] = chargé vide
+  const [loadingSugg, setLoadingSugg] = useState(false)
+
+  // Charge les suggestions QB la première fois qu'on ouvre le form.
+  useEffect(() => {
+    if (!editing || suggestions !== null) return
+    setLoadingSugg(true)
+    api.payments.qbLinkSuggestions(payment.id)
+      .then(r => setSuggestions(r.suggestions || []))
+      .catch(() => setSuggestions([]))
+      .finally(() => setLoadingSugg(false))
+  }, [editing, suggestions, payment.id])
+
+  function pickSuggestion(s) {
+    setCol(s.column)
+    setQbId(s.qb_id)
+    setCreditAcctId(s.credit_account_id || '')
+    setCreditAcctName(s.credit_account_name || '')
+  }
+
+  async function save() {
+    const trimmed = qbId.trim()
+    if (!trimmed) { setErr('ID QB requis'); return }
+    setSaving(true)
+    setErr(null)
+    try {
+      const payload = {
+        [col]: trimmed,
+        qb_credit_account_id: creditAcctId.trim() || null,
+        qb_credit_account_name: creditAcctName.trim() || null,
+      }
+      const res = await api.admin.paymentRawUpdate(payment.id, payload)
+      if (res?.rejected && Object.keys(res.rejected).length) {
+        setErr(`Rejeté : ${JSON.stringify(res.rejected)}`)
+        return
+      }
+      setEditing(false)
+      setQbId('')
+      setCreditAcctId('')
+      setCreditAcctName('')
+      if (onChanged) await onChanged()
+    } catch (e) {
+      setErr(e.message || 'Erreur')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="inline-flex flex-col gap-1.5 align-top" data-testid={`payment-qb-link-form-${payment.id}`}>
+        <div className="inline-flex items-center gap-1">
+          <select
+            value={col}
+            onChange={e => setCol(e.target.value)}
+            className="text-xs border border-slate-300 rounded px-1 py-0.5"
+            disabled={saving}
+          >
+            {QB_LINK_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+          </select>
+          <input
+            type="text"
+            value={qbId}
+            onChange={e => setQbId(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false) }}
+            placeholder="ID"
+            className="w-20 text-xs border border-slate-300 rounded px-1 py-0.5"
+            autoFocus
+            disabled={saving}
+            data-testid={`payment-qb-link-input-${payment.id}`}
+          />
+          <button
+            onClick={save}
+            disabled={saving}
+            className="text-xs px-1.5 py-0.5 bg-brand-600 hover:bg-brand-700 text-white rounded disabled:opacity-50"
+            data-testid={`payment-qb-link-save-${payment.id}`}
+          >
+            {saving ? '…' : 'OK'}
+          </button>
+          <button
+            onClick={() => { setEditing(false); setErr(null) }}
+            disabled={saving}
+            className="text-xs px-1.5 py-0.5 text-slate-500 hover:bg-slate-100 rounded"
+          >
+            ✕
+          </button>
+          {err && <span className="text-xs text-red-600 ml-1" title={err}>!</span>}
+        </div>
+        {/* Compte crédité — auto-rempli depuis QB quand on choisit une
+            suggestion (Deposit/JE), éditable pour saisie manuelle. Trace
+            comptable : Revenus perçus d'avance (23900) / Ventes (40000) /
+            Revenus de service (41000) / Comptes clients (12000). */}
+        <div className="inline-flex items-center gap-1">
+          <label className="text-[10px] text-slate-500 uppercase tracking-wide">Cr</label>
+          <input
+            type="text"
+            value={creditAcctName}
+            onChange={e => setCreditAcctName(e.target.value)}
+            placeholder="ex. 23900 Revenus perçus d'avance"
+            className="text-xs border border-slate-300 rounded px-1 py-0.5 w-64"
+            disabled={saving}
+            data-testid={`payment-qb-credit-name-${payment.id}`}
+          />
+        </div>
+        {/* Suggestions : opérations QB du client dans une fenêtre de ±90 jours
+            autour de la date du paiement. Clic = remplit le type + l'ID. */}
+        <div className="border border-slate-200 rounded bg-white max-w-md" data-testid={`payment-qb-suggestions-${payment.id}`}>
+          {loadingSugg && (
+            <div className="text-[11px] text-slate-400 px-2 py-1.5">Chargement des opérations QB…</div>
+          )}
+          {!loadingSugg && suggestions && suggestions.length === 0 && (
+            <div className="text-[11px] text-slate-400 px-2 py-1.5 italic">
+              Aucune opération QB trouvée pour ce client dans ±90 jours.
+            </div>
+          )}
+          {!loadingSugg && suggestions && suggestions.length > 0 && (
+            <ul className="max-h-44 overflow-y-auto divide-y divide-slate-100">
+              {suggestions.map(s => {
+                const selected = qbId === s.qb_id && col === s.column
+                return (
+                  <li key={`${s.type}:${s.qb_id}`}>
+                    <button
+                      onClick={() => pickSuggestion(s)}
+                      className={`w-full text-left px-2 py-1 text-[11px] hover:bg-slate-50 ${selected ? 'bg-brand-50' : ''}`}
+                      data-testid={`payment-qb-suggestion-${s.type}-${s.qb_id}`}
+                    >
+                      <div>
+                        <span className="font-mono text-slate-700">{s.prefix} #{s.qb_id}</span>
+                        <span className="text-slate-400 mx-1.5">·</span>
+                        <span className="text-slate-600">{s.txn_date}</span>
+                        <span className="text-slate-400 mx-1.5">·</span>
+                        <span className="text-slate-700">{fmtMoneyShort(s.amount, payment.currency)}</span>
+                      </div>
+                      {s.credit_account_name && (
+                        <div className="text-slate-500 mt-0.5">
+                          Cr <span className="text-slate-700">{s.credit_account_name}</span>
+                        </div>
+                      )}
+                      {s.description && !s.credit_account_name && (
+                        <div className="text-slate-400 truncate mt-0.5">{s.description}</div>
+                      )}
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 text-xs text-slate-500"
+      title="L'écriture QB a été marquée comme déjà postée manuellement à la création du paiement"
+      data-testid={`payment-qb-skipped-${payment.id}`}
+    >
+      saisi à la main
+      {isAdmin && (
+        <button
+          onClick={() => setEditing(true)}
+          className="text-brand-600 hover:underline text-[11px]"
+          title="Rattacher l'id du Deposit / JE / SalesReceipt créé manuellement dans QuickBooks"
+          data-testid={`payment-qb-link-btn-${payment.id}`}
+        >
+          lier QB
+        </button>
+      )}
+    </span>
+  )
+}
+
+// Éditeur inline du compte crédité QB, affiché sous le lien QB d'un payment
+// déjà rattaché. Permet à un admin d'ajouter ou modifier l'annotation Cr xxxx
+// sans repasser par le flow de liaison complet. Bouton "auto" qui fetch QB
+// directement (utile pour rattraper les rows liées avant que la capture
+// automatique soit en place).
+function QbCreditAccountInline({ payment, isAdmin, onChanged }) {
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(payment.qb_credit_account_name || '')
+  const [acctId, setAcctId] = useState(payment.qb_credit_account_id || '')
+  const [saving, setSaving] = useState(false)
+  const [autoLoading, setAutoLoading] = useState(false)
+  const [err, setErr] = useState(null)
+
+  async function save() {
+    setSaving(true)
+    setErr(null)
+    try {
+      const res = await api.admin.paymentRawUpdate(payment.id, {
+        qb_credit_account_id: acctId.trim() || null,
+        qb_credit_account_name: name.trim() || null,
+      })
+      if (res?.rejected && Object.keys(res.rejected).length) {
+        setErr(`Rejeté : ${JSON.stringify(res.rejected)}`)
+        return
+      }
+      setEditing(false)
+      if (onChanged) await onChanged()
+    } catch (e) {
+      setErr(e.message || 'Erreur')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function autoDetect() {
+    setAutoLoading(true)
+    setErr(null)
+    try {
+      const r = await api.payments.qbCreditAccount(payment.id)
+      if (r.credit_account_name) {
+        setName(r.credit_account_name)
+        setAcctId(r.credit_account_id || '')
+      } else {
+        setErr('Aucun compte crédité détecté dans QB pour ce client')
+      }
+    } catch (e) {
+      setErr(e.message || 'Erreur QB')
+    } finally {
+      setAutoLoading(false)
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="inline-flex items-center gap-1 mt-0.5" data-testid={`payment-qb-credit-form-${payment.id}`}>
+        <span className="text-[10px] text-slate-500 uppercase">Cr</span>
+        <input
+          type="text"
+          value={name}
+          onChange={e => setName(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false) }}
+          placeholder="ex. 23900 Revenus perçus d'avance"
+          className="text-[11px] border border-slate-300 rounded px-1 py-0.5 w-56"
+          autoFocus
+          disabled={saving}
+          data-testid={`payment-qb-credit-input-${payment.id}`}
+        />
+        <button
+          onClick={autoDetect}
+          disabled={saving || autoLoading}
+          className="text-[10px] px-1.5 py-0.5 text-brand-700 hover:bg-brand-50 rounded border border-brand-200 disabled:opacity-50"
+          title="Détecter le compte crédité depuis QuickBooks"
+          data-testid={`payment-qb-credit-auto-${payment.id}`}
+        >
+          {autoLoading ? '…' : 'auto'}
+        </button>
+        <button
+          onClick={save}
+          disabled={saving}
+          className="text-[10px] px-1.5 py-0.5 bg-brand-600 hover:bg-brand-700 text-white rounded disabled:opacity-50"
+          data-testid={`payment-qb-credit-save-${payment.id}`}
+        >
+          {saving ? '…' : 'OK'}
+        </button>
+        <button
+          onClick={() => { setEditing(false); setErr(null); setName(payment.qb_credit_account_name || ''); setAcctId(payment.qb_credit_account_id || '') }}
+          disabled={saving}
+          className="text-[10px] px-1 text-slate-500 hover:bg-slate-100 rounded"
+        >
+          ✕
+        </button>
+        {err && <span className="text-[10px] text-red-600 ml-1" title={err}>!</span>}
+      </div>
+    )
+  }
+
+  if (payment.qb_credit_account_name) {
+    return (
+      <span
+        className="text-[10px] text-slate-500 mt-0.5"
+        title="Compte crédité dans QuickBooks pour cette opération"
+        data-testid={`payment-qb-credit-display-${payment.id}`}
+      >
+        Cr {payment.qb_credit_account_name}
+        {isAdmin && (
+          <button
+            onClick={() => setEditing(true)}
+            className="ml-1 text-brand-600 hover:underline"
+            title="Modifier le compte crédité"
+            data-testid={`payment-qb-credit-edit-${payment.id}`}
+          >
+            ✎
+          </button>
+        )}
+      </span>
+    )
+  }
+
+  if (!isAdmin) return null
+  return (
+    <button
+      onClick={() => setEditing(true)}
+      className="text-[10px] text-brand-600 hover:underline mt-0.5 w-fit"
+      title="Annoter le compte crédité dans QB pour la traçabilité comptable"
+      data-testid={`payment-qb-credit-add-${payment.id}`}
+    >
+      + compte crédité
+    </button>
+  )
+}
+
+function PaymentList({ title, rows, icon: Icon, colorClass, onRetryQb, isAdmin, onChanged }) {
+  const [expandedId, setExpandedId] = useState(null)
   return (
     <div>
       <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
@@ -230,101 +727,219 @@ function PaymentList({ title, rows, icon: Icon, colorClass, onRetryQb }) {
       <table className="w-full text-sm">
         <thead className="text-xs text-slate-400 uppercase tracking-wide">
           <tr>
+            {isAdmin && <th className="w-6 pb-2"></th>}
             <th className="text-left pb-2 font-medium">Date</th>
             <th className="text-left pb-2 font-medium">Mode</th>
             <th className="text-right pb-2 font-medium w-32">Montant</th>
-            <th className="text-left pb-2 font-medium">Payout</th>
-            <th className="text-left pb-2 font-medium">JE QB</th>
+            <th className="text-left pb-2 pl-4 font-medium">Payout</th>
+            <th className="text-left pb-2 font-medium">QB</th>
           </tr>
         </thead>
         <tbody>
           {rows.map(p => (
-            <tr key={p.id} className="border-t border-slate-100">
-              <td className="py-2 text-slate-700 whitespace-nowrap">{fmtDate(p.received_at)}</td>
-              <td className="py-2 text-slate-600">
-                {METHOD_LABELS[p.method] || p.method}
-                {p.stripe_charge_id && (
-                  <a
-                    href={`https://dashboard.stripe.com/payments/${p.stripe_charge_id}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-0.5 ml-1.5 text-brand-600 hover:underline"
-                    title="Voir dans Stripe"
-                  >
-                    <ExternalLink size={10} />
-                  </a>
-                )}
-              </td>
-              <td className="py-2 text-right font-medium text-slate-800">{fmtMoney(p.amount, p.currency)}</td>
-              <td className="py-2 text-slate-600 whitespace-nowrap">
-                {p.payout_stripe_id ? (
-                  <Link
-                    to={`/stripe-payouts/${p.payout_stripe_id}`}
-                    className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline"
-                    title="Voir le payout Stripe"
-                  >
-                    {p.payout_stripe_id.slice(-8)}
-                  </Link>
-                ) : null}
-              </td>
-              <td className="py-2 text-slate-600 whitespace-nowrap">
-                {(() => {
-                  // Cas paiement Stripe synthétique (pas de row payments) :
-                  // affiche le lien QB s'il existe (deferred ou JE constat),
-                  // sinon "comptabilisé au payout" en lecture seule.
-                  if (p.synthetic) {
-                    if (p.qb_payment_url) {
-                      return (
-                        <a
-                          href={p.qb_payment_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline"
-                          title="Ouvrir dans QuickBooks"
-                        >
-                          QB <ExternalLink size={10} />
-                        </a>
-                      )
-                    }
-                    return (
-                      <span className="inline-flex items-center gap-1 text-xs text-slate-400" title="La JE QB sera posée au push du payout Stripe">
-                        au payout
-                      </span>
-                    )
-                  }
-                  const qbId = p.qb_journal_entry_id || p.qb_payment_id
-                  const qbUrl = p.qb_journal_entry_url || p.qb_payment_url
-                  const label = p.qb_payment_id && !p.qb_journal_entry_id ? 'SR' : 'JE'
-                  if (!qbId) {
-                    return (
-                      <button
-                        onClick={() => onRetryQb(p.id)}
-                        className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 hover:bg-amber-100 px-2 py-0.5 rounded"
-                        title="JE non posée — réessayer"
-                      >
-                        <RefreshCw size={10} /> Retry
-                      </button>
-                    )
-                  }
-                  return qbUrl ? (
-                    <a
-                      href={qbUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline"
-                      title={`Ouvrir dans QuickBooks (${label} #${qbId})`}
-                    >
-                      {label} #{qbId} <ExternalLink size={10} />
-                    </a>
-                  ) : (
-                    <span className="text-xs font-mono">{label} #{qbId}</span>
-                  )
-                })()}
-              </td>
-            </tr>
+            <PaymentRow
+              key={p.id}
+              p={p}
+              isAdmin={isAdmin}
+              expanded={expandedId === p.id}
+              onToggleExpand={() => setExpandedId(prev => prev === p.id ? null : p.id)}
+              onRetryQb={onRetryQb}
+              onChanged={onChanged}
+            />
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+function PaymentRow({ p, isAdmin, expanded, onToggleExpand, onRetryQb, onChanged }) {
+  return (
+    <>
+      <tr className="border-t border-slate-100">
+        {isAdmin && (
+          <td className="py-2 align-top">
+            {p.synthetic ? null : (
+              <button
+                onClick={onToggleExpand}
+                className="p-0.5 text-slate-400 hover:text-slate-700 rounded"
+                title="Édition avancée (admin)"
+                data-testid={`payment-raw-edit-toggle-${p.id}`}
+              >
+                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              </button>
+            )}
+          </td>
+        )}
+        <td className="py-2 text-slate-700 whitespace-nowrap">{fmtDate(p.received_at)}</td>
+        <td className="py-2 text-slate-600">
+          {METHOD_LABELS[p.method] || p.method}
+          {p.stripe_charge_id && (
+            <a
+              href={`https://dashboard.stripe.com/payments/${p.stripe_charge_id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-0.5 ml-1.5 text-brand-600 hover:underline"
+              title="Voir dans Stripe"
+            >
+              <ExternalLink size={10} />
+            </a>
+          )}
+        </td>
+        <td className="py-2 text-right font-medium text-slate-800">{fmtMoney(p.amount, p.currency)}</td>
+        <td className="py-2 pl-4 text-slate-600 whitespace-nowrap">
+          {p.payout_stripe_id ? (
+            <Link
+              to={`/stripe-payouts/${p.payout_stripe_id}`}
+              className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline"
+              title="Voir le payout Stripe"
+            >
+              {p.payout_stripe_id.slice(-8)}
+            </Link>
+          ) : null}
+        </td>
+        <td className="py-2 text-slate-600 whitespace-nowrap">
+          {(() => {
+            // Cas paiement Stripe synthétique (pas de row payments) :
+            // affiche le lien QB s'il existe (deferred ou JE constat).
+            if (p.synthetic) {
+              if (p.qb_payment_url) {
+                return (
+                  <a
+                    href={p.qb_payment_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline"
+                    title="Ouvrir dans QuickBooks"
+                  >
+                    QB <ExternalLink size={10} />
+                  </a>
+                )
+              }
+              // Pas de JE par paiement, mais le payout a été poussé en QB →
+              // lien vers le Deposit du payout (où cette ligne est comptabilisée).
+              if (p.payout_qb_deposit_id) {
+                return (
+                  <a
+                    href={p.payout_qb_deposit_url || undefined}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline"
+                    title={`Comptabilisé via le Deposit du payout (DEP #${p.payout_qb_deposit_id})`}
+                  >
+                    DEP #{p.payout_qb_deposit_id} <ExternalLink size={10} />
+                  </a>
+                )
+              }
+              return (
+                <span className="inline-flex items-center gap-1 text-xs text-slate-400" title="La JE QB sera posée au push du payout Stripe">
+                  au payout
+                </span>
+              )
+            }
+            // Nouvelles rows : qb_deposit_id (Deposit QB). Rows historiques :
+            // qb_journal_entry_id (JE) ou qb_payment_id (SalesReceipt).
+            const qbId = p.qb_deposit_id || p.qb_journal_entry_id || p.qb_payment_id
+            const qbUrl = p.qb_deposit_url || p.qb_journal_entry_url || p.qb_payment_url
+            const label = p.qb_deposit_id ? 'DEP' : (p.qb_journal_entry_id ? 'JE' : 'SR')
+            if (!qbId) {
+              // qb_skipped : QB intentionnellement non posté à la création
+              // (encaissement déjà saisi à la main par le comptable). Pas de
+              // Retry — relancer poserait un Deposit en double. On expose un
+              // bouton "lier" pour rattacher l'id du Deposit/JE/SR créé à la
+              // main dans QB, ce qui transforme la cellule en lien cliquable.
+              if (p.qb_skipped) {
+                return <QbSkippedCell payment={p} isAdmin={isAdmin} onChanged={onChanged} />
+              }
+              // Paiement/refund Stripe (row payments réelle) : la pose comptable
+              // se fait au payout, pas par ligne. Pas de Retry — on affiche le
+              // Deposit du payout s'il a été poussé, sinon "au payout".
+              if (p.method === 'stripe') {
+                if (p.payout_qb_deposit_id) {
+                  return (
+                    <a
+                      href={p.payout_qb_deposit_url || undefined}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline"
+                      title={`Comptabilisé via le Deposit du payout (DEP #${p.payout_qb_deposit_id})`}
+                    >
+                      DEP #{p.payout_qb_deposit_id} <ExternalLink size={10} />
+                    </a>
+                  )
+                }
+                return (
+                  <span className="inline-flex items-center gap-1 text-xs text-slate-400" title="La JE QB sera posée au push du payout Stripe">
+                    au payout
+                  </span>
+                )
+              }
+              return (
+                <button
+                  onClick={() => onRetryQb(p.id)}
+                  className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 hover:bg-amber-100 px-2 py-0.5 rounded"
+                  title="Écriture QB non posée — réessayer"
+                >
+                  <RefreshCw size={10} /> Retry
+                </button>
+              )
+            }
+            // Compte crédité capturé lors de la liaison (suggestions QB ou
+            // saisie manuelle) — affiché en seconde ligne pour la traçabilité
+            // comptable (23900 perçus d'avance / 40000 ventes / 41000 service
+            // / 12000 AR). Sans cette annotation, il faudrait rouvrir QB pour
+            // identifier le compte.
+            return (
+              <div className="flex flex-col">
+                {qbUrl ? (
+                  <a
+                    href={qbUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline w-fit"
+                    title={`Ouvrir dans QuickBooks (${label} #${qbId})`}
+                  >
+                    {label} #{qbId} <ExternalLink size={10} />
+                  </a>
+                ) : (
+                  <span className="text-xs font-mono">{label} #{qbId}</span>
+                )}
+                <QbCreditAccountInline payment={p} isAdmin={isAdmin} onChanged={onChanged} />
+              </div>
+            )
+          })()}
+        </td>
+      </tr>
+      {isAdmin && expanded && !p.synthetic && (
+        <tr className="bg-slate-50/60">
+          <td colSpan={6} className="px-4 py-4">
+            <PaymentRawEdit paymentId={p.id} payment={p} onChanged={onChanged} />
+          </td>
+        </tr>
+      )}
+    </>
+  )
+}
+
+function PaymentRawEdit({ paymentId, payment, onChanged }) {
+  const schemaLoader = useCallback(() => api.admin.paymentRawSchema(paymentId), [paymentId])
+  const onSave = useCallback(async (col, value) => {
+    const res = await api.admin.paymentRawUpdate(paymentId, { [col]: value })
+    if (!res?.rejected?.[col] && onChanged) await onChanged()
+    return res
+  }, [paymentId, onChanged])
+  return (
+    <div>
+      <div className="text-[11px] text-amber-700 bg-amber-50 px-2 py-1 rounded mb-3 inline-block">
+        Édition avancée — aucune validation métier (qb_*_id, amount, direction… cassent l'idempotence si modifiés)
+      </div>
+      <RawEditPanel
+        schemaLoader={schemaLoader}
+        record={payment}
+        onSave={onSave}
+        groups={PAYMENT_GROUPS}
+        testIdPrefix={`payment-raw-edit-${paymentId}`}
+      />
     </div>
   )
 }

@@ -100,6 +100,7 @@ export function RachatPicker({ event }) {
           {[
             { v: 'probable',  label: 'Rachat probable' },
             { v: 'confirmed', label: 'Rachat confirmé' },
+            { v: 'merged',    label: 'Fusionné' },
             { v: 'none',      label: 'Pas de rachat' },
             { v: null,        label: 'Non vérifié' },
           ].map(opt => (

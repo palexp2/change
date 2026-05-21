@@ -1,5 +1,6 @@
-// Smoke test: an order whose company has at least one operational
-// central_controller renders the Orisha link in the OrderDetail header.
+// Smoke test: the OrderDetail header must NOT render any Orisha admin link,
+// even when the company has an operational central_controller. The link was
+// removed from the order detail page on demand.
 
 const { test, describe, before, after } = require('node:test')
 const assert = require('node:assert/strict')
@@ -18,7 +19,7 @@ async function login(page) {
   await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 15000 })
 }
 
-describe('OrderDetail — affichage des contrôleurs centraux du client', () => {
+describe('OrderDetail — pas de lien Orisha dans l\'en-tête', () => {
   let browser, ctx, page
 
   before(async () => {
@@ -30,9 +31,7 @@ describe('OrderDetail — affichage des contrôleurs centraux du client', () => 
 
   after(async () => { await browser?.close() })
 
-  test('un order dont le client a un contrôleur opérationnel affiche le lien Orisha', async () => {
-    // Find an order whose company has at least one operational central_controller.
-    // Walk a recent slice of orders and pick the first match.
+  test('un order dont le client a un contrôleur opérationnel n\'affiche pas le lien Orisha', async () => {
     const orderId = await page.evaluate(async () => {
       const tok = localStorage.getItem('erp_token')
       const list = await fetch('/erp/api/orders?limit=50', {
@@ -53,10 +52,11 @@ describe('OrderDetail — affichage des contrôleurs centraux du client', () => 
 
     await page.goto(`${URL}/orders/${orderId}`, { waitUntil: 'networkidle' })
 
-    // The header sub-line should contain at least one link to app.orisha.io/#admin/.
-    const link = page.locator('a[href^="https://app.orisha.io/#admin/"]').first()
-    await link.waitFor({ state: 'visible', timeout: 5000 })
-    const href = await link.getAttribute('href')
-    assert.match(href, /^https:\/\/app\.orisha\.io\/#admin\/.+/)
+    // Wait for the header "Créée le ..." so we know the header is rendered.
+    await page.locator('text=/Créée le /').first().waitFor({ state: 'visible', timeout: 5000 })
+
+    // No link to app.orisha.io/#admin/ should remain in the page.
+    const count = await page.locator('a[href^="https://app.orisha.io/#admin/"]').count()
+    assert.equal(count, 0, `attendu 0 lien Orisha, trouvé ${count}`)
   })
 })

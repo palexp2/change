@@ -16,21 +16,23 @@ const DB_PATH = process.env.ERP_DB_PATH || '/home/ec2-user/erp/server/data/erp.d
 describe('RelanceQualification — page de templates emails', () => {
   let browser, ctx, page, db
   let expectedTotal, sampleCompanyName
+  // Snapshot des Règles générales avant le test, restauré dans after().
+  // Cf. CLAUDE.md « sauvegarder/restaurer les configurations utilisateur ».
+  let originalGeneralRules
 
   before(async () => {
     db = new Database(DB_PATH, { readonly: true })
 
-    // Compte attendu côté DB.
+    // Compte attendu côté DB : entreprises avec QC et phase HubSpot = 'Quote Sent'.
     const all = db.prepare(`
       SELECT DISTINCT c.id, c.name
       FROM qualification_calls q
       JOIN companies c ON c.id = q.company_id
-      JOIN projects p ON p.company_id = c.id
-      WHERE q.company_id IS NOT NULL AND p.status = 'Perdu'
+      WHERE q.company_id IS NOT NULL AND c.lifecycle_phase = 'Quote Sent'
       ORDER BY c.name
     `).all()
     expectedTotal = all.length
-    if (expectedTotal === 0) throw new Error('Aucune relance attendue — seed de test manquant')
+    if (expectedTotal === 0) throw new Error('Aucune relance attendue — aucune company QC en Quote Sent')
     sampleCompanyName = all[0].name
 
     browser = await chromium.launch()
@@ -41,9 +43,29 @@ describe('RelanceQualification — page de templates emails', () => {
     await page.fill('input[type="password"]', PASS)
     await page.click('button:has-text("Se connecter")')
     await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 15000 })
+
+    // Capture l'état initial des Règles générales pour pouvoir le restaurer.
+    // Lecture directe en SQLite : pas besoin du token côté node, et fonctionne
+    // même si l'API GET change de forme plus tard.
+    const row = db.prepare("SELECT instructions FROM email_relance_overrides WHERE scope='global'").get()
+    originalGeneralRules = row?.instructions ?? null
   })
 
   after(async () => {
+    // Restaure les Règles générales à leur état initial, que le test ait passé
+    // ou non. Sans ça, chaque run écrase la config du user (voir CLAUDE.md).
+    try {
+      if (page && !page.isClosed()) {
+        await page.evaluate(async (value) => {
+          const tk = localStorage.getItem('erp_token')
+          await fetch('/erp/api/email-relance/settings/global', {
+            method: 'PUT',
+            headers: { Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ instructions: value ?? '' }),
+          })
+        }, originalGeneralRules)
+      }
+    } catch {}
     db?.close()
     await browser?.close()
   })
@@ -68,27 +90,14 @@ describe('RelanceQualification — page de templates emails', () => {
       await companyLink.waitFor({ state: 'visible', timeout: 5000 })
     }
 
-    // Le contenu brand-aligné doit être visible (Drew est l'histoire-pilier des templates)
-    await page.locator('text=Drew').first().waitFor({ state: 'visible', timeout: 5000 })
-
-    // Aucun em-dash en sortie (règle de marque)
+    // Aucun em-dash en sortie (règle de marque) — vaut pour les drafts IA persistés
     const allText = await page.locator('article').allInnerTexts()
     const joined = allText.join('\n')
     assert.ok(!joined.includes('—'), 'Les emails ne doivent contenir aucun em-dash')
 
-    // Le bouton "Copier sujet" doit être présent dans une carte
-    await page.locator('button:has-text("Copier sujet")').first().waitFor({ state: 'visible', timeout: 5000 })
-
-    // Bouton de régénération IA + input de température présents sur chaque carte
-    await page.locator('button:has-text("Régénérer (IA)")').first().waitFor({ state: 'visible', timeout: 5000 })
-    const tempInput = page.locator('input[type="number"][step="0.1"]').first()
-    await tempInput.waitFor({ state: 'visible', timeout: 5000 })
-    const tempVal = await tempInput.inputValue()
-    assert.equal(tempVal, '0.7', 'Température par défaut doit être 0.7')
-
-    // On peut modifier la température
-    await tempInput.fill('0.9')
-    assert.equal(await tempInput.inputValue(), '0.9')
+    // Le bouton "Générer (IA)" ou "Régénérer" est présent sur chaque carte
+    const genBtn = page.locator('button').filter({ hasText: /^(Générer \(IA\)|Régénérer)$/ }).first()
+    await genBtn.waitFor({ state: 'visible', timeout: 5000 })
 
     // Module "Règles générales" présent dans la sidebar gauche
     await page.locator('h2:has-text("Règles générales")').waitFor({ state: 'visible', timeout: 5000 })

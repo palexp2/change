@@ -36,7 +36,10 @@ function DynamicCell({ value, col }) {
     )
   }
   if (type === 'checkbox') {
-    return <span>{value === 1 || value === true || value === '1' ? '✓' : '—'}</span>
+    // Tolère les multiples formes héritées : 1/true (sync récente),
+    // '1' (cast SQLite TEXT), '1.0' (ancien parseFloat de la sync legacy).
+    const truthy = value === 1 || value === true || value === '1' || value === '1.0' || Number(value) === 1
+    return <span>{truthy ? '✓' : '—'}</span>
   }
   if (type === 'date') {
     let formatted
@@ -55,12 +58,20 @@ function DynamicCell({ value, col }) {
   if (type === 'text' && col.options?.format === 'url') {
     const str = String(value)
     if (/\.(jpe?g|png|gif|webp|svg|avif)(\?.*)?$/i.test(str) || str.includes('/product-images/')) {
-      return <img src={str} alt="" className="h-8 w-8 object-cover rounded" loading="lazy" />
+      return <img src={str} alt="" className="h-6 w-6 object-cover rounded" loading="lazy" />
     }
   }
   // text, long_text, link, etc.
   const str = String(value)
   return <span className="truncate">{str.length > 100 ? str.slice(0, 100) + '…' : str}</span>
+}
+
+// Normalise groupBy en tableau de field names. Accepte legacy string / null
+// / array. Filtre les valeurs vides pour éviter les niveaux fantômes.
+function normalizeGroupBy(g) {
+  if (g == null) return []
+  if (Array.isArray(g)) return g.filter(Boolean)
+  return g ? [g] : []
 }
 
 function ResizeHandle({ onResize }) {
@@ -107,6 +118,7 @@ export function DataTable({
   searchFields = [],
   height = 'calc(100vh - 260px)',
   initialGroupBy = null,
+  initialGroupOrder = null, // 'asc' | 'desc' | 'default' | array (aligné sur initialGroupBy)
   forceAllView = false,
   onBulkDelete,
   disabledColumns = null, // Map<column_name, { airtable_field_name }> | null
@@ -114,10 +126,19 @@ export function DataTable({
   customFieldsByColumn,   // Map<column_name, { id, name, type, decimals }> — pour right-click menu
   onEditCustomField,      // (field) => void
   onDeleteCustomField,    // (field) => void
+  onFilteredDataChange,   // (rows) => void — notifie le parent à chaque update de la vue filtrée
 }) {
   const [visibleCols, setVisibleCols] = useState([])
-  const [groupBy, setGroupBy] = useState(initialGroupBy)
-  const [groupOrder, setGroupOrder] = useState(null) // null | 'asc' | 'desc' | 'default'
+  // groupBy : tableau de field names. Hérité du legacy : accepte aussi null /
+  // string (single-level) et normalise vers array. Tableau vide = pas de
+  // groupage. Plusieurs niveaux = groupage imbriqué.
+  const [groupBy, setGroupByRaw] = useState(() => normalizeGroupBy(initialGroupBy))
+  // groupOrder : tableau de ('asc' | 'desc' | 'default' | null) par niveau.
+  // Aligné sur groupBy. Niveau manquant = 'default'.
+  const [groupOrder, setGroupOrderRaw] = useState(() => {
+    if (initialGroupOrder == null) return []
+    return Array.isArray(initialGroupOrder) ? initialGroupOrder : [initialGroupOrder]
+  })
   const [collapsedGroups, setCollapsedGroups] = useState(new Set())
   const [colWidths, setColWidths] = useState({})
   const [selectedIds, setSelectedIds] = useState(() => new Set())
@@ -133,6 +154,10 @@ export function DataTable({
 
   const view = useTableView({ table, columns, data, searchFields, forceAllView })
   const { filteredData, configReady, allColumns, bulkDeleteEnabled, airtableFieldsByColumn } = view
+
+  useEffect(() => {
+    if (typeof onFilteredDataChange === 'function') onFilteredDataChange(filteredData)
+  }, [filteredData, onFilteredDataChange])
   const selectionActive = bulkDeleteEnabled && typeof onBulkDelete === 'function'
   // Use allColumns (hardcoded + dynamic Airtable fields) everywhere
   const mergedColumns = allColumns || columns
@@ -166,18 +191,46 @@ export function DataTable({
     })
   }
 
+  // Wrappers : autorisent l'appelant à passer string|array|null (ergonomie
+  // legacy), normalisent vers array en interne.
+  const setGroupBy = useCallback(v => setGroupByRaw(normalizeGroupBy(v)), [])
+  const setGroupOrder = useCallback(v => {
+    if (v == null) setGroupOrderRaw([])
+    else if (Array.isArray(v)) setGroupOrderRaw(v)
+    else setGroupOrderRaw([v])
+  }, [])
+
   // Apply view config when active view changes
   useEffect(() => {
     if (!view.configReady) return
     setVisibleCols(view.viewVisibleColumns)
     if (!forceAllView) {
-      const newGroupBy = view.viewGroupBy
-      setGroupBy(newGroupBy)
-      setGroupOrder(view.viewGroupOrder)
-      prevGroupByRef.current = newGroupBy
-      // Restore collapsed groups from localStorage
+      const newGroupBy = normalizeGroupBy(view.viewGroupBy)
+      setGroupByRaw(newGroupBy)
+      const o = view.viewGroupOrder
+      setGroupOrderRaw(o == null ? [] : Array.isArray(o) ? o : [o])
+      // Sync prevGroupByRef avec la nouvelle signature pour éviter que le
+      // useEffect [groupBySig] détecte un changement et reset les groupes
+      // collapsés qu'on est en train de restaurer depuis le serveur.
+      prevGroupByRef.current = newGroupBy.join('|')
+      // Restore collapsed groups : priorité au state sauvé sur la pill (sync
+      // cross-device), fallback localStorage pour le legacy. Quand aucun des
+      // deux n'est dispo on part déplié.
+      let initial = null
+      const persisted = view.activeView?.collapsed_groups
+      if (Array.isArray(persisted)) {
+        initial = persisted
+      } else {
+        try {
+          const key = `erp_collapsed_${table}_${view.activeViewId || '__all__'}`
+          initial = JSON.parse(localStorage.getItem(key) || '[]')
+        } catch { initial = [] }
+      }
+      setCollapsedGroups(new Set(initial || []))
+    } else {
+      // forceAllView : pas de pill server-side, localStorage uniquement.
       try {
-        const key = `erp_collapsed_${table}_${view.activeViewId || '__all__'}`
+        const key = `erp_collapsed_${table}_forceAll`
         const stored = JSON.parse(localStorage.getItem(key) || '[]')
         setCollapsedGroups(new Set(stored))
       } catch { setCollapsedGroups(new Set()) }
@@ -315,12 +368,32 @@ export function DataTable({
     }
   }
 
-  const collapsedStorageKey = `erp_collapsed_${table}_${view.activeViewId || '__all__'}`
+  // Clé localStorage : conserve la persistence locale comme fallback (utile
+  // pour forceAllView, ou comme cache rapide avant la réponse serveur).
+  const collapsedStorageKey = forceAllView
+    ? `erp_collapsed_${table}_forceAll`
+    : `erp_collapsed_${table}_${view.activeViewId || '__all__'}`
   const storageKeyRef = useRef(collapsedStorageKey)
   storageKeyRef.current = collapsedStorageKey
 
+  // Debounce le save serveur des collapsed_groups : l'utilisateur peut
+  // cliquer rapidement plusieurs groupes d'affilée, on bundle les writes.
+  const saveCollapsedTimer = useRef(null)
+  const activeViewIdRef = useRef(view.activeViewId)
+  activeViewIdRef.current = view.activeViewId
+
   function saveCollapsed(set) {
     try { localStorage.setItem(storageKeyRef.current, JSON.stringify([...set])) } catch {}
+    // Persiste côté serveur si une pill est active (sinon : pas de pill =
+    // pas de stockage server, fallback localStorage seulement).
+    if (!forceAllView && activeViewIdRef.current) {
+      clearTimeout(saveCollapsedTimer.current)
+      const viewId = activeViewIdRef.current
+      const arr = [...set]
+      saveCollapsedTimer.current = setTimeout(() => {
+        api.views.updatePill(table, viewId, { collapsed_groups: arr }).catch(() => {})
+      }, 400)
+    }
   }
 
   const toggleGroup = useCallback(key => {
@@ -332,13 +405,16 @@ export function DataTable({
     })
   }, [])
 
-  const prevGroupByRef = useRef(groupBy)
+  // groupBy changeant (identité du tableau OU son contenu) → on reset les
+  // groupes collapsés pour repartir d'un état déplié propre.
+  const groupBySig = groupBy.join('|')
+  const prevGroupByRef = useRef(groupBySig)
   useEffect(() => {
-    if (prevGroupByRef.current !== groupBy) {
+    if (prevGroupByRef.current !== groupBySig) {
       setCollapsedGroups(new Set())
-      prevGroupByRef.current = groupBy
+      prevGroupByRef.current = groupBySig
     }
-  }, [groupBy])
+  }, [groupBySig])
 
   const numberColumns = useMemo(
     () => mergedColumns.filter(c => c.type === 'number' || c.type === 'currency'),
@@ -346,70 +422,98 @@ export function DataTable({
   )
 
   const virtualItems = useMemo(() => {
-    if (!groupBy) return filteredData
-    const groups = new Map()
-    for (const row of filteredData) {
-      const key = String(row[groupBy] ?? '(vide)')
-      if (!groups.has(key)) groups.set(key, [])
-      groups.get(key).push(row)
-    }
-    // Détermine l'ordre des groupes selon `groupOrder`.
-    // null/'default' → ordre des `options` du champ si défini (utile pour les
-    //   single_select métier comme statuts), sinon tri alphabétique croissant.
-    // 'asc'/'desc' → tri alphabétique forcé (case+accent insensible).
-    const groupCol = mergedColumns.find(c => c.field === groupBy)
-    const hasOptions = Array.isArray(groupCol?.options) && groupCol.options.length > 0
+    if (!groupBy.length) return filteredData
+
     const cmpAlpha = (a, b) => a.localeCompare(b, 'fr', { sensitivity: 'base', numeric: true })
-    let keys = [...groups.keys()]
-    if (groupOrder === 'asc') {
-      keys.sort(cmpAlpha)
-    } else if (groupOrder === 'desc') {
-      keys.sort(cmpAlpha).reverse()
-    } else if (hasOptions) {
-      // Mode défaut quand options définies : suit l'ordre des options ; les clés
-      // hors options sont rejetées en queue, triées alpha entre elles.
-      const orderIdx = new Map(groupCol.options.map((o, i) => [String(o), i]))
-      keys.sort((a, b) => {
-        const ia = orderIdx.has(a) ? orderIdx.get(a) : Number.MAX_SAFE_INTEGER
-        const ib = orderIdx.has(b) ? orderIdx.get(b) : Number.MAX_SAFE_INTEGER
-        if (ia !== ib) return ia - ib
-        return cmpAlpha(a, b)
-      })
-    } else {
-      // Mode défaut sans options : tri alpha croissant
-      keys.sort(cmpAlpha)
-    }
-    const flat = []
-    for (const key of keys) {
-      const rows = groups.get(key)
-      const collapsed = collapsedGroups.has(key)
-      const sums = {}
-      if (numberColumns.length > 0) {
-        for (const col of numberColumns) {
-          let total = 0
-          for (const row of rows) {
-            const v = parseFloat(row[col.field])
-            if (!isNaN(v)) total += v
+
+    // Construction récursive : pour chaque niveau, on regroupe les rows par
+    // la valeur du champ courant, on ordonne les clés, on émet le header
+    // puis (si déplié) les enfants — soit le niveau suivant, soit les rows.
+    // pathKey = clés du niveau 0 jusqu'à ce niveau, jointes par '||' ; sert
+    // d'identifiant unique pour le set `collapsedGroups`.
+    function buildLevel(rows, levelIdx, parentPath) {
+      if (levelIdx >= groupBy.length) return rows
+      const field = groupBy[levelIdx]
+      const order = groupOrder[levelIdx] || null
+
+      const groups = new Map()
+      for (const row of rows) {
+        const k = String(row[field] ?? '(vide)')
+        if (!groups.has(k)) groups.set(k, [])
+        groups.get(k).push(row)
+      }
+
+      const groupCol = mergedColumns.find(c => c.field === field)
+      const hasOptions = Array.isArray(groupCol?.options) && groupCol.options.length > 0
+      let keys = [...groups.keys()]
+      if (order === 'asc') {
+        keys.sort(cmpAlpha)
+      } else if (order === 'desc') {
+        keys.sort(cmpAlpha).reverse()
+      } else if (hasOptions) {
+        const orderIdx = new Map(groupCol.options.map((o, i) => [String(o), i]))
+        keys.sort((a, b) => {
+          const ia = orderIdx.has(a) ? orderIdx.get(a) : Number.MAX_SAFE_INTEGER
+          const ib = orderIdx.has(b) ? orderIdx.get(b) : Number.MAX_SAFE_INTEGER
+          if (ia !== ib) return ia - ib
+          return cmpAlpha(a, b)
+        })
+      } else {
+        keys.sort(cmpAlpha)
+      }
+
+      const flat = []
+      for (const key of keys) {
+        const groupRows = groups.get(key)
+        const path = parentPath ? `${parentPath}||${key}` : key
+        const collapsed = collapsedGroups.has(path)
+
+        const sums = {}
+        if (numberColumns.length > 0) {
+          for (const col of numberColumns) {
+            let total = 0
+            for (const row of groupRows) {
+              const v = parseFloat(row[col.field])
+              if (!isNaN(v)) total += v
+            }
+            if (total !== 0) sums[col.field] = total
           }
-          if (total !== 0) sums[col.field] = total
+        }
+
+        flat.push({
+          __isGroup: true,
+          __key: key,
+          __pathKey: path,
+          __level: levelIdx,
+          __count: groupRows.length,
+          __collapsed: collapsed,
+          __sums: sums,
+        })
+        if (!collapsed) {
+          flat.push(...buildLevel(groupRows, levelIdx + 1, path))
         }
       }
-      flat.push({ __isGroup: true, __key: key, __count: rows.length, __collapsed: collapsed, __sums: sums })
-      if (!collapsed) flat.push(...rows)
+      return flat
     }
-    return flat
+
+    return buildLevel(filteredData, 0, null)
   }, [filteredData, groupBy, groupOrder, collapsedGroups, numberColumns, mergedColumns])
 
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
     count: virtualItems.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: i => virtualItems[i]?.__isGroup ? 34 : 48,
+    estimateSize: i => virtualItems[i]?.__isGroup ? 26 : 32,
     overscan: 12,
   })
 
+  // Tous les pathKeys actuellement matérialisés (utile pour "Tout fermer").
+  // Note : avec le nested grouping, ne contient que les groupes des niveaux
+  // dépliés — un groupe parent fermé masque ses enfants donc ils n'apparaissent
+  // pas ici. "Tout fermer" sur les niveaux visibles est suffisant ; un second
+  // appel après que l'utilisateur ait déplié des niveaux fermera ceux-là.
   const groupKeys = useMemo(
-    () => virtualItems.filter(i => i.__isGroup).map(i => i.__key),
+    () => virtualItems.filter(i => i.__isGroup).map(i => i.__pathKey),
     [virtualItems]
   )
 
@@ -665,25 +769,44 @@ export function DataTable({
 
               if (item.__isGroup) {
                 const sums = item.__sums || {}
+                // Niveau 0 = la teinte la plus marquée ; chaque niveau imbriqué
+                // s'éclaircit légèrement pour visualiser la hiérarchie. Cap au
+                // niveau 2 pour éviter de devenir invisible.
+                const lvl = item.__level || 0
+                // Reformate la clé du groupe via la colonne du niveau (utile
+                // pour ex. afficher "mai 2026" pour un YYYY-MM ou "Upgrade"
+                // pour la catégorie brute "upgrade").
+                const lvlField = groupBy[lvl]
+                const lvlCol = lvlField ? mergedColumns.find(c => c.field === lvlField) : null
+                const groupLabel = lvlCol?.formatGroupKey
+                  ? lvlCol.formatGroupKey(item.__key)
+                  : item.__key
+                const groupBg = lvl === 0
+                  ? 'bg-slate-100 hover:bg-slate-200'
+                  : lvl === 1
+                    ? 'bg-slate-50 hover:bg-slate-100'
+                    : 'bg-white hover:bg-slate-50'
                 return (
                   <div
                     key={vItem.key}
+                    data-testid={`datatable-group-${item.__pathKey}`}
+                    data-group-level={lvl}
                     style={{
                       position: 'absolute', top: vItem.start, left: 0, right: 0, height: vItem.size,
                       display: 'grid',
                       gridTemplateColumns: gridTemplate,
                       alignItems: 'center',
                     }}
-                    className="bg-slate-100 border-b border-slate-200 cursor-pointer hover:bg-slate-200 transition-colors select-none"
-                    onClick={() => toggleGroup(item.__key)}
+                    className={`${groupBg} border-b border-slate-200 cursor-pointer transition-colors select-none`}
+                    onClick={() => toggleGroup(item.__pathKey)}
                   >
                     {selectionActive && <div />}
-                    <div className="flex items-center gap-2 px-3">
+                    <div className="flex items-center gap-2 px-3" style={{ paddingLeft: `${12 + lvl * 16}px` }}>
                       {item.__collapsed
                         ? <ChevronRight size={13} className="text-slate-400 flex-shrink-0" />
                         : <ChevronDown size={13} className="text-slate-400 flex-shrink-0" />
                       }
-                      <span className="text-xs font-semibold text-slate-600 truncate">{item.__key}</span>
+                      <span className="text-xs font-semibold text-slate-600 truncate capitalize">{groupLabel}</span>
                       <span className="text-xs text-slate-400 flex-shrink-0">({item.__count})</span>
                     </div>
                     {visibleColumns.slice(1).map(col => (

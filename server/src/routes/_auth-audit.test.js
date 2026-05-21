@@ -62,6 +62,7 @@ const MOUNTS = {
   'documents.js':               '/api/documents',
   'email-relance.js':           '/api/email-relance',
   'employees.js':               '/api/employees',
+  'field-visibility-rules.js':  '/api/field-visibility-rules',
   'hour-bank.js':               '/api/hour-bank',
   'installation-feedback.js':   '/api/public/installation-feedback',
   'interactions.js':            '/api/interactions',

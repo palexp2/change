@@ -9,7 +9,7 @@ if (!PASS) throw new Error('ERP_PASS env var required')
 
 const FACTURE_ID = '9e045250-9767-4675-a54c-ffb0b7094d10' // TDGMEWE0-0002
 
-describe('FactureDetail — Section État comptable QuickBooks', () => {
+describe('FactureDetail — Section Historique des événements', () => {
   let browser, ctx, page
 
   before(async () => {
@@ -25,13 +25,16 @@ describe('FactureDetail — Section État comptable QuickBooks', () => {
 
   after(async () => { await browser?.close() })
 
-  test('La section État comptable s\'affiche sur la fiche facture', async () => {
+  test('La section Historique des événements s\'affiche sur la fiche facture', async () => {
     await page.goto(`${URL}/factures/${FACTURE_ID}`, { waitUntil: 'domcontentloaded' })
     const section = page.getByTestId('facture-accounting-section')
     await section.waitFor({ state: 'visible', timeout: 10000 })
-    await assert.doesNotReject(section.getByText(/État comptable QuickBooks/).waitFor({ state: 'visible', timeout: 5000 }))
+    await assert.doesNotReject(section.getByText(/Historique des événements/).waitFor({ state: 'visible', timeout: 5000 }))
+    // Événement « Facture créée » : présent pour toute facture
+    await assert.doesNotReject(section.getByTestId('event-created').waitFor({ state: 'visible', timeout: 5000 }))
+    // Événement d'encaissement Stripe (« Encaissée + déférée » consolidé, ou « Encaissée (Stripe) »)
     await assert.doesNotReject(section.getByText(/Encaissée/).waitFor({ state: 'visible', timeout: 5000 }))
-    await assert.doesNotReject(section.getByText(/Revenu perçu d'avance/).waitFor({ state: 'visible', timeout: 5000 }))
+    // Événement de constatation
     await assert.doesNotReject(section.getByText(/Vente constatée/).waitFor({ state: 'visible', timeout: 5000 }))
   })
 
@@ -63,13 +66,21 @@ describe('FactureDetail — Section État comptable QuickBooks', () => {
     await page.waitForSelector('text=/Vérifié dans QuickBooks le/', { timeout: 15000 })
   })
 
-  test('La modale "Effacer la référence locale" liste les colonnes effacées', async () => {
+  test('Le badge d\'anomalie ouvre la modale d\'effacement (si anomalie détectée)', async () => {
+    // Le bouton « Effacer la référence locale » n'est plus permanent — il apparaît
+    // sous forme de badge ⚠ sur l'événement concerné UNIQUEMENT quand la
+    // vérification QB révèle une divergence. Si la facture est cohérente avec
+    // QuickBooks, le badge n'existe pas et il n'y a rien à tester.
     await page.goto(`${URL}/factures/${FACTURE_ID}`, { waitUntil: 'domcontentloaded' })
+    await page.getByTestId('verify-qb-btn').click()
+    await page.waitForSelector('text=/Vérifié dans QuickBooks le/', { timeout: 15000 })
     const clearBtn = page.getByTestId('clear-deferred-btn')
-    await clearBtn.waitFor({ state: 'visible', timeout: 10000 })
+    if (await clearBtn.count() === 0) {
+      // Facture cohérente avec QB — pas d'anomalie, rien à valider de plus.
+      return
+    }
     await clearBtn.click()
     await page.waitForSelector('text=/Effacer le passif local 23900/', { timeout: 5000 })
-    // Vérifie que la modale liste les colonnes
     await page.waitForSelector('text=/deferred_revenue_at/', { timeout: 5000 })
     await page.waitForSelector('text=/deferred_revenue_qb_ref/', { timeout: 5000 })
     // Annulation — pas de modification

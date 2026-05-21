@@ -12,6 +12,7 @@ import {
   setCurrentItemsSnapshot,
 } from '../services/subscriptionItemsSnapshot.js'
 import { computeMonthlyNet } from '../services/subscriptionMonthly.js'
+import { recomputeFactureBalance } from '../services/factureBalance.js'
 
 const router = Router()
 
@@ -285,6 +286,11 @@ async function upsertFactureFromStripeInvoice(invoice) {
       console.error(`❌ Stripe PDF dl ${factureId}:`, e.message)
     }
   }
+
+  // Réconcilie balance_due / status avec d'éventuels paiements locaux (Interac,
+  // chèque…). No-op si paid_at est posé (Stripe est autoritaire) ou si rien
+  // n'a changé. Voir services/factureBalance.js pour la règle.
+  recomputeFactureBalance(factureId)
 
   return { id: factureId, action, kind }
 }

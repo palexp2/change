@@ -114,7 +114,7 @@ export default function StripePayouts() {
           columns={COLUMNS}
           data={payouts}
           loading={loading}
-          searchFields={['stripe_id', 'description', 'bank_name', 'qb_deposit_id']}
+          searchFields={['stripe_id', 'description', 'bank_name', 'qb_deposit_id', 'amount']}
           onRowClick={row => navigate(`/stripe-payouts/${row.stripe_id}`)}
         />
       </div>

@@ -250,71 +250,155 @@ function SortPanel({ columns, sorts, onChange, left, disabledColumns }) {
   )
 }
 
+// Panel de groupage multi-niveau. `groupBy` est un array de field names :
+// chaque entrée = un niveau de groupage imbriqué (niveau 0 = parent). Compat
+// legacy : accepte aussi `null` ou string single-level, normalisé en array.
+// `groupOrder` est un array aligné sur `groupBy` (orders par niveau).
 function GroupPanel({ columns, groupBy, onChange, groupOrder, setGroupOrder, onCollapseAll, onExpandAll, left, disabledColumns }) {
   const [search, setSearch] = useState('')
-  const filtered = search
-    ? columns.filter(c => c.label.toLowerCase().includes(search.toLowerCase()))
-    : columns
-  const groupByBroken = !!(disabledColumns && groupBy && disabledColumns.has(groupBy))
+  const groupByArr = Array.isArray(groupBy) ? groupBy : (groupBy ? [groupBy] : [])
+  const groupOrderArr = Array.isArray(groupOrder) ? groupOrder : (groupOrder ? [groupOrder] : [])
+  const usedFields = new Set(groupByArr)
 
-  const groupCol = groupBy ? columns.find(c => c.field === groupBy) : null
-  const hasOptionOrder = Array.isArray(groupCol?.options) && groupCol.options.length > 0
+  const available = columns.filter(c => !usedFields.has(c.field))
+  const filtered = search
+    ? available.filter(c => c.label.toLowerCase().includes(search.toLowerCase()))
+    : available
+
+  function addLevel(field) {
+    onChange([...groupByArr, field])
+    setSearch('')
+  }
+  function removeLevel(idx) {
+    onChange(groupByArr.filter((_, i) => i !== idx))
+    if (setGroupOrder) setGroupOrder(groupOrderArr.filter((_, i) => i !== idx))
+  }
+  function moveLevel(idx, delta) {
+    const tgt = idx + delta
+    if (tgt < 0 || tgt >= groupByArr.length) return
+    const next = [...groupByArr]
+    ;[next[idx], next[tgt]] = [next[tgt], next[idx]]
+    onChange(next)
+    if (setGroupOrder) {
+      const o = [...groupOrderArr]
+      while (o.length < groupByArr.length) o.push(null)
+      ;[o[idx], o[tgt]] = [o[tgt], o[idx]]
+      setGroupOrder(o)
+    }
+  }
+  function setLevelOrder(idx, order) {
+    if (!setGroupOrder) return
+    const next = [...groupOrderArr]
+    while (next.length <= idx) next.push(null)
+    next[idx] = order
+    setGroupOrder(next)
+  }
+  function clearAll() {
+    onChange([])
+    if (setGroupOrder) setGroupOrder([])
+  }
 
   function orderBtnCls(active) {
-    return `flex items-center gap-1 flex-1 justify-center px-2 py-1.5 text-xs rounded border transition-colors ${
-      active ? 'bg-brand-50 text-brand-700 border-brand-200' : 'text-slate-600 hover:bg-slate-100 border-slate-200'
+    return `flex items-center gap-1 flex-1 justify-center px-1.5 py-0.5 text-[10px] rounded border transition-colors ${
+      active ? 'bg-brand-50 text-brand-700 border-brand-200' : 'text-slate-500 hover:bg-slate-100 border-slate-200'
     }`
   }
 
   return (
-    <Panel className="w-56" left={left}>
+    <Panel className="w-72" left={left}>
       <PanelTitle>Grouper par</PanelTitle>
-      {groupByBroken && (
-        <div className="flex items-start gap-1 mb-2 p-1.5 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-700">
-          <AlertTriangle size={11} className="mt-0.5 flex-shrink-0" />
-          <span>Le groupage actuel sur <code className="font-mono">{groupBy}</code> pointe sur un champ désactivé dans la sync Airtable.</span>
-        </div>
-      )}
-      {groupBy && setGroupOrder && (
-        <>
-          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Ordre des groupes</div>
-          <div className="flex items-center gap-1 mb-2">
-            {hasOptionOrder && (
-              <button
-                onClick={() => setGroupOrder('default')}
-                className={orderBtnCls(groupOrder === 'default' || groupOrder == null)}
-                title={`Ordre des options (${groupCol.options.slice(0, 3).join(', ')}${groupCol.options.length > 3 ? '...' : ''})`}
-              >
-                Défaut
-              </button>
-            )}
-            <button
-              onClick={() => setGroupOrder('asc')}
-              className={orderBtnCls(groupOrder === 'asc' || (groupOrder == null && !hasOptionOrder))}
-              title="Tri alphabétique croissant"
-            >
-              <ChevronUp size={12} /> A → Z
+
+      {groupByArr.length > 0 && (
+        <div className="mb-3 space-y-1.5">
+          {groupByArr.map((field, idx) => {
+            const col = columns.find(c => c.field === field)
+            const broken = !!(disabledColumns && disabledColumns.has(field))
+            const order = groupOrderArr[idx] || null
+            const hasOpts = Array.isArray(col?.options) && col.options.length > 0
+            return (
+              <div key={`${field}-${idx}`} className="bg-slate-50 border border-slate-200 rounded p-1.5">
+                <div className="flex items-center gap-1">
+                  <span className="text-[10px] font-semibold text-slate-400 w-7 flex-shrink-0">N°{idx + 1}</span>
+                  <span className="flex-1 truncate text-xs font-medium text-slate-700">
+                    {col?.label || field}
+                  </span>
+                  <button
+                    onClick={() => moveLevel(idx, -1)}
+                    disabled={idx === 0}
+                    className="p-0.5 text-slate-400 hover:text-slate-700 disabled:opacity-30 disabled:hover:text-slate-400"
+                    title="Monter d'un niveau"
+                  >
+                    <ChevronUp size={12} />
+                  </button>
+                  <button
+                    onClick={() => moveLevel(idx, 1)}
+                    disabled={idx === groupByArr.length - 1}
+                    className="p-0.5 text-slate-400 hover:text-slate-700 disabled:opacity-30 disabled:hover:text-slate-400"
+                    title="Descendre d'un niveau"
+                  >
+                    <ChevronDown size={12} />
+                  </button>
+                  <button
+                    onClick={() => removeLevel(idx)}
+                    className="p-0.5 text-slate-400 hover:text-rose-600"
+                    title="Retirer ce niveau"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+                {broken && (
+                  <div className="flex items-start gap-1 mt-1 text-[10px] text-amber-700">
+                    <AlertTriangle size={10} className="mt-0.5 flex-shrink-0" />
+                    <span>Champ désactivé dans la sync Airtable</span>
+                  </div>
+                )}
+                {setGroupOrder && (
+                  <div className="flex items-center gap-1 mt-1">
+                    {hasOpts && (
+                      <button
+                        onClick={() => setLevelOrder(idx, 'default')}
+                        className={orderBtnCls(order === 'default' || order == null)}
+                        title={`Ordre des options (${col.options.slice(0, 3).join(', ')}${col.options.length > 3 ? '…' : ''})`}
+                      >
+                        Défaut
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setLevelOrder(idx, 'asc')}
+                      className={orderBtnCls(order === 'asc' || (order == null && !hasOpts))}
+                      title="Tri alphabétique croissant"
+                    >
+                      <ChevronUp size={10} /> A → Z
+                    </button>
+                    <button
+                      onClick={() => setLevelOrder(idx, 'desc')}
+                      className={orderBtnCls(order === 'desc')}
+                      title="Tri alphabétique décroissant"
+                    >
+                      <ChevronDown size={10} /> Z → A
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          <div className="flex items-center gap-1">
+            <button onClick={onExpandAll} className="flex items-center gap-1 flex-1 justify-center px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-100 rounded border border-slate-200 transition-colors">
+              <ChevronsUpDown size={11} /> Tout ouvrir
             </button>
-            <button
-              onClick={() => setGroupOrder('desc')}
-              className={orderBtnCls(groupOrder === 'desc')}
-              title="Tri alphabétique décroissant"
-            >
-              <ChevronDown size={12} /> Z → A
+            <button onClick={onCollapseAll} className="flex items-center gap-1 flex-1 justify-center px-2 py-1 text-[11px] text-slate-600 hover:bg-slate-100 rounded border border-slate-200 transition-colors">
+              <ChevronsDownUp size={11} /> Tout fermer
             </button>
           </div>
-        </>
-      )}
-      {groupBy && (
-        <div className="flex items-center gap-1 mb-2">
-          <button onClick={onExpandAll} className="flex items-center gap-1 flex-1 justify-center px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded border border-slate-200 transition-colors">
-            <ChevronsUpDown size={12} /> Tout ouvrir
-          </button>
-          <button onClick={onCollapseAll} className="flex items-center gap-1 flex-1 justify-center px-2 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded border border-slate-200 transition-colors">
-            <ChevronsDownUp size={12} /> Tout fermer
+          <button onClick={clearAll} className="w-full px-2 py-1 text-[11px] text-rose-600 hover:bg-rose-50 rounded border border-slate-200">
+            Tout retirer
           </button>
         </div>
       )}
+
+      <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">
+        {groupByArr.length === 0 ? 'Choisir un champ' : 'Ajouter un niveau'}
+      </div>
       <div className="relative mb-2">
         <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
         <input
@@ -326,18 +410,18 @@ function GroupPanel({ columns, groupBy, onChange, groupOrder, setGroupOrder, onC
         />
       </div>
       <div className="space-y-0.5 max-h-60 overflow-y-auto">
-        {!search && (
-          <button onClick={() => onChange(null)} className={`flex items-center justify-between w-full px-2 py-1.5 rounded text-sm text-left transition-colors ${!groupBy ? 'bg-brand-50 text-brand-700 font-medium' : 'hover:bg-slate-50 text-slate-600'}`}>
-            Aucun {!groupBy && <Check size={13} />}
-          </button>
-        )}
         {filtered.length === 0
-          ? <p className="text-xs text-slate-400 text-center py-2">Aucun résultat</p>
+          ? <p className="text-xs text-slate-400 text-center py-2">{available.length === 0 ? 'Tous les champs sont utilisés' : 'Aucun résultat'}</p>
           : filtered.map(col => (
-          <button key={col.id} onClick={() => onChange(col.field)} className={`flex items-center justify-between w-full px-2 py-1.5 rounded text-sm text-left transition-colors ${groupBy === col.field ? 'bg-brand-50 text-brand-700 font-medium' : 'hover:bg-slate-50 text-slate-600'}`}>
-            {col.label} {groupBy === col.field && <Check size={13} />}
-          </button>
-        ))}
+            <button
+              key={col.id}
+              onClick={() => addLevel(col.field)}
+              className="flex items-center justify-between w-full px-2 py-1.5 rounded text-sm text-left transition-colors hover:bg-slate-50 text-slate-600"
+            >
+              {col.label}
+              <Plus size={13} className="text-slate-400" />
+            </button>
+          ))}
       </div>
     </Panel>
   )
@@ -429,12 +513,21 @@ export function ViewToolbar({
     if (!p) return
     pendingSaveRef.current = null
     clearTimeout(autoSaveRef.current)
+    // group_by / group_order : envoyer null si vide pour éviter de stocker
+    // des arrays vides ; sinon, envoyer tel quel — le serveur encode les
+    // arrays en JSON et accepte aussi les strings (legacy single-level).
+    const normGroupBy = Array.isArray(p.groupBy)
+      ? (p.groupBy.length > 0 ? p.groupBy : null)
+      : (p.groupBy || null)
+    const normGroupOrder = Array.isArray(p.groupOrder)
+      ? (p.groupOrder.length > 0 ? p.groupOrder : null)
+      : (p.groupOrder || null)
     api.views.updatePill(p.table, p.viewId, {
       sort: p.sorts,
       filters: p.filters || [],
       visible_columns: p.visibleCols || [],
-      group_by: p.groupBy || null,
-      group_order: p.groupOrder || null,
+      group_by: normGroupBy,
+      group_order: normGroupOrder,
     }).catch(() => {})
   }
   flushSaveRef.current = flushSave
@@ -602,7 +695,11 @@ export function ViewToolbar({
             onClick={(e) => togglePanel('sort', e)} />
 
           {setGroupBy && (
-            <ToolbarBtn icon={<Layers size={14} />} label="Grouper" active={openPanel === 'group' || !!groupBy}
+            <ToolbarBtn
+              icon={<Layers size={14} />}
+              label="Grouper"
+              active={openPanel === 'group' || (Array.isArray(groupBy) ? groupBy.length > 0 : !!groupBy)}
+              badge={Array.isArray(groupBy) && groupBy.length > 1 ? groupBy.length : 0}
               dataPanelBtn="group"
               onClick={(e) => togglePanel('group', e)} />
           )}
@@ -637,7 +734,7 @@ export function ViewToolbar({
           <GroupPanel
             columns={columns.filter(c => c.groupable !== false && !disabledColumns?.has(c.field) && !disabledColumns?.has(c.id))}
             groupBy={groupBy}
-            onChange={v => { setGroupBy(v); setOpenPanel(null) }}
+            onChange={setGroupBy}
             groupOrder={groupOrder}
             setGroupOrder={setGroupOrder}
             onCollapseAll={onCollapseAll} onExpandAll={onExpandAll} left={panelLeft}

@@ -4,6 +4,7 @@ import { ArrowLeft, Barcode, History } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
+import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 
 function fmtCad(n) {
@@ -83,6 +84,12 @@ export default function SerialDetail() {
             <Field label="Date fabrication">{fmtDate(serial.manufacture_date)}</Field>
             <Field label="Dernière programmation">{fmtDate(serial.last_programmed_date)}</Field>
           </div>
+          {serial.permissions && Object.keys(serial.permissions).length > 0 && (
+            <div className="border-t border-slate-100 pt-4">
+              <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Permissions</div>
+              <CentralControllerPermissions permissions={serial.permissions} />
+            </div>
+          )}
           {serial.notes && (
             <div className="border-t border-slate-100 pt-4">
               <Field label="Notes">

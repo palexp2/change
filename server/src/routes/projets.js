@@ -334,7 +334,13 @@ router.get('/factures', (req, res) => {
              LEFT JOIN orders od ON od.id = f.order_id
              LEFT JOIN orders op ON op.project_id = f.project_id AND f.project_id IS NOT NULL
              WHERE sh.order_id = od.id OR sh.order_id = op.id
-           ) AS has_linked_shipment
+           ) AS has_linked_shipment,
+           COALESCE((
+             SELECT SUM(pm.amount) FROM payments pm
+             WHERE pm.facture_id = f.id
+               AND pm.direction = 'out'
+               AND pm.stripe_refund_id IS NOT NULL
+           ), 0) AS refund_amount
     FROM factures_v f
     LEFT JOIN companies co ON f.company_id = co.id
     LEFT JOIN projects p ON f.project_id = p.id
@@ -368,7 +374,8 @@ router.get('/factures', (req, res) => {
            NULL AS notes, pi.created_at, pi.updated_at,
            NULL AS generated_pdf_path, NULL AS shipping_country, NULL AS subscription_id, NULL AS airtable_pdf_path,
            co.name AS company_name, NULL AS project_name, NULL AS order_number,
-           'pending' AS source
+           'pending' AS source,
+           0 AS refund_amount
     FROM pending_invoices pi
     LEFT JOIN companies co ON pi.company_id = co.id
     ${pwhere}
@@ -382,11 +389,14 @@ router.get('/factures', (req, res) => {
   })
   // is_sent : « expédié » = shipment sur la commande liée (directement via
   // order_id ou via une commande du projet lié), OU override manuel via
-  // is_sent_manual=1. Pending = toujours faux.
+  // is_sent_manual=1, OU facture « orpheline » sans abonnement / commande /
+  // projet (rien à expédier — la vente est constatée d'emblée). Pending =
+  // toujours faux.
   // deferred_revenue_state : "Constaté" si revenue_recognized_at posé,
   // "En attente" si deferred_revenue_at posé sans constat, sinon "—".
   for (const r of merged) {
-    r.is_sent = r.has_linked_shipment === 1 || r.is_sent_manual === 1
+    const isOrphan = r.kind !== 'subscription' && !r.order_id && !r.project_id && r.source !== 'pending'
+    r.is_sent = r.has_linked_shipment === 1 || r.is_sent_manual === 1 || isOrphan
     if (r.revenue_recognized_at) r.deferred_revenue_state = 'Constaté'
     else if (r.deferred_revenue_at) r.deferred_revenue_state = 'En attente'
     else r.deferred_revenue_state = '—'
@@ -408,7 +418,14 @@ router.get('/factures/:id', async (req, res) => {
         LEFT JOIN orders od ON od.id = f.order_id
         LEFT JOIN orders op ON op.project_id = f.project_id AND f.project_id IS NOT NULL
         WHERE sh.order_id = od.id OR sh.order_id = op.id
-      ) AS has_linked_shipment
+      ) AS has_linked_shipment,
+      (
+        SELECT MIN(sh.shipped_at)
+        FROM shipments sh
+        LEFT JOIN orders od ON od.id = f.order_id
+        LEFT JOIN orders op ON op.project_id = f.project_id AND f.project_id IS NOT NULL
+        WHERE (sh.order_id = od.id OR sh.order_id = op.id) AND sh.shipped_at IS NOT NULL
+      ) AS first_shipped_at
     FROM factures_v f
     LEFT JOIN companies co ON f.company_id = co.id
     LEFT JOIN projects p ON f.project_id = p.id
@@ -564,7 +581,9 @@ router.get('/factures/:id', async (req, res) => {
       taxes: computeFactureTaxes(row),
       last_payment_in: lastPaymentIn,
       payments_in_count: paymentsInCount,
-      is_sent: row.has_linked_shipment === 1 || row.is_sent_manual === 1,
+      is_sent: row.has_linked_shipment === 1
+        || row.is_sent_manual === 1
+        || (row.kind !== 'subscription' && !row.order_id && !row.project_id),
       items,
       discounts,
     })
@@ -749,6 +768,30 @@ router.patch('/factures/:id', (req, res) => {
   res.json(row)
 })
 
+// Suppression manuelle d'une facture (admin uniquement) — escape hatch pour
+// nettoyer les doublons créés par les deux pipelines de sync (webhook Stripe
+// vs sync Airtable, qui ne se dédupent pas entre eux sur invoice_id).
+// N'émet aucun side effect externe : ne touche pas à Stripe, Airtable ni
+// QuickBooks. Si la facture portait une JE de constat de vente, la JE QB
+// existe toujours côté QuickBooks après la suppression locale.
+router.delete('/factures/:id', requireAdmin, (req, res) => {
+  const f = db.prepare('SELECT id FROM factures WHERE id = ?').get(req.params.id)
+  if (!f) return res.status(404).json({ error: 'Not found' })
+
+  const tx = db.transaction(() => {
+    // Cascade : stripe_invoice_items sont des lignes de détail qui n'ont pas
+    // de sens sans leur facture parente. Les payments sont conservés
+    // (orphelins) — un admin qui veut supprimer une facture comptabilisée
+    // doit déjà être conscient des implications via le modal de confirmation.
+    db.prepare('DELETE FROM stripe_invoice_items WHERE facture_id = ?').run(req.params.id)
+    db.prepare('DELETE FROM factures WHERE id = ?').run(req.params.id)
+  })
+  tx()
+
+  emitEntity('facture', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
+  res.json({ ok: true })
+})
+
 // ── Retours ──────────────────────────────────────────────────────────────────
 
 router.get('/retours', (req, res) => {
@@ -903,9 +946,9 @@ router.patch('/abonnement-events/:id/rachat', (req, res) => {
   }
 
   const { status, order_id } = req.body || {}
-  const VALID_STATUSES = [null, 'probable', 'confirmed', 'none']
+  const VALID_STATUSES = [null, 'probable', 'confirmed', 'merged', 'none']
   if (status !== undefined && !VALID_STATUSES.includes(status)) {
-    return res.status(400).json({ error: `status doit être null, 'probable', 'confirmed' ou 'none'` })
+    return res.status(400).json({ error: `status doit être null, 'probable', 'confirmed', 'merged' ou 'none'` })
   }
   if (order_id !== undefined && order_id !== null) {
     const exists = db.prepare('SELECT id FROM orders WHERE id=? AND deleted_at IS NULL').get(order_id)
@@ -1066,9 +1109,13 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
     }))
 
     // Local change history (persistent, survives Stripe 30-day event window)
-    const localEvents = db.prepare(
-      'SELECT * FROM subscription_events WHERE subscription_id=? ORDER BY event_date DESC'
-    ).all(row.id)
+    const localEvents = db.prepare(`
+      SELECT e.*, o.order_number AS rachat_order_number
+      FROM subscription_events e
+      LEFT JOIN orders o ON o.id = e.rachat_order_id
+      WHERE e.subscription_id = ?
+      ORDER BY e.event_date DESC
+    `).all(row.id)
 
     const history = localEvents.map(ev => ({
       id: ev.id,
@@ -1079,6 +1126,9 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
       previous_amount_cad: ev.previous_amount_cad,
       new_amount_cad: ev.new_amount_cad,
       amount_cad_delta: ev.amount_cad_delta,
+      rachat_status: ev.rachat_status,
+      rachat_order_id: ev.rachat_order_id,
+      rachat_order_number: ev.rachat_order_number,
     }))
 
     // Fetch invoices with line items for this subscription. Stripe API ≥ 2024 :
@@ -1419,7 +1469,10 @@ async function checkRevenueRecognitionJE(f) {
 // crédite "Ventes" pour le montant HT en revenu reçu d'avance, puis marque la facture.
 router.post('/factures/:id/recognize-revenue', async (req, res) => {
   try {
-    const out = await postRevenueRecognitionJE(req.params.id)
+    // bypassShipmentCheck=true → force le constat même sans envoi lié (constatation
+    // manuelle déclenchée depuis le bouton « Constater sur QuickBooks » de la fiche).
+    const bypassShipmentCheck = req.body?.bypassShipmentCheck === true
+    const out = await postRevenueRecognitionJE(req.params.id, { bypassShipmentCheck })
     const fresh = db.prepare(`
       SELECT f.*, co.name as company_name, p.name as project_name, o.order_number,
         EXISTS (

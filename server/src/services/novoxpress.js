@@ -75,7 +75,11 @@ async function apiPost(endpoint, body) {
   })
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(`Novoxpress ${endpoint} (${res.status}): ${text}`)
+    const err = new Error(`Novoxpress ${endpoint} (${res.status}): ${text}`)
+    err.status = res.status
+    err.responseBody = text
+    err.sentPayload = body
+    throw err
   }
   return res.json()
 }
@@ -97,15 +101,75 @@ const SENDER = {
   residential: false
 }
 
+// Liste des provinces (FR + EN) pour stripper le nom de province quand on
+// parse une adresse legacy multi-lignes type Airtable.
+const PROVINCE_NAMES = [
+  'Québec', 'Quebec', 'Ontario', 'Alberta', 'Manitoba', 'Saskatchewan',
+  'Nouveau-Brunswick', 'New Brunswick', 'Nouvelle-Écosse', 'Nova Scotia',
+  'Terre-Neuve-et-Labrador', 'Newfoundland and Labrador', 'Newfoundland',
+  'Île-du-Prince-Édouard', 'Prince Edward Island',
+  'Colombie-Britannique', 'British Columbia',
+  'Yukon', 'Territoires du Nord-Ouest', 'Northwest Territories', 'Nunavut',
+]
+
+// Parse une adresse Airtable de type "Rue\nVille Province QC postal CA"
+// (line1 multi-lignes) et renvoie { street, city }. Retourne null si line1
+// n'a pas de structure multi-lignes (cas normal, on retombe sur les colonnes).
+function parseAddressFromLine1(line1) {
+  if (!line1 || !line1.includes('\n')) return null
+  const lines = line1.split('\n').map(s => s.trim()).filter(Boolean)
+  if (lines.length < 2) return null
+  const street = lines[0]
+  let rest = lines.slice(1).join(' ').trim()
+  // Strip pays
+  rest = rest.replace(/\s+(CA|US|Canada|United States|États-Unis)$/i, '').trim()
+  // Strip code postal CA (A1A 1A1 / A1A1A1) puis US (12345 / 12345-6789)
+  rest = rest.replace(/\s+[A-Za-z]\d[A-Za-z]\s*\d[A-Za-z]\d$/, '').trim()
+  rest = rest.replace(/\s+\d{5}(-\d{4})?$/, '').trim()
+  // Strip code province (QC, ON, …)
+  rest = rest.replace(/\s+(QC|ON|AB|MB|SK|NB|NS|NL|PE|BC|YT|NT|NU)$/i, '').trim()
+  // Strip nom de province (Québec, Ontario, …)
+  for (const prov of PROVINCE_NAMES) {
+    const lcRest = rest.toLowerCase()
+    const lcProv = ' ' + prov.toLowerCase()
+    if (lcRest.endsWith(lcProv)) {
+      rest = rest.slice(0, rest.length - prov.length).trim()
+      break
+    }
+  }
+  return { street, city: rest }
+}
+
 function extractStreet(line1, city) {
   if (!line1) return ''
-  // line1 often contains full concatenated address: "123 rue X Ville QC H1H1H1 CA"
-  // Extract just the street by cutting at the city name
+  // Cas 1 — line1 multi-lignes (legacy Airtable) : la 1ère ligne EST la rue.
+  if (line1.includes('\n')) {
+    return line1.split('\n')[0].trim().slice(0, 35)
+  }
+  // Cas 2 — line1 concaténée single-line "123 rue X Ville QC H1H1H1 CA" :
+  // on coupe au nom de ville (si présent dans line1).
   if (city) {
     const idx = line1.indexOf(city)
     if (idx > 0) return line1.slice(0, idx).trim().slice(0, 35)
   }
   return line1.slice(0, 35).trim()
+}
+
+// Novoxpress sérialise nos chaînes JSON directement dans le XML envoyé à
+// Canada Post (et probablement aux autres transporteurs). Sans échappement,
+// un `&` dans un nom (ex. « Ferme L&C Charlebois ») est interprété comme le
+// début d'une entité XML et casse le parsing côté Canada Post avec
+// "illegal character ' '". On neutralise les 3 chars XML-spéciaux qui peuvent
+// apparaître dans des noms réels (entreprise, contact, rue) en les remplaçant
+// par des équivalents lisibles plutôt qu'en cassant le rendu de l'étiquette.
+function sanitizeXmlText(s) {
+  if (!s) return s
+  return String(s)
+    // « L&C » → « L et C » (espaces préservés pour lisibilité sur l'étiquette)
+    .replace(/\s*&\s*/g, ' et ')
+    .replace(/[<>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function buildRecipient(shipment) {
@@ -117,12 +181,19 @@ function buildRecipient(shipment) {
   const countryMap = { 'Canada': 'CA', 'United States': 'US', 'États-Unis': 'US' }
   const country = countryMap[shipment.address_country] || shipment.address_country || 'CA'
 
+  // Si line1 est multi-lignes, on en extrait street + city ; sinon on retombe
+  // sur les colonnes structurées. La ville parsée bat la colonne dans ce cas,
+  // car les imports legacy Airtable mettent souvent la province dans `city`.
+  const parsed = parseAddressFromLine1(shipment.address_line1)
+  const street = extractStreet(shipment.address_line1, shipment.address_city)
+  const city = parsed?.city || shipment.address_city || ''
+
   return {
-    company_name: (shipment.company_name || 'Client').slice(0, 30),
+    company_name: sanitizeXmlText(shipment.company_name || 'Client').slice(0, 30),
     email_address: shipment.company_email || '',
     address: {
-      street_address: extractStreet(shipment.address_line1, shipment.address_city),
-      city: shipment.address_city || '',
+      street_address: sanitizeXmlText(street).slice(0, 35),
+      city: sanitizeXmlText(city).slice(0, 35),
       region: shipment.address_province || '',
       country,
       postal_code: (shipment.address_postal_code || '').replace(/\s/g, ''),
@@ -144,11 +215,32 @@ function buildPayload(shipment, packaging_type, packages, declaredValue = '100')
   }
 }
 
+// Transporteurs masqués côté UI/sélection. Ajouter ici pour exclure d'autres
+// services à l'avenir (préfèrence opérationnelle Orisha).
+const HIDDEN_CARRIERS = ['gls']
+
+function isHiddenCarrier(rate) {
+  const c = String(rate.carrier_name || rate.carrier || '').toLowerCase()
+  return HIDDEN_CARRIERS.some(h => c.includes(h))
+}
+
 export async function getRates(shipment, { packaging_type, packages, declared_value }) {
-  const data = await apiPost('/services/rate-estimate',
-    buildPayload(shipment, packaging_type, packages, declared_value || '100'))
-  const rates = (data.ratelist || []).sort((a, b) => parseFloat(a.total?.value ?? 0) - parseFloat(b.total?.value ?? 0))
-  return { request_id: data.request_id || null, rates }
+  const payload = buildPayload(shipment, packaging_type, packages, declared_value || '100')
+  let data
+  try {
+    data = await apiPost('/services/rate-estimate', payload)
+  } catch (e) {
+    if (!e.sentPayload) e.sentPayload = payload
+    throw e
+  }
+  const rates = (data.ratelist || [])
+    .filter(r => !isHiddenCarrier(r))
+    .sort((a, b) => parseFloat(a.total?.value ?? 0) - parseFloat(b.total?.value ?? 0))
+  // Inclut la réponse brute (hors ratelist déjà extrait) + le payload envoyé,
+  // pour permettre au client d'afficher warnings/erreurs/diagnostics Novoxpress
+  // lorsque ratelist est vide ou inattendu.
+  const { ratelist: _omit, ...response } = data
+  return { request_id: data.request_id || null, rates, response, sent: payload }
 }
 
 export async function cancelPickup(pickupId) {
@@ -216,10 +308,17 @@ export async function createLabel(shipment, erpShipmentId, { request_id, service
       }
     })
   }
-  const data = await apiPost('/shipment/create-shipment', { request_id, service_id, details })
+  const createPayload = { request_id, service_id, details }
+  const data = await apiPost('/shipment/create-shipment', createPayload)
 
   const novoxShipmentId = data.shipment_id
-  if (!novoxShipmentId) throw new Error(`Novoxpress: shipment_id manquant — réponse: ${JSON.stringify(data)}`)
+  if (!novoxShipmentId) {
+    const err = new Error(`Novoxpress: shipment_id manquant — ${data?.error?.description || JSON.stringify(data)}`)
+    err.sentPayload = createPayload
+    err.responseBody = JSON.stringify(data)
+    err.status = 200
+    throw err
+  }
 
   // Fetch label PDF
   const token = await getToken()

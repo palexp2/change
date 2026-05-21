@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Upload, FileText, Trash2, RefreshCw, AlertCircle, CheckCircle, Clock, ReceiptText, BookOpen } from 'lucide-react'
+import { Upload, FileText, Trash2, RefreshCw, AlertCircle, CheckCircle, Clock, ReceiptText, BookOpen, Camera } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -72,6 +72,144 @@ function UploadZone({ onUpload, uploading }) {
   )
 }
 
+function WebcamCaptureModal({ onClose, onCapture, uploading }) {
+  const videoRef  = useRef(null)
+  const canvasRef = useRef(null)
+  const streamRef = useRef(null)
+  const [error, setError]       = useState(null)
+  const [starting, setStarting] = useState(true)
+  const [preview, setPreview]   = useState(null)       // object URL
+  const previewBlobRef          = useRef(null)
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: 'environment' },
+            width:  { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: false,
+        })
+        if (cancelled) { stream.getTracks().forEach(t => t.stop()); return }
+        streamRef.current = stream
+        if (videoRef.current) videoRef.current.srcObject = stream
+        setStarting(false)
+      } catch (e) {
+        if (cancelled) return
+        setStarting(false)
+        if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+          setError("Permission refusée. Autorisez l'accès à la caméra dans votre navigateur.")
+        } else if (e.name === 'NotFoundError' || e.name === 'OverconstrainedError') {
+          setError("Aucune caméra détectée sur cet appareil.")
+        } else {
+          setError(`Erreur caméra : ${e.message || e.name}`)
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t => t.stop())
+        streamRef.current = null
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!preview) return
+    return () => URL.revokeObjectURL(preview)
+  }, [preview])
+
+  function capture() {
+    const video  = videoRef.current
+    const canvas = canvasRef.current
+    if (!video || !canvas) return
+    const w = video.videoWidth, h = video.videoHeight
+    if (!w || !h) return
+    canvas.width = w
+    canvas.height = h
+    canvas.getContext('2d').drawImage(video, 0, 0, w, h)
+    canvas.toBlob(blob => {
+      if (!blob) return
+      previewBlobRef.current = blob
+      setPreview(URL.createObjectURL(blob))
+    }, 'image/jpeg', 0.92)
+  }
+
+  function retake() {
+    previewBlobRef.current = null
+    setPreview(null)
+  }
+
+  async function confirmUpload() {
+    const blob = previewBlobRef.current
+    if (!blob) return
+    const fd = new FormData()
+    const filename = `webcam-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`
+    fd.append('file', blob, filename)
+    await onCapture(fd)
+    onClose()
+  }
+
+  return (
+    <Modal isOpen={true} onClose={onClose} title="Capturer avec la caméra" size="lg">
+      {error ? (
+        <div className="flex flex-col items-center gap-3 py-6">
+          <AlertCircle size={32} className="text-red-500" />
+          <p className="text-sm text-slate-700 text-center max-w-sm">{error}</p>
+          <button className="btn-secondary text-sm" onClick={onClose}>Fermer</button>
+        </div>
+      ) : (
+        <div className="flex flex-col items-center gap-4">
+          <div className="w-full bg-black rounded-lg overflow-hidden aspect-video flex items-center justify-center relative">
+            {preview ? (
+              <img src={preview} alt="Capture" className="max-w-full max-h-full object-contain" data-testid="webcam-preview" />
+            ) : (
+              <>
+                {starting && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white">
+                    <RefreshCw size={28} className="animate-spin" />
+                    <p className="text-xs">Démarrage de la caméra…</p>
+                  </div>
+                )}
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className={`w-full h-full object-contain ${starting ? 'opacity-0' : ''}`}
+                  data-testid="webcam-video"
+                />
+              </>
+            )}
+          </div>
+          <canvas ref={canvasRef} className="hidden" />
+
+          <div className="flex gap-2 justify-center">
+            {preview ? (
+              <>
+                <button type="button" className="btn-secondary inline-flex items-center gap-1" onClick={retake} disabled={uploading}>
+                  <RefreshCw size={14} /> Reprendre
+                </button>
+                <button type="button" className="btn-primary inline-flex items-center gap-1" onClick={confirmUpload} disabled={uploading} data-testid="webcam-confirm">
+                  {uploading ? <><RefreshCw size={14} className="animate-spin" /> Téléversement…</> : <><CheckCircle size={14} /> Utiliser cette photo</>}
+                </button>
+              </>
+            ) : (
+              <button type="button" className="btn-primary inline-flex items-center gap-1" onClick={capture} disabled={starting} data-testid="webcam-capture">
+                <Camera size={14} /> Capturer
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </Modal>
+  )
+}
+
 function ReceiptItem({ receipt, selected, onClick, onDelete }) {
   const label = receipt.company || receipt.original_name || '—'
   const amount = receipt.total ? fmtCad(receipt.total) : null
@@ -117,8 +255,10 @@ function QBPublishForm({ receipt, onSuccess }) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
 
+  const [type, setType] = useState('purchase')
   const [expenseAccountId, setExpenseAccountId] = useState('')
   const [paymentAccountId, setPaymentAccountId] = useState('')
+  const [dueDate, setDueDate] = useState('')
   const [vendorMode, setVendorMode] = useState('existing')
   const [vendorId, setVendorId] = useState('')
   const [newVendorName, setNewVendorName] = useState(receipt.company || '')
@@ -142,7 +282,7 @@ function QBPublishForm({ receipt, onSuccess }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const expenseAccounts = accounts.filter(a => ['Expense', 'Other Expense'].includes(a.AccountType))
+  const expenseAccounts = accounts.filter(a => ['Expense', 'Other Expense', 'Cost of Goods Sold'].includes(a.AccountType))
   const paymentAccounts = accounts.filter(a => ['Bank', 'Credit Card'].includes(a.AccountType))
   const filteredVendors  = vendorSearch  ? vendors.filter(v => v.DisplayName.toLowerCase().includes(vendorSearch.toLowerCase()))  : vendors
   const filteredExpense  = expenseSearch ? expenseAccounts.filter(a => a.Name.toLowerCase().includes(expenseSearch.toLowerCase())) : expenseAccounts
@@ -150,17 +290,19 @@ function QBPublishForm({ receipt, onSuccess }) {
 
   async function handleSubmit() {
     if (!expenseAccountId) { setError('Sélectionnez un compte de dépense'); return }
-    if (!paymentAccountId) { setError('Sélectionnez un compte de paiement'); return }
+    if (type === 'purchase' && !paymentAccountId) { setError('Sélectionnez un compte de paiement'); return }
     if (vendorMode === 'existing' && !vendorId) { setError('Sélectionnez un fournisseur'); return }
     if (vendorMode === 'new' && !newVendorName.trim()) { setError('Entrez le nom du fournisseur'); return }
     setSubmitting(true)
     setError(null)
     try {
       await api.saleReceipts.pushToQb(receipt.id, {
+        type,
         expenseAccountId,
-        paymentAccountId,
+        paymentAccountId: type === 'purchase' ? paymentAccountId : undefined,
         vendorId: vendorMode === 'existing' ? vendorId : undefined,
         newVendorName: vendorMode === 'new' ? newVendorName.trim() : undefined,
+        dueDate: type === 'bill' && dueDate ? dueDate : undefined,
       })
       const updated = await api.saleReceipts.get(receipt.id)
       onSuccess(updated)
@@ -181,6 +323,21 @@ function QBPublishForm({ receipt, onSuccess }) {
 
   return (
     <div className="mt-3 border border-green-200 bg-green-50 rounded-xl p-4 space-y-4">
+      {/* Type de transaction QB */}
+      <div>
+        <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Type</label>
+        <div className="flex gap-4">
+          <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+            <input type="radio" data-testid="qb-type-purchase" checked={type === 'purchase'} onChange={() => setType('purchase')} />
+            <span>Dépense payée (Purchase)</span>
+          </label>
+          <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+            <input type="radio" data-testid="qb-type-bill" checked={type === 'bill'} onChange={() => setType('bill')} />
+            <span>Facture à payer (Bill → Comptes fournisseurs)</span>
+          </label>
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
         {/* Fournisseur */}
         <div>
@@ -216,15 +373,26 @@ function QBPublishForm({ receipt, onSuccess }) {
           </select>
         </div>
 
-        {/* Compte de paiement */}
-        <div>
-          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Compte de paiement</label>
-          <input type="text" placeholder="Rechercher…" value={paymentSearch} onChange={e => setPaymentSearch(e.target.value)} className="input-field text-xs w-full mb-1" />
-          <select value={paymentAccountId} onChange={e => setPaymentAccountId(e.target.value)} className="input-field text-xs w-full" size={4}>
-            <option value="">— Sélectionner —</option>
-            {filteredPayment.map(a => <option key={a.Id} value={a.Id}>{a.Name} ({a.AccountType})</option>)}
-          </select>
-        </div>
+        {type === 'purchase' ? (
+          /* Compte de paiement (Purchase uniquement) */
+          <div>
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Compte de paiement</label>
+            <input type="text" placeholder="Rechercher…" value={paymentSearch} onChange={e => setPaymentSearch(e.target.value)} className="input-field text-xs w-full mb-1" />
+            <select value={paymentAccountId} onChange={e => setPaymentAccountId(e.target.value)} className="input-field text-xs w-full" size={4}>
+              <option value="">— Sélectionner —</option>
+              {filteredPayment.map(a => <option key={a.Id} value={a.Id}>{a.Name} ({a.AccountType})</option>)}
+            </select>
+          </div>
+        ) : (
+          /* Échéance (Bill uniquement) — le crédit va automatiquement aux Comptes fournisseurs */
+          <div>
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Échéance</label>
+            <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} className="input-field text-xs w-full" />
+            <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
+              Le crédit est posté automatiquement au compte <strong>Comptes fournisseurs</strong> du vendor — aucun compte de paiement à choisir.
+            </p>
+          </div>
+        )}
       </div>
 
       {error && <p className="text-xs text-red-600 bg-red-100 rounded-lg px-3 py-2">{error}</p>}
@@ -311,9 +479,22 @@ function ReceiptDetail({ receipt, onUpdate }) {
             {receipt.receipt_date && <span className="text-sm text-slate-500">{fmtDate(receipt.receipt_date)}</span>}
             {receipt.receipt_number && <span className="text-sm text-slate-500">#{receipt.receipt_number}</span>}
             {receipt.quickbooks_id && (
-              <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full">
-                <BookOpen size={10} /> QB #{receipt.quickbooks_id}
-              </span>
+              receipt.quickbooks_url ? (
+                <a
+                  href={receipt.quickbooks_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  data-testid="qb-link"
+                  title="Ouvrir dans QuickBooks"
+                  className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 hover:bg-green-200 px-2 py-0.5 rounded-full transition-colors"
+                >
+                  <BookOpen size={10} /> QB #{receipt.quickbooks_id}
+                </a>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full">
+                  <BookOpen size={10} /> QB #{receipt.quickbooks_id}
+                </span>
+              )
             )}
           </div>
           {receipt.status === 'done' && !receipt.quickbooks_id && (
@@ -408,6 +589,7 @@ export default function SaleReceipts() {
   const [selected, setSelected]       = useState(null)
   const [uploading, setUploading]     = useState(false)
   const [toDelete, setToDelete]       = useState(null)
+  const [webcamOpen, setWebcamOpen]   = useState(false)
   const pollingRef                    = useRef(null)
 
   const load = useCallback(async () => {
@@ -484,8 +666,18 @@ export default function SaleReceipts() {
             <p className="text-xs text-slate-400 mt-0.5">Extraction automatique par IA</p>
           </div>
 
-          <div className="p-3 border-b border-slate-100">
+          <div className="p-3 border-b border-slate-100 space-y-2">
             <UploadZone onUpload={handleUpload} uploading={uploading} />
+            <button
+              type="button"
+              onClick={() => setWebcamOpen(true)}
+              disabled={uploading}
+              data-testid="open-webcam"
+              className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-sm text-slate-700 bg-white border border-slate-300 rounded-lg hover:border-brand-400 hover:bg-slate-50 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            >
+              <Camera size={14} />
+              Capturer avec la caméra
+            </button>
           </div>
 
           <div className="flex-1 overflow-y-auto p-2">
@@ -520,9 +712,18 @@ export default function SaleReceipts() {
         </div>
       </div>
 
+      {/* Webcam capture */}
+      {webcamOpen && (
+        <WebcamCaptureModal
+          onClose={() => setWebcamOpen(false)}
+          onCapture={handleUpload}
+          uploading={uploading}
+        />
+      )}
+
       {/* Delete confirmation */}
       {toDelete && (
-        <Modal title="Supprimer ce reçu" onClose={() => setToDelete(null)} size="sm">
+        <Modal isOpen={true} title="Supprimer ce reçu" onClose={() => setToDelete(null)} size="sm">
           <p className="text-slate-600 text-sm">Voulez-vous supprimer le reçu <strong>{toDelete.company || toDelete.original_name}</strong> ? Cette action est irréversible.</p>
           <div className="flex justify-end gap-2 mt-4">
             <button className="btn-secondary" onClick={() => setToDelete(null)}>Annuler</button>

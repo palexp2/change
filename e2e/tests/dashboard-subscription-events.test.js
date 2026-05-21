@@ -160,60 +160,61 @@ describe('Dashboard — Mouvements d\'abonnements', () => {
     // Le titre du panel
     const title = await page.locator('[data-testid="section-subscription-events"] h2').innerText()
     assert.match(title, /Mouvements d'abonnements/, `titre inattendu: ${title}`)
-    // Au moins une ligne de mois
-    const rowCount = await page.locator('[data-testid^="sub-events-month-"]').count()
-    assert.ok(rowCount > 0, 'aucune ligne de mois dans le panel')
-    // Les colonnes Upgrades et Downgrades doivent être dans l'en-tête
-    const headerText = await page.locator('[data-testid="section-subscription-events"] thead').innerText()
-    assert.match(headerText, /Upgrades/i, `colonne Upgrades absente: ${headerText}`)
-    assert.match(headerText, /Downgrades/i, `colonne Downgrades absente: ${headerText}`)
+    // DataTable rend les groupes du niveau mois (niveau 0). On doit en avoir
+    // au moins un (le mois en cours, vu qu'on a injecté des events).
+    const monthGroupCount = await page.locator('[data-testid^="datatable-group-"][data-group-level="0"]').count()
+    assert.ok(monthGroupCount > 0, 'aucun en-tête de groupe mois dans le panel')
   })
 
-  test('cellules Nouveaux/Upgrades/Downgrades/Annulations ne montrent que le montant $ (pas le compteur)', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
-    const rows = await page.locator('[data-testid^="sub-events-month-"]').all()
-    assert.ok(rows.length > 0, 'aucune ligne de mois')
-    // Ordre des colonnes dans <tr> : Mois, Net MRR, Nouveaux, Upgrades, Downgrades, Annulations, chevron
-    // Les cellules d'index 2..5 doivent contenir soit un montant ($) soit le tiret "—".
-    // Aucune d'entre elles ne doit afficher un compteur d'occurrences seul.
-    let nonEmptyCellsChecked = 0
-    for (const row of rows) {
-      const cells = await row.locator('td').all()
-      for (let i = 2; i <= 5; i++) {
-        const text = (await cells[i].innerText()).trim()
-        const isAmount = /\$/.test(text)
-        const isEmpty = text === '—'
-        assert.ok(isAmount || isEmpty, `cellule ${i} contenu inattendu: "${text}" — doit être un montant $ ou "—"`)
-        if (isAmount) nonEmptyCellsChecked += 1
-      }
-    }
-    assert.ok(nonEmptyCellsChecked > 0, 'aucune cellule de mouvement avec montant — données absentes pour valider le format')
-  })
-
-  test('cliquer sur une ligne de mois déplie le détail des entreprises', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
-    const firstRow = page.locator('[data-testid^="sub-events-month-"]').first()
-    await firstRow.click()
-    await page.waitForTimeout(300)
-    // Une section détail devrait apparaître contenant au moins une catégorie titre
-    const hasDetail = await page.locator('text=/Nouveaux abonnements|Annulations|Upgrades|Downgrades/').first().isVisible()
-    assert.ok(hasDetail, 'détail non visible après clic')
-  })
-
-  test('le détail du mois courant montre les sections Upgrades et Downgrades', async () => {
+  test('le mois courant est rendu comme groupe niveau 0', async () => {
     await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
     await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
     const now = new Date()
     const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`
-    const monthRow = page.locator(`[data-testid="sub-events-month-${thisMonth}"]`)
-    await monthRow.click()
+    const monthHeader = page.locator(`[data-testid="datatable-group-${thisMonth}"]`)
+    await monthHeader.waitFor({ state: 'visible', timeout: 5000 })
+    // L'ordre est desc → mois courant en haut.
+    const level = await monthHeader.getAttribute('data-group-level')
+    assert.equal(level, '0', `niveau attendu 0, vu ${level}`)
+  })
+
+  test('cliquer sur le mois ouvre les sous-groupes catégorie', async () => {
+    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
+    await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
+    const now = new Date()
+    const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`
+    const monthHeader = page.locator(`[data-testid="datatable-group-${thisMonth}"]`)
+    await monthHeader.waitFor({ state: 'visible', timeout: 5000 })
+    // Les niveaux 0 sont dépliés par défaut → les groupes catégorie sont déjà
+    // visibles. On vérifie la présence des sous-groupes attendus (creation,
+    // upgrade, downgrade, churn) pour le mois courant.
+    const upgradeSub = page.locator(`[data-testid="datatable-group-${thisMonth}||upgrade"]`)
+    const downgradeSub = page.locator(`[data-testid="datatable-group-${thisMonth}||downgrade"]`)
+    await upgradeSub.waitFor({ state: 'visible', timeout: 5000 })
+    await downgradeSub.waitFor({ state: 'visible', timeout: 5000 })
+    const upgradeLvl = await upgradeSub.getAttribute('data-group-level')
+    assert.equal(upgradeLvl, '1', `sous-groupe upgrade : niveau attendu 1, vu ${upgradeLvl}`)
+  })
+
+  test('replier puis déplier le mois courant cache/montre ses sous-groupes', async () => {
+    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
+    await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
+    const now = new Date()
+    const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`
+    const monthHeader = page.locator(`[data-testid="datatable-group-${thisMonth}"]`)
+    const upgradeSub = page.locator(`[data-testid="datatable-group-${thisMonth}||upgrade"]`)
+    await monthHeader.waitFor({ state: 'visible', timeout: 5000 })
+    await upgradeSub.waitFor({ state: 'visible', timeout: 5000 })
+
+    // Replier le mois → les sous-groupes disparaissent
+    await monthHeader.click()
     await page.waitForTimeout(300)
-    const upgradeTitle = page.locator('text=/^Upgrades \\(/').first()
-    const downgradeTitle = page.locator('text=/^Downgrades \\(/').first()
-    assert.ok(await upgradeTitle.isVisible(), 'section Upgrades non visible')
-    assert.ok(await downgradeTitle.isVisible(), 'section Downgrades non visible')
+    assert.equal(await upgradeSub.count(), 0, 'sous-groupe upgrade encore visible après repli du mois')
+
+    // Déplier le mois → les sous-groupes réapparaissent
+    await monthHeader.click()
+    await page.waitForTimeout(300)
+    await upgradeSub.waitFor({ state: 'visible', timeout: 5000 })
   })
 
   test('endpoint retourne products[] sur les items quand une facture liée existe', async () => {
@@ -272,10 +273,11 @@ describe('Dashboard — Mouvements d\'abonnements', () => {
   test('UI : badge "(X $/an)"/"Mensuel" affiché à côté du montant des items', async () => {
     await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
     await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
-    // Déplie tous les mois pour exposer les items
-    const rows = await page.locator('[data-testid^="sub-events-month-"]').all()
-    for (const r of rows) await r.click()
-    await page.waitForTimeout(300)
+    // Les groupes mois sont dépliés par défaut → les items sont déjà visibles.
+    // On laisse le DataTable se rendre puis on attend que les badges d'interval
+    // apparaissent (les rows sont virtualisées : il faut potentiellement
+    // scroller pour exposer tous les events).
+    await page.waitForTimeout(500)
 
     // Au moins un badge annuel "(… /an)" et un badge "Mensuel" doivent être visibles
     // (les sub injectés en setup ont l'un et l'autre)
@@ -334,16 +336,13 @@ describe('Dashboard — Mouvements d\'abonnements', () => {
     assert.equal(item.products[0].product_name, 'Widget C (added)')
   })
 
-  test('cliquer sur le nom d\'un mouvement ouvre la modale de l\'abonnement', async () => {
+  test('cliquer sur un événement ouvre la modale de l\'abonnement', async () => {
     await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
     await page.waitForSelector('[data-testid="section-subscription-events"]', { timeout: 10000 })
 
-    // Déplie le premier mois disponible
-    const firstRow = page.locator('[data-testid^="sub-events-month-"]').first()
-    await firstRow.click()
-
-    // Clique sur le bouton du premier mouvement déplié
-    const firstEventBtn = page.locator('[data-testid^="sub-event-open-"]').first()
+    // Les groupes mois sont dépliés par défaut → le bouton "abo-event-open-*"
+    // de la colonne Abonnement doit être visible directement.
+    const firstEventBtn = page.locator('[data-testid^="abo-event-open-"]').first()
     await firstEventBtn.waitFor({ state: 'visible', timeout: 5000 })
     await firstEventBtn.click()
 

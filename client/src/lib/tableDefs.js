@@ -32,10 +32,40 @@ export const TABLE_LABELS = {
   catalog:        'Catalogue de produits',
   users:          'Utilisateurs',
   bom_items:      'BOM',
+  qualification_calls: 'Appels de qualification',
+  public_files: 'Fichiers publics',
 }
 
 // Chaque entrée : { id, label, field, type?, options?, sortable?, filterable?, groupable?, defaultVisible? }
 // type: 'text' (défaut) | 'number' | 'date' | 'boolean' | 'single_select'
+
+// Permissions dérivées des contrôleurs centraux de l'entreprise du record.
+// SUM agrégée sur les CC dont le status est "Opérationnel - Vendu/Loué".
+// Source : server/src/utils/ccPermissions.js. Toutes cachées par défaut.
+const CC_PERMISSION_COLUMNS = [
+  // Flag global : true si on a au moins un CC actif avec permissions importées.
+  // Permet de filtrer "Info permissions CC : Oui" pour exclure les inconnus.
+  { id: 'company_has_cc_permissions', label: 'Info permissions CC', field: 'company_has_cc_permissions', type: 'boolean', defaultVisible: false },
+  ...[
+    { id: 'company_max_circulation_fans',       label: 'Permissions — ventilateurs circulation' },
+    { id: 'company_max_fans',                   label: 'Permissions — ventilateurs' },
+    { id: 'company_max_ventilation_fans',       label: 'Permissions — ventilateurs extraction' },
+    { id: 'company_max_heaters',                label: 'Permissions — chaufferettes' },
+    { id: 'company_max_heat_pipes',             label: 'Permissions — tuyaux chauffants' },
+    { id: 'company_max_misters',                label: 'Permissions — brumisateurs' },
+    { id: 'company_max_roofs',                  label: 'Permissions — toits' },
+    { id: 'company_max_tensiometers',           label: 'Permissions — tensiomètres' },
+    { id: 'company_max_thermal_screens',        label: 'Permissions — écrans thermiques' },
+    { id: 'company_max_valves',                 label: 'Permissions — valves' },
+    { id: 'company_max_gh_advanced_ventilation',label: 'Permissions — serres ventilation avancée' },
+    { id: 'company_max_gh_disease_prevention',  label: 'Permissions — serres prévention maladies' },
+    { id: 'company_max_gh_heating',             label: 'Permissions — serres chauffage' },
+    { id: 'company_max_gh_humidity_conservation', label: 'Permissions — serres conservation humidité' },
+    { id: 'company_max_gh_irrigation',          label: 'Permissions — serres irrigation' },
+    { id: 'company_max_gh_rollup_ventilation',  label: 'Permissions — serres ventilation rouleau' },
+  ].map(c => ({ ...c, field: c.id, type: 'number', defaultVisible: false })),
+]
+
 export const TABLE_COLUMN_META = {
   tasks: [
     { id: 'title',         label: 'Titre',        field: 'title' },
@@ -56,6 +86,7 @@ export const TABLE_COLUMN_META = {
     { id: 'phone',           label: 'Téléphone',    field: 'phone', type: 'phone' },
     { id: 'lifecycle_phase', label: 'Phase',        field: 'lifecycle_phase', type: 'single_select', options: ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore'] },
     { id: 'contacts_count',  label: 'Contacts',     field: 'contacts_count',  type: 'number', groupable: false, sortable: false },
+    ...CC_PERMISSION_COLUMNS,
   ],
 
   contacts: [
@@ -65,6 +96,8 @@ export const TABLE_COLUMN_META = {
     { id: 'phone',        label: 'Téléphone',   field: 'phone',  type: 'phone' },
     { id: 'mobile',       label: 'Cellulaire',  field: 'mobile', type: 'phone', defaultVisible: false },
     { id: 'language',     label: 'Langue',      field: 'language',  type: 'single_select', options: ['French', 'English'] },
+    { id: 'has_shipping_address', label: 'Adresse de livraison', field: 'has_shipping_address', type: 'boolean', defaultVisible: false },
+    ...CC_PERMISSION_COLUMNS,
   ],
 
   projects: [
@@ -125,6 +158,8 @@ export const TABLE_COLUMN_META = {
     { id: 'product_name',  label: 'Produit',         field: 'product_name' },
     { id: 'company_name',  label: 'Entreprise',      field: 'company_name' },
     { id: 'status',        label: 'Statut',          field: 'status', type: 'single_select', options: ['active', 'inactive', 'returned', 'lost'] },
+    { id: 'address',       label: 'Adresse',         field: 'address', defaultVisible: false },
+    { id: 'permissions',   label: 'Permissions',     field: 'permissions', sortable: false, filterable: false, groupable: false, defaultVisible: false },
     { id: 'manufacture_date', label: 'Date fab.',    field: 'manufacture_date', type: 'date', defaultVisible: false },
   ],
 
@@ -161,6 +196,7 @@ export const TABLE_COLUMN_META = {
     { id: 'amount_before_tax_cad', label: 'Avant taxes (CAD)', field: 'amount_before_tax_cad', type: 'number' },
     { id: 'total_amount',          label: 'Total',             field: 'total_amount',          type: 'number' },
     { id: 'balance_due',           label: 'Solde dû',          field: 'balance_due',           type: 'number' },
+    { id: 'refund_amount',         label: 'Remboursé',         field: 'refund_amount',         type: 'number', defaultVisible: false },
     { id: 'is_sent',               label: 'Envoyée',           field: 'is_sent',               type: 'boolean', defaultVisible: false },
     { id: 'deferred_revenue_state',label: 'Revenu reçu d\'avance', field: 'deferred_revenue_state', type: 'single_select', options: ['Constaté', 'En attente', '—'], defaultVisible: false },
   ],
@@ -178,11 +214,12 @@ export const TABLE_COLUMN_META = {
 
   abonnement_events: [
     { id: 'event_date',          label: 'Date',           field: 'event_date',     type: 'date' },
+    { id: 'month',               label: 'Mois',           field: 'month',          defaultVisible: false },
     { id: 'category',            label: 'Mouvement',      field: 'category',       type: 'single_select', options: ['creation', 'upgrade', 'downgrade', 'churn', 'reactivation'] },
     { id: 'company_name',        label: 'Entreprise',     field: 'company_name' },
     { id: 'subscription_link',   label: 'Abonnement',     field: 'stripe_subscription_id', sortable: false, filterable: false, groupable: false },
     { id: 'amount_cad_delta',    label: 'Δ MRR (CAD)',    field: 'amount_cad_delta', type: 'number' },
-    { id: 'rachat',              label: 'Rachat',         field: 'rachat_status', type: 'single_select', options: ['probable', 'confirmed', 'none'], sortable: false },
+    { id: 'rachat',              label: 'Rachat',         field: 'rachat_status', type: 'single_select', options: ['probable', 'confirmed', 'merged', 'none'], sortable: false },
     { id: 'previous_amount_cad', label: 'Avant (CAD)',    field: 'previous_amount_cad', type: 'number', defaultVisible: false },
     { id: 'new_amount_cad',      label: 'Après (CAD)',    field: 'new_amount_cad', type: 'number', defaultVisible: false },
     { id: 'currency',            label: 'Devise',         field: 'currency', type: 'single_select', options: ['CAD', 'USD'], defaultVisible: false },
@@ -321,7 +358,7 @@ export const TABLE_COLUMN_META = {
   users: [
     { id: 'name',   label: 'Utilisateur', field: 'name' },
     { id: 'email',  label: 'Courriel',    field: 'email' },
-    { id: 'role',   label: 'Rôle',        field: 'role',   type: 'single_select', options: ['admin', 'sales', 'support', 'ops'] },
+    { id: 'role',   label: 'Rôle',        field: 'role',   type: 'single_select', options: ['admin', 'rh', 'sales', 'support', 'ops'] },
     { id: 'active', label: 'Statut',      field: 'active', type: 'boolean' },
     { id: 'reset',  label: '',            field: '',       sortable: false, filterable: false, groupable: false },
   ],
@@ -388,5 +425,34 @@ export const TABLE_COLUMN_META = {
     { id: 'qb_pushed_at',  label: 'Envoyé à QB',    field: 'qb_pushed_at', type: 'date', defaultVisible: false },
     { id: 'description',   label: 'Description',    field: 'description',  defaultVisible: false },
     { id: 'created_date',  label: 'Créé le',        field: 'created_date', type: 'date', defaultVisible: false },
+  ],
+
+  qualification_calls: [
+    { id: 'call_date',         label: 'Date',          field: 'call_date',         type: 'date' },
+    { id: 'company_name',      label: 'Entreprise',    field: 'company_name' },
+    { id: 'assignee',          label: 'Vendeur',       field: 'assignee' },
+    { id: 'status',            label: 'Statut',        field: 'status',            type: 'single_select', options: ['En cours', 'Terminé', 'Abandonné'] },
+    { id: 'contact_full_name', label: 'Contact',       field: 'contact_full_name', defaultVisible: false },
+    { id: 'motivation_today',  label: 'Motivation',    field: 'motivation_today' },
+    { id: 'pain_points_count', label: 'Pains',         field: 'pain_points_count', type: 'number' },
+    { id: 'red_flags_count',   label: 'Red flags',     field: 'red_flags_count',   type: 'number' },
+    { id: 'quote_paid_at',     label: 'Payé',          field: 'quote_paid_at',     type: 'date' },
+    { id: 'source',            label: 'Source',        field: 'source',            type: 'single_select', options: ['ERP', 'Airtable'] },
+    { id: 'summary',           label: 'Résumé',        field: 'summary',           defaultVisible: false },
+    { id: 'next_steps',        label: 'Suite',         field: 'next_steps',        defaultVisible: false },
+    { id: 'heard_about',       label: 'Source du lead', field: 'heard_about',      defaultVisible: false },
+    { id: 'created_at',        label: 'Créé le',       field: 'created_at',        type: 'date', defaultVisible: false },
+  ],
+
+  public_files: [
+    { id: 'original_name',    label: 'Nom du fichier',  field: 'original_name' },
+    { id: 'folder',           label: 'Dossier',         field: 'folder' },
+    { id: 'description',      label: 'Description',     field: 'description' },
+    { id: 'tags',             label: 'Étiquettes',      field: 'tags', sortable: false },
+    { id: 'mime_type',        label: 'Type',            field: 'mime_type', defaultVisible: false },
+    { id: 'size',             label: 'Taille',          field: 'size', type: 'number' },
+    { id: 'uploaded_by_name', label: 'Téléversé par',   field: 'uploaded_by_name', defaultVisible: false },
+    { id: 'created_at',       label: 'Téléversé le',    field: 'created_at', type: 'date' },
+    { id: 'link',             label: 'Lien public',     field: 'token', sortable: false, filterable: false, groupable: false },
   ],
 }

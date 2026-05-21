@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAuth, isHROrAdmin } from '../middleware/auth.js'
 import { parseDurationToMinutes } from '../services/duration.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 
@@ -10,11 +10,11 @@ router.use(requireAuth)
 
 const ALLOWED_MODES = new Set(['simple', 'detailed'])
 
-// Admin (role='admin') peut voir/modifier toutes les feuilles. Sinon, restreint à l'utilisateur connecté.
+// Admin et RH peuvent voir/modifier toutes les feuilles. Sinon, restreint à l'utilisateur connecté.
 function resolveTargetUserId(req, requested) {
   const me = req.user
   if (!requested || requested === me.id) return me.id
-  if (me.role === 'admin') return requested
+  if (isHROrAdmin(me)) return requested
   return null // not allowed
 }
 

@@ -186,7 +186,7 @@ export default function Products() {
             <h1 className="text-2xl font-bold text-slate-900">Inventaire</h1>
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="products" />
+            <TableConfigModal table="products" bulkDelete />
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouveau produit
             </button>

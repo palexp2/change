@@ -2,17 +2,34 @@ import { Router } from 'express'
 import { randomUUID } from 'crypto'
 import multer from 'multer'
 import { join, extname } from 'path'
-import { existsSync, mkdirSync, readFileSync, unlinkSync } from 'fs'
-import { spawnSync } from 'child_process'
+import { existsSync, mkdirSync, unlinkSync } from 'fs'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { pushSaleReceiptToQB } from '../services/quickbooks.js'
+import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
+import { runExtractionAndUpdate } from '../services/saleReceiptExtraction.js'
+
+// Construit l'URL QB d'un reçu poussé. Les rangées antérieures au toggle
+// Purchase/Bill n'ont pas de quickbooks_type ; on les traite comme 'purchase'.
+function buildQbUrl(row) {
+  if (!row.quickbooks_id) return null
+  const entity = row.quickbooks_type === 'bill' ? 'bill' : 'expense'
+  return qbEntityUrl(entity, row.quickbooks_id)
+}
+
+function serializeRow(row) {
+  return {
+    ...row,
+    items: JSON.parse(row.items || '[]'),
+    quickbooks_url: buildQbUrl(row),
+  }
+}
 
 function fetchSaleReceiptRow(id) {
-  const row = db.prepare('SELECT * FROM sale_receipts WHERE id=?').get(id)
+  const row = db.prepare('SELECT * FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(id)
   if (!row) return null
-  return { ...row, items: JSON.parse(row.items || '[]') }
+  return serializeRow(row)
 }
 
 const router = Router()
@@ -22,7 +39,6 @@ const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'r
 if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true })
 
 const ALLOWED_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf']
-const IMAGE_EXT   = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
 
 const storage = multer.diskStorage({
   destination: uploadsDir,
@@ -38,81 +54,6 @@ const upload = multer({
   },
 })
 
-// ── OpenAI extraction ─────────────────────────────────────────────────────────
-
-const SYSTEM_PROMPT = `Tu es un assistant spécialisé dans l'extraction de données de reçus et factures de vente.
-Extrait toutes les informations disponibles et retourne un JSON valide avec exactement cette structure:
-{
-  "receipt_date": "YYYY-MM-DD ou null",
-  "company": "nom de l'entreprise/magasin ou null",
-  "address": "adresse complète ou null",
-  "receipt_number": "numéro de reçu/facture ou null",
-  "items": [{"description": "...", "quantity": 1, "unit_price": 0.00, "total": 0.00}],
-  "subtotal": 0.00,
-  "tps": 0.00,
-  "tvq": 0.00,
-  "other_taxes": 0.00,
-  "total": 0.00,
-  "payment_method": "méthode de paiement ou null",
-  "currency": "CAD",
-  "notes": "autres informations pertinentes ou null"
-}
-Retourne UNIQUEMENT le JSON, sans texte supplémentaire ni balises markdown.
-Si une valeur est inconnue, utilise null pour les chaînes et 0 pour les nombres.`
-
-async function extractWithOpenAI(filePath, fileExt) {
-  const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) throw new Error('OPENAI_API_KEY non configuré')
-
-  let messages
-
-  if (IMAGE_EXT.includes(fileExt)) {
-    const fileBuffer = readFileSync(filePath)
-    const base64 = fileBuffer.toString('base64')
-    const mimeMap = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' }
-    const mime = mimeMap[fileExt] || 'image/jpeg'
-
-    messages = [
-      { role: 'system', content: SYSTEM_PROMPT },
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'Voici un reçu de vente. Extrait toutes les données disponibles.' },
-          { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}`, detail: 'high' } },
-        ],
-      },
-    ]
-  } else {
-    // PDF → extract text with pdftotext
-    const result = spawnSync('pdftotext', ['-layout', filePath, '-'], { encoding: 'utf8', timeout: 30000 })
-    const pdfText = result.stdout?.trim() || ''
-    if (!pdfText) throw new Error('Impossible d\'extraire le texte du PDF')
-
-    messages = [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: `Voici le contenu textuel d'un reçu de vente:\n\n${pdfText.slice(0, 8000)}` },
-    ]
-  }
-
-  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'gpt-4o', messages, max_tokens: 2000, temperature: 0 }),
-  })
-
-  if (!resp.ok) {
-    const err = await resp.json().catch(() => ({}))
-    throw new Error(err.error?.message || `OpenAI HTTP ${resp.status}`)
-  }
-
-  const data = await resp.json()
-  const content = data.choices?.[0]?.message?.content?.trim() || ''
-
-  // Strip markdown code fences if present
-  const cleaned = content.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
-  return JSON.parse(cleaned)
-}
-
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 router.get('/', (req, res) => {
@@ -120,21 +61,22 @@ router.get('/', (req, res) => {
   const limitAll = limit === 'all'
   const limitVal = limitAll ? -1 : parseInt(limit)
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
-  const total = db.prepare('SELECT COUNT(*) as c FROM sale_receipts').get().c
+  const total = db.prepare('SELECT COUNT(*) as c FROM sale_receipts WHERE deleted_at IS NULL').get().c
   const rows = db.prepare(`
     SELECT * FROM sale_receipts
+    WHERE deleted_at IS NULL
     ORDER BY created_at DESC LIMIT ? OFFSET ?
   `).all(limitVal, offset)
 
-  const parsed = rows.map(r => ({ ...r, items: JSON.parse(r.items || '[]') }))
+  const parsed = rows.map(serializeRow)
   res.json({ data: parsed, total, page: parseInt(page), limit: parseInt(limit) })
 })
 
 router.get('/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM sale_receipts WHERE id=?')
+  const row = db.prepare('SELECT * FROM sale_receipts WHERE id=? AND deleted_at IS NULL')
     .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json({ ...row, items: JSON.parse(row.items || '[]') })
+  res.json(serializeRow(row))
 })
 
 router.post('/upload', upload.single('file'), async (req, res) => {
@@ -155,48 +97,12 @@ router.post('/upload', upload.single('file'), async (req, res) => {
   // Return immediately, process async
   res.status(201).json({ id, status: 'processing' })
 
-  // Run extraction asynchronously
   const filePath = join(uploadsDir, req.file.filename)
-  try {
-    const extracted = await extractWithOpenAI(filePath, ext)
-
-    db.prepare(`
-      UPDATE sale_receipts SET
-        status='done',
-        receipt_date=?, company=?, address=?, receipt_number=?,
-        subtotal=?, tps=?, tvq=?, other_taxes=?, total=?,
-        payment_method=?, currency=?, items=?, raw_data=?,
-        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id=?
-    `).run(
-      extracted.receipt_date || null,
-      extracted.company || null,
-      extracted.address || null,
-      extracted.receipt_number || null,
-      extracted.subtotal || 0,
-      extracted.tps || 0,
-      extracted.tvq || 0,
-      extracted.other_taxes || 0,
-      extracted.total || 0,
-      extracted.payment_method || null,
-      extracted.currency || 'CAD',
-      JSON.stringify(extracted.items || []),
-      JSON.stringify(extracted),
-      id
-    )
-    const updated = fetchSaleReceiptRow(id)
-    if (updated) emitEntity('sale_receipt', 'updated', id, updated, req.user?.id)
-  } catch (err) {
-    console.error('Receipt extraction error:', err.message)
-    db.prepare(`UPDATE sale_receipts SET status='error', error_message=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-      .run(err.message, id)
-    const errored = fetchSaleReceiptRow(id)
-    if (errored) emitEntity('sale_receipt', 'updated', id, errored, req.user?.id)
-  }
+  runExtractionAndUpdate({ saleReceiptId: id, filePath, fileExt: ext, userId: req.user?.id })
 })
 
 router.get('/:id/file', (req, res) => {
-  const row = db.prepare('SELECT filename, file_type FROM sale_receipts WHERE id=?')
+  const row = db.prepare('SELECT filename, file_type FROM sale_receipts WHERE id=? AND deleted_at IS NULL')
     .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
@@ -210,8 +116,8 @@ router.get('/:id/file', (req, res) => {
 
 router.post('/:id/push-to-qb', async (req, res) => {
   try {
-    const { expenseAccountId, paymentAccountId, vendorId, newVendorName } = req.body
-    const qbId = await pushSaleReceiptToQB(req.params.id, { expenseAccountId, paymentAccountId, vendorId, newVendorName })
+    const { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate } = req.body
+    const qbId = await pushSaleReceiptToQB(req.params.id, { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate })
     const updated = fetchSaleReceiptRow(req.params.id)
     if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
     res.json({ ok: true, quickbooks_id: qbId })
@@ -220,17 +126,38 @@ router.post('/:id/push-to-qb', async (req, res) => {
   }
 })
 
+// Délie le pointeur QB d'un reçu (sans toucher à QB) — utile après suppression
+// manuelle de la transaction dans QB pour permettre un re-push.
+router.delete('/:id/quickbooks-link', (req, res) => {
+  const r = db.prepare(`
+    UPDATE sale_receipts
+    SET quickbooks_id=NULL, quickbooks_type=NULL,
+        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id=?
+  `).run(req.params.id)
+  if (!r.changes) return res.status(404).json({ error: 'Not found' })
+  const updated = fetchSaleReceiptRow(req.params.id)
+  if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
+  res.json({ ok: true })
+})
+
 router.delete('/:id', (req, res) => {
-  const row = db.prepare('SELECT filename FROM sale_receipts WHERE id=?')
+  const row = db.prepare('SELECT filename, gmail_message_id FROM sale_receipts WHERE id=? AND deleted_at IS NULL')
     .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
-  // Delete file
+  // Le fichier est toujours purgé du disque — on ne garde que le stub en DB
   const filePath = join(uploadsDir, row.filename)
   try { if (existsSync(filePath)) unlinkSync(filePath) } catch {}
 
-  db.prepare('DELETE FROM sale_receipts WHERE id=?')
-    .run(req.params.id)
+  // Si la pièce vient d'un email (gmail_message_id), soft-delete pour que
+  // syncInvoiceLabel ne la réimporte pas à chaque tour ; sinon, hard-delete.
+  if (row.gmail_message_id) {
+    db.prepare("UPDATE sale_receipts SET deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
+      .run(req.params.id)
+  } else {
+    db.prepare('DELETE FROM sale_receipts WHERE id=?').run(req.params.id)
+  }
   emitEntity('sale_receipt', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })
 })

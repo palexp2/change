@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
+import path from 'path';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
@@ -7,6 +9,52 @@ import { buildPurchaseOrderPdf, fetchOrishaLogo } from '../services/purchaseOrde
 import { sendEmail as sendGmail } from '../services/gmail.js';
 import { insertPurchasesFromPo } from '../services/purchaseOrder.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
+
+const INSTALLATION_DOC_FIELDS = [
+  { url: 'lien_pdf_installation_fr', local: 'lien_pdf_installation_fr_local', type: 'installation-fr' },
+  { url: 'lien_pdf_installation_en', local: 'lien_pdf_installation_en_local', type: 'installation-en' },
+  { url: 'lien_pdf_remplacement_fr', local: 'lien_pdf_remplacement_fr_local', type: 'remplacement-fr' },
+  { url: 'lien_pdf_remplacement_en', local: 'lien_pdf_remplacement_en_local', type: 'remplacement-en' },
+];
+
+function productDocsDir() {
+  const dir = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'products', 'docs');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function deleteLocalDocSafe(relativePath) {
+  if (!relativePath) return;
+  const abs = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads', relativePath);
+  const root = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'products', 'docs');
+  if (!abs.startsWith(root + path.sep)) return; // refuse à supprimer hors du dossier docs
+  try { fs.unlinkSync(abs); } catch {}
+}
+
+// Un champ lien_pdf_* peut contenir plusieurs URLs séparées par virgules
+// (cas Airtable où la pièce a plusieurs PDFs pour la même variante).
+function splitUrls(raw) {
+  if (!raw) return [];
+  return String(raw).split(',').map(s => s.trim()).filter(Boolean);
+}
+
+// Google Drive `file/d/<ID>` et `open?id=<ID>` renvoient la page HTML du visualiseur
+// au lieu du PDF. On les réécrit vers l'URL de téléchargement direct.
+function normalizeDocUrl(url) {
+  if (!url) return url;
+  // https://drive.google.com/file/d/<ID>[/view][?...]
+  let m = url.match(/^https?:\/\/drive\.google\.com\/file\/d\/([^/?#]+)/i);
+  if (m) return `https://drive.google.com/uc?export=download&id=${m[1]}`;
+  // https://drive.google.com/open?id=<ID>
+  m = url.match(/^https?:\/\/drive\.google\.com\/open\?(?:.*&)?id=([^&#]+)/i);
+  if (m) return `https://drive.google.com/uc?export=download&id=${m[1]}`;
+  // https://drive.google.com/uc?id=<ID>... sans export=download → on l'ajoute
+  m = url.match(/^https?:\/\/drive\.google\.com\/uc\?/i);
+  if (m && !/[?&]export=download(?:&|$)/i.test(url)) {
+    return url + (url.includes('?') ? '&' : '?') + 'export=download';
+  }
+  return url;
+}
 
 const router = Router();
 router.use(requireAuth);
@@ -369,6 +417,70 @@ router.post('/:id/purchase-order/send-email', async (req, res) => {
     console.error('PO send-email error:', e)
     res.status(500).json({ error: e.message })
   }
+});
+
+// POST /api/products/:id/refresh-installation-docs
+// Pour chaque champ lien_pdf_* (qui peut contenir plusieurs URLs séparées par virgules) :
+// supprime les anciennes copies locales, télécharge chaque URL séparément (suffixe -1/-2/…),
+// sauvegarde dans uploads/products/docs/, met à jour la colonne *_local (CSV de chemins).
+// Pour les champs vides : supprime les copies locales et vide la colonne *_local.
+router.post('/:id/refresh-installation-docs', async (req, res) => {
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+
+  productDocsDir();
+  const results = [];
+  const updates = {};
+
+  for (const f of INSTALLATION_DOC_FIELDS) {
+    const urls = splitUrls(product[f.url]);
+    const oldLocals = splitUrls(product[f.local]);
+
+    // Toujours supprimer toutes les anciennes copies locales en premier
+    for (const oldLocal of oldLocals) deleteLocalDocSafe(oldLocal);
+
+    if (urls.length === 0) {
+      updates[f.local] = null;
+      results.push({ field: f.url, status: 'cleared' });
+      continue;
+    }
+
+    const newLocals = [];
+    for (let i = 0; i < urls.length; i++) {
+      const url = urls[i];
+      const fetchUrl = normalizeDocUrl(url);
+      const suffix = urls.length === 1 ? '' : `-${i + 1}`;
+      try {
+        const response = await fetch(fetchUrl, { redirect: 'follow' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const buffer = Buffer.from(await response.arrayBuffer());
+        // Vérifie le magic byte PDF : si l'URL renvoie une page HTML
+        // (visualiseur Google Drive, page de connexion, etc.) on refuse.
+        if (buffer.slice(0, 4).toString('ascii') !== '%PDF') {
+          throw new Error('Réponse non-PDF (probablement une page HTML — le document est peut-être privé ou le lien n\'est pas un PDF direct)');
+        }
+        const filename = `${product.id}-${f.type}${suffix}.pdf`;
+        const absPath = path.join(productDocsDir(), filename);
+        fs.writeFileSync(absPath, buffer);
+        const relativePath = path.posix.join('products', 'docs', filename);
+        newLocals.push(relativePath);
+        results.push({ field: f.url, index: i, url, status: 'downloaded', local: relativePath, bytes: buffer.length });
+      } catch (e) {
+        results.push({ field: f.url, index: i, url, status: 'error', error: e.message });
+      }
+    }
+    updates[f.local] = newLocals.length ? newLocals.join(',') : null;
+  }
+
+  // Persiste tous les chemins locaux
+  const setClause = INSTALLATION_DOC_FIELDS.map(f => `${f.local} = ?`).join(', ');
+  const values = INSTALLATION_DOC_FIELDS.map(f => updates[f.local]);
+  db.prepare(`UPDATE products SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+    .run(...values, req.params.id);
+
+  const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
+  res.json({ product: updated, results });
 });
 
 // DELETE /api/products/:id

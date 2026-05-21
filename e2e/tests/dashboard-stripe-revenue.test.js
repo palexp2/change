@@ -99,7 +99,7 @@ describe('Dashboard — Abonnements + Ventes (cartes scindées, 12 mois)', () =>
     const tableCount = await drilldown.locator('table').count()
     if (tableCount > 0) {
       const headers = (await drilldown.locator('thead th').allInnerTexts()).map(s => s.trim().toLowerCase())
-      const expected = ['date', 'n°', 'client', 'statut', 'montant ht (orig.)', 'montant ht (cad)', 'intervalle', 'payout']
+      const expected = ['date', 'n°', 'client', 'statut', 'montant ht (orig.)', 'montant ht (cad)', 'intervalle', 'date de constatation']
       for (const h of expected) {
         assert.ok(headers.includes(h), `En-tête attendu « ${h} », reçu: ${JSON.stringify(headers)}`)
       }
@@ -156,7 +156,7 @@ describe('Dashboard — Abonnements + Ventes (cartes scindées, 12 mois)', () =>
     const tableCount = await drilldown.locator('table').count()
     if (tableCount > 0) {
       const headers = (await drilldown.locator('thead th').allInnerTexts()).map(s => s.trim().toLowerCase())
-      const expected = ['date', 'n°', 'client', 'statut', 'montant ht (orig.)', 'montant ht (cad)', 'payout']
+      const expected = ['date', 'n°', 'client', 'statut', 'montant ht (orig.)', 'montant ht (cad)', 'date de constatation']
       for (const h of expected) {
         assert.ok(headers.includes(h), `En-tête attendu « ${h} », reçu: ${JSON.stringify(headers)}`)
       }
@@ -380,6 +380,35 @@ describe('Dashboard — Abonnements + Ventes (cartes scindées, 12 mois)', () =>
       (maxR - minR) / maxR < 0.001,
       `Toutes les lignes USD du payout ${data.arrivalDate} (mois ${data.month}/${data.type}) devraient partager le même ratio CAD/USD ` +
       `(taux BoC du payout). Ratios observés: ${JSON.stringify(data.rows)}`
+    )
+  })
+
+  test('la légende affiche le total an. préc. en montant CAD (Abonnements + Ventes)', async () => {
+    // Régression : la légende montrait juste « Abonnement an. préc. » / « Vente
+    // an. préc. » sans le total, contrairement aux totaux année courante qui
+    // s'affichaient en CAD à côté du libellé. On vérifie maintenant que la
+    // légende inclut un montant formaté ($/CAD) après le libellé an. préc.
+    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
+
+    // Format attendu : « Abonnement an. préc. 12 345 $ » ou similaire. Le total
+    // peut être 0 $ si pas de données pour l'année précédente — mais le suffixe
+    // monétaire doit toujours apparaître.
+    const moneyRe = /an\. préc\.[^\n]*?-?[\d\s ]+(?:[.,]\d+)?\s*\$/
+
+    const subsCard = page.locator('[data-section-id="section_stripe_subscriptions"]')
+    await subsCard.waitFor({ state: 'visible', timeout: 8000 })
+    const subsText = await subsCard.innerText()
+    assert.ok(
+      moneyRe.test(subsText),
+      `Légende « Abonnement an. préc. » devrait inclure un total CAD ($). Reçu: ${subsText.slice(0, 500)}`
+    )
+
+    const salesCard = page.locator('[data-section-id="section_stripe_sales"]')
+    await salesCard.waitFor({ state: 'visible', timeout: 8000 })
+    const salesText = await salesCard.innerText()
+    assert.ok(
+      moneyRe.test(salesText),
+      `Légende « Vente an. préc. » devrait inclure un total CAD ($). Reçu: ${salesText.slice(0, 500)}`
     )
   })
 

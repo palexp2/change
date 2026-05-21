@@ -192,7 +192,7 @@ export default function Abonnements() {
           columns={COLUMNS}
           data={abonnements}
           loading={loading}
-          searchFields={['company_name', 'rachat']}
+          searchFields={['company_name', 'rachat', 'amount_cad']}
           onRowClick={setSelected}
         />
       </div>

@@ -1486,7 +1486,7 @@ router.get('/quickbooks/accounts', requireAuth, async (req, res) => {
     const all = req.query.all === '1' || req.query.all === 'true'
     const query = all
       ? "SELECT * FROM Account WHERE Active = true MAXRESULTS 1000"
-      : "SELECT * FROM Account WHERE AccountType IN ('Expense', 'Other Expense', 'Bank', 'Credit Card') MAXRESULTS 200"
+      : "SELECT * FROM Account WHERE AccountType IN ('Expense', 'Other Expense', 'Cost of Goods Sold', 'Bank', 'Credit Card') MAXRESULTS 200"
     const q = new URLSearchParams({ query })
     const data = await qbGet(`/query?${q}`)
     res.json(data.QueryResponse?.Account || [])
@@ -1545,28 +1545,48 @@ router.post('/sync/qb-import', requireAuth, async (req, res) => {
 // GET /api/connectors/stripe — état de configuration
 router.get('/stripe', requireAuth, (req, res) => {
   const configured = isStripeConfigured()
-  res.json({ configured })
+  const pk = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='publishable_key'").get()
+  res.json({ configured, publishable_key: pk?.value || null })
 })
 
-// PUT /api/connectors/stripe — enregistrer la clé secrète
+// PUT /api/connectors/stripe — enregistrer la clé secrète (+/- publishable)
 router.put('/stripe', requireAuth, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
-  const { secret_key } = req.body
-  if (!secret_key || !secret_key.startsWith('sk_')) {
-    return res.status(400).json({ error: 'Clé Stripe invalide (doit commencer par sk_)' })
+  const { secret_key, publishable_key } = req.body
+  if (secret_key !== undefined) {
+    if (!secret_key || !secret_key.startsWith('sk_')) {
+      return res.status(400).json({ error: 'Clé Stripe invalide (doit commencer par sk_)' })
+    }
+    db.prepare(`
+      INSERT INTO connector_config (connector, key, value) VALUES (?,?,?)
+      ON CONFLICT(connector, key) DO UPDATE SET value=excluded.value
+    `).run('stripe', 'secret_key', secret_key)
   }
-  db.prepare(`
-    INSERT INTO connector_config (connector, key, value) VALUES (?,?,?)
-    ON CONFLICT(connector, key) DO UPDATE SET value=excluded.value
-  `).run('stripe', 'secret_key', secret_key)
+  if (publishable_key !== undefined) {
+    if (!publishable_key || !publishable_key.startsWith('pk_')) {
+      return res.status(400).json({ error: 'Publishable key invalide (doit commencer par pk_)' })
+    }
+    db.prepare(`
+      INSERT INTO connector_config (connector, key, value) VALUES (?,?,?)
+      ON CONFLICT(connector, key) DO UPDATE SET value=excluded.value
+    `).run('stripe', 'publishable_key', publishable_key)
+  }
   res.json({ ok: true })
+})
+
+// GET /api/connectors/stripe/publishable-key — clé publique exposée pour Stripe.js
+// (publishable_key est par nature publique, pas d'auth requise — l'iframe du guide
+// d'appel l'utilise pour monter Stripe Elements).
+router.get('/stripe/publishable-key', (req, res) => {
+  const row = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='publishable_key'").get()
+  res.json({ publishable_key: row?.value || null })
 })
 
 // DELETE /api/connectors/stripe — supprimer la clé
 router.delete('/stripe', requireAuth, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
   db.prepare(
-    "DELETE FROM connector_config WHERE connector='stripe' AND key='secret_key'"
+    "DELETE FROM connector_config WHERE connector='stripe' AND key IN ('secret_key','publishable_key')"
   ).run()
   res.json({ ok: true })
 })

@@ -79,7 +79,12 @@ router.post('/rates/:shipmentId', async (req, res) => {
     res.json(result)
   } catch (e) {
     console.error('Novoxpress getRates error:', e.message)
-    res.status(502).json({ error: e.message })
+    res.status(502).json({
+      error: e.message,
+      sent: e.sentPayload || null,
+      responseBody: e.responseBody || null,
+      novoxpressStatus: e.status || null,
+    })
   }
 })
 
@@ -90,7 +95,7 @@ router.post('/label/:shipmentId', async (req, res) => {
   const shipment = getShipmentWithAddress(req.params.shipmentId)
   if (!shipment) return res.status(404).json({ error: 'Envoi introuvable' })
 
-  const { request_id, service_id, packaging_type, packages, declared_value } = req.body
+  const { request_id, service_id, carrier_name, service_name, packaging_type, packages, declared_value } = req.body
   if (!service_id) return res.status(400).json({ error: 'service_id requis' })
   if (!packages?.length) return res.status(400).json({ error: 'packages requis' })
 
@@ -99,7 +104,10 @@ router.post('/label/:shipmentId', async (req, res) => {
       request_id, service_id, packaging_type, packages, declared_value
     })
 
-    // Update shipment record with tracking number + label path
+    // Update shipment record with tracking number, carrier, label path.
+    // Le `carrier_name` vient de la sélection client (ex. "Canada Post",
+    // "Nationex") ; on l'écrit en clair pour permettre le lien de suivi
+    // automatique dans OrderDetail (`trackingUrl()` matche sur ce label).
     db.prepare(`
       UPDATE shipments
       SET novoxpress_shipment_id = ?,
@@ -113,7 +121,7 @@ router.post('/label/:shipmentId', async (req, res) => {
       result.shipment_id,
       result.filename,
       result.tracking_id || null,
-      null, // carrier set manually or from service name
+      carrier_name || null,
       req.params.shipmentId
     )
 
@@ -140,7 +148,12 @@ router.post('/label/:shipmentId', async (req, res) => {
     })
   } catch (e) {
     console.error('Novoxpress createLabel error:', e.message)
-    res.status(502).json({ error: e.message })
+    res.status(502).json({
+      error: e.message,
+      sent: e.sentPayload || null,
+      responseBody: e.responseBody || null,
+      novoxpressStatus: e.status || null,
+    })
   }
 })
 

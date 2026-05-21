@@ -444,7 +444,7 @@ export default function AchatsFournisseurs() {
           data={filteredRows}
           loading={loading}
           onRowClick={row => setEditing(row)}
-          searchFields={['vendor', 'description', 'reference', 'vendor_invoice_number', 'bill_number', 'category']}
+          searchFields={['vendor', 'description', 'reference', 'vendor_invoice_number', 'bill_number', 'category', 'total_cad', 'amount_paid_cad', 'balance_due_cad']}
         />
       </div>
 

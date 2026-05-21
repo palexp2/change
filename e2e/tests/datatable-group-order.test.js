@@ -105,11 +105,12 @@ describe('DataTable — ordre des groupes', () => {
     await page.waitForTimeout(200)
   }
 
-  test('le panneau Grouper expose Défaut / A→Z / Z→A quand un groupBy single_select est actif', async () => {
+  test('le panneau Grouper expose Défaut / A → Z / Z → A quand un groupBy single_select est actif', async () => {
     await setupGroupByStatus()
     // Ouvrir le panneau Grouper
     await page.click('button[data-panel-btn="group"]')
-    await page.waitForSelector('text=Ordre des groupes', { timeout: 3000 })
+    // Attend que les boutons d'ordre (rendus par niveau actif) soient présents
+    await page.waitForSelector('button:has-text("A → Z")', { timeout: 3000 })
     for (const label of ['Défaut', 'A → Z', 'Z → A']) {
       const visible = await page.locator(`button:has-text("${label}")`).first().isVisible()
       assert.ok(visible, `bouton "${label}" absent`)
@@ -120,7 +121,7 @@ describe('DataTable — ordre des groupes', () => {
   test('A → Z trie les groupes alphabétiquement croissant', async () => {
     await setupGroupByStatus()
     await page.click('button[data-panel-btn="group"]')
-    await page.waitForSelector('text=Ordre des groupes', { timeout: 3000 })
+    await page.waitForSelector('button:has-text("A → Z")', { timeout: 3000 })
     await applyOrderAndCollapse('A → Z')
     const headers = await getGroupHeaders(page)
     assert.ok(headers.length >= 2, `au moins 2 groupes attendus, got ${headers.length}: ${JSON.stringify(headers)}`)
@@ -131,7 +132,7 @@ describe('DataTable — ordre des groupes', () => {
   test('Z → A trie les groupes alphabétiquement décroissant', async () => {
     await setupGroupByStatus()
     await page.click('button[data-panel-btn="group"]')
-    await page.waitForSelector('text=Ordre des groupes', { timeout: 3000 })
+    await page.waitForSelector('button:has-text("A → Z")', { timeout: 3000 })
     await applyOrderAndCollapse('Z → A')
     const headers = await getGroupHeaders(page)
     assert.ok(headers.length >= 2, `au moins 2 groupes attendus`)
@@ -142,7 +143,7 @@ describe('DataTable — ordre des groupes', () => {
   test('Défaut respecte l\'ordre des options de TABLE_COLUMN_META', async () => {
     await setupGroupByStatus()
     await page.click('button[data-panel-btn="group"]')
-    await page.waitForSelector('text=Ordre des groupes', { timeout: 3000 })
+    await page.waitForSelector('button:has-text("A → Z")', { timeout: 3000 })
     await applyOrderAndCollapse('Défaut')
     const headers = await getGroupHeaders(page)
     // Pour factures : options = ['Payée', 'Partielle', 'En retard', 'Envoyée', 'Brouillon', 'Annulée']

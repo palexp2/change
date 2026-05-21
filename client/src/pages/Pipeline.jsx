@@ -383,7 +383,7 @@ export default function Pipeline() {
           data={displayedProjects}
           loading={loading}
           onRowClick={row => navigate(`/projects/${row.id}`)}
-          searchFields={['name', 'company_name', 'type', 'vendeur_label', 'nom_du_vendeur']}
+          searchFields={['name', 'company_name', 'type', 'vendeur_label', 'nom_du_vendeur', 'value_cad', 'monthly_cad']}
           initialGroupBy={monthFilter ? 'status' : null}
           forceAllView={!!monthFilter || !!createdMonthFilter}
           disabledColumns={disabledCols}

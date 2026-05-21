@@ -157,14 +157,14 @@ describe('Écritures de journal — vue liste standard', () => {
     await page.fill('input[type="date"] >> nth=2', '2026-12-31')
     await page.click('button:has-text("Analyser la période")')
     await page.waitForSelector('text=Réconciliation Stock de Pièces', { timeout: 15000 })
-    await page.waitForSelector('text=Réconciliation Stock de Produits finis reconditionnés', { timeout: 5000 })
+    await page.waitForSelector('text=Réconciliation Stock de Produits reconditionnés', { timeout: 5000 })
     await page.waitForSelector('text=Réconciliation Stock d\'équip. en transit', { timeout: 5000 })
     await page.waitForSelector('text=Réconciliation Équipements prêtés aux abonnés', { timeout: 5000 })
 
     const reconciliations = [
       { name: 'Stock de Pièces', erpRegex: /ERP.*pièces non sérialisées/ },
       { name: 'Stock de Produits finis', erpRegex: /ERP.*Disponible - Vente/ },
-      { name: 'Stock de Produits finis reconditionnés', erpRegex: /ERP.*Disponible - Location/ },
+      { name: 'Stock de Produits reconditionnés', erpRegex: /ERP.*Disponible - Location/ },
       { name: 'Stock d\'équip. en transit', erpRegex: /ERP.*En retour.*À analyser.*À reconditionner/ },
       { name: 'Équipements prêtés aux abonnés', erpRegex: /ERP.*Opérationnel - Loué/ },
     ]

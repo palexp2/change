@@ -6,6 +6,15 @@ import { requireAuth } from '../middleware/auth.js'
 const router = Router()
 router.use(requireAuth)
 
+function parsePermissions(row) {
+  if (!row) return row
+  if (row.permissions && typeof row.permissions === 'string') {
+    try { row.permissions = JSON.parse(row.permissions) }
+    catch { row.permissions = null }
+  }
+  return row
+}
+
 // ── Mapping comptable des transitions ──────────────────────────────────────
 
 // GET /api/serials/accounting/transitions
@@ -217,6 +226,7 @@ router.get('/', (req, res) => {
     LIMIT ? OFFSET ?
   `).all(...params, limitVal, offset)
 
+  serials.forEach(parsePermissions)
   res.json({ data: serials, total, page: parseInt(page), limit: parseInt(limit) })
 })
 
@@ -229,7 +239,7 @@ router.get('/:id', (req, res) => {
     WHERE sn.id = ?
   `).get(req.params.id)
   if (!serial) return res.status(404).json({ error: 'Not found' })
-  res.json(serial)
+  res.json(parsePermissions(serial))
 })
 
 router.get('/:id/history', (req, res) => {

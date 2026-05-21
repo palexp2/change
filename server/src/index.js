@@ -17,6 +17,7 @@ import contactsRouter from './routes/contacts.js'
 import projectsRouter from './routes/projects.js'
 import customFieldsRouter from './routes/custom-fields.js'
 import airtableFieldsRouter from './routes/airtable-fields.js'
+import fieldVisibilityRulesRouter from './routes/field-visibility-rules.js'
 import productsRouter from './routes/products.js'
 import ordersRouter from './routes/orders.js'
 import ticketsRouter from './routes/tickets.js'
@@ -26,6 +27,7 @@ import undoRouter from './routes/undo.js'
 import interactionsRouter from './routes/interactions.js'
 import callsRouter, { rematchCalls } from './routes/calls.js'
 import connectorsRouter from './routes/connectors.js'
+import hubspotRouter from './routes/hubspot.js'
 import purchasesRouter from './routes/purchases.js'
 import serialsRouter from './routes/serials.js'
 import viewsRouter from './routes/views.js'
@@ -43,6 +45,7 @@ import employeesRouter from './routes/employees.js'
 import vacationsRouter from './routes/vacations.js'
 import qualificationCallsRouter from './routes/qualification-calls.js'
 import emailRelanceRouter from './routes/email-relance.js'
+import placesRouter from './routes/places.js'
 import paiesRouter from './routes/paies.js'
 import timesheetsRouter from './routes/timesheets.js'
 import activityCodesRouter from './routes/activity-codes.js'
@@ -61,6 +64,7 @@ import stripeInvoiceItemsRouter from './routes/stripe-invoice-items.js'
 import novoxpressRouter from './routes/novoxpress.js'
 import trackRouter from './routes/track.js'
 import installationFeedbackRouter from './routes/installation-feedback.js'
+import { publicFilesRouter, publicFileServeRouter } from './routes/public-files.js'
 import { sendInstallationFollowups } from './services/installationFollowup.js'
 import { resolveFromAddress, getAutomationFrom } from './services/postmarkConfig.js'
 import { createRealtimeServer } from './services/realtime.js'
@@ -141,6 +145,8 @@ app.use('/api/recordings', express.static(path.join(process.cwd(), process.env.U
 app.use('/api/bons-livraison', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'bons-livraison')))
 // Serve product images
 app.use('/api/product-images', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'products')))
+// Serve product installation/replacement PDFs (cached copies of lien_pdf_*)
+app.use('/api/product-docs', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'products', 'docs')))
 // Serve record attachments
 app.use('/api/attachments', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'attachments')))
 
@@ -194,6 +200,7 @@ app.use('/api/contacts', contactsRouter)
 app.use('/api/projects', projectsRouter)
 app.use('/api/custom-fields', customFieldsRouter)
 app.use('/api/airtable-fields', airtableFieldsRouter)
+app.use('/api/field-visibility-rules', fieldVisibilityRulesRouter)
 app.use('/api/products', productsRouter)
 app.use('/api/orders', ordersRouter)
 app.use('/api/tickets', ticketsRouter)
@@ -203,6 +210,7 @@ app.use('/api/undo', undoRouter)
 app.use('/api/interactions', interactionsRouter)
 app.use('/api/calls', callsRouter)
 app.use('/api/connectors', connectorsRouter)
+app.use('/api/hubspot', hubspotRouter)
 app.use('/api/purchases', purchasesRouter)
 app.use('/api/serials', serialsRouter)
 app.use('/api/views', viewsRouter)
@@ -232,6 +240,7 @@ app.use('/api/employees', employeesRouter)
 app.use('/api/vacations', vacationsRouter)
 app.use('/api/qualification-calls', qualificationCallsRouter)
 app.use('/api/email-relance', emailRelanceRouter)
+app.use('/api/places', placesRouter)
 app.use('/api/paies', paiesRouter)
 app.use('/api/timesheets', timesheetsRouter)
 app.use('/api/activity-codes', activityCodesRouter)
@@ -242,6 +251,10 @@ app.use('/api/novoxpress', novoxpressRouter)
 app.use('/api/track', trackRouter)
 app.use('/api/public/installation-feedback', installationFeedbackRouter)
 app.use('/api/interaction-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'interactions')))
+app.use('/api/public-files', publicFilesRouter)
+// Fichiers publics — URL non auth /erp/p/<token>/<filename>. Doit être monté
+// avant le static client (/erp) sinon l'index.html SPA est servi à la place.
+app.use('/erp/p', publicFileServeRouter)
 
 // Serve client build
 const clientBuild = path.join(__dirname, '../../client/dist')

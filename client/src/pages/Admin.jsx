@@ -220,9 +220,9 @@ function HealthDashboard() {
   )
 }
 
-const ROLES = ['admin', 'sales', 'support', 'ops']
-const roleLabels = { admin: 'Admin', sales: 'Ventes', support: 'Support', ops: 'Opérations' }
-const roleColors = { admin: 'indigo', sales: 'blue', support: 'green', ops: 'orange' }
+const ROLES = ['admin', 'rh', 'sales', 'support', 'ops']
+const roleLabels = { admin: 'Admin', rh: 'RH', sales: 'Ventes', support: 'Support', ops: 'Opérations' }
+const roleColors = { admin: 'indigo', rh: 'purple', sales: 'blue', support: 'green', ops: 'orange' }
 
 function EmployeePicker({ value, onChange, disabled }) {
   const [employees, setEmployees] = useState([])

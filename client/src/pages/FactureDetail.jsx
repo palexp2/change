@@ -1,16 +1,49 @@
 import { useState, useEffect } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, X, Download, ExternalLink, Send, Hourglass, AlertCircle, CheckCircle2 } from 'lucide-react'
+import { ArrowLeft, X, Download, ExternalLink, Send, Hourglass, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
+import { Modal } from '../components/Modal.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import { SendPaymentLinkModal } from '../components/SendPaymentLinkModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import FacturePaymentsSection from '../components/FacturePaymentsSection.jsx'
 import FactureAccountingSection from '../components/FactureAccountingSection.jsx'
+import FactureRawEditSection from '../components/FactureRawEditSection.jsx'
+import { FieldGuard, FieldGuardProvider } from '../components/FieldGuard.jsx'
+import { useAuth } from '../lib/auth.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+
+// Champs disponibles pour le builder de règles de visibilité. Le picker
+// utilise `field` (clé du record) et `label` (humain). On expose un
+// sur-ensemble de `TABLE_COLUMN_META.factures` car les pages détail montrent
+// plus de champs que les tables (subscription_id, kind, source, etc.).
+const FACTURE_RULE_FIELDS = [
+  { id: 'company_id',          field: 'company_id',          label: 'Entreprise (id)' },
+  { id: 'company_name',        field: 'company_name',        label: 'Entreprise (nom)' },
+  { id: 'project_id',          field: 'project_id',          label: 'Projet (id)' },
+  { id: 'project_name',        field: 'project_name',        label: 'Projet (nom)' },
+  { id: 'order_id',            field: 'order_id',            label: 'Commande (id)' },
+  { id: 'order_number',        field: 'order_number',        label: 'Commande (n°)' },
+  { id: 'subscription_id',     field: 'subscription_id',     label: 'Abonnement (id Stripe)' },
+  { id: 'subscription_local_id', field: 'subscription_local_id', label: 'Abonnement (id local)' },
+  { id: 'kind',                field: 'kind',                label: 'Type (kind : order/subscription)' },
+  { id: 'source',              field: 'source',              label: 'Source (stripe/pending)' },
+  { id: 'status',              field: 'status',              label: 'Statut' },
+  { id: 'currency',            field: 'currency',            label: 'Devise' },
+  { id: 'is_sent',             field: 'is_sent',             label: 'Envoyée' },
+  { id: 'is_sent_manual',      field: 'is_sent_manual',      label: 'Envoyée forcée manuellement' },
+  { id: 'has_linked_shipment', field: 'has_linked_shipment', label: 'A un envoi lié' },
+  { id: 'deferred_revenue_at', field: 'deferred_revenue_at', label: 'Comptabilisé en revenu reçu d\'avance' },
+  { id: 'revenue_recognized_at', field: 'revenue_recognized_at', label: 'Vente constatée' },
+  { id: 'paid_at',             field: 'paid_at',             label: 'Date de paiement' },
+  { id: 'balance_due',         field: 'balance_due',         label: 'Solde dû' },
+  { id: 'document_date',       field: 'document_date',       label: 'Date document' },
+  { id: 'due_date',            field: 'due_date',            label: 'Date d\'échéance' },
+  { id: 'invoice_id',          field: 'invoice_id',          label: 'ID Stripe/source' },
+]
 
 
 function fmtMoney(n, currency = 'CAD') {
@@ -57,6 +90,7 @@ const STATUS_COLORS = {
 export default function FactureDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [facture, setFacture] = useState(null)
   const [loading, setLoading] = useState(true)
   const [projects, setProjects] = useState([])
@@ -70,22 +104,22 @@ export default function FactureDetail() {
   const [subscriptionModal, setSubscriptionModal] = useState(null)
   const [loadingSubscription, setLoadingSubscription] = useState(false)
   const [sendModalOpen, setSendModalOpen] = useState(false)
-  const [recognizingRevenue, setRecognizingRevenue] = useState(false)
-  const [recognizeError, setRecognizeError] = useState(null)
+  const [factureIds, setFactureIds] = useState([])
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState(null)
 
-  async function handleRecognizeRevenue() {
-    setRecognizeError(null)
-    setRecognizingRevenue(true)
+  async function handleDelete() {
+    setDeleting(true)
+    setDeleteError(null)
     try {
-      const res = await api.factures.recognizeRevenue(id)
-      setFacture(res.facture)
+      await api.factures.delete(id)
+      navigate('/factures')
     } catch (e) {
-      setRecognizeError(e.message || 'Erreur')
-    } finally {
-      setRecognizingRevenue(false)
+      setDeleteError(e?.message || 'Erreur lors de la suppression')
+      setDeleting(false)
     }
   }
-
   function openSendModal() {
     if (facture?.source !== 'pending') return
     setSendModalOpen(true)
@@ -145,6 +179,16 @@ export default function FactureDetail() {
     api.companies.lookup().then(setCompanies).catch(() => setCompanies([]))
   }, [])
 
+  useEffect(() => {
+    api.factures.list({ limit: 'all' })
+      .then(res => setFactureIds((res.data || []).map(f => String(f.id))))
+      .catch(() => {})
+  }, [])
+
+  const currentIdx = factureIds.indexOf(String(id))
+  const prevId = currentIdx > 0 ? factureIds[currentIdx - 1] : null
+  const nextId = currentIdx >= 0 && currentIdx < factureIds.length - 1 ? factureIds[currentIdx + 1] : null
+
   async function handleProjectChange(newProjectId) {
     setSelectedProjectId(newProjectId || '')
     setSaving(true)
@@ -201,6 +245,7 @@ export default function FactureDetail() {
 
   return (
     <Layout>
+      <FieldGuardProvider context="facture" record={facture} fields={FACTURE_RULE_FIELDS}>
       <div className="p-6 max-w-4xl mx-auto">
         {/* Header */}
         <div className="flex items-start gap-4 mb-6">
@@ -250,39 +295,10 @@ export default function FactureDetail() {
                   <ExternalLink size={12} /> Lien de paiement
                 </a>
               )}
-              {/* Revenu reçu d'avance — états */}
-              {facture.revenue_recognized_at ? (
-                facture.revenue_recognized_qb_url ? (
-                  <a
-                    href={facture.revenue_recognized_qb_url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg border border-emerald-200"
-                    title={`Vente constatée le ${fmtDate(facture.revenue_recognized_at)} — ouvrir l'écriture de journal QB #${facture.revenue_recognized_je_id || ''}`}
-                    data-testid="revenue-status-recognized"
-                  >
-                    <CheckCircle2 size={12} /> Vente constatée <ExternalLink size={10} />
-                  </a>
-                ) : (
-                  <span
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-emerald-700 bg-emerald-50 rounded-lg border border-emerald-200"
-                    title={`Vente constatée le ${fmtDate(facture.revenue_recognized_at)}${facture.revenue_recognized_je_id ? ` — JE QB #${facture.revenue_recognized_je_id}` : ''}`}
-                    data-testid="revenue-status-recognized"
-                  >
-                    <CheckCircle2 size={12} /> Vente constatée
-                  </span>
-                )
-              ) : facture.deferred_revenue_at && facture.has_linked_shipment ? (
-                <button
-                  onClick={handleRecognizeRevenue}
-                  disabled={recognizingRevenue}
-                  className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-medium text-amber-900 bg-amber-100 hover:bg-amber-200 rounded-lg border border-amber-300 disabled:opacity-50"
-                  title="Poster une écriture de journal QB qui débite Revenus perçus d'avance et crédite Ventes pour constater la vente."
-                  data-testid="revenue-recognize-btn"
-                >
-                  <AlertCircle size={12} /> {recognizingRevenue ? 'Publication…' : 'Constater la vente'}
-                </button>
-              ) : facture.deferred_revenue_at ? (
+              {/* Badge « Revenu perçu d'avance » : affichée tant que la vente n'est pas
+                  constatée. L'état post-constatation est désormais visible dans
+                  l'historique des événements en bas de page. */}
+              {facture.deferred_revenue_at && !facture.revenue_recognized_at && (
                 facture.deferred_revenue_qb_url ? (
                   <a
                     href={facture.deferred_revenue_qb_url}
@@ -303,11 +319,8 @@ export default function FactureDetail() {
                     <Hourglass size={12} /> Revenu perçu d'avance
                   </span>
                 )
-              ) : null}
+              )}
             </div>
-            {recognizeError && (
-              <div className="mt-2 text-xs text-red-600">Erreur constatation : {recognizeError}</div>
-            )}
             {facture.deferred_revenue_at && !facture.revenue_recognized_at && (
               <div className="mt-2 text-xs text-slate-500">
                 Cette facture est comptabilisée dans le compte <strong>23900 Revenus perçus d'avance</strong>
@@ -322,6 +335,26 @@ export default function FactureDetail() {
                   : " La vente sera constatable lorsqu'un envoi sera fait sur une commande liée."}
               </div>
             )}
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => prevId && navigate(`/factures/${prevId}`)}
+              disabled={!prevId}
+              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+              title="Facture précédente"
+              aria-label="Facture précédente"
+            >
+              <ChevronLeft size={16} />
+            </button>
+            <button
+              onClick={() => nextId && navigate(`/factures/${nextId}`)}
+              disabled={!nextId}
+              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+              title="Facture suivante"
+              aria-label="Facture suivante"
+            >
+              <ChevronRight size={16} />
+            </button>
           </div>
         </div>
 
@@ -362,31 +395,35 @@ export default function FactureDetail() {
 
           {/* Commande / Abonnement */}
           <div className="grid grid-cols-2 gap-4 p-5">
-            <div>
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Commande</p>
-              {facture.company_id ? (
-                <LinkedRecordField
-                  name="order_id"
-                  value={facture.order_id}
-                  options={orders}
-                  labelFn={o => `#${o.order_number}`}
-                  getHref={o => `/orders/${o.id}`}
-                  placeholder="Commande"
-                  saving={saving}
-                  onChange={handleOrderChange}
-                />
-              ) : (
-                <span className="text-slate-400 text-sm">Associer une entreprise d'abord</span>
-              )}
-            </div>
-            <div>
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Abonnement</p>
-              {facture.subscription_local_id
-                ? <button onClick={openSubscriptionModal} disabled={loadingSubscription} className="text-brand-600 hover:underline font-medium disabled:opacity-50 font-mono text-sm">{facture.subscription_stripe_id || facture.subscription_id}</button>
-                : facture.subscription_id
-                  ? <span className="text-slate-500 font-mono text-sm">{facture.subscription_id}</span>
-                  : <span className="text-slate-400 text-sm">—</span>}
-            </div>
+            <FieldGuard fieldId="order_field" label="Commande">
+              <div data-field-id="order_field">
+                <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Commande</p>
+                {facture.company_id ? (
+                  <LinkedRecordField
+                    name="order_id"
+                    value={facture.order_id}
+                    options={orders}
+                    labelFn={o => `#${o.order_number}`}
+                    getHref={o => `/orders/${o.id}`}
+                    placeholder="Commande"
+                    saving={saving}
+                    onChange={handleOrderChange}
+                  />
+                ) : (
+                  <span className="text-slate-400 text-sm">Associer une entreprise d'abord</span>
+                )}
+              </div>
+            </FieldGuard>
+            <FieldGuard fieldId="subscription_field" label="Abonnement">
+              <div data-field-id="subscription_field">
+                <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Abonnement</p>
+                {facture.subscription_local_id
+                  ? <button onClick={openSubscriptionModal} disabled={loadingSubscription} className="text-brand-600 hover:underline font-medium disabled:opacity-50 font-mono text-sm">{facture.subscription_stripe_id || facture.subscription_id}</button>
+                  : facture.subscription_id
+                    ? <span className="text-slate-500 font-mono text-sm">{facture.subscription_id}</span>
+                    : <span className="text-slate-400 text-sm">—</span>}
+              </div>
+            </FieldGuard>
           </div>
 
           {/* PDF thumbnail */}
@@ -425,31 +462,16 @@ export default function FactureDetail() {
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Devise</p>
               <p className="text-sm font-mono text-slate-700">{facture.currency || '—'}</p>
             </div>
-            <div>
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Envoyée</p>
-              <label className="inline-flex items-center gap-2 cursor-pointer" title="Coche pour forcer 'Envoyée=Oui' même si aucun shipment n'est lié (ex: facture de service sans matériel physique)">
-                <input
-                  type="checkbox"
-                  checked={!!facture.is_sent}
-                  onChange={async e => {
-                    const checked = e.target.checked
-                    // Optimiste : on patche localement avant le PATCH
-                    setFacture(f => ({ ...f, is_sent: checked, is_sent_manual: checked ? 1 : 0 }))
-                    try {
-                      const updated = await api.factures.update(id, { is_sent_manual: checked })
-                      setFacture(f => ({ ...f, ...updated }))
-                    } catch {
-                      setFacture(f => ({ ...f, is_sent: !checked, is_sent_manual: checked ? 0 : 1 }))
-                    }
-                  }}
-                  className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-                />
-                <span className={`text-sm ${facture.is_sent ? 'text-slate-700' : 'text-slate-400'}`}>{facture.is_sent ? 'Oui' : 'Non'}</span>
-                {facture.is_sent_manual === 1 && !facture.has_linked_shipment && (
-                  <span className="text-[10px] text-slate-400 italic">(forcé)</span>
+            <FieldGuard fieldId="is_sent" label="Envoyée">
+              <div data-field-id="is_sent">
+                <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Envoyée</p>
+                {facture.is_sent ? (
+                  <Badge color="green" size="sm">Envoyée</Badge>
+                ) : (
+                  <span className="text-sm text-slate-400">—</span>
                 )}
-              </label>
-            </div>
+              </div>
+            </FieldGuard>
           </div>
 
 
@@ -511,14 +533,27 @@ export default function FactureDetail() {
                     <td className="py-2 text-right tabular-nums">−{fmtMoney(d.amount, facture.currency)}</td>
                   </tr>
                 ))}
-                {/* Sous-total avant taxes */}
-                <tr className="border-t-2 border-slate-200 text-slate-700" data-testid="facture-line-subtotal">
-                  <td className="pt-3 pb-2 font-medium" colSpan={4}>Avant taxes</td>
-                  <td className="pt-3 pb-2 text-right tabular-nums font-medium">{fmtMoney(
-                    facture.montant_avant_taxes != null ? parseFloat(facture.montant_avant_taxes) : facture.amount_before_tax_cad,
-                    facture.currency,
-                  )}</td>
-                </tr>
+                {/* Sous-total avant taxes — rabais appliqué quand présent.
+                    Pour les factures Stripe, montant_avant_taxes = invoice.subtotal qui
+                    est PRE-discount; on déduit la somme des rabais affichés ci-dessus
+                    pour que le sous-total reflète bien lignes − rabais. */}
+                {(() => {
+                  const storedBeforeTax = facture.montant_avant_taxes != null
+                    ? parseFloat(facture.montant_avant_taxes)
+                    : facture.amount_before_tax_cad
+                  const discountSum = Array.isArray(facture.discounts)
+                    ? facture.discounts.reduce((s, d) => s + (Number(d.amount) || 0), 0)
+                    : 0
+                  const displayedBeforeTax = storedBeforeTax != null && discountSum > 0
+                    ? Number(storedBeforeTax) - discountSum
+                    : storedBeforeTax
+                  return (
+                    <tr className="border-t-2 border-slate-200 text-slate-700" data-testid="facture-line-subtotal">
+                      <td className="pt-3 pb-2 font-medium" colSpan={4}>Avant taxes</td>
+                      <td className="pt-3 pb-2 text-right tabular-nums font-medium">{fmtMoney(displayedBeforeTax, facture.currency)}</td>
+                    </tr>
+                  )
+                })()}
                 {/* Taxes — split par juridiction (TPS / TVQ / HST / etc.) */}
                 {Array.isArray(facture.taxes) && facture.taxes.map((t, i) => (
                   <tr key={`tax-${i}`} className="border-t border-slate-100 text-slate-700" data-testid="facture-line-tax">
@@ -544,6 +579,14 @@ export default function FactureDetail() {
           factureId={id}
           factureCurrency={facture.currency || 'CAD'}
           factureIsPaid={facture.status === 'Payé' || facture.status === 'Payée' || (facture.balance_due != null && Number(facture.balance_due) <= 0 && Number(facture.total_amount) > 0)}
+          facturePaidAt={facture.paid_at}
+          facturePaidChargeId={facture.paid_charge_id}
+          facturePaidPaymentIntent={facture.paid_payment_intent}
+          factureTotalAmount={facture.total_amount}
+          onFactureChanged={async () => {
+            const fresh = await api.factures.get(id)
+            setFacture(fresh)
+          }}
         />
 
         <FactureAccountingSection
@@ -553,6 +596,29 @@ export default function FactureDetail() {
             setFacture(fresh)
           }}
         />
+
+        {user?.role === 'admin' && (
+          <FactureRawEditSection
+            factureId={id}
+            facture={facture}
+            onChanged={async () => {
+              const fresh = await api.factures.get(id)
+              setFacture(fresh)
+            }}
+          />
+        )}
+
+        {user?.role === 'admin' && (
+          <div className="mt-8 pt-6 border-t border-slate-200 flex justify-end">
+            <button
+              onClick={() => { setDeleteError(null); setDeleteModalOpen(true) }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-700 bg-white hover:bg-red-50 rounded-lg border border-red-200"
+              data-testid="facture-delete-button"
+            >
+              <Trash2 size={14} /> Supprimer la facture
+            </button>
+          </div>
+        )}
 
         {/* Tech responses (paid Stripe invoices only) */}
         {Array.isArray(facture.tech_responses) && facture.tech_responses.length > 0 && (
@@ -611,6 +677,79 @@ export default function FactureDetail() {
         onClose={() => setSendModalOpen(false)}
         onSent={handleSent}
       />
+
+      <Modal
+        isOpen={deleteModalOpen}
+        onClose={() => !deleting && setDeleteModalOpen(false)}
+        title="Supprimer cette facture ?"
+        size="md"
+      >
+        <div className="space-y-4 text-sm text-slate-700">
+          <p>
+            Cette action supprime <strong>uniquement le record local</strong> dans l'ERP.
+            Aucun appel n'est fait à Stripe, Airtable ni QuickBooks.
+          </p>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+            <div><span className="text-slate-500">N°</span> <strong>{facture.document_number || facture.id}</strong></div>
+            {facture.invoice_id && (
+              <div><span className="text-slate-500">ID source</span> <code className="text-xs">{facture.invoice_id}</code></div>
+            )}
+            <div><span className="text-slate-500">Montant</span> <strong>{fmtMoney(facture.total_amount, facture.currency)}</strong></div>
+          </div>
+
+          <div>
+            <div className="font-semibold text-slate-900 mb-1.5">Ce qui sera supprimé :</div>
+            <ul className="list-disc pl-5 space-y-1 text-slate-600">
+              <li>Le record <code className="text-xs">factures</code></li>
+              <li>Les lignes <code className="text-xs">stripe_invoice_items</code> attachées (cascade)</li>
+            </ul>
+          </div>
+
+          {(facture.revenue_recognized_at || facture.deferred_revenue_at || facture.paid_at) && (
+            <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-amber-900">
+              <div className="font-semibold mb-1">⚠ Cette facture a déjà été comptabilisée</div>
+              <ul className="list-disc pl-5 space-y-0.5 text-xs">
+                {facture.revenue_recognized_at && (
+                  <li>
+                    Vente constatée le {fmtDate(facture.revenue_recognized_at)}
+                    {facture.revenue_recognized_je_id && <> — JE QuickBooks <strong>#{facture.revenue_recognized_je_id}</strong> existe toujours côté QB</>}
+                  </li>
+                )}
+                {facture.deferred_revenue_at && !facture.revenue_recognized_at && (
+                  <li>Revenu perçu d'avance comptabilisé le {fmtDate(facture.deferred_revenue_at)}</li>
+                )}
+                {facture.paid_at && <li>Paiement reçu le {fmtDate(facture.paid_at)} ({fmtMoney(facture.paid_amount, facture.currency)})</li>}
+              </ul>
+              <div className="text-xs mt-1.5">La trace locale est perdue mais les écritures QB / mouvements Stripe demeurent.</div>
+            </div>
+          )}
+
+          {deleteError && (
+            <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-red-800 text-xs">
+              {deleteError}
+            </div>
+          )}
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              onClick={() => setDeleteModalOpen(false)}
+              disabled={deleting}
+              className="btn-secondary"
+            >
+              Annuler
+            </button>
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="btn-danger"
+              data-testid="facture-delete-confirm"
+            >
+              {deleting ? 'Suppression…' : 'Supprimer définitivement'}
+            </button>
+          </div>
+        </div>
+      </Modal>
+      </FieldGuardProvider>
     </Layout>
   )
 }

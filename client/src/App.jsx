@@ -2,6 +2,8 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './lib/auth.jsx'
 import { ToastProvider } from './contexts/ToastContext.jsx'
 import { ConfirmProvider } from './components/ConfirmProvider.jsx'
+import ServerOfflineOverlay from './components/ServerOfflineOverlay.jsx'
+import { useFavicon } from './hooks/useFavicon.js'
 
 import Login from './pages/Login.jsx'
 import Setup from './pages/Setup.jsx'
@@ -38,6 +40,7 @@ import Automations from './pages/Automations.jsx'
 import AutomationDetail from './pages/AutomationDetail.jsx'
 import Tasks from './pages/Tasks.jsx'
 import RelanceQualification from './pages/RelanceQualification.jsx'
+import QualificationCall from './pages/QualificationCall.jsx'
 import Agent from './pages/Agent.jsx'
 import AchatsFournisseurs from './pages/AchatsFournisseurs.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
@@ -56,16 +59,19 @@ import CompanyDetail from './pages/CompanyDetail.jsx'
 import StripePayouts from './pages/StripePayouts.jsx'
 import StripePayoutDetail from './pages/StripePayoutDetail.jsx'
 import CustomerPostPayment from './pages/CustomerPostPayment.jsx'
+import PublicFiles from './pages/PublicFiles.jsx'
 
-function ProtectedRoute({ children, adminOnly = false }) {
+function ProtectedRoute({ children, adminOnly = false, hrOnly = false }) {
   const { user } = useAuth()
   if (!user) return <Navigate to="/login" replace />
   if (adminOnly && user.role !== 'admin') return <Navigate to="/dashboard" replace />
+  if (hrOnly && !['admin', 'rh'].includes(user.role)) return <Navigate to="/dashboard" replace />
   return children
 }
 
 function AppRoutes() {
   const { user } = useAuth()
+  useFavicon()
 
   return (
     <Routes>
@@ -83,6 +89,7 @@ function AppRoutes() {
       <Route path="/products/:id" element={<ProtectedRoute><ProductDetail /></ProtectedRoute>} />
       <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
       <Route path="/relance-qualification" element={<ProtectedRoute><RelanceQualification /></ProtectedRoute>} />
+      <Route path="/qualification-call" element={<ProtectedRoute><QualificationCall /></ProtectedRoute>} />
       <Route path="/tickets" element={<ProtectedRoute><Tickets /></ProtectedRoute>} />
       <Route path="/tickets/:id" element={<ProtectedRoute><TicketDetail /></ProtectedRoute>} />
       <Route path="/interactions" element={<ProtectedRoute><Interactions /></ProtectedRoute>} />
@@ -112,10 +119,10 @@ function AppRoutes() {
       <Route path="/stripe-payouts/:stripeId" element={<ProtectedRoute><StripePayoutDetail /></ProtectedRoute>} />
       <Route path="/journal-entries" element={<ProtectedRoute><JournalEntries /></ProtectedRoute>} />
       <Route path="/stock-movement" element={<ProtectedRoute><StockMovements /></ProtectedRoute>} />
-      <Route path="/employees" element={<ProtectedRoute><Employees /></ProtectedRoute>} />
-      <Route path="/employees/:id" element={<ProtectedRoute><EmployeeDetail /></ProtectedRoute>} />
+      <Route path="/employees" element={<ProtectedRoute hrOnly><Employees /></ProtectedRoute>} />
+      <Route path="/employees/:id" element={<ProtectedRoute hrOnly><EmployeeDetail /></ProtectedRoute>} />
       <Route path="/feuille-de-temps" element={<ProtectedRoute><FeuilleDeTemps /></ProtectedRoute>} />
-      <Route path="/codes-activite" element={<ProtectedRoute><CodesActivite /></ProtectedRoute>} />
+      <Route path="/codes-activite" element={<ProtectedRoute hrOnly><CodesActivite /></ProtectedRoute>} />
       <Route path="/banque-heures" element={<ProtectedRoute><BanqueHeures /></ProtectedRoute>} />
       <Route path="/paies" element={<ProtectedRoute><Paies /></ProtectedRoute>} />
       <Route path="/contacts" element={<ProtectedRoute><Contacts /></ProtectedRoute>} />
@@ -125,6 +132,7 @@ function AppRoutes() {
       <Route path="/admin" element={<ProtectedRoute adminOnly><Admin /></ProtectedRoute>} />
       <Route path="/admin/:tab" element={<ProtectedRoute adminOnly><Admin /></ProtectedRoute>} />
 
+      <Route path="/public-files" element={<ProtectedRoute><PublicFiles /></ProtectedRoute>} />
       <Route path="/automations" element={<ProtectedRoute><Automations /></ProtectedRoute>} />
       <Route path="/automations/:id" element={<ProtectedRoute><AutomationDetail /></ProtectedRoute>} />
       <Route path="/agent" element={<ProtectedRoute adminOnly><Agent /></ProtectedRoute>} />
@@ -140,6 +148,7 @@ export default function App() {
       <ToastProvider>
         <ConfirmProvider>
           <AppRoutes />
+          <ServerOfflineOverlay />
         </ConfirmProvider>
       </ToastProvider>
     </AuthProvider>

@@ -9,6 +9,7 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
+import { useAuth } from '../lib/auth.jsx'
 
 function bool(row, key) {
   return row[key] ? <span className="text-green-600">✓</span> : <span className="text-slate-300">—</span>
@@ -268,6 +269,8 @@ function PaieForm({ paie, onClose, onSaved, onDeleted }) {
 
 function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
   const { addToast } = useToast()
+  const { user } = useAuth()
+  const isHR = ['admin', 'rh'].includes(user?.role)
   const [detail, setDetail] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -353,22 +356,24 @@ function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
         </div>
       </div>
 
-      <div className="flex items-center gap-2 text-sm border-t border-slate-200 pt-3">
-        <button
-          onClick={handleImport}
-          disabled={importing}
-          className="btn-secondary flex items-center gap-1.5 text-sm"
-          title="Recalcule les heures depuis les feuilles de temps. Les employés avec hours_per_week > 0 conservent leurs heures régulières (le diff va en banque d'heures). Les autres voient leurs heures régulières écrasées."
-        >
-          <RefreshCw size={13} className={importing ? 'animate-spin' : ''} />
-          {importing ? 'Import en cours…' : 'Resynchroniser avec les feuilles de temps'}
-        </button>
-        {importResult && (
-          <span className="text-xs text-slate-500">
-            {importResult.results?.length || 0} employé(s) traité(s) — période {importResult.period_start} → {importResult.period_end}
-          </span>
-        )}
-      </div>
+      {isHR && (
+        <div className="flex items-center gap-2 text-sm border-t border-slate-200 pt-3">
+          <button
+            onClick={handleImport}
+            disabled={importing}
+            className="btn-secondary flex items-center gap-1.5 text-sm"
+            title="Recalcule les heures depuis les feuilles de temps. Les employés avec hours_per_week > 0 conservent leurs heures régulières (le diff va en banque d'heures). Les autres voient leurs heures régulières écrasées."
+          >
+            <RefreshCw size={13} className={importing ? 'animate-spin' : ''} />
+            {importing ? 'Import en cours…' : 'Resynchroniser avec les feuilles de temps'}
+          </button>
+          {importResult && (
+            <span className="text-xs text-slate-500">
+              {importResult.results?.length || 0} employé(s) traité(s) — période {importResult.period_start} → {importResult.period_end}
+            </span>
+          )}
+        </div>
+      )}
       {importResult?.results?.some(r => r.skipped === 'no_user_link') && (
         <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
           Certains employés n'ont pas d'utilisateur lié (impossible d'importer leurs feuilles de temps).
@@ -385,7 +390,7 @@ function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
 
       <div className="flex justify-between items-center gap-2">
         <div>
-          {confirmDelete ? (
+          {isHR && (confirmDelete ? (
             <div className="flex items-center gap-2">
               <button onClick={handleDelete} disabled={deleting} className="text-sm text-red-600 hover:bg-red-50 px-2 py-1 rounded font-medium">
                 {deleting ? 'Suppression…' : 'Confirmer la suppression'}
@@ -396,12 +401,14 @@ function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
             <button onClick={() => setConfirmDelete(true)} className="text-sm text-slate-400 hover:text-red-600 flex items-center gap-1.5">
               <Trash2 size={13} /> Supprimer
             </button>
-          )}
+          ))}
         </div>
         <div className="flex gap-2">
-          <button onClick={() => onEdit(detail)} className="btn-secondary flex items-center gap-1.5">
-            <Pencil size={13} /> Modifier
-          </button>
+          {isHR && (
+            <button onClick={() => onEdit(detail)} className="btn-secondary flex items-center gap-1.5">
+              <Pencil size={13} /> Modifier
+            </button>
+          )}
           <button onClick={onClose} className="btn-primary">Fermer</button>
         </div>
       </div>
@@ -410,6 +417,8 @@ function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
 }
 
 export default function Paies() {
+  const { user } = useAuth()
+  const isHR = ['admin', 'rh'].includes(user?.role)
   const [paies, setPaies] = useState([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null)
@@ -448,16 +457,18 @@ export default function Paies() {
     <Layout>
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold text-slate-900">Paies</h1>
+          <h1 className="text-2xl font-bold text-slate-900">{isHR ? 'Paies' : 'Mes bulletins de paie'}</h1>
           <div className="flex items-center gap-2">
             <TableConfigModal table="paies" />
-            <button onClick={openCreate} className="btn-primary flex items-center gap-2">
-              <Plus size={15} /> Nouvelle paie
-            </button>
+            {isHR && (
+              <button onClick={openCreate} className="btn-primary flex items-center gap-2">
+                <Plus size={15} /> Nouvelle paie
+              </button>
+            )}
           </div>
         </div>
 
-        <SyncPanel onSynced={load} />
+        {isHR && <SyncPanel onSynced={load} />}
 
         <DataTable
           table="paies"
@@ -465,7 +476,7 @@ export default function Paies() {
           data={paies}
           loading={loading}
           onRowClick={row => setSelected(row)}
-          searchFields={['status', 'number']}
+          searchFields={['status', 'number', 'total_with_charges_and_reimb', 'total_regular_amount']}
         />
       </div>
 

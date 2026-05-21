@@ -1,11 +1,11 @@
 import { Router } from 'express'
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireHROrAdmin } from '../middleware/auth.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 
 const router = Router()
-router.use(requireAuth)
+router.use(requireHROrAdmin)
 
 // ── Airtable sync config (consumed by Employees page)
 router.get('/sync-config', (req, res) => {

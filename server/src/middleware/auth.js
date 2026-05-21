@@ -34,3 +34,16 @@ export function requireAdmin(req, res, next) {
     next();
   });
 }
+
+export function requireHROrAdmin(req, res, next) {
+  requireAuth(req, res, () => {
+    if (!['admin', 'rh'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'Accès RH requis' });
+    }
+    next();
+  });
+}
+
+export function isHROrAdmin(user) {
+  return !!user && ['admin', 'rh'].includes(user.role);
+}

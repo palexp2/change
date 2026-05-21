@@ -7,7 +7,7 @@ import { readFileSync, statSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import os from 'os';
 import Stripe from 'stripe';
-import { postInvoicePaidJE, stripeInvoiceNetHtCents } from '../services/quickbooks.js';
+import { postPaymentDeposit, stripeInvoiceNetHtCents } from '../services/quickbooks.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
 
 const router = Router();
@@ -86,6 +86,34 @@ router.post('/factures/:id/clear-deferred-revenue', (req, res) => {
   res.json({ ok: true })
 })
 
+// POST /api/admin/factures/:id/clear-paid-status
+// Use case : facture marquée "Payé" via Stripe (paid_out_of_band ou similaire)
+// mais l'argent est réellement entré hors-Stripe (Interac, chèque, virement…).
+// Tant que paid_at est posé et que status='Payé', l'UI cache le bouton
+// « Paiement (hors Stripe) » → impossible d'enregistrer le vrai paiement.
+// Cette route remet paid_at/paid_amount/paid_charge_id/paid_payment_intent
+// à NULL et ramène status à 'À payer'/'En retard' pour rouvrir la facture
+// à la saisie d'un paiement manuel. Ne touche pas à QB ni aux colonnes
+// revenue_recognized_* / deferred_revenue_*.
+router.post('/factures/:id/clear-paid-status', (req, res) => {
+  const f = db.prepare('SELECT id, paid_at, due_date FROM factures WHERE id=?').get(req.params.id)
+  if (!f) return res.status(404).json({ error: 'Facture introuvable' })
+  if (!f.paid_at) return res.json({ ok: true, already_clean: true })
+  const today = new Date().toISOString().slice(0, 10)
+  const nextStatus = (f.due_date && f.due_date < today) ? 'En retard' : 'À payer'
+  db.prepare(`
+    UPDATE factures
+    SET paid_at = NULL,
+        paid_amount = NULL,
+        paid_charge_id = NULL,
+        paid_payment_intent = NULL,
+        status = CASE WHEN status IN ('Payé','Payée') THEN ? ELSE status END,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = ?
+  `).run(nextStatus, req.params.id)
+  res.json({ ok: true, status: nextStatus })
+})
+
 // POST /api/admin/factures/:id/clear-revenue-recognition
 // Symétrique de clear-deferred-revenue : efface les colonnes de constat de vente
 // (revenue_recognized_at, revenue_recognized_je_id) quand la JE QB référencée a
@@ -103,6 +131,129 @@ router.post('/factures/:id/clear-revenue-recognition', (req, res) => {
     WHERE id = ?
   `).run(req.params.id)
   res.json({ ok: true })
+})
+
+// Pattern « édition avancée » par table — schéma brut via PRAGMA table_info +
+// PATCH bypass. Aucune validation métier : assumé pour les admins.
+// Cache du schéma par process — les tables n'évoluent pas en runtime.
+const _schemaCache = new Map()
+function getTableSchema(tableName) {
+  if (_schemaCache.has(tableName)) return _schemaCache.get(tableName)
+  const cols = db.prepare(`PRAGMA table_info(${tableName})`).all().map(c => ({
+    name: c.name,
+    type: c.type,
+    notnull: !!c.notnull,
+    pk: !!c.pk,
+  }))
+  _schemaCache.set(tableName, cols)
+  return cols
+}
+
+// Construit la requête UPDATE depuis un body { col: value } en validant chaque
+// colonne contre PRAGMA. Renvoie { updates, params, applied, rejected }.
+function buildRawUpdate(tableName, body) {
+  const schemaByName = new Map(getTableSchema(tableName).map(c => [c.name, c]))
+  const updates = []
+  const params = []
+  const applied = {}
+  const rejected = {}
+  for (const [key, rawValue] of Object.entries(body || {})) {
+    if (key === 'id') { rejected[key] = 'id immuable'; continue }
+    const col = schemaByName.get(key)
+    if (!col) { rejected[key] = 'colonne inconnue'; continue }
+    let value = rawValue
+    if (value === '' || value === undefined) value = null
+    if (value !== null) {
+      if (col.type === 'INTEGER') {
+        if (typeof value === 'boolean') value = value ? 1 : 0
+        else {
+          const n = Number(value)
+          if (!Number.isFinite(n)) { rejected[key] = `valeur INTEGER invalide: ${rawValue}`; continue }
+          value = Math.trunc(n)
+        }
+      } else if (col.type === 'REAL') {
+        const n = Number(value)
+        if (!Number.isFinite(n)) { rejected[key] = `valeur REAL invalide: ${rawValue}`; continue }
+        value = n
+      } else {
+        value = String(value)
+      }
+    }
+    updates.push(`"${col.name}"=?`)
+    params.push(value)
+    applied[key] = value
+  }
+  return { updates, params, applied, rejected, hasUpdatedAt: schemaByName.has('updated_at') }
+}
+
+router.get('/factures/:id/raw-schema', (req, res) => {
+  const exists = db.prepare('SELECT id FROM factures WHERE id=?').get(req.params.id)
+  if (!exists) return res.status(404).json({ error: 'Facture introuvable' })
+  res.json({ columns: getTableSchema('factures') })
+})
+
+// PATCH /api/admin/factures/:id/raw — édition bypass de n'importe quelle colonne.
+// Aucun garde-fou : toucher paid_*, revenue_recognized_*, deferred_revenue_*
+// peut désynchroniser Stripe/QB.
+router.patch('/factures/:id/raw', (req, res) => {
+  const exists = db.prepare('SELECT id FROM factures WHERE id=?').get(req.params.id)
+  if (!exists) return res.status(404).json({ error: 'Facture introuvable' })
+
+  const { updates, params, applied, rejected, hasUpdatedAt } = buildRawUpdate('factures', req.body)
+  if (updates.length === 0) {
+    return res.status(400).json({ error: 'Aucune colonne valide à mettre à jour', rejected })
+  }
+  if (hasUpdatedAt && !('updated_at' in applied)) {
+    updates.push(`"updated_at"=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
+  }
+  params.push(req.params.id)
+  try {
+    db.prepare(`UPDATE factures SET ${updates.join(', ')} WHERE id=?`).run(...params)
+  } catch (err) {
+    return res.status(400).json({ error: err.message, rejected })
+  }
+
+  const row = db.prepare(`
+    SELECT f.*, co.name as company_name, p.name as project_name, o.order_number
+    FROM factures f
+    LEFT JOIN companies co ON f.company_id = co.id
+    LEFT JOIN projects p ON f.project_id = p.id
+    LEFT JOIN orders o ON f.order_id = o.id
+    WHERE f.id = ?
+  `).get(req.params.id)
+  emitEntity('facture', 'updated', req.params.id, row, req.user?.id)
+  res.json({ facture: row, applied, rejected })
+})
+
+router.get('/payments/:id/raw-schema', (req, res) => {
+  const exists = db.prepare('SELECT id FROM payments WHERE id=?').get(req.params.id)
+  if (!exists) return res.status(404).json({ error: 'Paiement introuvable' })
+  res.json({ columns: getTableSchema('payments') })
+})
+
+// PATCH /api/admin/payments/:id/raw — édition bypass d'une row payments.
+// Aucun garde-fou : toucher qb_deposit_id / qb_payment_id / qb_journal_entry_id
+// ou amount casse l'idempotence des retries QB et la traçabilité comptable.
+router.patch('/payments/:id/raw', (req, res) => {
+  const exists = db.prepare('SELECT id, facture_id FROM payments WHERE id=?').get(req.params.id)
+  if (!exists) return res.status(404).json({ error: 'Paiement introuvable' })
+
+  const { updates, params, applied, rejected, hasUpdatedAt } = buildRawUpdate('payments', req.body)
+  if (updates.length === 0) {
+    return res.status(400).json({ error: 'Aucune colonne valide à mettre à jour', rejected })
+  }
+  if (hasUpdatedAt && !('updated_at' in applied)) {
+    updates.push(`"updated_at"=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
+  }
+  params.push(req.params.id)
+  try {
+    db.prepare(`UPDATE payments SET ${updates.join(', ')} WHERE id=?`).run(...params)
+  } catch (err) {
+    return res.status(400).json({ error: err.message, rejected })
+  }
+
+  const row = db.prepare('SELECT * FROM payments WHERE id=?').get(req.params.id)
+  res.json({ payment: row, applied, rejected })
 })
 
 // POST /api/admin/factures/cleanup-supprimees
@@ -177,7 +328,7 @@ router.post('/users', async (req, res) => {
   if (!email || !name || !password || !role) {
     return res.status(400).json({ error: 'email, name, password, role are required' });
   }
-  const validRoles = ['admin', 'sales', 'support', 'ops'];
+  const validRoles = ['admin', 'sales', 'support', 'ops', 'rh'];
   if (!validRoles.includes(role)) {
     return res.status(400).json({ error: 'Invalid role' });
   }
@@ -202,7 +353,7 @@ router.put('/users/:id', async (req, res) => {
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const { name, email, role, active, password, employee_id } = req.body;
-  const validRoles = ['admin', 'sales', 'support', 'ops'];
+  const validRoles = ['admin', 'sales', 'support', 'ops', 'rh'];
   if (role && !validRoles.includes(role)) {
     return res.status(400).json({ error: 'Invalid role' });
   }
@@ -413,7 +564,7 @@ function listBackfillCandidates(cutoffDate) {
     SELECT f.id, f.invoice_id, f.document_number, f.document_date, f.kind,
            f.currency, f.amount_before_tax_cad, f.total_amount, f.status,
            f.deferred_revenue_at, f.revenue_recognized_at,
-           (SELECT COUNT(*) FROM payments p WHERE p.facture_id = f.id AND p.direction = 'in' AND p.method = 'stripe' AND (p.qb_journal_entry_id IS NOT NULL OR p.qb_payment_id IS NOT NULL)) AS posted_payments
+           (SELECT COUNT(*) FROM payments p WHERE p.facture_id = f.id AND p.direction = 'in' AND p.method = 'stripe' AND (p.qb_deposit_id IS NOT NULL OR p.qb_journal_entry_id IS NOT NULL OR p.qb_payment_id IS NOT NULL)) AS posted_payments
     FROM factures f
     WHERE f.invoice_id IS NOT NULL
       AND f.sync_source = 'Factures Stripe'
@@ -470,11 +621,11 @@ router.post('/stripe-backfill/process', async (req, res) => {
   const results = []
   for (const f of candidates) {
     try {
-      // Si une ligne payments orpheline existe déjà (sans qb_journal_entry_id, créée
+      // Si une ligne payments orpheline existe déjà (sans écriture QB, créée
       // par une tentative précédente qui a échoué côté QB), on la réutilise au lieu
       // de créer un doublon.
       const existing = db.prepare(
-        "SELECT id FROM payments WHERE facture_id = ? AND direction = 'in' AND method = 'stripe' AND qb_journal_entry_id IS NULL AND qb_payment_id IS NULL LIMIT 1"
+        "SELECT id FROM payments WHERE facture_id = ? AND direction = 'in' AND method = 'stripe' AND qb_deposit_id IS NULL AND qb_journal_entry_id IS NULL AND qb_payment_id IS NULL LIMIT 1"
       ).get(f.id)
 
       let paymentId = existing?.id
@@ -519,8 +670,8 @@ router.post('/stripe-backfill/process', async (req, res) => {
         try { invForJe = await stripe.invoices.retrieve(f.invoice_id) } catch {}
       }
       try {
-        const r = await postInvoicePaidJE(paymentId, invForJe ? { invoice: invForJe } : {})
-        results.push({ facture_id: f.id, document_number: f.document_number, payment_id: paymentId, qb_je: r.qb_journal_entry_id, qb_sales_receipt: r.qb_payment_id, credit: r.credit_account, reused: !!existing })
+        const r = await postPaymentDeposit(paymentId, invForJe ? { invoice: invForJe } : {})
+        results.push({ facture_id: f.id, document_number: f.document_number, payment_id: paymentId, qb_deposit: r.qb_deposit_id, qb_je: r.qb_journal_entry_id, qb_sales_receipt: r.qb_payment_id, credit: r.credit_account, reused: !!existing })
       } catch (qbErr) {
         results.push({ facture_id: f.id, document_number: f.document_number, payment_id: paymentId, qb_error: qbErr.message })
       }
@@ -533,10 +684,70 @@ router.post('/stripe-backfill/process', async (req, res) => {
     cutoff,
     dry_run: !!dry_run,
     processed: results.length,
-    success: results.filter(r => r.qb_je || r.qb_sales_receipt).length,
+    success: results.filter(r => r.qb_deposit || r.qb_je || r.qb_sales_receipt).length,
     qb_errors: results.filter(r => r.qb_error).length,
     other_errors: results.filter(r => r.error).length,
     results,
+  })
+})
+
+// POST /api/admin/import-cc-permissions
+// Body: { "<address>": { maxNumberOf...: number, ... }, ... }
+// Met à jour la colonne `permissions` (JSON) du serial_number correspondant
+// pour les contrôleurs centraux (produit "Contrôleur central%"). Les entrées
+// vides (`{}`) sont ignorées pour permettre des imports incrémentaux sans
+// écraser des permissions saisies manuellement.
+router.post('/import-cc-permissions', (req, res) => {
+  const payload = req.body
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return res.status(400).json({ error: 'Body doit être un objet { address: permissions }' })
+  }
+  const findStmt = db.prepare(`
+    SELECT sn.id, sn.serial, sn.address
+    FROM serial_numbers sn
+    LEFT JOIN products pr ON pr.id = sn.product_id
+    WHERE sn.address = ?
+      AND pr.name_fr LIKE 'Contrôleur central%'
+  `)
+  const updateStmt = db.prepare(`
+    UPDATE serial_numbers
+    SET permissions = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = ?
+  `)
+  const updated = []
+  const skippedEmpty = []
+  const notFound = []
+  const ambiguous = []
+  const tx = db.transaction(() => {
+    for (const [address, perms] of Object.entries(payload)) {
+      if (!perms || typeof perms !== 'object' || Object.keys(perms).length === 0) {
+        skippedEmpty.push(address)
+        continue
+      }
+      const rows = findStmt.all(String(address))
+      if (rows.length === 0) {
+        notFound.push(address)
+        continue
+      }
+      if (rows.length > 1) {
+        ambiguous.push({ address, count: rows.length })
+      }
+      for (const row of rows) {
+        updateStmt.run(JSON.stringify(perms), row.id)
+        updated.push({ address, serial: row.serial, id: row.id })
+      }
+    }
+  })
+  tx()
+  res.json({
+    updated_count: updated.length,
+    skipped_empty_count: skippedEmpty.length,
+    not_found_count: notFound.length,
+    ambiguous_count: ambiguous.length,
+    updated,
+    skipped_empty: skippedEmpty,
+    not_found: notFound,
+    ambiguous,
   })
 })
 

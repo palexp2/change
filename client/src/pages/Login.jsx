@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/auth.jsx'
 
 export default function Login() {
@@ -25,11 +25,13 @@ export default function Login() {
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-brand-600 rounded-2xl mb-4 shadow-lg">
-            <span className="text-white font-bold text-2xl">O</span>
-          </div>
-          <h1 className="text-3xl font-bold text-white">Orisha ERP</h1>
-          <p className="text-slate-400 mt-1">Système de gestion intégré</p>
+          <img
+            src="/erp/orisha-logo.png"
+            alt="Orisha"
+            className="mx-auto mb-3 h-16 w-auto drop-shadow-lg"
+          />
+          <p className="text-slate-300 text-lg font-medium">ERP</p>
+          <p className="text-slate-400 text-sm mt-1">Système de gestion intégré</p>
         </div>
 
         <div className="bg-white rounded-2xl shadow-2xl p-8">
@@ -74,13 +76,6 @@ export default function Login() {
               {isLoading ? 'Connexion...' : 'Se connecter'}
             </button>
           </form>
-
-          <p className="text-center text-xs text-slate-400 mt-6">
-            Première utilisation?{' '}
-            <Link to="/setup" className="text-brand-600 hover:underline">
-              Configurer l'application
-            </Link>
-          </p>
         </div>
       </div>
     </div>

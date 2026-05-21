@@ -47,8 +47,14 @@ describe('FactureDetail — Avant taxes en devise native', () => {
     }, target.id)
 
     assert.ok(detail.montant_avant_taxes != null, 'la facture test doit avoir montant_avant_taxes')
-    const native = parseFloat(detail.montant_avant_taxes)
-    const cad = Number(detail.amount_before_tax_cad)
+    // La ligne "Avant taxes" affiche stored − somme des rabais (cf.
+    // facture-detail-avant-taxes-after-discount.test.js). On retire les rabais
+    // pour comparer à la valeur effectivement rendue dans l'UI.
+    const discountSum = Array.isArray(detail.discounts)
+      ? detail.discounts.reduce((s, d) => s + (Number(d.amount) || 0), 0)
+      : 0
+    const native = parseFloat(detail.montant_avant_taxes) - discountSum
+    const cad = Number(detail.amount_before_tax_cad) - discountSum
 
     await page.goto(URL + '/factures/' + target.id, { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('[data-testid="facture-line-subtotal"]', { timeout: 10000 })

@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { syncStripePayouts, syncStripeBalanceTransactions, syncAllPayoutsBalanceTransactions, backfillRefundsToFactures, fixRefundDocumentNumbers } from '../services/stripe.js'
+import { syncStripePayouts, syncStripeBalanceTransactions, syncAllPayoutsBalanceTransactions, backfillRefundsToFactures, fixRefundDocumentNumbers, migrateRefundsToPayments } from '../services/stripe.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { buildDepositFromPayout, pushDepositFromPayout } from '../services/quickbooks.js'
 import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
@@ -78,8 +78,8 @@ router.post('/:stripeId/sync-transactions', async (req, res) => {
 // Preview the QB Deposit payload without sending
 router.get('/:stripeId/preview-deposit', async (req, res) => {
   try {
-    const { deposit, summary, warnings, lineAccounts } = await buildDepositFromPayout(req.params.stripeId)
-    res.json({ deposit, summary, warnings, lineAccounts })
+    const { deposit, summary, warnings, lineAccounts, lineRefs } = await buildDepositFromPayout(req.params.stripeId)
+    res.json({ deposit, summary, warnings, lineAccounts, lineRefs })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
@@ -120,6 +120,27 @@ router.post('/backfill-refunds', (req, res) => {
     res.json(result)
   } catch (e) {
     logSystemRun('sys_stripe_refunds_backfill', { status: 'error', error: e.message, duration_ms: Date.now() - started })
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// Migre les factures standalone "Remboursements Stripe" vers des lignes payments
+// (direction='out') attachées à la facture d'origine. Idempotent. dryRun=true pour
+// simuler. Voir services/stripe.js:migrateRefundsToPayments.
+router.post('/migrate-refunds-to-payments', (req, res) => {
+  const started = Date.now()
+  try {
+    const dryRun = req.body?.dryRun === true
+    const result = migrateRefundsToPayments({ dryRun })
+    logSystemRun('sys_stripe_refunds_migration', {
+      status: 'success',
+      result: `${result.migrated} migrés · ${result.skipped_payment_exists} déjà en payments · ${result.skipped_payout_reversal} pyr · ${result.skipped_zero_amount} 0$ · ${result.skipped_no_match} sans match sur ${result.total}${dryRun ? ' (dry-run)' : ''}`,
+      duration_ms: Date.now() - started,
+      triggerData: { dryRun },
+    })
+    res.json(result)
+  } catch (e) {
+    logSystemRun('sys_stripe_refunds_migration', { status: 'error', error: e.message, duration_ms: Date.now() - started })
     res.status(500).json({ error: e.message })
   }
 })

@@ -81,6 +81,72 @@ export async function listOwners() {
   return out
 }
 
+// ── Contacts & Lists ───────────────────────────────────────────────────
+// Utilisés pour pousser une liste statique HubSpot à partir d'un set
+// d'emails ERP (segment marketing). On ne crée pas de contacts — si un
+// email n'existe pas dans HubSpot il est rapporté dans `not_found`.
+
+/**
+ * Résout des emails en contact IDs HubSpot (batch). Les emails inconnus
+ * sont absents du résultat. Limite HubSpot : 100 par appel, donc on
+ * chunk. Retourne Map<email_lowercase, contactId>.
+ */
+export async function lookupContactsByEmail(emails) {
+  const out = new Map()
+  const unique = [...new Set(emails.map(e => String(e || '').trim().toLowerCase()).filter(Boolean))]
+  for (let i = 0; i < unique.length; i += 100) {
+    const chunk = unique.slice(i, i + 100)
+    const body = {
+      idProperty: 'email',
+      properties: ['email'],
+      inputs: chunk.map(email => ({ id: email })),
+    }
+    const data = await hsFetch('/crm/v3/objects/contacts/batch/read', { method: 'POST', body })
+    for (const result of data?.results || []) {
+      const email = result.properties?.email
+      if (email) out.set(email.toLowerCase(), result.id)
+    }
+  }
+  return out
+}
+
+/**
+ * Crée une liste statique de contacts dans HubSpot. `objectTypeId` 0-1
+ * = contacts. `processingType: MANUAL` = liste statique (par opposition
+ * à DYNAMIC qui se peuple via critères HubSpot).
+ */
+export async function createStaticContactList(name) {
+  const body = { name, objectTypeId: '0-1', processingType: 'MANUAL' }
+  const data = await hsFetch('/crm/v3/lists/', { method: 'POST', body })
+  return data?.list?.listId || data?.listId
+}
+
+/**
+ * Ajoute des contacts (par recordIds = vids) à une liste statique.
+ * HubSpot accepte jusqu'à 100 par appel donc on chunk.
+ */
+export async function addContactsToList(listId, contactIds) {
+  let added = 0
+  for (let i = 0; i < contactIds.length; i += 100) {
+    const chunk = contactIds.slice(i, i + 100)
+    const data = await hsFetch(`/crm/v3/lists/${listId}/memberships/add`, {
+      method: 'PUT',
+      body: chunk,
+    })
+    added += (data?.recordIdsAdded?.length ?? chunk.length)
+  }
+  return added
+}
+
+/**
+ * Retourne l'ID du portail HubSpot (utilisé pour construire l'URL de la
+ * liste dans l'UI HubSpot).
+ */
+export async function getPortalId() {
+  const data = await hsFetch('/account-info/v3/details')
+  return data?.portalId
+}
+
 /**
  * Recherche les tâches modifiées après `sinceIso`. Pagine entièrement.
  * `sinceIso` peut être null pour un premier sync complet.

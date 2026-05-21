@@ -70,4 +70,46 @@ describe("Dashboard — Valeur de l'inventaire", () => {
       )
     }
   })
+
+  test('Le total Pièces matche la vue « Valeur inventaire » de la table products', async () => {
+    // La carte du dashboard doit afficher exactement la même somme que celle
+    // qu'on obtiendrait en additionnant valeur_inventaire pour les produits
+    // filtrés par la vue « Valeur inventaire » (pill 997d024c) :
+    //   - type ∉ {JWT, SYSTEM, PIÈCE OBSOLÈTE, PRODUIT OBSOLÈTE}
+    //   - type non vide
+    //   - besoin_d_un_numero_de_serie ≠ '1.0'
+    //   - deleted_at IS NULL (filtré côté API products)
+    await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
+
+    const data = await page.evaluate(async () => {
+      const tok = localStorage.getItem('erp_token')
+      const dash = await (await fetch('/erp/api/dashboard', { headers: { Authorization: `Bearer ${tok}` } })).json()
+      const prods = await (await fetch('/erp/api/products?limit=all', { headers: { Authorization: `Bearer ${tok}` } })).json()
+      const list = Array.isArray(prods) ? prods : (prods.data || prods.items || [])
+      const EXCLUDED = new Set(['JWT', 'SYSTEM', 'PIÈCE OBSOLÈTE', 'PRODUIT OBSOLÈTE'])
+      const matching = list.filter(p =>
+        p.besoin_d_un_numero_de_serie !== '1.0' &&
+        p.type != null && String(p.type).trim() !== '' &&
+        !EXCLUDED.has(p.type)
+      )
+      const expected = matching.reduce((s, p) => s + (Number(p.valeur_inventaire) || 0), 0)
+      return {
+        dashTotal: dash?.inventory?.valuation?.pieces?.total_value || 0,
+        dashCount: dash?.inventory?.valuation?.pieces?.count || 0,
+        expectedTotal: expected,
+        expectedCount: matching.length,
+      }
+    })
+
+    // Tolérance 0,01 $ pour arrondi flottant
+    assert.ok(
+      Math.abs(data.dashTotal - data.expectedTotal) < 0.01,
+      `Pièces (dashboard) = ${data.dashTotal}, attendu (vue) = ${data.expectedTotal}. Les filtres ou la source diffèrent.`
+    )
+    assert.equal(
+      data.dashCount,
+      data.expectedCount,
+      `Nombre de produits différent : dashboard=${data.dashCount}, vue=${data.expectedCount}`
+    )
+  })
 })

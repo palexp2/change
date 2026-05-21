@@ -663,6 +663,9 @@ export function initSchema() {
       summary TEXT,
       next_steps TEXT,
       notes TEXT,
+      heard_about TEXT,
+      red_flags TEXT,
+      created_by TEXT,
       raw_fields TEXT,
       airtable_created_at TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -753,6 +756,7 @@ export function initSchema() {
     'ALTER TABLE serial_numbers ADD COLUMN manufacture_date TEXT',
     'ALTER TABLE serial_numbers ADD COLUMN last_programmed_date TEXT',
     'ALTER TABLE serial_numbers ADD COLUMN manufacture_value REAL DEFAULT 0',
+    'ALTER TABLE serial_numbers ADD COLUMN permissions TEXT',
     'ALTER TABLE users ADD COLUMN ftp_username TEXT',
     'ALTER TABLE users ADD COLUMN phone_number TEXT',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_users_ftp_username ON users(ftp_username) WHERE ftp_username IS NOT NULL',
@@ -791,6 +795,28 @@ export function initSchema() {
     'ALTER TABLE subscriptions ADD COLUMN stripe_url TEXT',
     'ALTER TABLE subscriptions ADD COLUMN amount_after_discount REAL',
     'ALTER TABLE sale_receipts ADD COLUMN quickbooks_id TEXT',
+    'ALTER TABLE sale_receipts ADD COLUMN source TEXT DEFAULT \'upload\'',
+    'ALTER TABLE sale_receipts ADD COLUMN gmail_message_id TEXT',
+    'CREATE INDEX IF NOT EXISTS idx_sale_receipts_gmail_msg ON sale_receipts(gmail_message_id) WHERE gmail_message_id IS NOT NULL',
+    // Type d'objet QB poussé : 'purchase' (Purchase, déjà payé) ou 'bill' (Bill, à payer).
+    // NULL pour les anciens enregistrements pré-toggle = traités comme 'purchase'.
+    'ALTER TABLE sale_receipts ADD COLUMN quickbooks_type TEXT',
+    // Soft delete : on conserve la ligne (au moins le gmail_message_id) pour éviter
+    // que syncInvoiceLabel ne réimporte le même email à chaque tour, mais le fichier
+    // disque est purgé et la ligne disparaît du UI (filtre `deleted_at IS NULL`).
+    'ALTER TABLE sale_receipts ADD COLUMN deleted_at TEXT',
+    // qualification_calls — colonnes additionnelles pour le module d'appel guidé
+    'ALTER TABLE qualification_calls ADD COLUMN heard_about TEXT',
+    'ALTER TABLE qualification_calls ADD COLUMN red_flags TEXT',
+    'ALTER TABLE qualification_calls ADD COLUMN created_by TEXT',
+    // Devis live durant l'appel — onglet Quote dans la slide Proposal.
+    'ALTER TABLE qualification_calls ADD COLUMN quote_currency TEXT DEFAULT \'USD\'',
+    'ALTER TABLE qualification_calls ADD COLUMN quote_helper_count INTEGER DEFAULT 0',
+    'ALTER TABLE qualification_calls ADD COLUMN quote_chief_count INTEGER DEFAULT 0',
+    // Paiement Stripe effectué pendant l'appel — set par /subscribe-card, pas par le client.
+    'ALTER TABLE qualification_calls ADD COLUMN quote_paid_at TEXT',
+    'ALTER TABLE qualification_calls ADD COLUMN quote_paid_email TEXT',
+    'ALTER TABLE qualification_calls ADD COLUMN quote_subscription_id TEXT',
     // stock_movements — Airtable sync enhancements
     'ALTER TABLE stock_movements ADD COLUMN airtable_id TEXT',
     'ALTER TABLE stock_movements ADD COLUMN unit_cost REAL',
@@ -1357,6 +1383,27 @@ export function initSchema() {
     );
   `)
 
+  // Fichiers publics — uploadés par n'importe quel utilisateur authentifié,
+  // accessibles ensuite via une URL opaque /erp/p/<token>/<original_name> sans auth.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS public_files (
+      id TEXT PRIMARY KEY,
+      token TEXT UNIQUE NOT NULL,
+      original_name TEXT NOT NULL,
+      stored_name TEXT NOT NULL,
+      mime_type TEXT,
+      size INTEGER,
+      folder TEXT DEFAULT '',
+      description TEXT,
+      tags TEXT DEFAULT '[]',
+      uploaded_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+  `)
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_public_files_folder ON public_files(folder)') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_public_files_created ON public_files(created_at DESC)') } catch {}
+
   try { db.exec("ALTER TABLE tasks ADD COLUMN hubspot_task_id TEXT") } catch {}
   try { db.exec("ALTER TABLE tasks ADD COLUMN last_hubspot_sync TEXT") } catch {}
   try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_hubspot_id ON tasks(hubspot_task_id) WHERE hubspot_task_id IS NOT NULL") } catch {}
@@ -1472,6 +1519,11 @@ export function initSchema() {
   try { db.exec('ALTER TABLE products ADD COLUMN supplier_company_id TEXT REFERENCES companies(id)') } catch {}
   // Destinataire par défaut pour l'envoi du bon de commande (sinon premier contact fournisseur)
   try { db.exec('ALTER TABLE products ADD COLUMN order_email TEXT') } catch {}
+  // Copies locales des PDFs d'installation/remplacement (chemin relatif à uploads/, ex: products/docs/<id>-installation-fr.pdf)
+  try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_installation_fr_local TEXT') } catch {}
+  try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_installation_en_local TEXT') } catch {}
+  try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_remplacement_fr_local TEXT') } catch {}
+  try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_remplacement_en_local TEXT') } catch {}
   // Lien purchases.supplier (texte libre hérité d'Airtable) → companies
   try { db.exec('ALTER TABLE purchases ADD COLUMN supplier_company_id TEXT REFERENCES companies(id)') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_supplier_company ON purchases(supplier_company_id)') } catch {}
@@ -1643,6 +1695,41 @@ export function initSchema() {
   if (ticketHasNotes) {
     db.exec('ALTER TABLE tickets DROP COLUMN notes')
     console.log('✅ Tickets: dropped unused notes column')
+  }
+
+  // Retirer le CHECK constraint sur users.role pour permettre l'ajout de nouveaux
+  // rôles (rh d'abord) sans devoir migrer la table à chaque fois. Validation
+  // côté application dans server/src/routes/admin.js (validRoles).
+  const usersDef = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get()
+  if (usersDef && usersDef.sql.includes('CHECK(role IN')) {
+    const cols = db.pragma('table_info(users)').map(c => c.name)
+    db.exec('PRAGMA foreign_keys = OFF')
+    db.exec(`
+      CREATE TABLE users_new (
+        id TEXT PRIMARY KEY,
+        email TEXT NOT NULL,
+        password_hash TEXT NOT NULL,
+        name TEXT NOT NULL,
+        role TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+        ftp_username TEXT,
+        phone_number TEXT,
+        hubspot_owner_id TEXT,
+        employee_id TEXT REFERENCES employees(id),
+        timesheet_default_mode TEXT DEFAULT 'simple',
+        UNIQUE(email)
+      );
+    `)
+    const knownCols = ['id','email','password_hash','name','role','active','created_at','ftp_username','phone_number','hubspot_owner_id','employee_id','timesheet_default_mode']
+    const presentCols = knownCols.filter(c => cols.includes(c))
+    const colList = presentCols.map(c => '"' + c + '"').join(', ')
+    db.exec(`INSERT INTO users_new (${colList}) SELECT ${colList} FROM users`)
+    db.exec('DROP TABLE users')
+    db.exec('ALTER TABLE users_new RENAME TO users')
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_employee ON users(employee_id) WHERE employee_id IS NOT NULL')
+    db.exec('PRAGMA foreign_keys = ON')
+    console.log('✅ Users: CHECK constraint on role removed (rh now accepted)')
   }
 
   // Installation follow-up email — 21 days after first shipment. Set once per company
@@ -2103,11 +2190,53 @@ export function initSchema() {
   try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_stripe_btx ON payments(stripe_balance_tx_id) WHERE stripe_balance_tx_id IS NOT NULL") } catch {}
   try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_stripe_refund ON payments(stripe_refund_id) WHERE stripe_refund_id IS NOT NULL") } catch {}
 
+  // Règles de visibilité conditionnelle sur les champs des pages détail.
+  // Configurées globalement (admin), évaluées côté client à partir du record
+  // courant. `context` = nom de la page/entité (ex. 'facture', 'order'),
+  // `field_id` = identifiant stable du champ (passé via <FieldGuard fieldId>),
+  // `conditions_json` = arbre AND/OR sérialisé. Si une règle matche, le champ
+  // est masqué.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS field_visibility_rules (
+      id TEXT PRIMARY KEY,
+      context TEXT NOT NULL,
+      field_id TEXT NOT NULL,
+      conditions_json TEXT NOT NULL,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_field_vis_rules_context ON field_visibility_rules(context, field_id)') } catch {}
+
   // QB Invoice ID séparé : on crée une Invoice QB + un Receive Payment qui la solde.
   // qb_payment_id porte le Payment, qb_invoice_id porte l'Invoice. Permet le LinkedTxn
   // Payment → Invoice (et Deposit → Payment) supporté par l'API QB.
   // Pour les refunds : qb_invoice_id porte le Credit Memo lié.
   try { db.exec('ALTER TABLE payments ADD COLUMN qb_invoice_id TEXT') } catch {}
+
+  // Deposit QB pour les paiements hors Stripe (chèque, virement, Interac, comptant).
+  // Remplace l'ancienne JE / SalesReceipt — le Deposit débite la banque réelle (BNC
+  // ou Venn USD selon devise) et crédite AR / 23900 / 41000 selon l'état de la facture.
+  // Les rows historiques gardent qb_journal_entry_id ou qb_payment_id.
+  try { db.exec('ALTER TABLE payments ADD COLUMN qb_deposit_id TEXT') } catch {}
+
+  // qb_skipped : flag explicite "écriture QB déjà postée manuellement, ne pas
+  // re-poster". Posé à la création du payment via skip_qb=true (cas typique :
+  // facture Stripe paid-out-of-band dont l'encaissement Interac/chèque a été
+  // saisi à la main par le comptable dans QB). Sans ce flag, on ne pourrait
+  // pas distinguer "QB échoué à poster, retry possible" de "QB intentionnellement
+  // skip" — le bouton Retry afficherait dans les deux cas.
+  try { db.exec('ALTER TABLE payments ADD COLUMN qb_skipped INTEGER DEFAULT 0') } catch {}
+
+  // Compte crédité par l'écriture QB liée — capturé depuis QB au moment de la
+  // liaison manuelle (suggestions: Deposit/JE/SR). Permet de tracer si l'argent
+  // a été crédité aux Revenus perçus d'avance (23900), au compte de ventes
+  // (40000), aux Revenus de service (41000) ou aux Comptes clients (12000),
+  // sans avoir à rouvrir QB. Le name est dénormalisé pour le rendu, l'id permet
+  // de pointer vers le compte en QB si besoin.
+  try { db.exec('ALTER TABLE payments ADD COLUMN qb_credit_account_id TEXT') } catch {}
+  try { db.exec('ALTER TABLE payments ADD COLUMN qb_credit_account_name TEXT') } catch {}
 
   // Migration : suppression de la vue virtuelle « Tous ». Pour chaque table sans
   // aucune pill, on crée une pill par défaut basée sur la config admin existante,
@@ -2162,6 +2291,109 @@ export function initSchema() {
     }
   } catch (e) {
     console.warn('⚠️  Migration mois_du_document:', e.message)
+  }
+
+  // Backfill : remonter l'adresse de livraison du client jusqu'aux orders puis
+  // aux shipments quand elle n'est pas définie. Idempotent.
+  // Étape 1 — orders sans address_id : on prend l'adresse Livraison de
+  // l'entreprise rattachée (ou la 1ère adresse non typée à défaut).
+  try {
+    const r1 = db.prepare(`
+      UPDATE orders
+         SET address_id = (
+           SELECT a.id FROM adresses a
+            WHERE a.company_id = orders.company_id
+            ORDER BY (CASE WHEN a.address_type = 'Livraison' THEN 0 ELSE 1 END), a.created_at DESC
+            LIMIT 1
+         )
+       WHERE orders.address_id IS NULL
+         AND orders.company_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM adresses a WHERE a.company_id = orders.company_id)
+    `).run()
+    if (r1.changes > 0) console.log(`✅ Orders: backfilled address_id sur ${r1.changes} commande(s) (livraison entreprise)`)
+  } catch (e) {
+    console.warn('⚠️  Backfill orders.address_id:', e.message)
+  }
+  // Étape 2 — shipments sans address_id : on copie celle de la commande parente.
+  try {
+    const r2 = db.prepare(`
+      UPDATE shipments
+         SET address_id = (SELECT address_id FROM orders WHERE orders.id = shipments.order_id)
+       WHERE shipments.address_id IS NULL
+         AND EXISTS (SELECT 1 FROM orders WHERE orders.id = shipments.order_id AND orders.address_id IS NOT NULL)
+    `).run()
+    if (r2.changes > 0) console.log(`✅ Shipments: backfilled address_id sur ${r2.changes} envoi(s)`)
+  } catch (e) {
+    console.warn('⚠️  Backfill shipments.address_id:', e.message)
+  }
+
+  // Multi-entreprise par contact : table de jointure. `contacts.company_id`
+  // reste comme cache de l'entreprise principale (is_primary=1) pour ne pas
+  // casser les requêtes existantes.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS contact_companies (
+      id TEXT PRIMARY KEY,
+      contact_id TEXT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+      company_id TEXT NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      role TEXT,
+      is_primary INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      UNIQUE(contact_id, company_id)
+    )
+  `)
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_contact_companies_contact ON contact_companies(contact_id)') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_contact_companies_company ON contact_companies(company_id)') } catch {}
+  // Un seul `is_primary=1` par contact.
+  try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_companies_primary ON contact_companies(contact_id) WHERE is_primary = 1') } catch {}
+
+  // Backfill : pour chaque contact avec company_id non NULL, créer la ligne
+  // de jointure principale si elle manque encore.
+  try {
+    const r = db.prepare(`
+      INSERT OR IGNORE INTO contact_companies (id, contact_id, company_id, is_primary)
+      SELECT lower(hex(randomblob(16))), ct.id, ct.company_id, 1
+      FROM contacts ct
+      WHERE ct.company_id IS NOT NULL
+        AND ct.deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM contact_companies cc
+          WHERE cc.contact_id = ct.id AND cc.company_id = ct.company_id
+        )
+    `).run()
+    if (r.changes > 0) console.log(`✅ contact_companies: backfilled ${r.changes} liens (entreprise principale)`)
+  } catch (e) {
+    console.warn('⚠️  Backfill contact_companies:', e.message)
+  }
+
+  // Backfill : recalcule balance_due/status pour les factures non payées par
+  // Stripe (paid_at IS NULL) qui ont au moins un paiement local "in". Cas
+  // typique : facture Stripe acquittée par Interac/virement/chèque — le webhook
+  // Stripe gardait balance_due au montant total parce qu'il ignore le paiement
+  // local. Import async pour casser le cycle (factureBalance importe db).
+  try {
+    const candidates = db.prepare(`
+      SELECT DISTINCT f.id
+      FROM factures f
+      JOIN payments p ON p.facture_id = f.id
+      WHERE f.paid_at IS NULL
+        AND p.direction = 'in'
+    `).all()
+    if (candidates.length > 0) {
+      import('../services/factureBalance.js').then(({ recomputeFactureBalance }) => {
+        let fixed = 0
+        for (const c of candidates) {
+          const before = db.prepare('SELECT balance_due, status FROM factures WHERE id=?').get(c.id)
+          recomputeFactureBalance(c.id)
+          const after = db.prepare('SELECT balance_due, status FROM factures WHERE id=?').get(c.id)
+          if (Number(before?.balance_due) !== Number(after?.balance_due) || before?.status !== after?.status) {
+            fixed++
+          }
+        }
+        if (fixed > 0) console.log(`✅ Factures: backfilled balance_due/status sur ${fixed} facture(s) avec paiement hors Stripe`)
+      }).catch(e => console.warn('⚠️  Backfill factures balance_due:', e.message))
+    }
+  } catch (e) {
+    console.warn('⚠️  Backfill factures balance_due (candidats):', e.message)
   }
 
   console.log('Database schema initialized');

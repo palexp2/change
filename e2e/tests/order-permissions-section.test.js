@@ -1,7 +1,6 @@
-// Smoke test: section "Permissions" sur OrderDetail —
-//   - liste les items dont le produit est de type 'JWT'
-//   - affiche l'adresse du contrôleur opérationnel du client
-//   - expose un bouton "Configurer" pointant vers orisha-config://configure?controller=<address>
+// Régression : la section "Permissions" (items JWT + contrôleur + bouton
+// Configurer) a été retirée de OrderDetail. Le test vérifie qu'elle ne réapparaît
+// pas, même pour une commande qui combine items JWT + contrôleur opérationnel.
 
 const { test, describe, before, after } = require('node:test')
 const assert = require('node:assert/strict')
@@ -20,7 +19,7 @@ async function login(page) {
   await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 15000 })
 }
 
-describe('OrderDetail — section Permissions', () => {
+describe('OrderDetail — section Permissions retirée', () => {
   let browser, ctx, page
 
   before(async () => {
@@ -32,9 +31,7 @@ describe('OrderDetail — section Permissions', () => {
 
   after(async () => { await browser?.close() })
 
-  test('un order avec items JWT + contrôleur opérationnel affiche la section et le bouton Configurer', async () => {
-    // Trouve une commande avec au moins un item JWT et un contrôleur opérationnel.
-    // On scanne les commandes récentes jusqu'à matcher.
+  test('une commande avec items JWT + contrôleur opérationnel n\'affiche plus la section Permissions ni le bouton Configurer', async () => {
     const found = await page.evaluate(async () => {
       const tok = localStorage.getItem('erp_token')
       const list = await fetch('/erp/api/orders?limit=200', {
@@ -46,13 +43,7 @@ describe('OrderDetail — section Permissions', () => {
         }).then(r => r.json())
         const hasJwt = (detail.items || []).some(i => i.product_type === 'JWT')
         const hasController = Array.isArray(detail.central_controllers) && detail.central_controllers.length > 0
-        if (hasJwt && hasController) {
-          return {
-            id: o.id,
-            jwtCount: detail.items.filter(i => i.product_type === 'JWT').length,
-            address: detail.central_controllers[0].address,
-          }
-        }
+        if (hasJwt && hasController) return { id: o.id }
       }
       return null
     })
@@ -61,18 +52,15 @@ describe('OrderDetail — section Permissions', () => {
 
     await page.goto(`${URL}/orders/${found.id}`, { waitUntil: 'networkidle' })
 
-    // Le titre "Permissions (n)" doit être présent.
-    const heading = page.locator(`h2:has-text("Permissions (${found.jwtCount})")`)
-    await heading.waitFor({ state: 'visible', timeout: 5000 })
+    // On attend le rendu de l'en-tête pour s'assurer que la page est bien chargée.
+    await page.locator('text=/Créée le /').first().waitFor({ state: 'visible', timeout: 5000 })
 
-    // L'adresse du contrôleur doit apparaître textuellement dans le header de la section.
-    await page.locator(`text=${found.address}`).first().waitFor({ state: 'visible', timeout: 5000 })
+    // Aucun titre "Permissions (...)".
+    const permHeadings = await page.locator('h2', { hasText: /^Permissions \(/ }).count()
+    assert.equal(permHeadings, 0, `attendu 0 section Permissions, trouvé ${permHeadings}`)
 
-    // Un bouton "Configurer" pointant vers orisha-config:// doit exister.
-    const cfgLink = page.locator('a[href^="orisha-config://configure"]').first()
-    await cfgLink.waitFor({ state: 'visible', timeout: 5000 })
-    const href = await cfgLink.getAttribute('href')
-    assert.match(href, /^orisha-config:\/\/configure\?controller=/)
-    assert.ok(href.includes(encodeURIComponent(found.address)), `href doit contenir l'adresse encodée du contrôleur : ${href}`)
+    // Aucun lien orisha-config://configure.
+    const cfgLinks = await page.locator('a[href^="orisha-config://configure"]').count()
+    assert.equal(cfgLinks, 0, `attendu 0 lien Configurer, trouvé ${cfgLinks}`)
   })
 })

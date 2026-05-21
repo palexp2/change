@@ -1,0 +1,3776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Orisha qualification guide</title>
+<script src="https://js.stripe.com/v3/"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&family=Poppins:ital,wght@0,300;0,400;0,500;0,600;1,300&display=swap');
+
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;}
+body{font-family:'Poppins',sans-serif;background:#f5f5f5;color:#555;}
+
+/* ===== TOPBAR ===== */
+.topbar{
+  background:#fff;border-bottom:1px solid #e8e8e8;
+  padding:0 2rem;height:64px;
+  display:flex;align-items:center;justify-content:space-between;
+  position:sticky;top:0;z-index:10;
+}
+.logo{font-family:'Rubik',sans-serif;font-size:19px;font-weight:800;letter-spacing:-0.01em;display:flex;align-items:center;gap:8px;}
+.logo span{color:#2EAA4A;}
+.logo-img{height:36px;width:auto;display:block;}
+.topbar-right{display:flex;align-items:center;gap:16px;}
+.topbar-tag{font-size:11px;font-weight:500;color:#2EAA4A;background:#E8F8ED;padding:5px 13px;border-radius:20px;}
+.kbd-hint{font-size:11px;color:#888;display:flex;align-items:center;gap:6px;}
+.kbd{
+  font-family:'Rubik',sans-serif;font-size:10px;font-weight:600;
+  background:#f0f0f0;border:1px solid #ddd;border-bottom-width:2px;
+  border-radius:4px;padding:2px 6px;color:#555;min-width:20px;text-align:center;
+}
+
+/* ===== PROGRESS BAR ===== */
+.progress-bar{
+  height:3px;background:#f0f0f0;position:sticky;top:64px;z-index:9;
+}
+.progress-fill{
+  height:100%;background:#2EAA4A;transition:width 0.3s ease;
+}
+
+/* ===== LAYOUT ===== */
+.layout{display:grid;grid-template-columns:260px 1fr;min-height:calc(100vh - 67px);}
+.layout.focus{grid-template-columns:0 1fr;}
+.layout.focus .sidebar{overflow:hidden;opacity:0;pointer-events:none;}
+
+/* Focus mode: hide topbar + progress bar */
+body.focus-mode .topbar,
+body.focus-mode .progress-bar{display:none;}
+body.focus-mode .layout{min-height:100vh;}
+
+/* ===== SIDEBAR ===== */
+.sidebar{
+  background:#fff;border-right:1px solid #e8e8e8;
+  padding:2rem 0 1.5rem;
+  display:flex;flex-direction:column;
+  transition:opacity 0.2s;
+  overflow-y:auto;
+}
+.sidebar-label{
+  font-size:10px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;
+  color:#aaa;padding:0 1.5rem;margin-bottom:1rem;
+}
+.nav-item{
+  display:flex;align-items:center;gap:12px;
+  padding:12px 1.5rem;cursor:pointer;
+  transition:background 0.15s;
+  border-left:3px solid transparent;
+  position:relative;
+}
+.nav-item:hover{background:#f5f5f5;}
+.nav-item.active{background:#E8F8ED;border-left-color:#2EAA4A;}
+.nav-item.done{opacity:0.7;}
+.nav-num{
+  font-family:'Rubik',sans-serif;font-size:11px;font-weight:700;
+  width:26px;height:26px;border-radius:50%;
+  background:#f0f0f0;display:flex;align-items:center;justify-content:center;
+  color:#999;flex-shrink:0;
+}
+.nav-item.active .nav-num{background:#2EAA4A;color:#fff;}
+.nav-item.done .nav-num{background:#2EAA4A;color:#fff;}
+.nav-item.done .nav-num::before{content:'✓';font-size:12px;}
+.nav-item.done .nav-num .num-text{display:none;}
+.nav-text{font-size:13px;font-weight:400;color:#666;line-height:1.4;}
+.nav-item.active .nav-text{color:#555;font-weight:600;}
+.nav-duration{
+  display:none;
+}
+
+.sidebar-footer{
+  margin-top:auto;padding:1.25rem 1.5rem;border-top:1px solid #f0f0f0;
+  font-size:11px;color:#888;line-height:1.8;
+}
+.sidebar-footer kbd{
+  font-family:'Rubik',sans-serif;font-size:9px;
+  background:#f5f5f5;border:1px solid #e0e0e0;border-radius:3px;
+  padding:1px 5px;color:#666;
+}
+
+/* ===== MAIN ===== */
+.main{
+  padding:2.5rem 3rem 2rem;
+  display:flex;flex-direction:column;background:#fff;
+  min-width:0;
+}
+
+.step-header{
+  display:flex;align-items:baseline;justify-content:space-between;
+  margin-bottom:0.75rem;gap:1rem;
+}
+/* Vue client (slide view) : on cache l'eyebrow (Step X · Y) et le step-header
+   au complet, le client n'a pas besoin de la numérotation interne. */
+html:not(.assistant-mode) .step-header{display:none;}
+.step-eyebrow{
+  font-size:11px;font-weight:600;color:#999;
+  letter-spacing:0.12em;text-transform:uppercase;
+}
+.step-duration{
+  display:none;
+}
+.step-duration::before{content:'⏱';font-size:13px;}
+
+.page-title{
+  font-family:'Rubik',sans-serif;font-size:32px;font-weight:800;
+  line-height:1.15;margin-bottom:2.5rem;letter-spacing:-0.015em;
+  color:#2EAA4A;
+}
+
+/* ===== COACHING NOTE (top banner) ===== */
+.coach-banner{
+  background:linear-gradient(90deg,#F0FAF3 0%,#F7FCF9 100%);
+  border:1px solid #D4EBD9;border-left:3px solid #2EAA4A;
+  border-radius:8px;padding:0.85rem 1.1rem;
+  display:flex;align-items:flex-start;gap:10px;
+  margin-bottom:1.5rem;
+}
+.coach-banner-icon{
+  font-size:14px;color:#2EAA4A;flex-shrink:0;margin-top:1px;
+}
+.coach-banner-text{
+  font-size:12.5px;color:#2d6a3f;line-height:1.55;
+  font-style:italic;font-weight:400;
+}
+.coach-banner-label{
+  font-style:normal;font-weight:600;color:#1a7a32;
+  margin-right:4px;
+}
+
+/* ===== COLUMNS ===== */
+.content-cols{display:grid;grid-template-columns:1.5fr 1fr;gap:2.5rem;}
+.content-cols-equal{display:grid;grid-template-columns:1fr 1fr;gap:2rem;}
+.content-cols-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1.5rem;}
+
+.section-label{
+  font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;
+  color:#2EAA4A;margin-bottom:1rem;
+  display:flex;align-items:center;gap:8px;
+}
+.section-label-count{
+  font-family:'Rubik',sans-serif;font-size:10px;color:#999;font-weight:500;
+}
+
+/* ===== QUESTIONS (interactive) ===== */
+.q-list{list-style:none;display:flex;flex-direction:column;gap:4px;}
+.q-list li{
+  font-size:14px;color:#555;line-height:1.55;font-weight:400;
+  display:flex;align-items:flex-start;gap:12px;
+  padding:12px 14px;border-radius:8px;
+  cursor:pointer;transition:background 0.12s;
+  user-select:none;
+}
+.q-list li:hover{background:#f7f7f7;}
+.q-check{
+  width:18px;height:18px;border:1.5px solid #ccc;border-radius:4px;
+  flex-shrink:0;margin-top:1px;
+  display:flex;align-items:center;justify-content:center;
+  transition:all 0.15s;
+}
+.q-list li.checked .q-check{background:#2EAA4A;border-color:#2EAA4A;}
+.q-list li.checked .q-check::after{content:'✓';color:#fff;font-size:12px;font-weight:700;}
+.q-text{flex:1;}
+
+/* ===== SIGNALS ===== */
+.signals{display:flex;flex-direction:column;gap:8px;}
+.signal{
+  font-size:13px;padding:10px 14px;border-radius:8px;font-weight:500;
+  display:flex;align-items:center;gap:10px;line-height:1.5;
+}
+.signal.go{background:#E8F8ED;color:#1a7a32;}
+.signal.stop{background:#FEECEC;color:#b91c1c;}
+.signal-icon{font-weight:700;flex-shrink:0;}
+
+/* ===== LIGHT LIST (not interactive) ===== */
+.light-list{list-style:none;display:flex;flex-direction:column;gap:12px;}
+.light-list li{
+  font-size:14px;color:#444;line-height:1.65;font-weight:400;
+  display:flex;align-items:flex-start;gap:11px;padding:2px 0;
+}
+.light-list li::before{
+  content:'';width:6px;height:6px;border-radius:50%;
+  background:#2EAA4A;margin-top:9px;flex-shrink:0;
+}
+
+/* ===== CARDS ===== */
+.card{
+  border:1px solid #f0f0f0;border-radius:12px;padding:1.5rem 1.75rem;
+  display:flex;flex-direction:column;gap:14px;background:#fff;
+  transition:border-color 0.15s,box-shadow 0.15s;
+}
+.card:hover{border-color:#c8e6d0;}
+.card.featured{border:2px solid #2EAA4A;box-shadow:0 4px 16px rgba(46,170,74,0.08);}
+.card-head{display:flex;justify-content:space-between;align-items:center;gap:12px;}
+.card-title-row{display:flex;align-items:center;gap:12px;}
+.card-icon{width:36px;height:36px;flex-shrink:0;}
+.card-name{font-family:'Rubik',sans-serif;font-size:18px;font-weight:700;letter-spacing:-0.01em;}
+.card-badge{
+  font-size:10px;font-weight:600;padding:4px 11px;border-radius:20px;
+  background:#2EAA4A;color:#fff;white-space:nowrap;
+}
+.card-badge.secondary{background:#E8F8ED;color:#1a7a32;}
+.card-desc{font-size:14px;color:#555;line-height:1.65;}
+.card-features{list-style:none;display:flex;flex-direction:column;gap:10px;margin-top:6px;}
+.card-features li{font-size:13px;color:#444;display:flex;align-items:flex-start;gap:9px;line-height:1.6;}
+.card-features li::before{content:'';width:5px;height:5px;border-radius:50%;background:#2EAA4A;margin-top:8px;flex-shrink:0;}
+
+/* ===== BIG QUESTION ===== */
+.big-q{
+  font-family:'Rubik',sans-serif;font-size:24px;font-weight:700;
+  line-height:1.4;padding:2rem 2.25rem;background:#F0FAF3;
+  border-radius:12px;margin:0 0 2rem;border-left:4px solid #2EAA4A;
+  letter-spacing:-0.01em;
+}
+
+/* ===== PROP ROWS ===== */
+.prop-row{display:flex;flex-direction:column;gap:12px;}
+.prop-item{
+  display:flex;gap:1.25rem;align-items:flex-start;
+  padding:1.25rem 1.5rem;border:1px solid #f0f0f0;border-radius:10px;background:#fafafa;
+}
+.prop-label{
+  font-size:11px;color:#2EAA4A;min-width:100px;flex-shrink:0;padding-top:2px;
+  font-weight:600;text-transform:uppercase;letter-spacing:0.08em;
+}
+.prop-value{font-size:14px;color:#555;line-height:1.65;}
+
+/* ===== FOOTER NAV ===== */
+.footer-nav{display:none;}
+/* En vue assistant, la barre Back/Next est fixée tout en bas du viewport pour
+   rester accessible peu importe où le vendeur a scrollé dans le contenu du
+   panel. Décalée de la largeur de la sidebar (260px) pour ne pas la recouvrir.
+   .main reçoit un padding-bottom égal à la hauteur de la barre pour que le
+   dernier contenu ne soit pas masqué. */
+.assistant-mode .footer-nav{
+  display:flex;align-items:center;justify-content:space-between;gap:1rem;
+  position:fixed;bottom:0;left:260px;right:0;
+  background:#fff;border-top:1px solid #e8e8e8;
+  padding:1rem 3rem;z-index:20;
+}
+.assistant-mode .main{padding-bottom:5.5rem;}
+.fnav-btn{
+  background:#fff;border:1.5px solid #ccc;border-radius:8px;
+  padding:11px 22px;font-family:'Poppins',sans-serif;font-size:13px;font-weight:500;
+  color:#555;cursor:pointer;transition:all 0.15s;
+}
+.fnav-btn:hover:not(:disabled){background:#f5f5f5;border-color:#aaa;}
+.fnav-btn:disabled{opacity:0.3;cursor:default;}
+.fnav-btn.primary{background:#2EAA4A;border-color:#2EAA4A;color:#fff;font-weight:600;}
+.fnav-btn.primary:hover:not(:disabled){background:#269940;border-color:#269940;}
+.step-info{font-size:12px;color:#888;font-weight:500;}
+
+/* ===== SLIDES ===== */
+.slide{display:none;animation:fadeIn 0.25s ease;}
+.slide.visible{display:block;}
+@keyframes fadeIn{
+  from{opacity:0;}
+  to{opacity:1;}
+}
+
+/* ===== VIDEO ===== */
+.video-wrap{
+  position:relative;
+  width:fit-content;max-width:100%;
+  height:calc(100vh - 14rem);
+  margin:0 auto 1.25rem;
+  display:flex;
+  border-radius:10px;overflow:hidden;
+  border:4px solid #e8e8e8;
+}
+.video-wrap video{
+  height:100%;width:auto;display:block;
+  object-fit:contain;
+}
+.video-wrap-regular{max-width:720px;aspect-ratio:16/9;}
+.video-wrap-regular iframe{width:100%;height:100%;display:block;border:0;}
+.video-wrap-short{max-width:360px;aspect-ratio:9/16;}
+.video-wrap-short iframe{width:100%;height:100%;display:block;border:0;}
+.video-meta{
+  display:flex;justify-content:space-between;align-items:center;
+  margin-bottom:0.65rem;
+}
+.video-meta-label{
+  font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;
+  color:#2EAA4A;
+}
+.video-meta-dur{
+  display:none;
+}
+.video-meta-dur::before{content:'⏱';}
+
+/* ===== QUALIFICATION LAYOUT (2 columns) ===== */
+.qualify-layout{
+  display:grid;grid-template-columns:1fr 280px;gap:2.5rem;
+  align-items:start;
+}
+.qualify-main{
+  min-width:0;
+}
+.qualify-side{
+  position:static;
+}
+@media (max-width: 1100px){
+  .qualify-layout{grid-template-columns:1fr;}
+  .qualify-side{position:static;}
+}
+
+/* ===== RED FLAGS (Qualification) ===== */
+.red-flags-section{
+  padding:1.25rem 1.25rem;
+  background:#FEF5F5;
+  border:1px solid #F9D5D5;
+  border-radius:10px;
+}
+.red-flags-label{
+  font-size:11px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;
+  color:#b91c1c;margin-bottom:1rem;
+  display:flex;align-items:center;gap:10px;
+  flex-wrap:wrap;
+}
+.red-flags-label::before{
+  content:'⚠';font-size:14px;
+}
+.red-flags-label .section-label-count{
+  color:#b91c1c;opacity:0.7;font-weight:400;
+}
+.red-flags-list{gap:2px;}
+.red-flags-list li{
+  padding:10px 12px;
+  font-size:15px;
+}
+.red-flags-list li:hover{background:rgba(255,255,255,0.6);}
+.red-flags-list li.checked{background:#FEECEC;}
+.red-flags-list li.checked .q-check{background:#b91c1c;border-color:#b91c1c;}
+
+/* ===== Q&A LIST (with textareas) ===== */
+.qa-list{
+  display:flex;flex-direction:column;gap:2rem;
+}
+.qa-item{display:flex;flex-direction:column;gap:10px;}
+.qa-q{
+  font-size:17px;font-weight:600;color:#555;line-height:1.4;
+  font-family:'Rubik',sans-serif;letter-spacing:-0.005em;
+}
+.qa-a{
+  width:100%;
+  font-family:'Poppins',sans-serif;font-size:14px;line-height:1.65;color:#555;
+  padding:14px 16px;
+  border:1px solid #e8e8e8;border-radius:8px;
+  background:#fafafa;
+  resize:vertical;
+  transition:border-color 0.15s,background 0.15s,box-shadow 0.15s;
+  outline:none;
+}
+.qa-a::placeholder{color:#aaa;font-style:italic;}
+.qa-a:hover{border-color:#c8c8c8;}
+.qa-a:focus{
+  border-color:#2EAA4A;background:#fff;
+  box-shadow:0 0 0 3px rgba(46,170,74,0.12);
+}
+.qa-fields-row{
+  display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;
+  margin-bottom:2.5rem;
+}
+.qa-fields-row.qa-address-row{grid-template-columns:1fr;}
+.qa-address-status{
+  display:inline-flex;align-items:center;gap:4px;
+  font-size:13px;font-weight:500;color:#2EAA4A;
+  margin-left:0.5rem;opacity:0;transition:opacity 0.2s;
+}
+.qa-address-status.is-verified{opacity:1;}
+.qa-address-status::before{content:"✓";font-weight:700;}
+.qa-address-wrap{position:relative;}
+.qa-address-suggestions{
+  position:absolute;top:calc(100% + 4px);left:0;right:0;
+  margin:0;padding:0;list-style:none;
+  background:#fff;border:1px solid #e8e8e8;border-radius:8px;
+  box-shadow:0 4px 16px rgba(0,0,0,0.08);
+  max-height:280px;overflow-y:auto;
+  z-index:1000;display:none;
+}
+.qa-address-suggestions.is-open{display:block;}
+.qa-address-suggestions li{
+  padding:10px 14px;font-size:14px;color:#333;cursor:pointer;
+  border-bottom:1px solid #f0f0f0;line-height:1.4;
+}
+.qa-address-suggestions li:last-child{border-bottom:none;}
+.qa-address-suggestions li:hover,
+.qa-address-suggestions li.is-active{background:#f5faf6;color:#222;}
+.qa-input{
+  width:100%;
+  font-family:'Poppins',sans-serif;font-size:14px;line-height:1.4;color:#555;
+  padding:14px 16px;
+  border:1px solid #e8e8e8;border-radius:8px;
+  background:#fafafa;
+  transition:border-color 0.15s,background 0.15s,box-shadow 0.15s;
+  outline:none;
+}
+.qa-input:hover{border-color:#c8c8c8;}
+.qa-input:focus{
+  border-color:#2EAA4A;background:#fff;
+  box-shadow:0 0 0 3px rgba(46,170,74,0.12);
+}
+@media (max-width: 900px){
+  .qa-fields-row{grid-template-columns:1fr;}
+}
+
+/* ===== INTRO ROADMAP ===== */
+.intro-roadmap{
+  display:grid;grid-template-columns:1fr 1fr;gap:14px;
+  margin-top:1rem;
+}
+@media (max-width: 700px){
+  .intro-roadmap{grid-template-columns:1fr;}
+}
+.intro-step{
+  display:grid;grid-template-columns:22px 44px 1fr;gap:16px;
+  align-items:center;padding:20px 22px;
+  border:1px solid #f0f0f0;border-left:3px solid #2EAA4A;
+  border-radius:10px;background:#fff;cursor:pointer;user-select:none;
+  transition:border-color 0.15s,box-shadow 0.15s,opacity 0.15s,background 0.15s;
+}
+.intro-step:hover{border-color:#c8e6d0;box-shadow:0 2px 8px rgba(0,0,0,0.03);}
+.intro-check{
+  width:20px;height:20px;border:1.5px solid #ccc;border-radius:5px;
+  display:flex;align-items:center;justify-content:center;
+  transition:all 0.15s;
+}
+.intro-step.checked .intro-check{
+  background:#2EAA4A;border-color:#2EAA4A;
+}
+.intro-step.checked .intro-check::after{
+  content:'✓';color:#fff;font-size:13px;font-weight:700;
+}
+/* Unchecked state — "skipped" */
+.intro-step:not(.checked){
+  border-left-color:#ddd;background:#fafafa;opacity:0.65;
+}
+.intro-step:not(.checked):hover{
+  border-color:#e0e0e0;opacity:0.8;
+}
+.intro-step:not(.checked) .intro-title{
+  text-decoration:line-through;text-decoration-color:#bbb;color:#888;
+}
+.intro-step:not(.checked) .intro-num{
+  background:#f0f0f0;color:#bbb;
+}
+.intro-num{
+  width:34px;height:34px;border-radius:50%;
+  background:#E8F8ED;color:#0F6E56;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Rubik',sans-serif;font-size:14px;font-weight:700;
+  transition:background 0.15s,color 0.15s;
+}
+.intro-body{
+  display:flex;flex-direction:column;justify-content:center;
+}
+.intro-title{
+  font-size:16px;font-weight:600;color:#555;margin-bottom:4px;
+  font-family:'Rubik',sans-serif;letter-spacing:-0.005em;
+  transition:color 0.15s;
+}
+.intro-desc{
+  font-size:15px;color:#666;line-height:1.65;
+}
+
+/* Hide intro-check and step descriptions from client view */
+html:not(.assistant-mode) #intro-roadmap .intro-check,
+html:not(.assistant-mode) #intro-roadmap .intro-desc{display:none;}
+html:not(.assistant-mode) #intro-roadmap .intro-step{grid-template-columns:44px 1fr;gap:16px;cursor:default;}
+
+/* ===== SPLIT-SLIDE LAYOUT (slide = quote-left, image-full-right) ===== */
+.slide.slide-with-quote.visible{
+  display:grid;
+  grid-template-columns:2fr 3fr;
+  gap:2.5rem;
+  align-items:stretch;
+  flex:1;
+}
+.slide-quote-content{
+  display:flex;
+  flex-direction:column;
+  min-width:0;
+}
+.testimonial-split-body{
+  flex:1;
+  display:flex;flex-direction:column;justify-content:center;gap:1rem;
+  min-width:0;
+  padding:0 4rem;
+  text-align:center;
+}
+@media (max-width: 1100px){
+  .testimonial-split-body{padding:0 2rem;}
+}
+.testimonial-split-text{
+  font-family:'Rubik',sans-serif;font-size:20px;font-weight:500;line-height:1.55;
+  color:#555;letter-spacing:-0.005em;
+  font-style:italic;
+}
+.testimonial-split-text strong{color:#2EAA4A;font-weight:700;}
+.how-bullets{
+  flex:1;
+  display:flex;flex-direction:column;justify-content:center;gap:3rem;
+}
+.testimonial-split-body:has(.how-bullets){
+  justify-content:flex-start;
+  padding-top:7rem;
+  padding-bottom:3rem;
+}
+.how-bullet{
+  font-size:22px;font-weight:500;color:#555;line-height:1.5;
+  position:relative;padding-left:1.4em;
+  text-align:left;
+}
+.how-bullet::before{
+  content:'•';position:absolute;left:0.4em;top:0;
+  color:#2EAA4A;font-weight:700;
+}
+.support-categories{
+  display:flex;flex-direction:column;gap:3rem;
+  width:100%;text-align:left;
+}
+.testimonial-split-body:has(.support-categories){
+  justify-content:center;
+}
+.support-category-title{
+  font-family:'Rubik',sans-serif;
+  font-size:24px;font-weight:700;color:#555;
+  margin-bottom:0.5rem;
+}
+.support-category ul{
+  list-style:none;padding:0;margin:0;
+  display:flex;flex-direction:column;gap:0.5rem;
+}
+.support-category li{
+  font-size:20px;font-weight:500;color:#555;line-height:1.55;
+  padding-left:1.4em;position:relative;
+}
+.support-category li::before{
+  content:'•';position:absolute;left:0.4em;top:0;
+  color:#2EAA4A;font-weight:700;
+}
+html:not(.assistant-mode) .how-quote-card{
+  position:fixed;
+  left:71vw;bottom:3rem;
+  transform:translateX(-50%);
+  max-width:calc(58vw - 4rem);
+  width:max-content;
+  background:rgba(252,229,205,0.9);
+  border-radius:12px;
+  padding:1.5rem 2.5rem;
+  box-shadow:0 6px 24px rgba(0,0,0,0.15);
+  text-align:center;
+  z-index:1;
+}
+.testimonial-split-author{
+  font-size:14px;color:#2EAA4A;font-weight:600;
+}
+.testimonial-split-farm{color:#555;font-weight:400;}
+.testimonial-split-img{
+  width:100%;height:100%;
+  min-height:280px;
+  object-fit:cover;
+  border-radius:12px;display:block;
+  box-shadow:0 4px 16px rgba(0,0,0,0.08);
+  align-self:stretch;
+}
+@media (max-width: 900px){
+  .slide.slide-with-quote.visible{grid-template-columns:1fr;}
+  .testimonial-split-body{padding:0;margin-bottom:1.5rem;}
+  .testimonial-split-img{min-height:240px;max-height:320px;}
+}
+
+/* Slide-2 (Introduction) en vue client : réutilise le layout split de
+   slide-with-quote (agenda à gauche dans le 2/5, image JM plein-droit +
+   quote overlay dans le 3/5) — même pattern que slide-3 « How we help ».
+   L'image JM est fixed à right:0;width:60vw (commence à 40vw) — on limite
+   donc la colonne gauche à 38vw pour que les cartes d'agenda ne débordent
+   pas sous l'image. */
+html:not(.assistant-mode) #slide-2 .slide-quote-content{
+  max-width:calc(38vw - 3rem);
+}
+html:not(.assistant-mode) #slide-2 #intro-roadmap{
+  display:grid;
+  grid-template-columns:1fr;
+  gap:1.75rem;
+  flex:1;                /* prend toute la hauteur dispo dans slide-quote-content */
+  align-content:center;  /* centre les cartes verticalement (comme how-bullets) */
+}
+html:not(.assistant-mode) #slide-2 #intro-roadmap .intro-title{
+  font-size:22px;        /* même taille que les .how-bullet de slide-3 (How we help) */
+}
+
+/* Slide view (always focus): image pinned to right half of viewport,
+   touching top/bottom/right edges. Uses position:fixed since negative
+   margins don't extend the box. .main padding stays consistent across slides. */
+html:not(.assistant-mode) .slide.slide-with-quote.visible{gap:0;}
+html:not(.assistant-mode) .testimonial-split-img{
+  position:fixed;
+  top:0;right:0;bottom:0;
+  width:60vw;
+  height:auto;
+  min-height:0;
+  margin:0;
+  border-radius:0;
+  box-shadow:none;
+}
+html:not(.assistant-mode) .testimonial-split-body{
+  position:fixed;
+  top:0;left:0;bottom:0;
+  width:40vw;
+  margin:0;
+}
+
+/* ===== PLACEHOLDER SECTION ===== */
+.placeholder-section{
+  margin-top:2rem;
+  padding:2.5rem 1.5rem;
+  background:#fafafa;
+  border:1px dashed #d0d0d0;
+  border-radius:8px;
+  text-align:center;
+  font-size:13px;color:#999;font-style:italic;
+}
+
+/* ===== NOTE BOX ===== */
+.note-box{
+  margin-top:1.5rem;
+  padding:12px 16px;
+  background:#FFF8E5;
+  border-left:3px solid #F5B800;
+  border-radius:6px;
+  font-size:13px;color:#5C4A00;line-height:1.5;
+}
+.note-label{
+  font-weight:600;color:#7A6200;margin-right:4px;
+}
+
+/* ===== FEATURE TABLE (Step 3) ===== */
+.subtitle-quote{
+  font-size:15px;color:#555;font-style:italic;line-height:1.6;
+  margin-bottom:2rem;max-width:680px;
+}
+.feature-table{
+  border-top:1px solid #e8e8e8;
+}
+.feature-table-head{
+  display:grid;grid-template-columns:1fr;gap:0;
+  font-size:13px;font-weight:600;color:#2EAA4A;
+  letter-spacing:0.1em;text-transform:uppercase;
+  padding:18px 0 16px;border-bottom:1px solid #e8e8e8;
+}
+.feature-table-head > div:nth-child(1){padding-right:24px;}
+.feature-table-head > div:nth-child(2){padding-left:24px;}
+.feature-row{
+  display:grid;grid-template-columns:1fr;gap:0;
+  padding:22px 0;border-bottom:1px solid #f0f0f0;
+  align-items:start;
+}
+.feature-row:last-child{border-bottom:none;}
+.feature-what{
+  font-size:14px;line-height:1.65;color:#555;
+  padding-right:24px;
+}
+.feature-what strong{font-weight:600;}
+.feature-why{
+  font-size:14px;line-height:1.65;color:#0F6E56;
+  font-weight:500;
+  padding:0 24px;
+  border-left:1px solid #e8e8e8;
+}
+.feature-img{
+  padding-left:24px;
+}
+.feature-img img{
+  width:100%;height:auto;max-height:120px;object-fit:contain;
+  display:block;
+}
+.img-placeholder{
+  width:100%;aspect-ratio:4/3;
+  background:repeating-linear-gradient(45deg,#f5f5f5,#f5f5f5 6px,#ebebeb 6px,#ebebeb 12px);
+  border:1px dashed #d0d0d0;border-radius:6px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:10px;color:#888;font-family:'Rubik',monospace;
+  text-align:center;padding:4px;
+}
+
+/* ===== TESTIMONIAL QUOTE (Proposal) ===== */
+.testimonial{
+  margin:4rem auto 0;
+  max-width:700px;
+  padding:1.5rem 2rem;
+  background:#F0FAF3;
+  border:1px solid #D4EBD9;border-left:4px solid #2EAA4A;
+  border-radius:12px;
+  display:flex;align-items:center;gap:32px;
+}
+.testimonial.testimonial-wide{max-width:800px;}
+.testimonial.testimonial-xwide{max-width:none;}
+.testimonial-mark{display:none;}
+.testimonial-body{flex:1;min-width:0;}
+.testimonial-text{
+  font-family:'Rubik',sans-serif;font-size:17px;font-weight:500;line-height:1.5;
+  color:#555;letter-spacing:-0.005em;
+}
+.testimonial-text strong{color:#0F6E56;font-weight:700;}
+.testimonial-author{
+  font-size:13px;color:#0F6E56;font-weight:600;
+  margin-top:12px;
+  display:flex;align-items:center;gap:8px;
+}
+.testimonial-author::before{display:none;}
+.testimonial-avatar{
+  width:210px;height:210px;border-radius:50%;
+  object-fit:cover;flex-shrink:0;
+  border:3px solid #fff;
+  box-shadow:0 4px 12px rgba(0,0,0,0.12);
+  margin:-60px 0 -60px -4rem;
+}
+.testimonial-farm{color:#555;font-weight:400;}
+
+/* ===== LEVEL HEADERS (Lifestyle / Features) ===== */
+.level-header{display:flex;align-items:center;gap:7px;}
+.level-bar{width:3px;height:14px;background:#2EAA4A;border-radius:2px;}
+.level-label{
+  font-size:10px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;
+  color:#2EAA4A;
+}
+.level-title{font-size:14px;font-weight:600;color:#555;margin-bottom:2px;}
+
+/* ===== UTILITIES ===== */
+.tag-row{display:flex;flex-wrap:wrap;gap:7px;margin-top:1rem;}
+.tag{font-size:11px;padding:4px 12px;border-radius:6px;font-weight:500;}
+.tag.go{background:#E8F8ED;color:#1a7a32;}
+.tag.stop{background:#FEECEC;color:#b91c1c;}
+
+/* ===== RESPONSIVE ===== */
+@media (max-width: 900px){
+  .layout{grid-template-columns:1fr;}
+  .sidebar{display:none;}
+  .content-cols,.content-cols-equal,.content-cols-3{grid-template-columns:1fr;}
+  .main{padding:1.25rem;}
+  .feature-table-head,.feature-row{grid-template-columns:1fr;gap:8px;}
+  .feature-table-head > div{padding:0 !important;}
+  .feature-what{padding-right:0;}
+  .feature-why,.feature-img{
+    padding:6px 0 0;border-left:none;
+    border-top:1px dashed #e8e8e8;
+  }
+  .feature-img img,.img-placeholder{max-width:200px;}
+}
+
+/* ===== ASSISTANT MODE ===== */
+.assistant-btn{
+  background:#1a1a1a;border:none;border-radius:6px;
+  padding:6px 12px;font-family:'Poppins',sans-serif;font-size:11.5px;font-weight:500;
+  color:#fff;cursor:pointer;transition:background 0.15s;
+}
+.assistant-btn:hover{background:#2EAA4A;}
+.assistant-badge{
+  display:none;font-size:10px;font-weight:600;
+  background:#1a1a1a;color:#fff;padding:3px 8px;border-radius:4px;
+  margin-left:8px;letter-spacing:0.05em;
+  vertical-align:middle;
+}
+
+.assistant-panel{display:none;}
+.assistant-mode .assistant-badge{display:inline-block;}
+.assistant-mode .slide,
+.assistant-mode .slide.visible{display:none !important;}
+.assistant-mode .assistant-panel{
+  display:flex;flex-direction:column;gap:1.5rem;
+  padding:1rem 0 2rem;
+}
+.assistant-mode .sidebar{background:#fafafa;}
+.assistant-mode .main{padding-top:1.5rem;}
+
+.assistant-head{
+  border-bottom:1px solid #e8e8e8;padding-bottom:1rem;
+}
+.assistant-eyebrow{
+  font-size:10px;font-weight:600;letter-spacing:0.12em;text-transform:uppercase;
+  color:#2EAA4A;margin-bottom:8px;
+}
+.assistant-head h2{
+  font-family:'Rubik',sans-serif;font-size:24px;font-weight:700;
+  letter-spacing:-0.01em;line-height:1.2;margin-bottom:4px;
+}
+.assistant-sub{display:none;}
+.assistant-body{display:flex;flex-direction:column;gap:1.25rem;}
+.assistant-empty{
+  padding:2.5rem 1.5rem;text-align:center;
+  background:#fafafa;border:1px dashed #d0d0d0;border-radius:8px;
+  font-size:13px;color:#999;font-style:italic;
+}
+
+.pain-card{
+  background:#fff;border:1px solid #e8e8e8;border-left:3px solid #2EAA4A;
+  border-radius:8px;padding:1rem 1.25rem;
+}
+.pain-card-name{
+  font-family:'Rubik',sans-serif;font-size:15px;font-weight:700;
+  color:#555;margin-bottom:12px;display:flex;align-items:center;gap:8px;
+}
+.pain-card-check{
+  width:18px;height:18px;border-radius:4px;background:#2EAA4A;color:#fff;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:11px;font-weight:700;flex-shrink:0;
+}
+.pain-card-features{
+  display:flex;flex-direction:column;gap:8px;
+  margin-bottom:14px;
+}
+.pain-card-feature{
+  font-size:13px;line-height:1.5;color:#333;
+  padding:8px 10px;background:#fafafa;border-radius:6px;
+}
+.pain-card-feature strong{color:#0F6E56;font-weight:600;}
+.pain-card-stories{
+  display:flex;flex-direction:column;gap:10px;
+  padding-top:12px;border-top:1px dashed #e8e8e8;
+}
+.story-item{
+  display:flex;gap:10px;align-items:flex-start;
+  font-size:12.5px;line-height:1.5;
+}
+.story-icon{
+  width:22px;height:22px;border-radius:50%;
+  background:#FFF8E5;color:#B8860B;
+  display:inline-flex;align-items:center;justify-content:center;
+  font-size:12px;flex-shrink:0;margin-top:2px;
+}
+.story-name{font-weight:600;color:#555;}
+.story-text{color:#555;}
+.assistant-section-label{
+  font-size:11px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;
+  color:#888;margin-bottom:6px;
+}
+
+/* ===== STORIES LIST (assistant view) ===== */
+.stories-list{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+@media (max-width: 700px){
+  .stories-list{grid-template-columns:1fr;}
+}
+.story-card{
+  background:#fff;border:1px solid #e8e8e8;border-left:3px solid #2EAA4A;
+  border-radius:8px;padding:14px 18px;
+}
+.story-card-name{
+  font-family:'Rubik',sans-serif;font-size:13px;font-weight:700;
+  color:#0F6E56;margin-bottom:8px;
+  letter-spacing:0.06em;text-transform:uppercase;
+}
+.story-card-text{
+  font-size:15px;line-height:1.65;color:#555;
+  font-style:italic;
+}
+
+/* ===== REFRAMING LIST (assistant view) ===== */
+.reframe-list{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+@media (max-width: 700px){
+  .reframe-list{grid-template-columns:1fr;}
+}
+.reframe-card{
+  background:#fff;border:1px solid #e8e8e8;border-left:3px solid #6B7280;
+  border-radius:8px;padding:14px 18px;
+}
+.reframe-card-title{
+  font-family:'Rubik',sans-serif;font-size:13px;font-weight:700;
+  color:#374151;margin-bottom:8px;
+  letter-spacing:0.06em;text-transform:uppercase;
+}
+.reframe-card-text{
+  font-size:15px;line-height:1.65;color:#555;
+}
+.reframe-card-text .eq-list{display:flex;flex-direction:column;gap:8px;}
+.reframe-card-text .eq-item strong{color:#0F6E56;font-weight:600;}
+.assistant-section-label.with-spacing{margin-top:1.75rem;}
+
+/* ===== SCRIPT CARD (assistant view) ===== */
+.script-card{
+  background:#fff;border:1px solid #e8e8e8;border-left:3px solid #2EAA4A;
+  border-radius:8px;padding:18px 22px;
+}
+.script-card p{font-size:15px;line-height:1.65;color:#555;font-style:italic;margin-bottom:0.9rem;}
+.script-card p:last-child{margin-bottom:0;}
+.script-card a{color:#0F6E56;}
+.script-stage{
+  font-size:14px;color:#888;font-style:normal;
+  padding:8px 12px;background:#f5f5f5;border-radius:6px;
+  margin-bottom:0.9rem;font-family:'Rubik',sans-serif;
+}
+.script-card ul{
+  list-style:none;padding:0;
+  display:flex;flex-direction:column;gap:4px;
+  margin-bottom:0.9rem;
+}
+.script-card ul li{
+  font-size:15px;line-height:1.5;color:#555;font-style:italic;
+  padding-left:18px;position:relative;
+}
+.script-card ul li::before{
+  content:'•';position:absolute;left:6px;color:#2EAA4A;font-weight:700;
+}
+
+/* ===== PROPOSAL PLAN CARD (slide view, slide-6) =====
+   Carte claire à 2 onglets (Helper / Chief Grower). Fond blanc, contour noir
+   60% opacité autour de toute la carte. Switch live entre les deux plans,
+   prix actualisés selon la devise du Quote tab (USD/CAD). */
+.plan-card{
+  --pc-border:rgba(0,0,0,0.6);
+  --pc-bg-tab-inactive:#f0f0f0;
+  --pc-bg-active:#fff;
+  --pc-text-primary:#1a1a1a;
+  --pc-text-secondary:#666;
+  --pc-text-muted:#888;
+  --pc-divider:rgba(0,0,0,0.15);
+  --pc-radius:16px;
+  width:100%;max-width:720px;margin:1.5rem auto 0;
+  color:var(--pc-text-primary);
+  font-family:'Rubik',-apple-system,BlinkMacSystemFont,sans-serif;
+  border:1px solid var(--pc-border);
+  border-radius:var(--pc-radius);
+  overflow:hidden;background:var(--pc-bg-active);
+}
+.plan-tabs{
+  display:grid;grid-template-columns:1fr 1fr;gap:0;
+}
+.plan-tab{
+  background:var(--pc-bg-tab-inactive);
+  padding:18px 16px 22px;text-align:center;cursor:pointer;
+  border:0;border-bottom:1px solid var(--pc-divider);
+  color:var(--pc-text-primary);
+  font-family:inherit;transition:background 0.2s ease;
+}
+.plan-tab:first-child{border-right:1px solid var(--pc-divider);}
+.plan-tab:hover:not(.plan-tab--active){background:#e8e8e8;}
+.plan-tab--active{
+  background:var(--pc-bg-active);
+  border-bottom-color:transparent; /* l'onglet actif se fond avec le body */
+}
+.plan-tab__heading{
+  display:flex;align-items:center;justify-content:center;gap:10px;
+  margin-bottom:6px;
+}
+.plan-tab__logo{
+  height:28px;width:auto;display:block;flex-shrink:0;
+}
+.plan-tab__title{
+  font-size:18px;font-weight:700;letter-spacing:-0.01em;
+}
+.plan-tab__price{
+  font-size:12px;color:var(--pc-text-secondary);font-weight:400;
+  font-variant-numeric:tabular-nums;
+}
+.plan-card-body{
+  background:var(--pc-bg-active);
+  padding:32px;
+}
+.plan-description{
+  font-size:14px;line-height:1.55;color:var(--pc-text-secondary);
+  margin:0 0 1.75rem;
+}
+.plan-section + .plan-section{margin-top:8px;}
+.plan-section-header{
+  display:flex;align-items:center;gap:14px;margin-bottom:20px;
+  font-size:11px;letter-spacing:0.12em;color:var(--pc-text-muted);font-weight:500;
+}
+.plan-section-header::after{
+  content:'';flex:1;height:1px;background:var(--pc-divider);
+}
+.plan-row{
+  display:flex;justify-content:space-between;align-items:baseline;
+  margin-bottom:24px;
+}
+.plan-row__label{font-size:16px;font-weight:700;letter-spacing:-0.01em;}
+.plan-row__value{
+  font-size:16px;font-weight:700;letter-spacing:-0.01em;
+  font-variant-numeric:tabular-nums;
+}
+.plan-unit{font-weight:400;color:var(--pc-text-secondary);font-size:14px;}
+.plan-info-text{
+  font-size:14px;line-height:1.55;color:var(--pc-text-secondary);
+  margin:0 0 1.5rem;
+}
+.plan-automation{
+  display:flex;flex-wrap:nowrap;gap:1.25rem;
+  justify-content:space-between;
+}
+.plan-automation-item{
+  display:flex;flex-direction:column;align-items:center;gap:0.5rem;
+  text-align:center;flex:0 0 auto;
+}
+.plan-automation-icon{
+  width:48px;height:48px;display:block;transition:opacity 0.15s;
+}
+.plan-automation-icon-wrap{
+  position:relative;display:inline-flex;align-items:center;justify-content:center;
+}
+.plan-automation-count{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-weight:800;font-size:28px;color:#222;line-height:1;
+  opacity:0;pointer-events:none;transition:opacity 0.15s;
+}
+.plan-automation-item[data-count]{cursor:default;}
+.plan-automation-item[data-count]:hover .plan-automation-icon{opacity:0.5;}
+.plan-automation-item[data-count]:hover .plan-automation-count{opacity:1;}
+.plan-automation-label{
+  font-size:12px;color:var(--pc-text-secondary);font-weight:500;
+}
+
+/* ===== PROPOSAL TOTAL (slide view, sous les 2 cartes) ===== */
+.proposal-total{
+  margin-top:2rem;
+  display:flex;align-items:center;justify-content:center;gap:2rem;
+  padding:1.25rem 1.75rem;
+}
+.proposal-total-quantities{
+  display:inline-flex;align-items:center;gap:1.5rem;
+}
+.proposal-total-quantities:empty{display:none;}
+.proposal-qty{
+  display:inline-flex;align-items:center;gap:0.5rem;
+  font-family:'Rubik',sans-serif;font-size:20px;font-weight:600;
+  color:#555;font-variant-numeric:tabular-nums;
+}
+.proposal-qty-logo{
+  height:32px;width:auto;display:block;
+}
+.proposal-total-amount{
+  font-family:'Rubik',sans-serif;font-size:32px;font-weight:700;
+  color:#2EAA4A;letter-spacing:-0.01em;font-variant-numeric:tabular-nums;
+}
+
+/* ===== QUOTE BUILDER (assistant view, onglet Quote du step Proposal) ===== */
+.quote-builder{
+  display:flex;flex-direction:column;gap:0.5rem;
+  padding:1rem 0;
+}
+.quote-currency-toggle{
+  display:inline-flex;border:1px solid #d4d4d4;border-radius:8px;overflow:hidden;
+  align-self:flex-start;margin-bottom:1rem;
+}
+.quote-curr{
+  background:#fff;border:0;padding:8px 18px;cursor:pointer;
+  font-family:'Rubik',sans-serif;font-size:13px;font-weight:600;color:#888;
+  transition:background 0.15s,color 0.15s;
+}
+.quote-curr:hover{background:#f5f5f5;}
+.quote-curr.active{background:#2EAA4A;color:#fff;}
+.quote-curr.active:hover{background:#2EAA4A;}
+.quote-row{
+  display:grid;grid-template-columns:1fr auto auto;gap:1.5rem;
+  align-items:center;
+  padding:0.85rem 0;border-bottom:1px solid #f0f0f0;
+}
+.quote-row:last-of-type{border-bottom:0;}
+.quote-label{
+  font-size:16px;font-weight:600;color:#555;
+  font-family:'Rubik',sans-serif;
+}
+.quote-stepper{
+  display:inline-flex;align-items:center;
+  border:1px solid #d4d4d4;border-radius:8px;overflow:hidden;
+}
+.quote-step{
+  background:#fff;border:0;width:34px;height:34px;cursor:pointer;
+  font-size:18px;font-weight:600;color:#2EAA4A;line-height:1;
+}
+.quote-step:hover{background:#f0fff4;}
+.quote-step:disabled{color:#ccc;cursor:not-allowed;background:#fafafa;}
+.quote-count{
+  min-width:36px;text-align:center;font-size:16px;font-weight:600;color:#333;
+  font-family:'Rubik',sans-serif;font-variant-numeric:tabular-nums;
+}
+.quote-unit-price{
+  font-size:14px;color:#888;min-width:90px;text-align:right;
+  font-family:'Rubik',sans-serif;font-variant-numeric:tabular-nums;
+}
+.quote-total-row{
+  display:flex;justify-content:space-between;align-items:center;
+  margin-top:1rem;padding-top:1.25rem;border-top:2px solid #2EAA4A;
+  font-family:'Rubik',sans-serif;
+}
+.quote-total-row-label{
+  font-size:12px;letter-spacing:0.14em;text-transform:uppercase;
+  color:#2EAA4A;font-weight:700;
+}
+.quote-total-row-amount{
+  font-size:22px;font-weight:700;color:#2EAA4A;
+  font-variant-numeric:tabular-nums;
+}
+
+/* ===== STRIPE CARD PAYMENT (bottom of quote tab, assistant view) =====
+   Formulaire pour saisir la carte du client pendant l'appel et créer un
+   abonnement Stripe récurrent (Helper×N + Chief×M selon le quote courant). */
+.quote-pay{
+  margin-top:1.5rem;padding-top:1.25rem;border-top:1px solid #eee;
+  display:flex;flex-direction:column;gap:0.75rem;
+  font-family:'Rubik',sans-serif;
+}
+.quote-pay-title{
+  font-size:11px;letter-spacing:0.14em;text-transform:uppercase;
+  color:#888;font-weight:700;margin-bottom:0.25rem;
+}
+.quote-pay-row{
+  display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;
+}
+.quote-pay-row.single{grid-template-columns:1fr;}
+.quote-pay-field{
+  display:flex;flex-direction:column;gap:4px;
+}
+.quote-pay-label{
+  font-size:11px;font-weight:600;color:#666;letter-spacing:0.02em;
+}
+.quote-pay-input,
+.quote-pay-card{
+  border:1px solid #d4d4d4;border-radius:8px;
+  padding:10px 12px;font-size:14px;font-family:'Poppins',sans-serif;
+  background:#fff;color:#333;
+  transition:border-color 0.15s,box-shadow 0.15s;
+}
+.quote-pay-input:focus,
+.quote-pay-card.StripeElement--focus{
+  outline:0;border-color:#2EAA4A;box-shadow:0 0 0 3px rgba(46,170,74,0.12);
+}
+.quote-pay-card.StripeElement--invalid{border-color:#c0392b;}
+.quote-pay-card{padding:12px;}
+.quote-pay-btn{
+  margin-top:0.5rem;background:#2EAA4A;color:#fff;border:0;border-radius:8px;
+  padding:11px 18px;font-size:14px;font-weight:600;cursor:pointer;
+  font-family:'Rubik',sans-serif;letter-spacing:0.01em;
+  transition:background 0.15s,opacity 0.15s;
+  display:inline-flex;align-items:center;justify-content:center;gap:8px;
+}
+.quote-pay-btn:hover:not(:disabled){background:#258a3c;}
+.quote-pay-btn:disabled{opacity:0.55;cursor:not-allowed;}
+.quote-pay-spin{
+  display:inline-block;width:14px;height:14px;border:2px solid rgba(255,255,255,0.4);
+  border-top-color:#fff;border-radius:50%;animation:quote-pay-spin 0.7s linear infinite;
+}
+@keyframes quote-pay-spin{to{transform:rotate(360deg);}}
+.quote-pay-msg{
+  font-size:13px;padding:9px 12px;border-radius:6px;line-height:1.45;
+  display:none;
+}
+.quote-pay-msg.show{display:block;}
+.quote-pay-msg.error{background:#fdecea;color:#a02723;border:1px solid #f5c6c0;}
+.quote-pay-msg.success{background:#e8f8ed;color:#1e6b30;border:1px solid #b9e5c4;}
+.quote-pay-msg.info{background:#eef4fb;color:#1f4f8a;border:1px solid #c7dcf2;}
+
+/* Écran de succès qui remplace la section Quote une fois le paiement passé. */
+.quote-paid{
+  display:flex;flex-direction:column;align-items:center;text-align:center;
+  gap:0.85rem;padding:2.5rem 1.5rem;
+  background:#e8f8ed;border:1px solid #b9e5c4;border-radius:12px;
+  font-family:'Rubik',sans-serif;color:#1e6b30;
+}
+.quote-paid-check{
+  width:64px;height:64px;border-radius:50%;background:#2EAA4A;
+  display:flex;align-items:center;justify-content:center;
+  color:#fff;font-size:36px;font-weight:700;line-height:1;
+  box-shadow:0 4px 14px rgba(46,170,74,0.35);
+}
+.quote-paid-title{font-size:22px;font-weight:700;margin:0;}
+.quote-paid-summary{font-size:15px;font-weight:500;color:#1e6b30;line-height:1.5;}
+.quote-paid-summary strong{font-weight:700;}
+.quote-paid-receipt{font-size:13px;color:#3b7a4d;margin-top:0.25rem;}
+
+/* Rabais ad-hoc — le vendeur peut appliquer un coupon Stripe à la volée */
+.quote-pay-discount{
+  background:#fafafa;border:1px solid #e8e8e8;border-radius:8px;
+  padding:10px 12px;display:flex;flex-direction:column;gap:8px;
+}
+.quote-pay-discount-toggle{
+  display:flex;align-items:center;gap:8px;cursor:pointer;
+  font-size:13px;font-weight:600;color:#555;user-select:none;
+}
+.quote-pay-discount-toggle input{
+  appearance:none;width:16px;height:16px;border:1.5px solid #bbb;border-radius:4px;
+  cursor:pointer;display:inline-flex;align-items:center;justify-content:center;
+  transition:background 0.15s,border-color 0.15s;flex-shrink:0;
+}
+.quote-pay-discount-toggle input:checked{background:#2EAA4A;border-color:#2EAA4A;}
+.quote-pay-discount-toggle input:checked::after{
+  content:'✓';color:#fff;font-size:11px;font-weight:700;line-height:1;
+}
+.quote-pay-discount-body{display:none;flex-direction:column;gap:8px;padding-top:6px;}
+.quote-pay-discount.open .quote-pay-discount-body{display:flex;}
+.quote-pay-seg{
+  display:inline-flex;border:1px solid #d4d4d4;border-radius:7px;overflow:hidden;
+  align-self:flex-start;
+}
+.quote-pay-seg button{
+  background:#fff;border:0;padding:6px 12px;cursor:pointer;
+  font-family:'Rubik',sans-serif;font-size:12px;font-weight:600;color:#888;
+}
+.quote-pay-seg button.active{background:#2EAA4A;color:#fff;}
+.quote-pay-seg button:hover:not(.active){background:#f5f5f5;}
+.quote-pay-discount-row{
+  display:grid;grid-template-columns:auto 1fr;gap:8px;align-items:center;
+  font-size:12px;color:#666;font-weight:600;
+}
+.quote-pay-discount-row label{letter-spacing:0.02em;}
+.quote-pay-value{
+  position:relative;display:flex;align-items:center;
+}
+.quote-pay-value input{
+  flex:1;border:1px solid #d4d4d4;border-radius:7px;
+  padding:7px 28px 7px 10px;font-size:13px;font-family:'Poppins',sans-serif;
+  background:#fff;color:#333;width:100%;
+}
+.quote-pay-value input:focus{outline:0;border-color:#2EAA4A;box-shadow:0 0 0 2px rgba(46,170,74,0.12);}
+.quote-pay-value-suffix{
+  position:absolute;right:10px;font-size:13px;color:#999;pointer-events:none;
+  font-family:'Rubik',sans-serif;font-weight:600;
+}
+.quote-pay-months-row{
+  display:none;grid-template-columns:auto auto 1fr;gap:8px;align-items:center;
+  font-size:12px;color:#666;font-weight:600;
+}
+.quote-pay-discount.duration-repeating .quote-pay-months-row{display:grid;}
+.quote-pay-months-row input{
+  width:64px;border:1px solid #d4d4d4;border-radius:7px;
+  padding:6px 8px;font-size:13px;font-family:'Poppins',sans-serif;
+}
+
+/* ===== PROPOSAL BLOCK (assistant view) ===== */
+.proposal-block{
+  background:#fff;border:1px solid #e8e8e8;border-left:3px solid #2EAA4A;
+  border-radius:8px;padding:18px 22px;
+}
+.proposal-intro{
+  font-size:15px;line-height:1.65;color:#555;font-style:italic;
+  margin-bottom:1rem;
+}
+.proposal-fields{
+  list-style:none;display:flex;flex-direction:column;gap:8px;
+  font-size:15px;line-height:1.6;color:#555;
+}
+.proposal-fields li{padding:8px 12px;background:#fafafa;border-radius:6px;}
+.proposal-fields strong{color:#0F6E56;font-weight:600;}
+
+.process-list{
+  list-style:none;counter-reset:proc;
+  display:flex;flex-direction:column;gap:10px;padding:0;
+}
+.process-list li{
+  counter-increment:proc;
+  font-size:15px;line-height:1.55;color:#555;
+  padding:12px 14px 12px 48px;position:relative;
+  background:#fff;border:1px solid #e8e8e8;border-radius:8px;
+}
+.process-list li::before{
+  content:counter(proc);
+  position:absolute;left:14px;top:50%;transform:translateY(-50%);
+  width:24px;height:24px;border-radius:50%;
+  background:#E8F8ED;color:#0F6E56;
+  display:flex;align-items:center;justify-content:center;
+  font-family:'Rubik',sans-serif;font-size:13px;font-weight:700;
+}
+
+/* ===== STEP 0 BLOCK (assistant view, on Qualification + Discovery) ===== */
+.step-zero-legend{
+  font-size:12px;color:#888;
+  padding:8px 12px;background:#fafafa;border-radius:6px;
+  position:sticky;top:67px;z-index:8;
+}
+.step-zero-legend .objection{color:#D97706;font-weight:600;}
+.step-zero{
+  background:#fff;border:1px solid #e8e8e8;border-radius:8px;
+  padding:18px 22px;
+  display:flex;flex-direction:column;gap:14px;
+}
+.step-tabs{
+  display:flex;gap:4px;
+  border-bottom:1px solid #e8e8e8;
+  margin:-6px -10px 4px;
+}
+.step-tab{
+  background:none;border:none;
+  border-bottom:2px solid transparent;
+  padding:8px 12px;font-family:'Poppins',sans-serif;
+  font-size:12px;font-weight:500;color:#666;
+  cursor:pointer;transition:all 0.15s;
+  margin-bottom:-1px;
+}
+.step-tab:hover{color:#555;}
+.step-tab.active{color:#2EAA4A;border-bottom-color:#2EAA4A;font-weight:600;}
+
+/* Tab visibility — Intent active */
+.step-zero[data-active-tab="intent"] .step-quote,
+.step-zero[data-active-tab="intent"] > .objection-block,
+.step-zero[data-active-tab="intent"] .qa-pair > .objection-block{display:none;}
+
+/* Tab visibility — Suggested words active */
+.step-zero[data-active-tab="quote"] .step-intent,
+.step-zero[data-active-tab="quote"] .step-note,
+.step-zero[data-active-tab="quote"] > .objection-block,
+.step-zero[data-active-tab="quote"] .qa-pair > .objection-block{display:none;}
+
+/* Tab visibility — Objection handling active */
+.step-zero[data-active-tab="objection"] > .step-intent,
+.step-zero[data-active-tab="objection"] > .step-quote,
+.step-zero[data-active-tab="objection"] > .step-subhead,
+.step-zero[data-active-tab="objection"] > .step-note,
+.step-zero[data-active-tab="objection"] .qa-pair > .step-intent,
+.step-zero[data-active-tab="objection"] .qa-pair > .step-quote,
+.step-zero[data-active-tab="objection"] .qa-pair > .step-note,
+.step-zero[data-active-tab="objection"] .qa-pair > .step-subhead{display:none;}
+.step-zero[data-active-tab="objection"] .qa-pair:not(:has(.objection-block)){display:none;}
+
+/* Tab visibility — 2 tabs per step : Script (toutes les anciennes sous-sections fusionnées) + Battle Cards.
+   "script" active : on cache le contenu de la phase-block battlecards.
+   "battlecards" active : on cache le contenu de toutes les autres phase-blocks. */
+.step-zero[data-tab-set="phases"] .phase-block,
+.step-zero[data-tab-set="how-we-help"] .phase-block,
+.step-zero[data-tab-set="support"] .phase-block,
+.step-zero[data-tab-set="demo"] .phase-block,
+.step-zero[data-tab-set="proposal"] .phase-block{display:contents;}
+
+.step-zero[data-tab-set="phases"][data-active-tab="script"] .phase-block[data-phase="battlecards"] > *,
+.step-zero[data-tab-set="how-we-help"][data-active-tab="script"] .phase-block[data-phase="battlecards"] > *,
+.step-zero[data-tab-set="support"][data-active-tab="script"] .phase-block[data-phase="battlecards"] > *,
+.step-zero[data-tab-set="demo"][data-active-tab="script"] .phase-block[data-phase="battlecards"] > *,
+.step-zero[data-tab-set="proposal"][data-active-tab="script"] .phase-block[data-phase="battlecards"] > *{display:none;}
+
+.step-zero[data-tab-set="phases"][data-active-tab="battlecards"] .phase-block:not([data-phase="battlecards"]) > *,
+.step-zero[data-tab-set="how-we-help"][data-active-tab="battlecards"] .phase-block:not([data-phase="battlecards"]) > *,
+.step-zero[data-tab-set="support"][data-active-tab="battlecards"] .phase-block:not([data-phase="battlecards"]) > *,
+.step-zero[data-tab-set="demo"][data-active-tab="battlecards"] .phase-block:not([data-phase="battlecards"]) > *,
+.step-zero[data-tab-set="proposal"][data-active-tab="battlecards"] .phase-block:not([data-phase="battlecards"]) > *{display:none;}
+/* Onglet Quote (proposal tab-set seulement) : sur script, cache aussi le quote ;
+   sur quote, cache tout sauf le quote. */
+.step-zero[data-tab-set="proposal"][data-active-tab="script"] .phase-block[data-phase="quote"] > *{display:none;}
+.step-zero[data-tab-set="proposal"][data-active-tab="quote"] .phase-block:not([data-phase="quote"]) > *{display:none;}
+.step-intent{font-size:15px;font-weight:600;color:#555;line-height:1.5;}
+.step-quote{
+  font-size:15px;line-height:1.6;color:#555;font-style:italic;
+  padding:10px 14px;background:#f7fcf9;border-left:3px solid #2EAA4A;border-radius:4px;
+}
+.step-subhead{
+  font-size:11px;font-weight:700;color:#0F6E56;
+  text-transform:uppercase;letter-spacing:0.08em;margin-top:6px;
+}
+.step-note{font-size:14px;line-height:1.55;color:#555;}
+.qa-pair{
+  display:flex;flex-direction:column;gap:8px;
+  padding-top:12px;border-top:1px dashed #e8e8e8;
+}
+.qa-pair:first-of-type{border-top:0;padding-top:0;}
+.objection-block{margin-top:6px;display:flex;flex-direction:column;gap:6px;}
+.objection-block .step-intent,
+.objection-block .step-quote,
+.objection-block .step-note{color:#D97706;}
+.objection-block .step-quote{
+  background:transparent;border-left:0;padding:0;font-size:14px;
+}
+
+/* ===== RED FLAG WARNING (assistant view) ===== */
+.flag-warning{
+  background:#FEECEC;border:1px solid #F5A5A5;border-left:4px solid #b91c1c;
+  border-radius:10px;padding:1.25rem 1.4rem;
+  display:flex;flex-direction:column;gap:10px;
+  margin-bottom:0.5rem;
+}
+.flag-warning-head{
+  display:flex;align-items:center;gap:10px;
+  font-family:'Rubik',sans-serif;font-size:15px;font-weight:700;
+  color:#b91c1c;letter-spacing:-0.005em;
+}
+.flag-warning-head::before{
+  content:'⚠';font-size:18px;
+}
+.flag-warning-body{
+  font-size:15px;color:#7a1a1a;line-height:1.6;
+}
+.flag-warning-list{
+  list-style:none;display:flex;flex-direction:column;gap:4px;
+  margin-top:4px;
+}
+.flag-warning-list li{
+  font-size:13px;color:#8a2a2a;
+  padding-left:14px;position:relative;
+}
+.flag-warning-list li::before{
+  content:'•';position:absolute;left:2px;color:#b91c1c;font-weight:700;
+}
+.flag-warning-link{
+  margin-top:4px;padding-top:12px;
+  border-top:1px dashed #F5A5A5;
+}
+.flag-warning-link-label{
+  font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;
+  color:#8a2a2a;margin-bottom:8px;
+}
+.flag-warning-link-row{
+  display:inline-flex;align-items:center;gap:0;
+  background:#fff;border:1px solid #F5A5A5;border-radius:6px;
+  padding:6px 6px 6px 12px;
+  width:fit-content;max-width:100%;
+}
+.flag-warning-url{
+  font-family:'Rubik',monospace;font-size:13px;color:#555;
+  text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  padding-right:8px;
+}
+.flag-warning-url:hover{color:#b91c1c;text-decoration:underline;}
+.flag-warning-copy{
+  font-family:'Poppins',sans-serif;font-size:12px;font-weight:600;
+  background:#b91c1c;color:#fff;border:none;border-radius:4px;
+  padding:6px 14px;cursor:pointer;flex-shrink:0;
+  transition:background 0.15s;
+}
+.flag-warning-copy:hover{background:#991818;}
+.flag-warning-copy.copied{background:#2EAA4A;}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo"><img src="logo.png" alt="Orisha" class="logo-img"><span class="assistant-badge">Assistant</span></div>
+  <div class="topbar-right">
+    <div class="kbd-hint">
+      <span class="kbd">←</span><span class="kbd">→</span>
+      <span>navigate</span>
+    </div>
+    <button class="assistant-btn" id="open-assistant" type="button">Open slide view ↗</button>
+    <div class="topbar-tag" id="topbar-tag">Internal guide</div>
+    <div class="kbd-hint" id="save-status" style="min-width:80px;text-align:right;color:#999;"></div>
+  </div>
+</div>
+
+<div class="progress-bar"><div class="progress-fill" id="progress"></div></div>
+
+<div class="layout" id="layout">
+  <aside class="sidebar">
+    <div class="sidebar-label">Steps</div>
+    <div id="nav"></div>
+    <div class="sidebar-footer">
+      <strong>Shortcuts</strong><br>
+      <kbd>←</kbd> <kbd>→</kbd> navigate<br>
+      <kbd>1</kbd>–<kbd>6</kbd> jump to step
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <!-- SLIDE 0 : Qualification -->
+    <section class="slide visible" id="slide-0">
+      <div class="step-header">
+        <div class="step-eyebrow">Step 1 · Qualification</div>
+        <div class="step-duration">~5 min</div>
+      </div>
+      <h1 class="page-title">Your farm</h1>
+      <div class="qualify-layout">
+        <div class="qualify-main">
+          <div class="qa-fields-row">
+            <div class="qa-item">
+              <label class="qa-q" for="qa-farm">Farm's name</label>
+              <input class="qa-input" id="qa-farm" type="text" placeholder="" readonly style="background:#f0f0f0;cursor:default;">
+            </div>
+            <div class="qa-item">
+              <label class="qa-q" for="qa-contact">Contact's name</label>
+              <input class="qa-input" id="qa-contact" type="text" placeholder="">
+            </div>
+          </div>
+          <div class="qa-fields-row qa-address-row">
+            <div class="qa-item">
+              <label class="qa-q" for="qa-address">
+                Address
+                <span class="qa-address-status" id="qa-address-status" aria-hidden="true"></span>
+              </label>
+              <div class="qa-address-wrap">
+                <input class="qa-input" id="qa-address" type="text" placeholder="Search the farm's address…" autocomplete="off">
+                <ul class="qa-address-suggestions" id="qa-address-suggestions" role="listbox"></ul>
+              </div>
+            </div>
+          </div>
+          <div class="qa-list">
+            <div class="qa-item">
+              <label class="qa-q" for="qa-1">How did you hear about Orisha?</label>
+              <textarea class="qa-a" id="qa-1" rows="3" placeholder="Notes…"></textarea>
+            </div>
+            <div class="qa-item">
+              <label class="qa-q" for="qa-2">What's the motivation for talking to us today?</label>
+              <textarea class="qa-a" id="qa-2" rows="3" placeholder="Notes…"></textarea>
+            </div>
+            <div class="qa-item">
+              <label class="qa-q" for="qa-3">Tell me about your farm.</label>
+              <textarea class="qa-a" id="qa-3" rows="4" placeholder="Notes…"></textarea>
+            </div>
+          </div>
+        </div>
+        <aside class="qualify-side">
+          <div class="red-flags-section">
+            <div class="red-flags-label">Red flags <span class="section-label-count">· check if detected during the call</span></div>
+            <ul class="q-list red-flags-list" id="red-flags-list">
+              <li data-flag="field_crops"><span class="q-check"></span><span class="q-text">Field crops only</span></li>
+              <li data-flag="industrial"><span class="q-check"></span><span class="q-text">Industrial grower</span></li>
+              <li data-flag="hobbyist"><span class="q-check"></span><span class="q-text">Hobbyist</span></li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- SLIDE 1 : Discovery -->
+    <section class="slide" id="slide-1">
+      <div class="step-header">
+        <div class="step-eyebrow">Step 2 · Discovery</div>
+        <div class="step-duration">~10 min</div>
+      </div>
+      <h1 class="page-title">What is the biggest challenge on your farm?</h1>
+      <div class="section-label">Answers <span class="section-label-count">· click to check</span></div>
+      <ul class="q-list" id="discovery-list">
+        <li data-pain="tied_to_farm"><span class="q-check"></span><span class="q-text">Feeling tied to the farm and unable to step away</span></li>
+        <li data-pain="living_far"><span class="q-check"></span><span class="q-text">Living far from the farm</span></li>
+        <li data-pain="crop_yields"><span class="q-check"></span><span class="q-text">Increasing crop yields</span></li>
+        <li data-pain="managing_incidents"><span class="q-check"></span><span class="q-text">Managing incidents (crops overheating or freezing, etc.)</span></li>
+        <li data-pain="plant_disease"><span class="q-check"></span><span class="q-text">Diseases</span></li>
+        <li data-pain="overwhelmed"><span class="q-check"></span><span class="q-text">Feeling overwhelmed by everything that needs to get done</span></li>
+        <li data-pain="disconnected_tools"><span class="q-check"></span><span class="q-text">Using disconnected tools or systems that don't work together</span></li>
+        <li data-pain="hiring"><span class="q-check"></span><span class="q-text">Hiring, training, and managing employees</span></li>
+      </ul>
+    </section>
+
+    <!-- SLIDE 2 : Introduction (agenda à gauche, image JM + quote à droite) -->
+    <section class="slide slide-with-quote" id="slide-2">
+      <div class="slide-quote-content">
+        <div class="step-header">
+          <div class="step-eyebrow">Step 3 · Introduction</div>
+          <div class="step-duration">~2 min</div>
+        </div>
+        <h1 class="page-title">Here's how this call will go</h1>
+        <div class="intro-roadmap" id="intro-roadmap">
+          <div class="intro-step checked" data-step-index="3">
+            <div class="intro-check"></div>
+            <div class="intro-num">1</div>
+            <div class="intro-body">
+              <div class="intro-title">How Orisha helps</div>
+              <div class="intro-desc">What Chief Grower does — built around the pains you mentioned.</div>
+            </div>
+          </div>
+          <div class="intro-step checked" data-step-index="4">
+            <div class="intro-check"></div>
+            <div class="intro-num">2</div>
+            <div class="intro-body">
+              <div class="intro-title">The ongoing service you'll get</div>
+              <div class="intro-desc">How our team works alongside you, beyond the software.</div>
+            </div>
+          </div>
+          <div class="intro-step checked" data-step-index="5">
+            <div class="intro-check"></div>
+            <div class="intro-num">3</div>
+            <div class="intro-body">
+              <div class="intro-title">Demo</div>
+              <div class="intro-desc">A short video of what the app looks like on your phone.</div>
+            </div>
+          </div>
+          <div class="intro-step checked" data-step-index="6">
+            <div class="intro-check"></div>
+            <div class="intro-num">4</div>
+            <div class="intro-body">
+              <div class="intro-title">What we're offering</div>
+              <div class="intro-desc">The actual offer — which tier fits your farm, and why.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <img src="jean-martin.png" alt="Jean-Martin Fortier" class="testimonial-split-img">
+      <div class="how-quote-card">
+        <div class="testimonial-split-text">"At both Ferme des Quatre-Temps and Les Jardins de la Grelinette, we've equipped our greenhouses with Orisha systems. For us, using their services is a real investment."</div>
+        <div class="testimonial-split-author">Jean-Martin Fortier</div>
+      </div>
+    </section>
+
+    <!-- SLIDE 3 : How we help -->
+    <section class="slide slide-with-quote" id="slide-3">
+      <div class="slide-quote-content">
+        <div class="step-header">
+          <div class="step-eyebrow">Step 4 · How we help</div>
+          <div class="step-duration">~5 min</div>
+        </div>
+        <h1 class="page-title">How Orisha can help you</h1>
+        <div class="testimonial-split-body">
+          <div class="how-bullets" id="how-bullets"></div>
+        </div>
+      </div>
+      <img src="Ben.howwehelp.jpg" alt="" class="testimonial-split-img" id="how-quote-img">
+      <div class="how-quote-card">
+        <div class="testimonial-split-text" id="how-quote-text"></div>
+        <div class="testimonial-split-author" id="how-quote-author"></div>
+      </div>
+    </section>
+
+    <!-- SLIDE 4 : Demo -->
+    <section class="slide" id="slide-5">
+      <div class="step-header">
+        <div class="step-eyebrow">Step 4 · Demo</div>
+        <div class="step-duration">~5 min</div>
+      </div>
+      <h1 class="page-title">See Orisha in action</h1>
+      <div class="video-meta">
+        <div class="video-meta-label">Demo video · App Overview</div>
+        <div class="video-meta-dur" id="video-dur">--:--</div>
+      </div>
+      <div class="video-wrap">
+        <video id="demo-video" controls preload="metadata" playsinline>
+          <source src="Demo.mp4" type="video/mp4">
+          Your browser doesn't support this video format.
+        </video>
+      </div>
+    </section>
+
+    <!-- SLIDE 3 : Ongoing service -->
+    <section class="slide slide-with-quote" id="slide-4">
+      <div class="slide-quote-content">
+        <div class="step-header">
+          <div class="step-eyebrow">Step 3 · Ongoing service</div>
+          <div class="step-duration">~5 min</div>
+        </div>
+        <h1 class="page-title">How we work together</h1>
+        <div class="testimonial-split-body">
+          <div class="support-categories">
+            <div class="support-category">
+              <div class="support-category-title">Kickoff</div>
+              <ul>
+                <li>Customize system to your equipment</li>
+                <li>Complete Formation</li>
+                <li>Installation Guide</li>
+              </ul>
+            </div>
+            <div class="support-category">
+              <div class="support-category-title">Ongoing service</div>
+              <ul>
+                <li>Self troubleshooting</li>
+                <li>Phone troubleshooting</li>
+                <li>Plant issues by email</li>
+              </ul>
+            </div>
+            <div class="support-category">
+              <div class="support-category-title">Coaching</div>
+              <ul>
+                <li>Virtual Consultant</li>
+                <li>40hr Farmer Program</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+      <img src="collin.png" alt="" class="testimonial-split-img">
+      <div class="how-quote-card">
+        <div class="testimonial-split-text">"I'm grateful for what you guys are doing to help us."</div>
+        <div class="testimonial-split-author">Colin Sober-Williams <span class="testimonial-split-farm">· Eat Local Muskoka</span></div>
+      </div>
+    </section>
+
+    <!-- SLIDE 5 : Proposition -->
+    <section class="slide" id="slide-6">
+      <div class="step-header">
+        <div class="step-eyebrow">Step 7 · Proposal</div>
+        <div class="step-duration">~5 min</div>
+      </div>
+      <h1 class="page-title">What we're offering you</h1>
+      <div class="plan-card" id="plan-card">
+        <div class="plan-tabs" role="tablist">
+          <button class="plan-tab plan-tab--active" role="tab" data-plan="helper" aria-selected="true">
+            <div class="plan-tab__heading">
+              <img src="/erp/p/c51ecb8a2020826f2021e9e4ca5a84c3" alt="" class="plan-tab__logo">
+              <div class="plan-tab__title">Helper</div>
+            </div>
+            <div class="plan-tab__price" data-price-target="helper">$130/mo</div>
+          </button>
+          <button class="plan-tab" role="tab" data-plan="chief" aria-selected="false">
+            <div class="plan-tab__heading">
+              <img src="/erp/p/55994ea11f9ed642059bc2c237904109" alt="" class="plan-tab__logo">
+              <div class="plan-tab__title">Chief Grower</div>
+            </div>
+            <div class="plan-tab__price" data-price-target="chief">$220/mo</div>
+          </button>
+        </div>
+        <div class="plan-card-body">
+          <p class="plan-description" id="plan-description">Reliable, intelligent roll-up automation, alerts, and monitoring service for climate control.</p>
+          <div class="plan-section">
+            <div class="plan-section-header">SERVICE</div>
+            <div class="plan-row">
+              <span class="plan-row__label" id="plan-service-label">Helper</span>
+              <span class="plan-row__value" id="plan-service-price">$130<span class="plan-unit">/mo</span></span>
+            </div>
+            <div class="plan-row">
+              <span class="plan-row__label">Consultant</span>
+              <span class="plan-row__value">Included</span>
+            </div>
+            <div class="plan-row">
+              <span class="plan-row__label">40hr Farmer Program</span>
+              <span class="plan-row__value">Included</span>
+            </div>
+          </div>
+          <div class="plan-section">
+            <div class="plan-section-header">HARDWARE</div>
+            <p class="plan-info-text">If you cancel service, you'll have to return your Orisha hardware rental.</p>
+            <div class="plan-row">
+              <span class="plan-row__label">Hardware cost</span>
+              <span class="plan-row__value">$0</span>
+            </div>
+          </div>
+          <div class="plan-section">
+            <div class="plan-section-header" id="plan-automation-header">AUTOMATION AVAILABLE</div>
+            <div class="plan-automation" id="plan-automation"></div>
+          </div>
+        </div>
+      </div>
+      <div class="proposal-total" id="proposal-total">
+        <span class="proposal-total-quantities" id="proposal-total-quantities"></span>
+        <span class="proposal-total-amount" id="proposal-total-amount">$0 USD/mo</span>
+      </div>
+    </section>
+
+    <!-- SLIDE 6 : Conclusion -->
+    <section class="slide slide-with-quote" id="slide-7">
+      <div class="slide-quote-content">
+        <div class="step-header">
+          <div class="step-eyebrow">Step 8 · Conclusion</div>
+          <div class="step-duration">~3 min</div>
+        </div>
+        <h1 class="page-title">Next steps</h1>
+        <div class="testimonial-split-body">
+          <div class="testimonial-split-text">"We've been very pleased with the Orisha products. They're always very responsive as a company. It's made a big difference in our greenhouse and it's well worth the investment that we've made into the system."</div>
+          <div class="testimonial-split-author">Michael Kilpatrick <span class="testimonial-split-farm">· Farm on Central</span></div>
+        </div>
+      </div>
+      <img src="Kilpatrick.png" alt="Michael Kilpatrick" class="testimonial-split-img">
+    </section>
+
+    <!-- Assistant-only panel (visible only when ?view=assistant) -->
+    <section class="assistant-panel" id="assistant-panel">
+      <div class="assistant-head">
+        <div class="assistant-eyebrow">Assistant view · follows the client screen</div>
+        <h2 id="assistant-title">Waiting for client screen…</h2>
+        <div class="assistant-sub" id="assistant-sub"></div>
+      </div>
+      <div class="assistant-body" id="assistant-body">
+        <div class="assistant-empty">Navigate on either screen — both stay in sync.</div>
+      </div>
+    </section>
+
+    <div class="footer-nav">
+      <button class="fnav-btn" id="prev" onclick="changeSlide(-1)" disabled>← Back</button>
+      <span class="step-info" id="step-info">Step 1 of 6</span>
+      <button class="fnav-btn primary" id="next" onclick="changeSlide(1)">Next →</button>
+    </div>
+  </main>
+</div>
+
+<script>
+// ===== Assistant mode detection (assistant is default; ?view=client opens slide view) =====
+const IS_ASSISTANT=new URLSearchParams(location.search).get('view')!=='client';
+if(IS_ASSISTANT)document.documentElement.classList.add('assistant-mode');
+// Slide view: always start in focus mode (no topbar, no sidebar, no progress bar)
+if(!IS_ASSISTANT){
+  document.getElementById('layout').classList.add('focus');
+  document.body.classList.add('focus-mode');
+}
+
+// ===== BroadcastChannel for cross-window sync (with localStorage fallback) =====
+const bc=('BroadcastChannel' in window)?new BroadcastChannel('orisha-sync'):null;
+let suppressBroadcast=false;
+const SYNC_KEY='orisha-sync-msg';
+function broadcast(msg){
+  if(suppressBroadcast)return;
+  if(bc){bc.postMessage(msg);}
+  // Also write to localStorage as a fallback (some browsers restrict BroadcastChannel on file://)
+  try{
+    localStorage.setItem(SYNC_KEY,JSON.stringify({...msg,ts:Date.now()}));
+  }catch(e){}
+}
+// Listen to localStorage events (fires in OTHER tabs, not the sender)
+window.addEventListener('storage',(e)=>{
+  if(e.key!==SYNC_KEY||!e.newValue)return;
+  try{
+    const msg=JSON.parse(e.newValue);
+    handleSyncMessage(msg);
+  }catch(err){}
+});
+
+const labels=[
+  // hidden:true   → masqué du client (slide view popup), mais affiché dans la
+  //                  sidebar de la vue assistant avec badge ⓪.
+  // stepZero:true → affichage ⓪ + eyebrow « Step 0 · X » (les deux vues si non
+  //                  hidden). Orthogonal à hidden — Introduction est stepZero
+  //                  mais reste visible côté client.
+  // aliasOf:N     → cette entrée navigue le slide DOM de labels[N] et hérite
+  //                  de son numéro pour le sidebar. Utilisé pour les sous-
+  //                  étapes (ex. Transition demo qui partage le slide de How
+  //                  we work). Toujours combiné avec hidden:true (popup ne
+  //                  voit qu'une seule entrée pour le slide partagé).
+  // insertAfter:N → après le build initial, l'item est déplacé juste après
+  //                  l'item N dans la sidebar.
+  {name:'Qualification',dur:'5 min',hidden:true,stepZero:true},
+  {name:'Discovery',dur:'10 min',hidden:true,stepZero:true},
+  {name:'Introduction',dur:'2 min',stepZero:true},
+  {name:'How we help',dur:'5 min'},
+  {name:'How we work',dur:'5 min'},
+  {name:'Demo',dur:'5 min'},
+  {name:'Proposal',dur:'5 min'},
+  {name:'Conclusion',dur:'3 min'},
+  {name:'Transition demo',dur:'2 min',hidden:true,aliasOf:4,insertAfter:4},
+  {name:'Transition proposal',dur:'2 min',hidden:true,aliasOf:5,insertAfter:5}
+];
+const total=labels.length;
+// Map internal index → client-facing position (1-based, seulement les vrais
+// steps numérotés — exclut hidden, stepZero et aliasOf).
+const visibleIndexes=labels.map((l,i)=>(l.hidden||l.stepZero||l.aliasOf!=null)?null:i).filter(i=>i!==null);
+const visibleTotal=visibleIndexes.length;
+function clientPos(i){
+  const lbl=labels[i];
+  if(lbl&&lbl.aliasOf!=null)return clientPos(lbl.aliasOf);
+  return visibleIndexes.indexOf(i)+1;
+}
+// Quel slide DOM afficher pour une entrée nav donnée (alias → slide de la cible).
+function slideIdFor(i){
+  const lbl=labels[i];
+  return (lbl&&lbl.aliasOf!=null)?lbl.aliasOf:i;
+}
+function isDemoSlide(i){return labels[i]&&labels[i].name==='Demo';}
+let cur=0;
+const done=new Set();
+
+// Build nav. Vue client (slide view) : seules les étapes visibles. Vue assistant :
+// on ajoute aussi les étapes hidden (Qualification + Discovery) avec un badge ⓪
+// pour que le vendeur puisse y naviguer depuis la sidebar.
+const nav=document.getElementById('nav');
+labels.forEach((l,i)=>{
+  if(l.hidden&&!IS_ASSISTANT)return;
+  const el=document.createElement('div');
+  const classes=['nav-item'];
+  if(i===cur)classes.push('active');
+  if(l.stepZero)classes.push('is-step-zero');
+  el.className=classes.join(' ');
+  el.dataset.idx=i;
+  const numLabel=l.stepZero?'0':clientPos(i);
+  el.innerHTML=`<div class="nav-num"><span class="num-text">${numLabel}</span></div>
+    <div class="nav-text">${l.name}</div>
+    <div class="nav-duration">${l.dur}</div>`;
+  el.onclick=()=>goTo(i);
+  nav.appendChild(el);
+});
+// Réordonne : les items avec insertAfter:N sont placés juste après l'item N
+// (utile pour les sous-étapes comme Transition demo qui sont déclarées en fin
+// de tableau mais doivent apparaître après leur parent dans la sidebar).
+labels.forEach((l,i)=>{
+  if(l.insertAfter==null)return;
+  const el=nav.querySelector(`.nav-item[data-idx="${i}"]`);
+  const after=nav.querySelector(`.nav-item[data-idx="${l.insertAfter}"]`);
+  if(el&&after&&after.nextSibling!==el)after.parentNode.insertBefore(el,after.nextSibling);
+});
+
+function goTo(n){
+  if(n<0||n>=total)return;
+  // Pause video if leaving demo slide
+  const vid=document.getElementById('demo-video');
+  if(vid&&isDemoSlide(cur)&&!isDemoSlide(n)){
+    if(vid.tagName==='VIDEO')vid.pause();
+    else if(vid.tagName==='IFRAME'){try{vid.contentWindow.postMessage('{"event":"command","func":"pauseVideo","args":""}','*');}catch(e){}}
+  }
+  // Mark previous as done if moving forward — compare positions dans l'ordre
+  // logique de la sidebar, pas les index bruts. Sinon les sous-étapes aliasées
+  // (Transition demo idx=8, Transition proposal idx=9) ne reçoivent jamais le
+  // checkmark : aller de 8 (Transition demo) à 5 (Demo) fait n<cur en index brut
+  // alors qu'on avance dans la sidebar.
+  {
+    const prevPos=LOGICAL_NAV_ORDER.indexOf(cur);
+    const nextPos=LOGICAL_NAV_ORDER.indexOf(n);
+    if(nextPos>prevPos)done.add(cur);
+  }
+  const prevSlideId=slideIdFor(cur);
+  const nextSlideId=slideIdFor(n);
+  // Skip hide/show si même slide cible (cas d'une transition entre un step et
+  // sa sous-étape aliasée — ex. How we work → Transition demo, slide-4 inchangé)
+  // pour éviter de rejouer l'animation fadeIn.
+  if(prevSlideId!==nextSlideId){
+    const prevSlideEl=document.getElementById('slide-'+prevSlideId);
+    if(prevSlideEl)prevSlideEl.classList.remove('visible');
+  }
+  cur=n;
+  if(prevSlideId!==nextSlideId){
+    const newSlideEl=document.getElementById('slide-'+nextSlideId);
+    if(newSlideEl)newSlideEl.classList.add('visible');
+  }
+  // Refresh all nav items (active/done based on data-idx mapping).
+  // En slide view, les items aliasés (Transition demo/proposal) ne sont pas
+  // dans la sidebar — on highlight aussi slideIdFor(cur) pour que la cible
+  // visible reste « active » quand cur pointe sur une sous-étape.
+  const activeSlide=slideIdFor(cur);
+  [...nav.children].forEach(el=>{
+    const idx=parseInt(el.dataset.idx);
+    el.classList.remove('active','done');
+    if(idx===cur||idx===activeSlide)el.classList.add('active');
+    else if(done.has(idx))el.classList.add('done');
+  });
+  // Update eyebrow to show client-facing step number (or hide section if hidden)
+  updateEyebrow(cur);
+  // Prev/next disabled basés sur la position dans l'ordre visuel de la sidebar,
+  // pas sur l'index brut (sinon le dernier item visuel n'arrêterait jamais next).
+  const orderForNav=navOrder();
+  const posForNav=orderForNav.indexOf(cur);
+  document.getElementById('prev').disabled=posForNav<=0;
+  const nb=document.getElementById('next');
+  const atEnd=posForNav===orderForNav.length-1;
+  nb.disabled=atEnd;
+  nb.textContent=atEnd?'Done ✓':'Next →';
+  // Footer step-info: only count "real" numbered steps; pour les Step 0, on
+  // affiche le label complet sans compteur.
+  if(labels[cur].stepZero){
+    document.getElementById('step-info').textContent=`Step 0 · ${labels[cur].name}`;
+    document.getElementById('progress').style.width='0%';
+  }else{
+    const p=clientPos(cur);
+    document.getElementById('step-info').textContent=`Step ${p} of ${visibleTotal}`;
+    document.getElementById('progress').style.width=(p/visibleTotal*100)+'%';
+  }
+  // Scroll active nav item into view if present
+  const activeNav=nav.querySelector('.nav-item.active');
+  if(activeNav)activeNav.scrollIntoView({block:'nearest',behavior:'smooth'});
+  window.scrollTo({top:0,behavior:'smooth'});
+  // Update assistant panel and broadcast navigation. On envoie le cur réel
+  // (incluant les aliases comme Transition demo/proposal) pour que les deux
+  // vues restent en lockstep — la slide view peut être sur cur=8 sans nav item,
+  // elle affichera juste slide-4 via slideIdFor.
+  renderAssistant();
+  broadcast({type:'nav',index:cur});
+}
+
+// Rewrite all eyebrows to use client-facing step numbers
+function updateEyebrow(i){
+  // Les entrées aliasées partagent le slide de leur cible (pas d'eyebrow propre).
+  if(labels[i]&&labels[i].aliasOf!=null)return;
+  const slide=document.getElementById('slide-'+i);
+  if(!slide)return;
+  const eyebrow=slide.querySelector('.step-eyebrow');
+  if(!eyebrow)return;
+  // Parse original content once and cache the name
+  if(!eyebrow.dataset.name){
+    const parts=eyebrow.textContent.split('·');
+    eyebrow.dataset.name=parts.length>1?parts.slice(1).join('·').trim():eyebrow.textContent.trim();
+  }
+  const name=eyebrow.dataset.name;
+  if(labels[i].stepZero){
+    eyebrow.textContent=`Step 0 · ${name}`;
+  }else{
+    eyebrow.textContent=`Step ${clientPos(i)} · ${name}`;
+  }
+}
+// Apply eyebrow rewrite to all slides on load
+labels.forEach((l,i)=>updateEyebrow(i));
+
+// Ordre logique de navigation = ordre du tableau labels après application des
+// insertAfter. Identique dans les deux vues — la slide view ne rend pas les
+// items hidden dans la sidebar, mais les arrows doivent quand même traverser
+// les sous-étapes aliasées (Transition demo, Transition proposal) pour que
+// l'assistant reste synchronisé.
+const LOGICAL_NAV_ORDER=(()=>{
+  const order=labels.map((_,i)=>i);
+  labels.forEach((l,i)=>{
+    if(l.insertAfter==null)return;
+    const fromIdx=order.indexOf(i);
+    if(fromIdx>=0)order.splice(fromIdx,1);
+    const anchor=order.indexOf(l.insertAfter);
+    order.splice(anchor+1,0,i);
+  });
+  return order;
+})();
+function navOrder(){return LOGICAL_NAV_ORDER;}
+function changeSlide(d){
+  // Collect step indices that are unchecked in the Introduction roadmap
+  const skipped=new Set();
+  document.querySelectorAll('#intro-roadmap .intro-step:not(.checked)').forEach(el=>{
+    skipped.add(parseInt(el.dataset.stepIndex));
+  });
+  const order=navOrder();
+  const pos=order.indexOf(cur);
+  if(pos===-1){goTo(cur+d);return;}
+  let p=pos+d;
+  // Skip over unchecked steps in the direction of movement
+  while(p>=0&&p<order.length&&skipped.has(order[p]))p+=d;
+  if(p<0||p>=order.length)return;
+  goTo(order[p]);
+}
+
+// ===== Quote builder state (devis live, persisté en DB) =====
+// Déclaré avant goTo(0) car renderAssistant() — invoqué par goTo — appelle
+// applyQuoteStateToUI() qui lit quoteState. Sans ça, TDZ sur le const.
+const QUOTE_PRICES={USD:{helper:130,chief:220},CAD:{helper:180,chief:290}};
+const quoteState={currency:'USD',helper:0,chief:0,paidAt:null,paidEmail:null,subscriptionId:null};
+// Idem : memoize l'onglet actif (Script / Battle Cards / Quote) par tab-set.
+const lastActiveTab={};
+
+// Plan card (slide-6) — onglet Helper/Chief, contenu et prix synchronisés avec
+// la devise du quote builder.
+let planCardActive='helper';
+const PLAN_INFO={
+  helper:{
+    label:'Helper',
+    description:'Reliable, intelligent roll-up automation, alerts, and monitoring service for climate control.',
+    automationHeader:'AUTOMATION INCLUDED',
+  },
+  chief:{
+    label:'Chief Grower',
+    description:'Reliable, intelligent greenhouse automation service for the same revenue with half the beds, and a lot more Saturdays.',
+    automationHeader:'AUTOMATION AVAILABLE',
+  },
+};
+// Liste des dispositifs automatisés par plan (section AUTOMATION AVAILABLE).
+// Les tokens pointent vers les SVG uploadés dans /erp/public-files.
+const PLAN_AUTOMATION={
+  helper:[
+    {token:'5d32722e9860d514758116d60ba0ce6e',label:'Roll-ups',count:2},
+  ],
+  chief:[
+    {token:'5d32722e9860d514758116d60ba0ce6e',label:'Roll-ups',count:2},
+    {token:'c6d50f8216c971a5d9e7f7ce66b8a2c5',label:'Valve',count:4},
+    {token:'7ffe11f98a5cb8032f11875685e1a331',label:'Heater',count:2},
+    {token:'51e3f966cceaec8a7b4d167c37c79d2e',label:'Exhaust fan'},
+    {token:'3e5ab6f898241baaaf5a4b9a0267f292',label:'Roof',count:1},
+    {token:'2af5b918c6179aeba6af5c99284445ba',label:'Wind sensor',count:1},
+  ],
+};
+function renderPlanCard(){
+  const card=document.getElementById('plan-card');
+  if(!card)return;
+  const prices=QUOTE_PRICES[quoteState.currency]||QUOTE_PRICES.USD;
+  // Prix dans les onglets (toujours visibles, montrent les deux options)
+  card.querySelectorAll('.plan-tab__price[data-price-target]').forEach(el=>{
+    const tgt=el.dataset.priceTarget;
+    if(prices[tgt]!=null)el.textContent='$'+prices[tgt]+'/mo';
+  });
+  // Onglet actif
+  card.querySelectorAll('.plan-tab').forEach(tab=>{
+    const isActive=tab.dataset.plan===planCardActive;
+    tab.classList.toggle('plan-tab--active',isActive);
+    tab.setAttribute('aria-selected',isActive?'true':'false');
+  });
+  // Contenu (description + SERVICE row)
+  const info=PLAN_INFO[planCardActive];
+  if(!info)return;
+  const desc=document.getElementById('plan-description');
+  if(desc)desc.textContent=info.description;
+  const lbl=document.getElementById('plan-service-label');
+  if(lbl)lbl.textContent=info.label;
+  const pr=document.getElementById('plan-service-price');
+  if(pr)pr.innerHTML='$'+prices[planCardActive]+'<span class="plan-unit">/mo</span>';
+  // Automation header (Available vs Included selon le plan)
+  const autoHead=document.getElementById('plan-automation-header');
+  if(autoHead)autoHead.textContent=info.automationHeader||'AUTOMATION AVAILABLE';
+  // Automation icons par plan
+  const autoEl=document.getElementById('plan-automation');
+  if(autoEl){
+    const items=PLAN_AUTOMATION[planCardActive]||[];
+    autoEl.innerHTML=items.map(it=>{
+      const hasCount=typeof it.count==='number';
+      const countAttr=hasCount?` data-count="${it.count}"`:'';
+      const countOverlay=hasCount?`<span class="plan-automation-count">${it.count}</span>`:'';
+      return `<div class="plan-automation-item"${countAttr}><span class="plan-automation-icon-wrap"><img src="/erp/p/${it.token}" alt="${it.label}" class="plan-automation-icon">${countOverlay}</span></div>`;
+    }).join('');
+  }
+}
+document.addEventListener('click',e=>{
+  const tab=e.target.closest('.plan-card .plan-tab[data-plan]');
+  if(!tab)return;
+  planCardActive=tab.dataset.plan;
+  renderPlanCard();
+});
+function quoteFormatTotal(){
+  const p=QUOTE_PRICES[quoteState.currency]||QUOTE_PRICES.USD;
+  const total=(quoteState.helper||0)*p.helper+(quoteState.chief||0)*p.chief;
+  return '$'+total.toLocaleString('en-US')+' '+quoteState.currency+'/mo';
+}
+// Sync state → DOM (assistant builder + slide-6 total block, dans la fenêtre courante)
+function applyQuoteStateToUI(){
+  document.querySelectorAll('.quote-curr').forEach(btn=>{
+    btn.classList.toggle('active',btn.dataset.currency===quoteState.currency);
+  });
+  const hc=document.querySelector('.quote-count[data-target="helper"]');
+  if(hc)hc.textContent=quoteState.helper||0;
+  const cc=document.querySelector('.quote-count[data-target="chief"]');
+  if(cc)cc.textContent=quoteState.chief||0;
+  document.querySelectorAll('.quote-unit-price').forEach(el=>{
+    const tgt=el.dataset.target;
+    const p=(QUOTE_PRICES[quoteState.currency]||QUOTE_PRICES.USD)[tgt];
+    if(p!=null)el.textContent='$'+p+'/mo';
+  });
+  const totalAs=document.getElementById('quote-total-display');
+  if(totalAs)totalAs.textContent=quoteFormatTotal();
+  const totalSlide=document.getElementById('proposal-total-amount');
+  if(totalSlide)totalSlide.textContent=quoteFormatTotal();
+  // Vue slide : logo + × N à côté du total, seulement si count > 0
+  const qtsEl=document.getElementById('proposal-total-quantities');
+  if(qtsEl){
+    const parts=[];
+    if((quoteState.helper||0)>0){
+      parts.push(`<span class="proposal-qty"><img src="/erp/p/c51ecb8a2020826f2021e9e4ca5a84c3" alt="Helper" class="proposal-qty-logo">× ${quoteState.helper}</span>`);
+    }
+    if((quoteState.chief||0)>0){
+      parts.push(`<span class="proposal-qty"><img src="/erp/p/55994ea11f9ed642059bc2c237904109" alt="Chief Grower" class="proposal-qty-logo">× ${quoteState.chief}</span>`);
+    }
+    qtsEl.innerHTML=parts.join('');
+  }
+  // Disable "−" when count is already 0
+  document.querySelectorAll('.quote-step[data-action="dec"]').forEach(btn=>{
+    btn.disabled=(quoteState[btn.dataset.target]||0)<=0;
+  });
+  // Plan card de slide-6 (prix selon devise)
+  if(typeof renderPlanCard==='function')renderPlanCard();
+}
+// Mutate state, render, broadcast cross-window, trigger autosave to server.
+function setQuoteState(partial){
+  Object.assign(quoteState,partial);
+  applyQuoteStateToUI();
+  try{ broadcast({type:'quote',currency:quoteState.currency,helper:quoteState.helper,chief:quoteState.chief}); }catch(e){}
+  if(typeof window.__pushSave==='function')window.__pushSave();
+}
+// Delegated click handler — boutons currency + +/- steppers
+document.addEventListener('click',e=>{
+  const curr=e.target.closest('.quote-curr');
+  if(curr){ setQuoteState({currency:curr.dataset.currency}); return; }
+  const step=e.target.closest('.quote-step');
+  if(step){
+    const tgt=step.dataset.target;
+    const delta=step.dataset.action==='inc'?1:-1;
+    const next=Math.max(0,(quoteState[tgt]||0)+delta);
+    if(next!==quoteState[tgt])setQuoteState({[tgt]:next});
+    return;
+  }
+});
+
+// ===== Stripe credit-card form (quote tab, proposal step) =====
+// Le DOM du form est régénéré à chaque renderAssistant — on remount Stripe Elements
+// à chaque fois qu'il apparaît. Le Stripe SDK est chargé une fois (singleton).
+const QUOTE_PAY={
+  stripe:null,            // instance Stripe.js
+  publishableKey:null,    // mis en cache après le 1er fetch
+  cardElement:null,       // Element monté dans #quote-pay-card
+  cardReady:false,
+  inFlight:false,         // empêche les double-submits
+  pending:null,           // { resolve, reject } pour les round-trips parent
+  pendingId:0,
+};
+function quotePayMsg(kind,text){
+  const el=document.getElementById('quote-pay-msg');
+  if(!el)return;
+  el.className='quote-pay-msg '+(kind||'');
+  el.classList.add('show');
+  el.textContent=text||'';
+  if(!text)el.classList.remove('show');
+}
+function quotePaySetBusy(busy){
+  const btn=document.getElementById('quote-pay-submit');
+  const lbl=document.getElementById('quote-pay-btn-label');
+  if(!btn||!lbl)return;
+  btn.disabled=!!busy;
+  if(busy){
+    lbl.innerHTML='<span class="quote-pay-spin"></span> Processing…';
+  }else{
+    lbl.textContent='Charge card & start subscription';
+  }
+}
+async function fetchPublishableKey(){
+  if(QUOTE_PAY.publishableKey)return QUOTE_PAY.publishableKey;
+  try{
+    const r=await fetch('/erp/api/connectors/stripe/publishable-key');
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const j=await r.json();
+    QUOTE_PAY.publishableKey=j.publishable_key||null;
+    return QUOTE_PAY.publishableKey;
+  }catch(e){
+    return null;
+  }
+}
+async function mountQuotePay(){
+  const cardEl=document.getElementById('quote-pay-card');
+  const submitBtn=document.getElementById('quote-pay-submit');
+  if(!cardEl||!submitBtn)return; // pas sur le quote tab → rien à faire
+  // Placeholder du Cardholder name : reprend le « Contact's name » saisi en slide 0.
+  const nameInput=document.getElementById('quote-pay-name');
+  const contactInput=document.getElementById('qa-contact');
+  if(nameInput&&contactInput){
+    const contactName=(contactInput.value||'').trim();
+    if(contactName)nameInput.placeholder=contactName;
+  }
+  if(typeof window.Stripe!=='function'){
+    quotePayMsg('error','Stripe.js failed to load. Check your connection and reload.');
+    submitBtn.disabled=true;
+    return;
+  }
+  const pk=await fetchPublishableKey();
+  if(!pk){
+    quotePayMsg('error','Stripe is not configured. Add a publishable key in Admin → Connectors.');
+    submitBtn.disabled=true;
+    return;
+  }
+  // Réinitialise les éléments à chaque remount — DOM régénéré, ancien card element invalidé.
+  if(!QUOTE_PAY.stripe)QUOTE_PAY.stripe=window.Stripe(pk);
+  const elements=QUOTE_PAY.stripe.elements();
+  const card=elements.create('card',{
+    style:{
+      base:{
+        fontFamily:'Poppins, sans-serif',fontSize:'15px',color:'#333',
+        '::placeholder':{color:'#aaa'},
+      },
+      invalid:{color:'#c0392b'},
+    },
+  });
+  card.mount('#quote-pay-card');
+  QUOTE_PAY.cardElement=card;
+  QUOTE_PAY.cardReady=false;
+  card.on('ready',()=>{QUOTE_PAY.cardReady=true;});
+  card.on('change',(ev)=>{
+    if(ev.error)quotePayMsg('error',ev.error.message);
+    else quotePayMsg('',''); // clear
+  });
+  // (Re-)bind submit handler — DOM est neuf, l'ancien listener est sur l'ancien node.
+  submitBtn.onclick=onQuotePaySubmit;
+  // Discount controls : toggle + segments (type/duration) sont re-bindés à chaque
+  // remount puisque le DOM est régénéré par renderAssistant.
+  bindQuotePayDiscount();
+}
+function bindQuotePayDiscount(){
+  const root=document.getElementById('quote-pay-discount');
+  if(!root)return;
+  const checkbox=document.getElementById('quote-pay-discount-on');
+  const suffix=document.getElementById('quote-pay-discount-suffix');
+  if(checkbox){
+    checkbox.onchange=()=>{ root.classList.toggle('open',checkbox.checked); };
+  }
+  root.querySelectorAll('.quote-pay-seg').forEach(seg=>{
+    const group=seg.dataset.group; // 'type' ou 'duration'
+    seg.onclick=e=>{
+      const btn=e.target.closest('button');
+      if(!btn)return;
+      seg.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b===btn));
+      if(group==='type'){
+        root.dataset.type=btn.dataset.type;
+        if(suffix)suffix.textContent=btn.dataset.type==='percent'?'%':'$';
+      }else if(group==='duration'){
+        root.dataset.duration=btn.dataset.duration;
+        root.classList.toggle('duration-repeating',btn.dataset.duration==='repeating');
+      }
+    };
+  });
+}
+// Lit l'état du bloc rabais et renvoie le payload pour le backend, ou null si
+// désactivé. Renvoie {error} si l'utilisateur a coché Apply discount sans saisir
+// une valeur valide.
+function readQuotePayDiscount(){
+  const root=document.getElementById('quote-pay-discount');
+  const on=document.getElementById('quote-pay-discount-on');
+  if(!root||!on||!on.checked)return null;
+  const type=root.dataset.type==='amount'?'amount':'percent';
+  const duration=root.dataset.duration||'once';
+  const valueEl=document.getElementById('quote-pay-discount-value');
+  const value=Number(valueEl&&valueEl.value);
+  if(!Number.isFinite(value)||value<=0){
+    return {error:'Discount value must be greater than 0.'};
+  }
+  if(type==='percent'&&value>100){
+    return {error:'Percent discount cannot exceed 100%.'};
+  }
+  const out={type,value,duration};
+  if(duration==='repeating'){
+    const mEl=document.getElementById('quote-pay-discount-months');
+    const months=Number(mEl&&mEl.value);
+    if(!Number.isInteger(months)||months<1||months>60){
+      return {error:'Months must be an integer between 1 and 60.'};
+    }
+    out.months=months;
+  }
+  return out;
+}
+async function onQuotePaySubmit(){
+  if(QUOTE_PAY.inFlight)return;
+  const name=(document.getElementById('quote-pay-name')||{}).value||'';
+  const email=(document.getElementById('quote-pay-email')||{}).value||'';
+  if(!name.trim()){quotePayMsg('error','Cardholder name is required.');return;}
+  if(!email.trim()||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){
+    quotePayMsg('error','A valid email is required for the receipt.');return;
+  }
+  if((quoteState.helper||0)<=0&&(quoteState.chief||0)<=0){
+    quotePayMsg('error','Add at least one Helper or Chief Grower to the quote.');return;
+  }
+  const discount=readQuotePayDiscount();
+  if(discount&&discount.error){quotePayMsg('error',discount.error);return;}
+  if(!QUOTE_PAY.stripe||!QUOTE_PAY.cardElement){
+    quotePayMsg('error','Card form is not ready yet.');return;
+  }
+  QUOTE_PAY.inFlight=true;
+  quotePaySetBusy(true);
+  quotePayMsg('info','Tokenizing card…');
+  try{
+    const {paymentMethod,error}=await QUOTE_PAY.stripe.createPaymentMethod({
+      type:'card',
+      card:QUOTE_PAY.cardElement,
+      billing_details:{name:name.trim(),email:email.trim()},
+    });
+    if(error){quotePayMsg('error',error.message||'Card error');return;}
+    quotePayMsg('info','Creating subscription…');
+    const result=await sendSubscribeCard({
+      payment_method_id:paymentMethod.id,
+      helper:quoteState.helper||0,
+      chief:quoteState.chief||0,
+      currency:quoteState.currency||'USD',
+      email:email.trim(),
+      name:name.trim(),
+      ...(discount?{discount}:{}),
+    });
+    if(result.error){quotePayMsg('error',result.error);return;}
+    // Si Stripe demande une étape 3DS, on confirme côté client.
+    if(result.client_secret&&result.payment_intent_status==='requires_action'){
+      quotePayMsg('info','Authenticating card (3-D Secure)…');
+      const conf=await QUOTE_PAY.stripe.confirmCardPayment(result.client_secret);
+      if(conf.error){quotePayMsg('error',conf.error.message||'Authentication failed');return;}
+    }
+    if(result.status==='active'||result.status==='trialing'||result.payment_intent_status==='succeeded'){
+      // Reset card field — éviter une 2e charge accidentelle.
+      try{ QUOTE_PAY.cardElement.clear(); }catch(e){}
+      quoteState.paidAt=result.paid_at||new Date().toISOString();
+      quoteState.paidEmail=result.paid_email||email.trim()||null;
+      quoteState.subscriptionId=result.subscription_id||null;
+      renderQuotePaidSuccess();
+      return;
+    }else{
+      quotePayMsg('info','Subscription status: '+(result.status||'pending')+'. Check Stripe dashboard.');
+    }
+  }catch(e){
+    quotePayMsg('error',e.message||'Unexpected error');
+  }finally{
+    QUOTE_PAY.inFlight=false;
+    quotePaySetBusy(false);
+  }
+}
+// Remplace le contenu de la section Quote (form de devis + paiement) par un
+// écran de confirmation. Appelé soit immédiatement après une souscription
+// réussie, soit lors d'un re-render si quoteState.paidAt est déjà set (persisté
+// en DB par /subscribe-card côté serveur).
+function renderQuotePaidSuccess(){
+  const section=document.querySelector('.phase-block[data-phase="quote"]');
+  if(!section)return;
+  const h=quoteState.helper||0;
+  const c=quoteState.chief||0;
+  const total=(typeof quoteFormatTotal==='function')?quoteFormatTotal():'';
+  const parts=[];
+  if(h>0)parts.push(`<strong>Helper</strong> × ${h}`);
+  if(c>0)parts.push(`<strong>Chief Grower</strong> × ${c}`);
+  const summary=parts.length?parts.join(' · ')+(total?` — ${total}`:''):total;
+  const safeEmail=String(quoteState.paidEmail||'').replace(/[<>&"]/g,s=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[s]));
+  section.innerHTML=`
+    <div class="quote-paid">
+      <div class="quote-paid-check">✓</div>
+      <div class="quote-paid-title">Payment confirmed</div>
+      <div class="quote-paid-summary">${summary}</div>
+      ${safeEmail?`<div class="quote-paid-receipt">A receipt has been sent to ${safeEmail}.</div>`:''}
+      <div class="quote-paid-receipt">The subscription is now active in Stripe.</div>
+    </div>
+  `;
+}
+// Si l'appel est déjà marqué « payé » (au chargement initial ou après navigation
+// entre slides), remplace le formulaire de la section Quote par l'écran de succès.
+function maybeRenderQuotePaid(){
+  if(quoteState.paidAt)renderQuotePaidSuccess();
+}
+// Envoie la requête au backend via le parent React (qui a le JWT). On utilise un id
+// unique par requête pour matcher la réponse postMessage.
+function sendSubscribeCard(body){
+  return new Promise(resolve=>{
+    const id=++QUOTE_PAY.pendingId;
+    QUOTE_PAY.pending={id,resolve};
+    try{
+      window.parent.postMessage({source:'qualification-call',type:'subscribe-card',id,body},'*');
+    }catch(e){
+      QUOTE_PAY.pending=null;
+      resolve({error:'Cannot reach parent frame'});
+    }
+    // Timeout de sécurité — si le parent ne répond jamais, on libère le bouton.
+    setTimeout(()=>{
+      if(QUOTE_PAY.pending&&QUOTE_PAY.pending.id===id){
+        QUOTE_PAY.pending=null;
+        resolve({error:'Request timed out'});
+      }
+    },45000);
+  });
+}
+
+// Init everything at slide 0 (Qualification, hidden from client menu)
+goTo(0);
+
+// Interactive checklist
+document.querySelectorAll('.q-list li').forEach(li=>{
+  li.addEventListener('click',()=>{
+    li.classList.toggle('checked');
+    // If this is a Discovery item, re-render How-we-help features
+    if(li.dataset.pain){
+      renderFeatures();
+      renderHowWeHelp();
+      renderAssistant();
+      // Broadcast the full state of checked pains
+      const checked=[...document.querySelectorAll('#discovery-list li.checked')].map(li=>li.dataset.pain);
+      broadcast({type:'pains',pains:checked});
+    }
+    // If this is a red flag, re-render assistant + broadcast
+    if(li.dataset.flag){
+      renderAssistant();
+      const checkedFlags=[...document.querySelectorAll('#red-flags-list li.checked')].map(li=>li.dataset.flag);
+      broadcast({type:'flags',flags:checkedFlags});
+    }
+  });
+});
+
+// Introduction roadmap: toggle steps to include/skip (assistant view only)
+// Delegated click so it works for both the source roadmap and any clone in the assistant panel
+document.addEventListener('click',(e)=>{
+  const step=e.target.closest('.intro-step');
+  if(!step)return;
+  if(!IS_ASSISTANT)return;
+  const idx=step.dataset.stepIndex;
+  const newState=!step.classList.contains('checked');
+  document.querySelectorAll(`.intro-step[data-step-index="${idx}"]`).forEach(el=>{
+    el.classList.toggle('checked',newState);
+  });
+  const skipped=[...document.querySelectorAll('#intro-roadmap .intro-step:not(.checked)')]
+    .map(s=>parseInt(s.dataset.stepIndex));
+  broadcast({type:'intro-skipped',skipped});
+});
+
+// ===== Feature bank (features Chief Grower, keyed by short id) =====
+const featureBank={
+  remote:{
+    what:"You leave the farm. Chief Grower stays behind. Monitor and control everything from your phone, wherever you are.",
+    why:"The farm no longer needs you to be there."
+  },
+  reassess:{
+    what:"Every two minutes, it reassesses the weather and adjusts your ventilation to keep your plants exactly where they grow best.",
+    why:"Not a timer. Not a guess. A constant, quiet decision made for you — all season long."
+  },
+  feedback:{
+    what:"It learns from your feedback on plant state and steers toward the strongest, healthiest, most productive crop possible.",
+    why:"Your read on the plant, translated into action."
+  },
+  disease:{
+    what:"When disease conditions are building, it does not just warn you. It runs dehumidification cycles to stop it before it spreads.",
+    why:"Most systems alert. Chief Grower intervenes."
+  },
+  irrigation:{
+    what:"Irrigation adapts to how much your plants are actually transpiring that day. The right amount of water, every time.",
+    why:"No timers to adjust. No guessing. No root issues, no growth sacrificed."
+  },
+  wind:{
+    what:"When winds get too strong, it closes the vents on its own. When a storm is coming, you close them from your phone.",
+    why:"The small decisions that used to pull you back to the farm, handled."
+  },
+  call:{
+    what:"If the temperature hits a dangerous level for your crops, it calls you. <strong>Not a notification. A call.</strong>",
+    why:"Because some things cannot wait."
+  },
+  balance:{
+    what:"It balances your heaters and ventilation for maximum plant growth at the lowest propane cost possible.",
+    why:"Better results, lower bills."
+  },
+  orchestrates:{
+    what:"Chief Grower orchestrates your entire greenhouse so you can focus on what only you can do.",
+    why:"One brain, running the whole operation."
+  }
+};
+
+// ===== Pain → features mapping =====
+const painToFeatures={
+  hiring:['feedback'],
+  living_far:['wind','call','remote'],
+  disconnected_tools:['irrigation','balance','disease'],
+  crop_yields:['balance','reassess','irrigation','feedback','disease'],
+  tied_to_farm:['wind','call','remote','disease'],
+  overwhelmed:['disease','wind','call'],
+  managing_incidents:['wind','call'],
+  plant_disease:['disease','reassess']
+};
+
+// ===== Render function =====
+const MAX_FEATURES=3;
+function topFeatures(pains){
+  // Count frequency across the given pains
+  const freq={};
+  pains.forEach(p=>{
+    (painToFeatures[p]||[]).forEach(f=>{freq[f]=(freq[f]||0)+1;});
+  });
+  return Object.entries(freq)
+    .sort((a,b)=>b[1]-a[1])
+    .map(([f])=>f);
+}
+function renderFeatures(){
+  const rows=document.getElementById('features-rows');
+  if(!rows)return;
+  const allPains=Object.keys(painToFeatures);
+  const checked=[...document.querySelectorAll('#discovery-list li.checked')].map(li=>li.dataset.pain);
+  // Primary: top features from checked pains (or all pains if none checked)
+  const primary=topFeatures(checked.length?checked:allPains);
+  let top=primary.slice(0,MAX_FEATURES);
+  // Top-up with globally most-frequent features if we have fewer than MAX_FEATURES
+  if(top.length<MAX_FEATURES){
+    const global=topFeatures(allPains);
+    for(const f of global){
+      if(top.length>=MAX_FEATURES)break;
+      if(!top.includes(f))top.push(f);
+    }
+  }
+  // Render
+  rows.innerHTML=top.map(f=>{
+    const feat=featureBank[f];
+    if(!feat)return '';
+    return `<div class="feature-row">
+      <div class="feature-what">${feat.what}</div>
+    </div>`;
+  }).join('');
+}
+// Initial render
+renderFeatures();
+
+// ===== "How we help" dynamic content (sourced from CSV) =====
+// rank = priority order from the pairwise CSV; primary/secondary = bullet content; quote = testimonial
+const painContent={
+  tied_to_farm:{
+    rank:1,
+    primary:"Monitor and control everything from your phone, wherever you are.",
+    secondary:"Vents automatically close when the winds get too strong.",
+    quote:"Before, we were unable to accept a diner's invitation in the late spring because we had to open or close the greenhouse roll-ups. During the day, it is hot and yet often below zero after sundown.",
+    author:"Scott Sigurdson",
+    farm:"",
+    image:"Scott.howwehelp.jpg"
+  },
+  living_far:{
+    rank:2,
+    primary:"Vents automatically close when the winds get too strong.",
+    secondary:"If the temperature hits a dangerous level for your crops, it calls you.",
+    quote:"You only got to miss it once. You only got one day not being able to come back home in time and your tomatoes are toasted. The motors cost money. Then you need something to control those motors to go up and down. And with all of that it just saves money. And it creates money.",
+    author:"Conor Crickmore",
+    farm:"Neversink Farm",
+    image:"conor.howwehelp.png"
+  },
+  crop_yields:{
+    rank:3,
+    primary:"Balances heaters and ventilation for maximum plant growth at the lowest propane cost possible. Better results, lower bills.",
+    secondary:"Irrigation adapts to how much your plants are actually transpiring that day. The right amount of water, every time. No timers to adjust. No guessing.",
+    quote:"In 2024, we have DOUBLED tomato production compared to last year. That's more than 2000 pounds of tomatoes harvested this summer!",
+    author:"Drew",
+    farm:"Ghost House Farm",
+    image:"drew.howwehelp.png"
+  },
+  managing_incidents:{
+    rank:4,
+    primary:"Vents automatically close when the winds get too strong.",
+    secondary:"Power outage? Temperature out of target? You get a phone call!",
+    quote:"I blocked my ridge vent open because I forgot to put the power back to the greenhouse after electricity works. I got an alarm and saved the day! Spring frost would have ruined my season!",
+    author:"Antoine Ratheau",
+    farm:"",
+    image:"Antoine.howwehelp.jpeg"
+  },
+  plant_disease:{
+    rank:5,
+    primary:"When disease conditions are building: it uses venting and heating to expel air out, only when the humidity level is in a dangerous zone.",
+    secondary:"Say bye to sprayers!",
+    quote:"Before, leaf mold was horrible. It was destroying the whole greenhouse. Since we got Orisha, we don't even think about it anymore and we can keep growing the beautiful varieties our clients love so much.",
+    author:"Catherine Sylvestre",
+    farm:"",
+    image:"Catherine.howwehelp.png"
+  },
+  overwhelmed:{
+    rank:6,
+    primary:"Orchestrates your entire greenhouse so you can focus on what only you can do.",
+    secondary:"Clear, personalized advice every week to boost yields, prevent issues, and simplify decisions.",
+    quote:"We plan on going into next season without a farm manager, and only having harvest/wash/pack crew. I will depend on Orisha to automate what it can and remove that from my team's plates.",
+    author:"Dan Trubey-Weller",
+    farm:"",
+    image:"Dan.howwehelp.jpg"
+  },
+  disconnected_tools:{
+    rank:7,
+    primary:"The right amount of water, every time. No timers to adjust. No guessing. No root issues, no growth sacrificed.",
+    secondary:"Balances heaters and ventilation for maximum plant growth at the lowest propane cost possible. Better results, lower bills.",
+    quote:"Orisha has designed a beautiful software programmed to take a lot of work out of my head. It will make sure that the environment stays optimum for plant growth.",
+    author:"Ben Hartman",
+    farm:"",
+    image:"Ben.howwehelp.jpg"
+  },
+  hiring:{
+    rank:8,
+    primary:"Clear, personalized advice every week to boost yields, prevent issues, and simplify decisions.",
+    secondary:"It learns from your feedback on plant state and steers toward the strongest, healthiest, most productive crop possible. Your read on the plant, translated into action.",
+    quote:"Dana and I can leave the farm. No need to decide beforehand if we leave roll-up sides open or not, no need to train staff how to decide when it's good to open the sides. The mental load of wondering whether we can leave without having to worry about it is gone.",
+    author:"Luke",
+    farm:"Terramor Farm",
+    image:"Luke.howwehelp.jpg"
+  }
+};
+
+function renderHowWeHelp(){
+  const bulletsEl=document.getElementById('how-bullets');
+  const quoteEl=document.getElementById('how-quote-text');
+  const authorEl=document.getElementById('how-quote-author');
+  const imgEl=document.getElementById('how-quote-img');
+  if(!bulletsEl||!quoteEl||!authorEl)return;
+
+  const all=Object.values(painContent).sort((a,b)=>a.rank-b.rank); // pains sorted by rank
+  const checked=[...document.querySelectorAll('#discovery-list li.checked')]
+    .map(li=>li.dataset.pain)
+    .filter(p=>painContent[p]);
+  const ranked=checked.map(p=>painContent[p]).sort((a,b)=>a.rank-b.rank);
+
+  let bullets,source,bullet3Source;
+  const usedPains=new Set();
+  if(ranked.length===0){
+    // 0 checked → primary #1, secondary #1, primary #3 / quote #1
+    bullets=[all[0].primary, all[0].secondary, all[2].primary];
+    source=all[0];
+    bullet3Source=all[2];
+    usedPains.add(all[0]);
+  }else if(ranked.length===1){
+    // 1 checked → primary, secondary, primary #1 (fallback #3 if checked is #1) / quote checked
+    const c=ranked[0];
+    const fb=c.rank===1?all[2]:all[0];
+    bullets=[c.primary, c.secondary, fb.primary];
+    source=c;
+    bullet3Source=fb;
+    usedPains.add(c);
+  }else if(ranked.length===2){
+    // 2 checked → primary top, secondary top, primary 2nd / quote top
+    bullets=[ranked[0].primary, ranked[0].secondary, ranked[1].primary];
+    source=ranked[0];
+    bullet3Source=ranked[1];
+    usedPains.add(ranked[0]);
+  }else{
+    // 3+ checked → primary of top-3 ranked checked / quote top
+    bullets=[ranked[0].primary, ranked[1].primary, ranked[2].primary];
+    source=ranked[0];
+    bullet3Source=ranked[2];
+    usedPains.add(ranked[0]);
+    usedPains.add(ranked[1]);
+  }
+  // Cascading fallback for bullet 3: primary → secondary → walk other pains by rank
+  const isDup=()=>bullets[2]===bullets[0]||bullets[2]===bullets[1];
+  if(isDup())bullets[2]=bullet3Source.secondary;
+  if(isDup()){
+    usedPains.add(bullet3Source);
+    for(const p of all){
+      if(usedPains.has(p))continue;
+      if(p.primary!==bullets[0]&&p.primary!==bullets[1]){bullets[2]=p.primary;break;}
+      if(p.secondary!==bullets[0]&&p.secondary!==bullets[1]){bullets[2]=p.secondary;break;}
+    }
+  }
+
+  bulletsEl.innerHTML='';
+  bullets.forEach(b=>{
+    const div=document.createElement('div');
+    div.className='how-bullet';
+    div.textContent=b;
+    bulletsEl.appendChild(div);
+  });
+  quoteEl.textContent=`"${source.quote}"`;
+  authorEl.textContent=source.author+(source.farm?` · ${source.farm}`:'');
+  if(imgEl&&source.image){
+    imgEl.src=source.image;
+    imgEl.alt=source.author;
+  }
+}
+renderHowWeHelp();
+
+// Video duration display
+const demoVid=document.getElementById('demo-video');
+if(demoVid){
+  demoVid.addEventListener('loadedmetadata',()=>{
+    const d=demoVid.duration;
+    if(isFinite(d)){
+      const m=Math.floor(d/60);
+      const s=Math.floor(d%60).toString().padStart(2,'0');
+      document.getElementById('video-dur').textContent=`${m}:${s}`;
+    }
+  });
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown',e=>{
+  // Ignore if typing in an input or interacting with video
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'||e.target.tagName==='VIDEO')return;
+  if(e.key==='ArrowRight'){e.preventDefault();changeSlide(1);}
+  else if(e.key==='ArrowLeft'){e.preventDefault();changeSlide(-1);}
+  else if(e.key>='1'&&e.key<='9'){
+    e.preventDefault();
+    const n=parseInt(e.key)-1;
+    // Map client-facing number to internal slide index (skipping hidden slides)
+    if(n<visibleTotal)goTo(visibleIndexes[n]);
+  }
+});
+
+// ===== Stories (from Orisha_Advantages PDF) =====
+// Each story is linked to one or more features
+const stories=[
+  {
+    name:'Scott — Italy',
+    icon:'✈',
+    text:'Two weeks in Italy, middle of the season. Ran everything from his phone. First real vacation in years.',
+    features:['remote']
+  },
+  {
+    name:'Drew — doubled yield',
+    icon:'📈',
+    text:'Doubled his tomato yield two seasons in a row. His wife was able to quit her job to work the farm full-time.',
+    features:['reassess','feedback','irrigation']
+  },
+  {
+    name:'Ferme des Quatre-Temps — leaf mold',
+    icon:'🍃',
+    text:'Was losing the whole greenhouse to leaf mold every fall. Since Orisha, says she does not even think about it anymore.',
+    features:['disease']
+  },
+  {
+    name:'Antoine — invisible weight',
+    icon:'🧠',
+    text:'Did not realize how much of his brain the greenhouse was occupying until it was not anymore. Said the mental weight that disappeared is priceless.',
+    features:['remote','orchestrates']
+  }
+];
+
+// Lookup: human-readable pain name from id
+const painNames={
+  hiring:'Hiring, training, and managing employees',
+  living_far:'Living far from the farm',
+  disconnected_tools:'Using disconnected tools or systems that don\'t work together',
+  crop_yields:'Increasing crop yields',
+  tied_to_farm:'Feeling tied to the farm and unable to step away',
+  overwhelmed:'Feeling overwhelmed by everything that needs to get done',
+  managing_incidents:'Managing incidents (crops overheating or freezing, etc.)',
+  plant_disease:'Diseases'
+};
+
+// Lookup: human-readable red flag name from id
+const flagNames={
+  field_crops:'Field crops only',
+  industrial:'Industrial grower',
+  hobbyist:'Hobbyist'
+};
+
+// ===== Copy orisha.io link to clipboard =====
+function copyOrishaLink(btn){
+  const url='https://www.orisha.io/';
+  const done=()=>{
+    const original=btn.textContent;
+    btn.textContent='Copied ✓';
+    btn.classList.add('copied');
+    setTimeout(()=>{
+      btn.textContent=original;
+      btn.classList.remove('copied');
+    },1800);
+  };
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(url).then(done).catch(()=>{
+      // Fallback
+      const ta=document.createElement('textarea');
+      ta.value=url;document.body.appendChild(ta);ta.select();
+      try{document.execCommand('copy');done();}catch(e){}
+      document.body.removeChild(ta);
+    });
+  }else{
+    const ta=document.createElement('textarea');
+    ta.value=url;document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');done();}catch(e){}
+    document.body.removeChild(ta);
+  }
+}
+
+// ===== Render the assistant panel =====
+function renderAssistant(){
+  try{
+  if(!IS_ASSISTANT)return;
+  const title=document.getElementById('assistant-title');
+  const sub=document.getElementById('assistant-sub');
+  const body=document.getElementById('assistant-body');
+  if(!title||!body)return;
+
+  // Header: use the same page title as the normal view (from <h1 class="page-title">)
+  const slide=document.getElementById('slide-'+slideIdFor(cur));
+  const pageTitle=slide?slide.querySelector('.page-title'):null;
+  const cname=pageTitle?pageTitle.textContent.trim():(labels[cur]?labels[cur].name:'—');
+  const clientStep=labels[cur]&&labels[cur].stepZero?`Step 0 · ${labels[cur].name}`:(labels[cur]?`Step ${clientPos(cur)} of ${visibleTotal}`:'—');
+  title.textContent=cname;
+  sub.textContent=clientStep;
+
+  // Check for red flags (shown only on Qualification + Discovery slides)
+  const checkedFlags=[...document.querySelectorAll('#red-flags-list li.checked')].map(li=>li.dataset.flag);
+  const showFlagWarning=checkedFlags.length&&(cur===0||cur===1);
+  const flagWarningHTML=showFlagWarning?`
+    <div class="flag-warning">
+      <div class="flag-warning-head">Do not use the pitch</div>
+      <div class="flag-warning-body">
+        Red flag${checkedFlags.length>1?'s':''} detected — this farm is not a fit for Orisha. Don't run the standard pitch. Stay human, find out more, and exit gracefully if it's not a match.
+        <ul class="flag-warning-list">
+          ${checkedFlags.map(f=>`<li>${flagNames[f]||f}</li>`).join('')}
+        </ul>
+      </div>
+      <div class="flag-warning-link">
+        <div class="flag-warning-link-label">Send them to our website instead</div>
+        <div class="flag-warning-link-row">
+          <a href="https://www.orisha.io/" target="_blank" rel="noopener" class="flag-warning-url">https://www.orisha.io/</a>
+          <button type="button" class="flag-warning-copy" onclick="copyOrishaLink(this)">Copy</button>
+        </div>
+      </div>
+    </div>`:'';
+
+  // Consolidated battle cards — same content reused as the "battlecards" phase
+  // at every step (Qualification, Discovery, How-we-help, Ongoing service, Demo, Proposal).
+  // Grouped by category for fast scanning during the call.
+  const battleCardsBody=`
+      <div class="step-subhead">Technical &amp; compatibility</div>
+      <div class="step-note">The redirect — use this every time. Answer in one sentence, park it, redirect to the pain. Don't let the technical question drive the call.</div>
+      <div class="step-quote">"Good question. That's exactly the kind of detail we sort out during setup, so it won't be a problem. But before we get into the specifics, what's the situation on your farm that's making you look at automation right now?"</div>
+      <div class="objection-block">
+        <div class="step-intent">IF: They give a technical answer (my sensors aren't compatible, I want to control parameters myself)</div>
+        <div class="step-quote">"That's a good detail and we handle it during setup. But before we go there, why are you looking at automation in the first place?"</div>
+      </div>
+      <div class="objection-block">
+        <div class="step-intent">IF: They go technical (compatibility, voltage, exact logic)</div>
+        <div class="step-quote">"That's exactly the kind of detail we sort out during setup. You don't need to have the answer today, that's our job. So let's not get stuck on that."</div>
+      </div>
+      <div class="objection-block">
+        <div class="step-intent">IF: They say 'if I already know what parameters I want, is this still right for me?'</div>
+        <div class="step-quote">"Honestly, if you already know exactly what settings you need and you want to control every parameter yourself, this might not be the right tool for you. We're built for the farmer who just wants it handled. Is that closer to where you're at?"</div>
+      </div>
+      <div class="qa-pair">
+        <div class="step-intent">→ Are the motors included?</div>
+        <div class="step-quote">"Yes, the motors are included in the system."</div>
+      </div>
+      <div class="qa-pair">
+        <div class="step-intent">→ Is my heater compatible?</div>
+        <div class="step-quote">"If your heater runs on a thermostat, it works. We'll confirm everything during setup."</div>
+      </div>
+      <div class="qa-pair">
+        <div class="step-intent">→ What voltage do the valves need?</div>
+        <div class="step-quote">"Our system runs on 24 volts for the valves. We'll go through all the specifics when we configure your setup."</div>
+      </div>
+      <div class="qa-pair">
+        <div class="step-intent">→ Does it work with my brand of roll-up motor?</div>
+        <div class="step-quote">"Most motors work. We'll confirm yours when we go through your equipment, that's part of the onboarding process."</div>
+      </div>
+      <div class="qa-pair">
+        <div class="step-intent">→ Do I need wifi in my greenhouse?</div>
+        <div class="step-quote">"No. We use radio communication between the controller and the sensors, so you don't need to run wifi out there."</div>
+      </div>
+
+      <div class="step-subhead">Pricing &amp; budget</div>
+      <div class="objection-block">
+        <div class="step-intent">IF: It's expensive</div>
+        <div class="step-quote">"Why does it feel expensive?"</div>
+        <div class="step-note">Let them answer. Then use the yield math if relevant: "If you're doing $5,000 a bed right now and we can help you get to $8,000, the $280 becomes a very different number."</div>
+      </div>
+      <div class="objection-block">
+        <div class="step-intent">IF: Can I get a discount?</div>
+        <div class="step-quote">"We don't do discounts. We keep pricing fair for everyone. But if budget is the constraint, we have a lighter option called Helper. It covers the roll-ups, remote monitoring, alerts, and support. Same subscription logic, at $120 a month. You can always upgrade to Chief Grower later and just pay the difference."</div>
+      </div>
+      <div class="objection-block">
+        <div class="step-intent">IF: I already have motors, can I get a discount?</div>
+        <div class="step-quote">"We don't offer a discount for that. But ours come with our full warranty. Yours don't. So you're getting covered hardware, which on a farm is worth something."</div>
+      </div>
+      <div class="objection-block">
+        <div class="step-intent">IF: Can I just buy it outright?</div>
+        <div class="step-quote">"Yes. It's $8,800 for Chief Grower. But we recommend starting with the subscription because you can cancel anytime. If you love it, you have 12 months to buy it and every payment you've made comes off the price. It's pretty much risk-free."</div>
+      </div>
+      <div class="objection-block">
+        <div class="step-intent">IF: I want to compare with Advancing Alternative</div>
+        <div class="step-quote">"The hardware price is similar. What's different is what you get around it. With them you get a controller. With us you get a team, a crop program, and ongoing support. The question is what kind of investment you want to make."</div>
+      </div>
+
+      <div class="step-subhead">Hesitation &amp; decision</div>
+      <div class="objection-block">
+        <div class="step-intent">IF: They say they need to think about it or talk to their partner</div>
+        <div class="step-quote">"Totally fair. What would help you make that decision? Is there something I haven't answered yet?"</div>
+        <div class="step-note">If they're genuinely not ready, don't push. Set a follow-up time and let the email sequence do its job.</div>
+      </div>
+
+      <div class="step-subhead">Access &amp; setup</div>
+      <div class="objection-block">
+        <div class="step-intent">IF: They ask about multiple user accounts / staff access</div>
+        <div class="step-quote">"There's one account right now. What I'd suggest is bringing whoever manages the greenhouses to the onboarding session we'll do together. Or we record it, and you have it for whenever you onboard new staff."</div>
+      </div>
+  `;
+  // Backwards-compat alias — stepZeroHTML still references stepZeroBody.
+  const stepZeroBody=battleCardsBody;
+
+  // Step 0 reference block (used on Qualification slide)
+  const stepZeroHTML=`
+    <div class="assistant-section-label with-spacing">Step 0 · Inbound call: handle technical questions and redirect</div>
+    <div class="step-zero">${stepZeroBody}</div>
+  `;
+
+  // Shared script for Qualification (index 0) and Discovery (index 1)
+  const discoveryScriptHTML=`
+      <div class="assistant-section-label">Step 0 · Inbound call: handle technical questions and redirect</div>
+      <div class="step-zero" data-tab-set="phases">
+        <div class="phase-block" data-phase="open">
+          <div class="step-subhead">Open</div>
+          <div class="step-quote">"Hey, thanks for being here. What can I do for you today?"</div>
+          <div class="step-note">(Pose les questions du form)</div>
+        </div>
+
+        <div class="phase-block" data-phase="dig">
+          <div class="step-subhead">Dig</div>
+          <div class="step-quote">"Why do you want to automate your greenhouses?"</div>
+          <div class="step-note">(Comprend leur besoin sans nommer les choix de réponses)</div>
+        </div>
+
+        <div class="phase-block" data-phase="confirm">
+          <div class="step-subhead">Confirm</div>
+          <div class="step-quote">"So what you really want is to (dis le pain que tu crois qu'ils ont). Is that fair?"</div>
+          <div class="step-note">Once they say yes, you have your anchor. Come back to it throughout the call.</div>
+        </div>
+
+        <div class="phase-block" data-phase="battlecards">${battleCardsBody}</div>
+      </div>
+  `;
+
+  if(cur===0||cur===1){
+    body.innerHTML=flagWarningHTML+discoveryScriptHTML;
+    return;
+  }
+
+  // Introduction slide (index 2)
+  if(cur===2){
+    body.innerHTML=flagWarningHTML+`
+      <div class="assistant-section-label">Step 0 · Introduction</div>
+      <div class="step-zero" data-tab-set="phases">
+        <div class="phase-block" data-phase="intro">
+          <div class="step-quote">"OK, let me share my screen for about 30 minutes. I want to show you how Orisha would apply to your farm specifically."</div>
+        </div>
+        <div class="phase-block" data-phase="battlecards">${battleCardsBody}</div>
+      </div>
+    `;
+    return;
+  }
+  // Show step 2 on How-we-help slide (index 3)
+  if(cur===3){
+    body.innerHTML=flagWarningHTML+`
+      <div class="assistant-section-label">Step 1 · Show how Orisha solves the pain</div>
+      <div class="step-zero" data-tab-set="how-we-help">
+        <div class="phase-block" data-phase="remote">
+          <div class="step-subhead">1. Remote access</div>
+          <div class="step-quote">Everything on your phone, but most of the time you won't need to check it.</div>
+          <div class="step-quote">The system handles it: wind picks up, roll-ups close. Sun kicks in, ventilation adjusts.</div>
+          <div class="step-quote">If something actually needs you, it calls you. Not a notification. A call.</div>
+          <div class="step-note">Story: Scott spent two weeks in Italy, ran his whole farm from his phone. First real vacation in years.</div>
+        </div>
+
+        <div class="phase-block" data-phase="climate">
+          <div class="step-subhead">2. Climate</div>
+          <div class="step-quote">Most systems: you tell them what to do ("open 20% at 18 degrees"). You're constantly adjusting.</div>
+          <div class="step-quote">With Orisha, you tell us the temperature you want. System figures out how, reassesses every 2 minutes, keeps propane use low.</div>
+          <div class="step-quote">For tomatoes: tell us how many clusters are on the plants, the system keeps them strong enough to carry the fruit load.</div>
+          <div class="step-note">Story: Drew doubled his tomato yield two seasons in a row. His wife quit her job to work the farm full time.</div>
+        </div>
+
+        <div class="phase-block" data-phase="irrigation">
+          <div class="step-subhead">3. Irrigation</div>
+          <div class="step-quote">Yesterday's program is already wrong today (sun, day length, plant maturity all shift).</div>
+          <div class="step-quote">Orisha adapts daily to how much the plant is actually transpiring. No timers, no guessing.</div>
+          <div class="step-quote">For tomatoes: tell us how many leaves are on your plants, we set the right program for the day.</div>
+        </div>
+
+        <div class="phase-block" data-phase="disease">
+          <div class="step-subhead">4. Disease &amp; humidity</div>
+          <div class="step-quote">When humidity hits the danger zone, the system doesn't just warn you, it runs a dehumidification cycle to fix it before disease spreads.</div>
+          <div class="step-quote">Uses your vents and heating to push humid air out, only when needed.</div>
+          <div class="step-quote">Some clients have completely stopped spraying for fungal disease.</div>
+          <div class="step-note">Story: Ferme des Quatre-Temps used to lose the greenhouse to leaf mold every fall. Since Orisha, doesn't even think about it.</div>
+        </div>
+
+        <div class="phase-block" data-phase="wind">
+          <div class="step-subhead">5. Wind</div>
+          <div class="step-quote">When wind picks up past a safe threshold, vents close automatically.</div>
+          <div class="step-quote">No racing back to the farm during a storm.</div>
+          <div class="step-quote">No waking up to damage.</div>
+        </div>
+
+        <div class="phase-block" data-phase="other-crops">
+          <div class="step-subhead">6. Other crops</div>
+          <div class="step-quote">Same kind of program rolling out for cucumber, cherry tomato, eggplant, pepper, and lettuce.</div>
+          <div class="step-quote">Tomato came first because that's where most growers started.</div>
+        </div>
+
+        <div class="phase-block" data-phase="battlecards">${battleCardsBody}</div>
+      </div>
+    `;
+    return;
+  }
+  // Show demo script on Demo slide (index 5)
+  if(cur===5){
+    body.innerHTML=flagWarningHTML+`
+      <div class="assistant-section-label">Step 3 · Demo</div>
+      <div class="step-zero" data-tab-set="demo">
+        <div class="phase-block" data-phase="intro">
+          <div class="step-subhead">Intro (before playing)</div>
+          <div class="step-quote">Just an overview of the app so you can picture yourself using it.</div>
+          <div class="step-quote">You'll have a full onboarding training before using the app once you're a client.</div>
+          <div class="step-quote">We'll watch it together, and if you have questions just say the word and we stop.</div>
+        </div>
+
+        <div class="phase-block" data-phase="after">
+          <div class="step-subhead">After the video</div>
+          <div class="step-quote">"What do you think? Does that look manageable?"</div>
+          <div class="step-note">(laisse-les réagir, écoute-les et réponds aux questions)</div>
+        </div>
+
+        <div class="phase-block" data-phase="consent">
+          <div class="step-subhead">Ask for proposal consent</div>
+          <div class="step-intent">Quick tip: Ask permission before showing numbers.</div>
+          <div class="step-quote">"That covers the system. I think there's a real fit here for your farm. Do you want to look at what this would actually cost for your setup?"</div>
+          <div class="step-note">Wait for a clear yes.</div>
+        </div>
+
+        <div class="phase-block" data-phase="battlecards">${battleCardsBody}</div>
+      </div>
+    `;
+    return;
+  }
+  // Show support script on Ongoing service slide (index 4)
+  if(cur===4){
+    body.innerHTML=flagWarningHTML+`
+      <div class="assistant-section-label">Step 2 · Ongoing service</div>
+      <div class="step-zero" data-tab-set="support">
+        <div class="phase-block" data-phase="open-with">
+          <div class="step-subhead">Open with</div>
+          <div class="step-quote">"The big difference with us is what happens after you buy. With most systems, you get a box and a manual. With us, you get a team."</div>
+        </div>
+
+        <div class="phase-block" data-phase="config">
+          <div class="step-subhead">1. Configuration &amp; installation</div>
+          <div class="step-quote">Before shipping, we send a short form about your equipment and configure the system to your farm. No generic template.</div>
+          <div class="step-quote">Clear step-by-step instructions for installation. No hardware store trip.</div>
+          <div class="step-quote">If you get stuck, you call us. We pick up.</div>
+          <div class="step-quote">Installation isn't easy, but we've simplified it as much as possible. That's also why we provide strong support service.</div>
+        </div>
+
+        <div class="phase-block" data-phase="ongoing">
+          <div class="step-subhead">2. Ongoing support</div>
+          <div class="step-quote">Most issues sorted in 15 minutes. If it goes deeper, we dig in with the people who built the system.</div>
+          <div class="step-quote">Outside our hours, there's a troubleshooting section in the app.</div>
+          <div class="step-quote">You're never waiting on us to be open.</div>
+        </div>
+
+        <div class="phase-block" data-phase="crop">
+          <div class="step-subhead">3. Crop questions: Antoine</div>
+          <div class="step-quote">Plant questions, not system questions: email <a href="mailto:rescue@orisha.io">rescue@orisha.io</a>.</div>
+          <div class="step-quote">Antoine answers every email personally. He's our in-house market gardener.</div>
+          <div class="step-quote">8 years growing greenhouse tomatoes. He grows what you grow.</div>
+        </div>
+
+        <div class="phase-block" data-phase="40hour">
+          <div class="step-subhead">4. 40 hour farmer program</div>
+          <div class="step-quote">The principle: every farm should produce strong results in a healthy work week.</div>
+          <div class="step-quote">Weekly group coaching with Antoine, Guillaume, and Andrew Mefferd (Growing for Market). Focus on boosting yield on key crops, starting with tomato.</div>
+          <div class="step-quote">Included with Chief Grower. No extra cost.</div>
+        </div>
+
+        <div class="phase-block" data-phase="battlecards">${battleCardsBody}</div>
+      </div>
+    `;
+    return;
+  }
+  // Show proposal script on Proposal slide (index 6)
+  if(cur===6){
+    body.innerHTML=flagWarningHTML+`
+      <div class="assistant-section-label">Step 4 · The proposal</div>
+      <div class="step-zero" data-tab-set="proposal">
+        <div class="phase-block" data-phase="proposal">
+          <div class="step-subhead">Qualify</div>
+          <div class="step-quote">"Do you heat? Do you irrigate?" If yes to either → Chief Grower.</div>
+          <div class="step-subhead">Pitch &amp; price</div>
+          <div class="step-quote">Connect Chief Grower to the pains they named in Step 1. Then: "That comes to $[X] per month."</div>
+          <div class="step-note">Let them sit with the number.</div>
+          <div class="step-subhead">Risk-free</div>
+          <div class="step-quote">Subscribe and try it. If you buy, payments come off the price. Not happy? Send it back, cancel. No questions asked.</div>
+          <div class="step-subhead">Close</div>
+          <div class="step-quote">"If you order today, it ships tomorrow. Ready to get started?"</div>
+        </div>
+
+        <div class="phase-block" data-phase="battlecards">${battleCardsBody}</div>
+
+        <div class="phase-block" data-phase="quote">
+          <div class="quote-builder">
+            <div class="quote-currency-toggle">
+              <button type="button" class="quote-curr" data-currency="USD">USD</button>
+              <button type="button" class="quote-curr" data-currency="CAD">CAD</button>
+            </div>
+            <div class="quote-row">
+              <span class="quote-label">Helper</span>
+              <div class="quote-stepper">
+                <button type="button" class="quote-step" data-action="dec" data-target="helper">−</button>
+                <span class="quote-count" data-target="helper">0</span>
+                <button type="button" class="quote-step" data-action="inc" data-target="helper">+</button>
+              </div>
+              <span class="quote-unit-price" data-target="helper">$130/mo</span>
+            </div>
+            <div class="quote-row">
+              <span class="quote-label">Chief Grower</span>
+              <div class="quote-stepper">
+                <button type="button" class="quote-step" data-action="dec" data-target="chief">−</button>
+                <span class="quote-count" data-target="chief">0</span>
+                <button type="button" class="quote-step" data-action="inc" data-target="chief">+</button>
+              </div>
+              <span class="quote-unit-price" data-target="chief">$220/mo</span>
+            </div>
+            <div class="quote-total-row">
+              <span class="quote-total-row-label">Monthly total</span>
+              <span class="quote-total-row-amount" id="quote-total-display">$0 USD/mo</span>
+            </div>
+            <div class="quote-pay" id="quote-pay">
+              <div class="quote-pay-title">Pay by credit card (over the phone)</div>
+              <div class="quote-pay-row">
+                <div class="quote-pay-field">
+                  <label class="quote-pay-label" for="quote-pay-name">Cardholder name</label>
+                  <input type="text" id="quote-pay-name" class="quote-pay-input" autocomplete="cc-name" placeholder="Full name on card">
+                </div>
+                <div class="quote-pay-field">
+                  <label class="quote-pay-label" for="quote-pay-email">Email for receipt</label>
+                  <input type="email" id="quote-pay-email" class="quote-pay-input" autocomplete="email" placeholder="customer@example.com">
+                </div>
+              </div>
+              <div class="quote-pay-row single">
+                <div class="quote-pay-field">
+                  <label class="quote-pay-label">Card details</label>
+                  <div id="quote-pay-card" class="quote-pay-card"></div>
+                </div>
+              </div>
+              <div class="quote-pay-discount" id="quote-pay-discount" data-type="percent" data-duration="once">
+                <label class="quote-pay-discount-toggle">
+                  <input type="checkbox" id="quote-pay-discount-on">
+                  <span>Apply discount</span>
+                </label>
+                <div class="quote-pay-discount-body">
+                  <div class="quote-pay-discount-row">
+                    <label>Type</label>
+                    <div class="quote-pay-seg" data-group="type">
+                      <button type="button" class="active" data-type="percent">% off</button>
+                      <button type="button" data-type="amount">$ off</button>
+                    </div>
+                  </div>
+                  <div class="quote-pay-discount-row">
+                    <label>Value</label>
+                    <div class="quote-pay-value">
+                      <input type="number" id="quote-pay-discount-value" min="0" step="0.01" placeholder="10">
+                      <span class="quote-pay-value-suffix" id="quote-pay-discount-suffix">%</span>
+                    </div>
+                  </div>
+                  <div class="quote-pay-discount-row">
+                    <label>Duration</label>
+                    <div class="quote-pay-seg" data-group="duration">
+                      <button type="button" class="active" data-duration="once">Once</button>
+                      <button type="button" data-duration="repeating">For N months</button>
+                      <button type="button" data-duration="forever">Forever</button>
+                    </div>
+                  </div>
+                  <div class="quote-pay-months-row">
+                    <label>Months</label>
+                    <input type="number" id="quote-pay-discount-months" min="1" max="60" step="1" value="3">
+                    <span style="color:#999;font-weight:400;font-size:12px;">(1–60)</span>
+                  </div>
+                </div>
+              </div>
+              <button type="button" class="quote-pay-btn" id="quote-pay-submit">
+                <span id="quote-pay-btn-label">Charge card &amp; start subscription</span>
+              </button>
+              <div class="quote-pay-msg" id="quote-pay-msg"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  // Show conclusion script on Conclusion slide (index 7)
+  // Transition demo (alias de How we work, slide-4)
+  if(cur===8){
+    body.innerHTML=flagWarningHTML+`
+      <div class="assistant-section-label">Step 2 · Transition demo</div>
+      <div class="step-zero" data-tab-set="none">
+        <div style="font-size:48px;font-weight:800;line-height:1.1;margin:8px 0 16px;">Transition demo</div>
+      </div>
+    `;
+    return;
+  }
+  // Transition proposal (alias de Demo, slide-5)
+  if(cur===9){
+    body.innerHTML=flagWarningHTML+`
+      <div class="assistant-section-label">Step 3 · Transition proposal</div>
+      <div class="step-zero" data-tab-set="none">
+        <div style="font-size:48px;font-weight:800;line-height:1.1;margin:8px 0 16px;">Transition proposal</div>
+      </div>
+    `;
+    return;
+  }
+  if(cur===7){
+    body.innerHTML=flagWarningHTML+`
+      <div class="assistant-section-label">Step 5 · Payment and next steps</div>
+      <div class="step-zero" data-tab-set="none">
+        <div class="step-subhead">Payment</div>
+        <div class="step-quote">"Perfect. Let's get you set up right now. I'll take your credit card over the phone."</div>
+        <div class="step-note">Take the payment. Confirm it went through before moving on.</div>
+        <div class="step-subhead">System builder</div>
+        <div class="step-quote">"You're in. You'll get an email in the next few minutes with the System Builder. It's a short form where you'll pick your onboarding session date and tell us about your equipment so we can configure everything to your farm. That's also where you schedule your full training with us. Fill it out right after we hang up so we can ship today."</div>
+        <div class="step-quote">"And if you get stuck anywhere on the form, just call me. I'm here until 4."</div>
+        <div class="step-subhead">Upsell other greenhouses</div>
+        <div class="step-note">Once payment is confirmed and System Builder is explained, ask about the other greenhouses naturally.</div>
+        <div class="step-quote">"By the way, I imagine the problem you're dealing with in this greenhouse, you're dealing with in the others too?"</div>
+        <div class="step-note">Let them answer. If yes: "We can add Chief Grower to those tunnels too. As long as you have one you're still checking manually, you won't get the full benefit of not having to drive out there." This is not a push. It's a logical observation.</div>
+        <div class="step-subhead">Close</div>
+        <div class="step-quote">"Looking forward to seeing what we can do for your farm. Talk soon."</div>
+      </div>
+    `;
+    return;
+  }
+  // Only show pain insights on the Discovery slide (index 1)
+  if(cur!==1){
+    body.innerHTML=flagWarningHTML;
+    return;
+  }
+
+  body.innerHTML=flagWarningHTML+stepZeroHTML;
+  }finally{
+    const _body=document.getElementById('assistant-body');
+    if(_body)injectStepTabs(_body);
+    // Quote builder DOM (assistant) est régénéré à chaque renderAssistant — re-sync
+    // l'état stocké. Pour la slide view, ça met aussi à jour le bloc total de slide-6.
+    applyQuoteStateToUI();
+    // Si le paiement a déjà été effectué, remplace le formulaire par l'écran de
+    // succès AVANT de tenter de monter Stripe Elements (qui no-op alors car le
+    // div #quote-pay-card n'existe plus).
+    maybeRenderQuotePaid();
+    // Le formulaire Stripe vit dans le quote tab du proposal step (slide 6). Le DOM
+    // est régénéré → on remount Stripe Elements à chaque fois qu'il apparaît.
+    mountQuotePay();
+  }
+}
+
+// ===== Step-zero tabs: default (Intent / Suggested words / Objection) or phases (Open / Dig / Confirm) =====
+// Mémoire de l'onglet actif par tab-set : renderAssistant rebuild le DOM à chaque
+// re-render (sync de pains, flags, etc.) — sans ça l'utilisateur perd son onglet.
+// lastActiveTab est déclaré plus haut (avant goTo(0)) pour éviter le TDZ quand
+// renderAssistant tourne via le goTo initial.
+function injectStepTabs(container){
+  if(!container)return;
+  container.querySelectorAll('.step-zero').forEach(stepZero=>{
+    if(stepZero.dataset.activeTab)return;
+    if(stepZero.dataset.tabSet==='none')return;
+    const tabSet=stepZero.dataset.tabSet;
+    let tabsConfig,defaultTab;
+    if(tabSet==='phases'||tabSet==='how-we-help'||tabSet==='support'||tabSet==='demo'||tabSet==='proposal'){
+      tabsConfig=[{id:'script',label:'Script'},{id:'battlecards',label:'Battle Cards'}];
+      if(tabSet==='proposal')tabsConfig.push({id:'quote',label:'Quote'});
+      // Défaut : Battle Cards partout, sauf "support" (How we work) = Script
+      // et "proposal" = Quote.
+      defaultTab=tabSet==='support'?'script':tabSet==='proposal'?'quote':'battlecards';
+    }else if(tabSet==='objection-only'){
+      tabsConfig=[{id:'battlecards',label:'Battle Cards'}];
+      defaultTab='battlecards';
+    }else{
+      tabsConfig=[{id:'intent',label:'Intent'},{id:'quote',label:'Suggested words'},{id:'objection',label:'Battle Cards'}];
+      defaultTab='intent';
+    }
+    const remembered=lastActiveTab[tabSet];
+    const initialTab=(remembered&&tabsConfig.some(t=>t.id===remembered))?remembered:defaultTab;
+    stepZero.dataset.activeTab=initialTab;
+    const tabs=document.createElement('div');
+    tabs.className='step-tabs';
+    tabs.innerHTML=tabsConfig.map(t=>`<button type="button" class="step-tab${t.id===initialTab?' active':''}" data-tab="${t.id}">${t.label}</button>`).join('');
+    stepZero.insertBefore(tabs,stepZero.firstChild);
+  });
+}
+document.addEventListener('click',e=>{
+  const tab=e.target.closest('.step-tab');
+  if(!tab)return;
+  const stepZero=tab.closest('.step-zero');
+  if(!stepZero)return;
+  stepZero.dataset.activeTab=tab.dataset.tab;
+  if(stepZero.dataset.tabSet)lastActiveTab[stepZero.dataset.tabSet]=tab.dataset.tab;
+  stepZero.querySelectorAll('.step-tab').forEach(t=>t.classList.toggle('active',t===tab));
+});
+
+// ===== Sync message handler (shared by BroadcastChannel + localStorage) =====
+function handleSyncMessage(msg){
+  if(!msg)return;
+  suppressBroadcast=true;
+  let savedDataChanged=false;
+  try{
+    if(msg.type==='nav'&&typeof msg.index==='number'){
+      if(msg.index!==cur)goTo(msg.index);
+    }else if(msg.type==='pains'&&Array.isArray(msg.pains)){
+      document.querySelectorAll('#discovery-list li').forEach(li=>{
+        const shouldBe=msg.pains.includes(li.dataset.pain);
+        if(shouldBe!==li.classList.contains('checked')){
+          li.classList.toggle('checked',shouldBe);
+          savedDataChanged=true;
+        }
+      });
+      renderFeatures();
+      renderHowWeHelp();
+      renderAssistant();
+    }else if(msg.type==='flags'&&Array.isArray(msg.flags)){
+      document.querySelectorAll('#red-flags-list li').forEach(li=>{
+        const shouldBe=msg.flags.includes(li.dataset.flag);
+        if(shouldBe!==li.classList.contains('checked')){
+          li.classList.toggle('checked',shouldBe);
+          savedDataChanged=true;
+        }
+      });
+      renderAssistant();
+    }else if(msg.type==='text'&&typeof msg.id==='string'&&typeof msg.value==='string'){
+      const el=document.getElementById(msg.id);
+      if(el&&el.value!==msg.value){
+        el.value=msg.value;
+        // qa-farm et qa-address ont chacun leur propre channel de save (vers
+        // companies.name et companies.address). Le __pushSave standard couvre
+        // seulement les champs du fieldMap (qualification_calls).
+        if(msg.id==='qa-farm'){
+          if(typeof window.__pushFarmSave==='function')window.__pushFarmSave();
+        }else if(msg.id==='qa-address'){
+          // Reset le badge "vérifié" — la valeur vient d'une autre fenêtre, on
+          // ne sait pas si elle a été validée par Places là-bas.
+          if(typeof window.__setAddressVerified==='function')window.__setAddressVerified(false);
+          if(typeof window.__pushAddressSave==='function')window.__pushAddressSave();
+        }else{
+          savedDataChanged=true;
+        }
+      }
+    }else if(msg.type==='intro-skipped'&&Array.isArray(msg.skipped)){
+      document.querySelectorAll('#intro-roadmap .intro-step').forEach(el=>{
+        const idx=parseInt(el.dataset.stepIndex);
+        const shouldBeChecked=!msg.skipped.includes(idx);
+        if(shouldBeChecked!==el.classList.contains('checked')){
+          el.classList.toggle('checked',shouldBeChecked);
+        }
+      });
+    }else if(msg.type==='quote'){
+      let changed=false;
+      if((msg.currency==='USD'||msg.currency==='CAD')&&msg.currency!==quoteState.currency){
+        quoteState.currency=msg.currency;changed=true;
+      }
+      if(typeof msg.helper==='number'&&msg.helper!==quoteState.helper){
+        quoteState.helper=msg.helper;changed=true;
+      }
+      if(typeof msg.chief==='number'&&msg.chief!==quoteState.chief){
+        quoteState.chief=msg.chief;changed=true;
+      }
+      if(changed){
+        applyQuoteStateToUI();
+        savedDataChanged=true;
+      }
+    }else if(msg.type==='hello'){
+      // A new tab asks for current state — reply with full state.
+      // On défère via setTimeout pour échapper au `suppressBroadcast` qui est à true
+      // tant que handleSyncMessage tourne (sinon les broadcasts seraient skip).
+      setTimeout(()=>{
+        broadcast({type:'nav',index:cur});
+        const checked=[...document.querySelectorAll('#discovery-list li.checked')].map(li=>li.dataset.pain);
+        broadcast({type:'pains',pains:checked});
+        const checkedFlags=[...document.querySelectorAll('#red-flags-list li.checked')].map(li=>li.dataset.flag);
+        broadcast({type:'flags',flags:checkedFlags});
+        const skipped=[...document.querySelectorAll('#intro-roadmap .intro-step:not(.checked)')]
+          .map(s=>parseInt(s.dataset.stepIndex));
+        broadcast({type:'intro-skipped',skipped});
+        ['qa-farm','qa-contact','qa-address','qa-1','qa-2','qa-3'].forEach(id=>{
+          const el=document.getElementById(id);
+          if(el)broadcast({type:'text',id,value:el.value||''});
+        });
+        broadcast({type:'quote',currency:quoteState.currency,helper:quoteState.helper,chief:quoteState.chief});
+      },0);
+    }
+  }finally{
+    suppressBroadcast=false;
+  }
+  // If the sync changed persisted data, trigger autosave via parent React (no-op in slide view).
+  if(savedDataChanged&&typeof window.__pushSave==='function'){
+    window.__pushSave();
+  }
+}
+
+// ===== BroadcastChannel: listen to the other tab =====
+if(bc){
+  bc.onmessage=(e)=>handleSyncMessage(e.data);
+  // On load, ask the other tab for the current state
+  setTimeout(()=>broadcast({type:'hello'}),100);
+}else{
+  // Fallback: still ask for state via localStorage
+  setTimeout(()=>broadcast({type:'hello'}),100);
+}
+
+// ===== Wire up the view-switcher button (toggles between assistant ⇄ slide view) =====
+const openAssistantBtn=document.getElementById('open-assistant');
+if(openAssistantBtn){
+  const targetView=IS_ASSISTANT?'client':'assistant';
+  openAssistantBtn.textContent=IS_ASSISTANT?'Open slide view ↗':'Open assistant view ↗';
+  openAssistantBtn.addEventListener('click',()=>{
+    const url=new URL(location.href);
+    url.searchParams.set('view',targetView);
+    window.open(url.toString(),'orisha-'+targetView,'noopener');
+  });
+}
+
+// Initial assistant render
+renderAssistant();
+
+// ===== ERP integration: postMessage bridge =====
+// This file is embedded in an iframe by the ERP. The parent passes the
+// company name via URL (?company_name=...), the qualification_calls record id
+// (?call_id=...), and (optionally) initial field values via postMessage.
+// On any change to a tracked field/checkbox/red-flag, we post a "save" message
+// to the parent. The parent debounces and PATCHes the record.
+(function(){
+  const params=new URLSearchParams(location.search);
+  const companyName=params.get('company_name')||'';
+  const companyAddress=params.get('company_address')||'';
+  // JWT pour authentifier les appels /api/places/* (autocomplete adresse via
+  // proxy backend — la clé Google Maps reste server-side).
+  const erpToken=params.get('token')||'';
+  const callId=params.get('call_id')||'';
+  const editableFarm=params.get('editable_farm')==='1';
+  // Pre-fill the farm name with the selected company. Editable only when the
+  // call was started via "Nouvelle entreprise" (editable_farm=1).
+  const farmInput=document.getElementById('qa-farm');
+  if(farmInput){
+    if(companyName)farmInput.value=companyName;
+    if(editableFarm){
+      farmInput.removeAttribute('readonly');
+      farmInput.style.background='';
+      farmInput.style.cursor='';
+      farmInput.placeholder='Nom de la ferme…';
+    }
+  }
+  // Update topbar tag
+  const tag=document.getElementById('topbar-tag');
+  if(tag&&companyName)tag.textContent=companyName;
+
+  const status=document.getElementById('save-status');
+  function setStatus(s){ if(status)status.textContent=s; }
+
+  function send(msg){
+    try{ window.parent.postMessage({source:'qualification-call', ...msg}, '*'); }catch(e){}
+  }
+
+  // Map from DOM ids to API field names
+  const fieldMap={
+    'qa-contact':'contact_full_name',
+    'qa-1':'heard_about',
+    'qa-2':'motivation_today',
+    'qa-3':'farm_description'
+  };
+
+  function snapshot(){
+    const out={};
+    for(const [id,key] of Object.entries(fieldMap)){
+      const el=document.getElementById(id);
+      if(el)out[key]=el.value||'';
+    }
+    out.pain_points=[...document.querySelectorAll('#discovery-list li.checked')].map(li=>li.dataset.pain);
+    out.red_flags=[...document.querySelectorAll('#red-flags-list li.checked')].map(li=>li.dataset.flag);
+    // Quote state (currency + counts) — persisté en DB sur quote_currency / _helper_count / _chief_count.
+    out.quote_currency=quoteState.currency;
+    out.quote_helper_count=quoteState.helper||0;
+    out.quote_chief_count=quoteState.chief||0;
+    return out;
+  }
+
+  function pushSave(){
+    setStatus('Sauvegarde…');
+    send({type:'save', data:snapshot()});
+  }
+  // Exposed so handleSyncMessage can trigger autosave after applying broadcast
+  // updates from the slide view window (where there is no parent React frame).
+  window.__pushSave=pushSave;
+
+  // Listen for parent → iframe messages (init data + save acks)
+  window.addEventListener('message',(e)=>{
+    const msg=e.data;
+    if(!msg||msg.target!=='qualification-call')return;
+    if(msg.type==='init'&&msg.data){
+      const d=msg.data;
+      for(const [id,key] of Object.entries(fieldMap)){
+        const el=document.getElementById(id);
+        if(el&&d[key]!=null)el.value=d[key];
+      }
+      // Pains
+      let pains=d.pain_points;
+      if(typeof pains==='string'){try{pains=JSON.parse(pains);}catch{pains=[];}}
+      if(Array.isArray(pains)){
+        document.querySelectorAll('#discovery-list li').forEach(li=>{
+          li.classList.toggle('checked', pains.includes(li.dataset.pain));
+        });
+      }
+      // Flags
+      let flags=d.red_flags;
+      if(typeof flags==='string'){try{flags=JSON.parse(flags);}catch{flags=[];}}
+      if(Array.isArray(flags)){
+        document.querySelectorAll('#red-flags-list li').forEach(li=>{
+          li.classList.toggle('checked', flags.includes(li.dataset.flag));
+        });
+      }
+      // Quote (currency + counts + état de paiement)
+      if(d.quote_currency==='USD'||d.quote_currency==='CAD')quoteState.currency=d.quote_currency;
+      if(d.quote_helper_count!=null)quoteState.helper=Number(d.quote_helper_count)||0;
+      if(d.quote_chief_count!=null)quoteState.chief=Number(d.quote_chief_count)||0;
+      quoteState.paidAt=d.quote_paid_at||null;
+      quoteState.paidEmail=d.quote_paid_email||null;
+      quoteState.subscriptionId=d.quote_subscription_id||null;
+      applyQuoteStateToUI();
+      // Push the freshly-loaded state to the slide view window (if open) so it
+      // mirrors the assistant view. Text fields use the same broadcast protocol
+      // handled by handleSyncMessage above.
+      try{
+        Object.keys(fieldMap).forEach(id=>{
+          const el=document.getElementById(id);
+          if(el)broadcast({type:'text',id,value:el.value||''});
+        });
+        // qa-address vit sur companies.address (hors fieldMap) — broadcast manuel
+        // pour que la popup éventuellement ouverte plus tard reçoive la valeur.
+        const addrEl=document.getElementById('qa-address');
+        if(addrEl)broadcast({type:'text',id:'qa-address',value:addrEl.value||''});
+        const checkedPains=[...document.querySelectorAll('#discovery-list li.checked')].map(li=>li.dataset.pain);
+        broadcast({type:'pains',pains:checkedPains});
+        const checkedFlags=[...document.querySelectorAll('#red-flags-list li.checked')].map(li=>li.dataset.flag);
+        broadcast({type:'flags',flags:checkedFlags});
+        broadcast({type:'quote',currency:quoteState.currency,helper:quoteState.helper,chief:quoteState.chief});
+      }catch(e){}
+      // Re-render derived state and clear status
+      try{ renderFeatures(); renderHowWeHelp(); renderAssistant(); }catch(e){}
+      setStatus('Synchronisé');
+      setTimeout(()=>setStatus(''),1500);
+    }else if(msg.type==='saved'){
+      setStatus('Sauvegardé ✓');
+      setTimeout(()=>setStatus(''),1500);
+    }else if(msg.type==='save-error'){
+      setStatus('Erreur ⚠');
+    }else if(msg.type==='subscribe-card-result'&&typeof msg.id==='number'){
+      // Réponse du parent React après appel API → résout la Promise dans sendSubscribeCard.
+      if(QUOTE_PAY.pending&&QUOTE_PAY.pending.id===msg.id){
+        const fn=QUOTE_PAY.pending.resolve;
+        QUOTE_PAY.pending=null;
+        fn(msg.result||{error:'Empty response'});
+      }
+    }
+  });
+
+  // Hook field changes (debounced for text inputs)
+  let textTimer=null;
+  function onTextChange(){
+    if(textTimer)clearTimeout(textTimer);
+    textTimer=setTimeout(pushSave, 600);
+    setStatus('…');
+  }
+  Object.keys(fieldMap).forEach(id=>{
+    const el=document.getElementById(id);
+    if(!el)return;
+    el.addEventListener('input', onTextChange);
+    el.addEventListener('input', ()=>{
+      // Sync to the other view (slide view ⇄ assistant view) via BroadcastChannel.
+      // suppressBroadcast guards against echoing back when the value came in via sync.
+      try{ broadcast({type:'text', id, value: el.value||''}); }catch(e){}
+    });
+    el.addEventListener('blur', ()=>{ if(textTimer){clearTimeout(textTimer);textTimer=null;} pushSave(); });
+  });
+
+  // Si le Contact's name change, met à jour le placeholder du Cardholder name
+  // (formulaire de paiement de la slide Proposal) en temps réel, au cas où la
+  // slide Proposal serait déjà affichée dans l'autre fenêtre.
+  const contactEl=document.getElementById('qa-contact');
+  if(contactEl){
+    contactEl.addEventListener('input', ()=>{
+      const nameEl=document.getElementById('quote-pay-name');
+      if(!nameEl)return;
+      const v=(contactEl.value||'').trim();
+      nameEl.placeholder=v||'Full name on card';
+    });
+  }
+
+  // Farm name (company.name) — only wired when editable_farm=1. Debounced save
+  // routes through a separate "save-company-name" message handled by the parent.
+  // Exposed via window.__pushFarmSave so handleSyncMessage can trigger it when
+  // the value comes in via cross-window broadcast (slide view ⇄ assistant view).
+  if(editableFarm&&farmInput){
+    let farmTimer=null;
+    function pushFarmSave(){
+      setStatus('Sauvegarde…');
+      send({type:'save-company-name', name: farmInput.value||''});
+      if(tag)tag.textContent=farmInput.value||'';
+    }
+    window.__pushFarmSave=pushFarmSave;
+    farmInput.addEventListener('input', ()=>{
+      if(farmTimer)clearTimeout(farmTimer);
+      farmTimer=setTimeout(pushFarmSave, 600);
+      setStatus('…');
+      try{ broadcast({type:'text', id:'qa-farm', value: farmInput.value||''}); }catch(e){}
+    });
+    farmInput.addEventListener('blur', ()=>{
+      if(farmTimer){clearTimeout(farmTimer);farmTimer=null;}
+      pushFarmSave();
+    });
+  }
+
+  // Address (company.address) — toujours éditable. Save séparé via
+  // "save-company-address" (parent React PATCH /api/companies/:id.address).
+  // Autocomplete via proxy backend /api/places/* : la clé Google Maps reste
+  // server-side, jamais exposée au client.
+  const addressInput=document.getElementById('qa-address');
+  const addressStatus=document.getElementById('qa-address-status');
+  const addressSugList=document.getElementById('qa-address-suggestions');
+  function setAddressVerified(v){
+    if(addressStatus)addressStatus.classList.toggle('is-verified', !!v);
+  }
+  // Exposé pour handleSyncMessage qui vit hors de cette IIFE.
+  window.__setAddressVerified=setAddressVerified;
+  if(addressInput){
+    if(companyAddress)addressInput.value=companyAddress;
+    // Si l'adresse était déjà persistée, on l'assume validée (a forcément été
+    // saisie via autocomplete ou tapée manuellement par le vendeur).
+    if(companyAddress)setAddressVerified(true);
+    let addressTimer=null;
+    function pushAddressSave(){
+      setStatus('Sauvegarde…');
+      send({type:'save-company-address', address: addressInput.value||''});
+    }
+    window.__pushAddressSave=pushAddressSave;
+
+    // ===== Custom Places dropdown (proxy /api/places/*) =====
+    // Session token Google : grouper autocomplete + details en un seul billing
+    // event. Renouvelé après chaque sélection (contrat Google).
+    let sessionToken=null;
+    function newSessionToken(){
+      sessionToken=(typeof crypto!=='undefined'&&crypto.randomUUID)?crypto.randomUUID()
+        :('xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{
+          const r=Math.random()*16|0;return (c==='x'?r:(r&0x3|0x8)).toString(16);
+        }));
+    }
+    let activeIdx=-1;
+    let currentPredictions=[];
+    let fetchTimer=null;
+    let fetchSeq=0;
+    function escapeHtml(s){return s.replace(/[<>&]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]));}
+    function closeDropdown(){
+      if(addressSugList)addressSugList.classList.remove('is-open');
+      activeIdx=-1;
+    }
+    function renderDropdown(){
+      if(!addressSugList)return;
+      if(!currentPredictions.length){closeDropdown();return;}
+      addressSugList.innerHTML=currentPredictions.map((p,i)=>
+        `<li role="option" data-idx="${i}"${i===activeIdx?' class="is-active"':''}>${escapeHtml(p.description||'')}</li>`
+      ).join('');
+      addressSugList.classList.add('is-open');
+    }
+    async function fetchPredictions(input){
+      if(!erpToken||!input.trim()){currentPredictions=[];closeDropdown();return;}
+      if(!sessionToken)newSessionToken();
+      const seq=++fetchSeq;
+      try{
+        const r=await fetch('/erp/api/places/autocomplete?input='+encodeURIComponent(input)+'&session_token='+encodeURIComponent(sessionToken)+'&token='+encodeURIComponent(erpToken));
+        if(!r.ok){console.warn('places autocomplete', r.status);return;}
+        const json=await r.json();
+        // Une requête plus récente est partie depuis — drop le résultat obsolète.
+        if(seq!==fetchSeq)return;
+        currentPredictions=json.predictions||[];
+        activeIdx=-1;
+        renderDropdown();
+      }catch(e){console.error('places autocomplete fetch',e);}
+    }
+    async function selectPrediction(idx){
+      const p=currentPredictions[idx];
+      if(!p)return;
+      closeDropdown();
+      let addr=p.description||'';
+      try{
+        const r=await fetch('/erp/api/places/details?place_id='+encodeURIComponent(p.place_id)+'&session_token='+encodeURIComponent(sessionToken||'')+'&token='+encodeURIComponent(erpToken));
+        if(r.ok){
+          const j=await r.json();
+          if(j&&j.formatted_address)addr=j.formatted_address;
+        }
+      }catch(e){console.error('places details fetch',e);}
+      addressInput.value=addr;
+      setAddressVerified(true);
+      if(addressTimer){clearTimeout(addressTimer);addressTimer=null;}
+      pushAddressSave();
+      try{ broadcast({type:'text', id:'qa-address', value: addressInput.value}); }catch(e){}
+      // Reset session token après chaque sélection — nouveau cycle de billing.
+      sessionToken=null;
+    }
+    addressInput.addEventListener('input', ()=>{
+      setAddressVerified(false);
+      if(addressTimer)clearTimeout(addressTimer);
+      addressTimer=setTimeout(pushAddressSave, 600);
+      setStatus('…');
+      try{ broadcast({type:'text', id:'qa-address', value: addressInput.value||''}); }catch(e){}
+      const v=addressInput.value||'';
+      if(fetchTimer)clearTimeout(fetchTimer);
+      fetchTimer=setTimeout(()=>fetchPredictions(v), 200);
+    });
+    addressInput.addEventListener('blur', ()=>{
+      if(addressTimer){clearTimeout(addressTimer);addressTimer=null;}
+      pushAddressSave();
+      // Délai pour laisser un éventuel mousedown sur un <li> se déclencher avant fermeture.
+      setTimeout(closeDropdown, 150);
+    });
+    addressInput.addEventListener('focus', ()=>{
+      if(currentPredictions.length&&addressSugList)addressSugList.classList.add('is-open');
+    });
+    addressInput.addEventListener('keydown', (e)=>{
+      if(!currentPredictions.length)return;
+      if(e.key==='ArrowDown'){
+        e.preventDefault();
+        activeIdx=Math.min(activeIdx+1, currentPredictions.length-1);
+        renderDropdown();
+      }else if(e.key==='ArrowUp'){
+        e.preventDefault();
+        activeIdx=Math.max(activeIdx-1, 0);
+        renderDropdown();
+      }else if(e.key==='Enter'&&activeIdx>=0){
+        e.preventDefault();
+        selectPrediction(activeIdx);
+      }else if(e.key==='Escape'){
+        closeDropdown();
+      }
+    });
+    if(addressSugList){
+      // mousedown pour fire AVANT le blur de l'input qui ferme le dropdown.
+      addressSugList.addEventListener('mousedown',(e)=>{
+        const li=e.target.closest('li[data-idx]');
+        if(!li)return;
+        e.preventDefault();
+        selectPrediction(parseInt(li.dataset.idx));
+      });
+    }
+  }
+
+  // Pain checkboxes — capture phase so our handler runs even with the existing toggler
+  document.querySelectorAll('#discovery-list li').forEach(li=>{
+    li.addEventListener('click', ()=>setTimeout(pushSave, 0));
+  });
+  // Red flag checkboxes
+  document.querySelectorAll('#red-flags-list li').forEach(li=>{
+    li.addEventListener('click', ()=>setTimeout(pushSave, 0));
+  });
+
+  // Tell parent we're ready for init data
+  send({type:'ready', call_id:callId});
+})();
+</script>
+
+</body>
+</html>

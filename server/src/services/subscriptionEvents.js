@@ -199,8 +199,9 @@ export function detectRachatForChurn(eventId) {
   `).get(eventId)
 
   if (!ev || ev.category !== 'churn' || !ev.company_id) return null
-  // On ne touche pas un statut confirmé / explicitement "none" par un user.
-  if (ev.rachat_status === 'confirmed' || ev.rachat_status === 'none') return null
+  // On ne touche pas un statut posé manuellement par un user (confirmed, none,
+  // merged). Seuls NULL et 'probable' restent éligibles à la (ré)détection auto.
+  if (ev.rachat_status === 'confirmed' || ev.rachat_status === 'none' || ev.rachat_status === 'merged') return null
 
   const eventDateOnly = String(ev.event_date).slice(0, 10)
   const candidates = detectRachatStmt.all(ev.company_id, eventDateOnly, eventDateOnly)

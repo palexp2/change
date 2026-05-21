@@ -8,7 +8,8 @@ import {
   ShoppingBag, Truck, RotateCcw, FileText, RefreshCw, Wrench,
   Barcode, MessageSquare, CheckSquare,
   Receipt, ReceiptText, Landmark, Users, Banknote, Contact, BookOpen,
-  ArrowLeftRight, CreditCard, Clock, Tag, Wallet, Mail
+  ArrowLeftRight, CreditCard, Clock, Tag, Wallet, Mail, PhoneCall,
+  FolderOpen, Building2
 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
@@ -63,11 +64,15 @@ function useHoverPrefetch(to) {
 
 const defaultNavItems = [
   { to: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/public-files', icon: FolderOpen,      label: 'Fichiers publics' },
   { group: 'Clients', icon: Contact, items: [
+    { to: '/contacts',     icon: Contact,       label: 'Contacts' },
+    { to: '/companies',    icon: Building2,     label: 'Entreprises' },
     { to: '/pipeline',     icon: TrendingUp,    label: 'Projets' },
     { to: '/tasks',        icon: CheckSquare,   label: 'Tâches' },
     { to: '/tickets',      icon: LifeBuoy,      label: 'Billets' },
     { to: '/interactions', icon: MessageSquare, label: 'Interactions' },
+    { to: '/qualification-call', icon: PhoneCall, label: 'Appels de qualification' },
     { to: '/relance-qualification', icon: Mail, label: 'Relances qualification' },
   ]},
   { group: 'Envois', icon: Truck, items: [
@@ -94,9 +99,9 @@ const defaultNavItems = [
     { to: '/serials',      icon: Barcode,     label: 'Numéros de série' },
   ]},
   { group: 'RH', icon: Users, items: [
-    { to: '/employees',        icon: Users,    label: 'Employés' },
+    { to: '/employees',        icon: Users,    label: 'Employés',              hrOnly: true },
     { to: '/feuille-de-temps', icon: Clock,    label: 'Feuille de temps' },
-    { to: '/codes-activite',   icon: Tag,      label: "Codes d'activité" },
+    { to: '/codes-activite',   icon: Tag,      label: "Codes d'activité",      hrOnly: true },
     { to: '/paies',            icon: Banknote, label: 'Paies' },
     { to: '/banque-heures',    icon: Wallet,   label: "Banque d'heures" },
   ]},
@@ -458,7 +463,16 @@ export function Layout({ children }) {
     return () => realtimeDisconnect()
   }, [])
 
-  const roleLabel = { admin: 'Admin', sales: 'Ventes', support: 'Support', ops: 'Opérations' }
+  const roleLabel = { admin: 'Admin', rh: 'RH', sales: 'Ventes', support: 'Support', ops: 'Opérations' }
+  const isHR = ['admin', 'rh'].includes(user?.role)
+  const filteredNavItems = defaultNavItems
+    .map(item => {
+      if (!item.group) return item
+      const items = item.items.filter(i => !i.hrOnly || isHR)
+      if (items.length === 0) return null
+      return { ...item, items }
+    })
+    .filter(Boolean)
 
   const SidebarContent = ({ mobile = false }) => (
     <div className={`flex flex-col h-full bg-slate-900 ${mobile ? 'w-72' : collapsed ? 'w-16' : 'w-56'} transition-all duration-200`}>
@@ -494,7 +508,7 @@ export function Layout({ children }) {
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-1 px-2 space-y-0.5">
-        {defaultNavItems.map(item =>
+        {filteredNavItems.map(item =>
           item.group
             ? <NavGroup key={item.group} {...item} collapsed={collapsed && !mobile} />
             : <NavItem key={item.to} {...item} collapsed={collapsed && !mobile} />

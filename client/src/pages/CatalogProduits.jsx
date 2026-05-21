@@ -178,7 +178,7 @@ export default function CatalogProduits() {
           data={products}
           loading={loading}
           onRowClick={row => setEditing(row)}
-          searchFields={['name_fr', 'name_en']}
+          searchFields={['name_fr', 'name_en', 'unit_price_cad', 'price_usd', 'monthly_price_cad', 'monthly_price_usd']}
         />
 
         <Modal

@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import PDFDocument from 'pdfkit';
+import { PDFDocument as PDFLibDocument } from 'pdf-lib';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
@@ -235,17 +236,18 @@ router.patch('/:id/status', (req, res) => {
 
 // POST /api/orders/:id/shipments
 router.post('/:id/shipments', (req, res) => {
-  const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
+  const order = db.prepare('SELECT id, address_id FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
-  const { tracking_number, carrier, status, shipped_at, notes, item_ids = [] } = req.body;
+  const { tracking_number, carrier, status, shipped_at, notes, item_ids = [], address_id } = req.body;
+  const resolvedAddressId = address_id !== undefined ? address_id : order.address_id;
   const id = uuidv4();
   const run = db.transaction(() => {
     db.prepare(
-      `INSERT INTO shipments (id, order_id, tracking_number, carrier, status, shipped_at, notes)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO shipments (id, order_id, tracking_number, carrier, status, shipped_at, notes, address_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(id, req.params.id, tracking_number || null, carrier || null,
-      status || 'À envoyer', shipped_at || null, notes || null);
+      status || 'À envoyer', shipped_at || null, notes || null, resolvedAddressId || null);
 
     if (item_ids.length > 0) {
       const stmt = db.prepare(`UPDATE order_items SET shipment_id = ?, fulfillment_status = 'Dans l''envoi' WHERE id = ? AND order_id = ?`);
@@ -451,6 +453,91 @@ router.post('/:id/scan', (req, res) => {
 
   return res.json({ type: 'not_found', value: v })
 })
+
+// POST /api/orders/:id/generate-installation-docs
+// Fusionne en un seul PDF les copies locales (uploads/products/docs/*) :
+//   - item_type='Remplacement' → lien_pdf_remplacement_<lang>_local
+//   - sinon                     → lien_pdf_installation_<lang>_local
+// où <lang> = fr|en selon orders.langue_du_contact_a_la_ferme.
+// Dedup par (product_id, doc_type) — un produit présent N fois ne génère qu'un doc.
+// Si un *_local est CSV (multi-URL), tous les fichiers sont inclus.
+// Les items dont le PDF local manque sont silencieusement ignorés.
+router.post('/:id/generate-installation-docs', async (req, res) => {
+  const order = db.prepare('SELECT * FROM orders WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+
+  const items = db.prepare(`
+    SELECT oi.id, oi.item_type, oi.product_id, p.name_fr as product_name, p.sku,
+      p.lien_pdf_installation_fr_local, p.lien_pdf_installation_en_local,
+      p.lien_pdf_remplacement_fr_local, p.lien_pdf_remplacement_en_local
+    FROM order_items oi
+    LEFT JOIN products p ON oi.product_id = p.id
+    WHERE oi.order_id = ?
+    ORDER BY oi.created_at
+  `).all(req.params.id);
+
+  const lang = (order.langue_du_contact_a_la_ferme || '').toLowerCase().startsWith('en') ? 'en' : 'fr';
+  const uploadsRoot = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads');
+
+  const merged = await PDFLibDocument.create();
+  const included = [];
+  const skipped = [];
+  const seen = new Set();
+
+  for (const item of items) {
+    if (!item.product_id) {
+      skipped.push({ item_id: item.id, sku: item.sku, name: item.product_name, reason: 'no_product' });
+      continue;
+    }
+    const docType = item.item_type === 'Remplacement' ? 'remplacement' : 'installation';
+    const dedupKey = `${item.product_id}:${docType}`;
+    if (seen.has(dedupKey)) continue;
+    seen.add(dedupKey);
+
+    const col = `lien_pdf_${docType}_${lang}_local`;
+    const csvPaths = item[col];
+    const paths = (csvPaths || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (paths.length === 0) {
+      skipped.push({ item_id: item.id, sku: item.sku, name: item.product_name, doc_type: docType, lang, reason: 'no_local_copy' });
+      continue;
+    }
+
+    for (const relPath of paths) {
+      const absPath = path.resolve(uploadsRoot, relPath);
+      // Garde-fou : doit être sous uploads/products/docs/
+      const allowed = path.resolve(uploadsRoot, 'products', 'docs');
+      if (!absPath.startsWith(allowed + path.sep)) {
+        skipped.push({ item_id: item.id, sku: item.sku, reason: 'path_outside_allowed' });
+        continue;
+      }
+      if (!fs.existsSync(absPath)) {
+        skipped.push({ item_id: item.id, sku: item.sku, name: item.product_name, doc_type: docType, lang, path: relPath, reason: 'file_missing' });
+        continue;
+      }
+      try {
+        const bytes = fs.readFileSync(absPath);
+        const src = await PDFLibDocument.load(bytes, { ignoreEncryption: true });
+        const pages = await merged.copyPages(src, src.getPageIndices());
+        pages.forEach(p => merged.addPage(p));
+        included.push({ item_id: item.id, sku: item.sku, name: item.product_name, doc_type: docType, lang, path: relPath, pages: pages.length });
+      } catch (e) {
+        skipped.push({ item_id: item.id, sku: item.sku, name: item.product_name, doc_type: docType, lang, path: relPath, reason: 'parse_error', error: e.message });
+      }
+    }
+  }
+
+  if (merged.getPageCount() === 0) {
+    return res.status(409).json({ error: 'Aucun document local disponible pour les items de cette commande.', included, skipped });
+  }
+
+  const out = await merged.save();
+  const filename = `documents-commande-${order.order_number}.pdf`;
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+  res.setHeader('X-Docs-Included', String(included.length));
+  res.setHeader('X-Docs-Skipped', String(skipped.length));
+  res.send(Buffer.from(out));
+});
 
 // DELETE /api/orders/:id
 router.delete('/:id', (req, res) => {

@@ -295,7 +295,17 @@ router.get('/', (req, res) => {
     ORDER BY MAX(s.shipped_at) DESC
   `).all();
 
-  // Inventory valuation — "Pièces" from products (stock_qty × unit_cost)
+  // Inventory valuation — "Pièces" alignée sur la vue « Valeur inventaire »
+  // de la table products (id pill 997d024c). Filtres et source identiques :
+  //   - type ∉ {JWT, SYSTEM, PIÈCE OBSOLÈTE, PRODUIT OBSOLÈTE}
+  //   - type non vide (la vue requiert is_not_empty)
+  //   - exclut les produits sérialisés (besoin_d_un_numero_de_serie != '1.0') —
+  //     leur valeur est portée par serial_numbers.manufacture_value
+  //     (cf. serialInventoryByStatus ci-dessous), sinon double-comptage.
+  //   - deleted_at IS NULL
+  //   - Valeur : colonne `valeur_inventaire` (formule Airtable FIFO synchronisée),
+  //     pas stock_qty × unit_cost — la FIFO plafonne les stocks négatifs et
+  //     reflète le coût réel d'acquisition, ce que la vue UI affiche.
   // + serial_numbers by status (manufacture_value), excluding statuses that
   // aren't actually held in inventory (sold, destroyed, in-use, unknown, not built)
   const EXCLUDED_SN_STATUSES = [
@@ -307,11 +317,13 @@ router.get('/', (req, res) => {
     'Non construit',
   ];
   const piecesInventory = db.prepare(`
-    SELECT COALESCE(SUM(stock_qty * unit_cost), 0) AS total_value,
-           COALESCE(SUM(CASE WHEN stock_qty > 0 THEN 1 ELSE 0 END), 0) AS count
+    SELECT COALESCE(SUM(CAST(valeur_inventaire AS REAL)), 0) AS total_value,
+           COUNT(*) AS count
     FROM products
-    WHERE active = 1
-      AND (type IS NULL OR type NOT IN ('PIÈCE OBSOLÈTE', 'PRODUIT OBSOLÈTE'))
+    WHERE (besoin_d_un_numero_de_serie IS NULL OR besoin_d_un_numero_de_serie != '1.0')
+      AND type IS NOT NULL AND type != ''
+      AND type NOT IN ('JWT', 'SYSTEM', 'PIÈCE OBSOLÈTE', 'PRODUIT OBSOLÈTE')
+      AND deleted_at IS NULL
   `).get();
   const placeholders = EXCLUDED_SN_STATUSES.map(() => '?').join(',');
   const serialInventoryByStatus = db.prepare(`
@@ -751,6 +763,7 @@ router.get('/stripe-revenue/factures', async (req, res) => {
            f.company_id, c.name AS company_name,
            f.currency, f.montant_avant_taxes, f.subscription_id, f.sync_source,
            f.invoice_id, f.paid_charge_id, f.paid_payment_intent,
+           f.revenue_recognized_at,
            s.interval_type
     FROM factures f
     LEFT JOIN companies c ON f.company_id = c.id
@@ -891,6 +904,21 @@ router.get('/stripe-revenue/factures', async (req, res) => {
       cad = native * rate;
     }
 
+    // Date de constatation = moment où la ligne est portée au compte de revenu
+    // dans QB. Pour les abonnements (Cr 41000 au payout) et les remboursements
+    // (réversion sur le Deposit du payout) : arrival_date du payout. Pour les
+    // ventes (Cr 40000) : `revenue_recognized_at` si posé (JE à l'expédition,
+    // après deferred), sinon arrival_date du payout (vente expédiée avant
+    // payout — Cr 40000 directement dans le Deposit).
+    const isRefundRow = r.sync_source === 'Remboursements Stripe';
+    const isSubscription = !!r.subscription_id;
+    let recognitionDate;
+    if (isRefundRow || isSubscription) {
+      recognitionDate = payoutArrivalDate;
+    } else {
+      recognitionDate = r.revenue_recognized_at || payoutArrivalDate;
+    }
+
     result.push({
       id: r.id,
       document_number: r.document_number,
@@ -903,6 +931,7 @@ router.get('/stripe-revenue/factures', async (req, res) => {
       amount_cad: Math.round(cad * 100) / 100,
       payout_arrival_date: payoutArrivalDate,
       payout_stripe_id: payoutId,
+      recognition_date: recognitionDate,
       sync_source: r.sync_source,
       subscription_id: r.subscription_id,
       interval_type: r.interval_type || null,
@@ -974,6 +1003,10 @@ router.get('/stripe-revenue/factures', async (req, res) => {
       }
     }
 
+    // Remboursement : constatation = arrival_date du payout (réversion sur le
+    // Deposit du payout, comme les refunds legacy ci-dessus).
+    const recognitionDate = payoutArrivalDate;
+
     result.push({
       // id pointe sur la facture parent pour que le lien /factures/:id
       // fonctionne (le payment.id ne correspond à aucune route).
@@ -988,6 +1021,7 @@ router.get('/stripe-revenue/factures', async (req, res) => {
       amount_cad: -Math.round(cadAbs * 100) / 100,
       payout_arrival_date: payoutArrivalDate,
       payout_stripe_id: payoutId,
+      recognition_date: recognitionDate,
       sync_source: 'Remboursements Stripe',
       subscription_id: r.subscription_id,
       interval_type: r.interval_type || null,

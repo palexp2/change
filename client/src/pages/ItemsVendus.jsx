@@ -106,7 +106,7 @@ export default function ItemsVendus() {
           table="stripe_invoice_items"
           columns={COLUMNS}
           data={items}
-          searchFields={['description', 'stripe_price_id', 'stripe_product_id', 'facture_document_number']}
+          searchFields={['description', 'stripe_price_id', 'stripe_product_id', 'facture_document_number', 'amount', 'unit_amount']}
           loading={loading}
         />
       </div>

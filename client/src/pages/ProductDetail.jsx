@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, FileText, ExternalLink } from 'lucide-react'
+import { ArrowLeft, FileText, ExternalLink, Download, RefreshCw } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.jsx'
@@ -92,6 +92,9 @@ export default function ProductDetail() {
   const [form, setForm] = useState({})
   const [bom, setBom] = useState([])
   const [showPoModal, setShowPoModal] = useState(false)
+  const [showRefreshDocsModal, setShowRefreshDocsModal] = useState(false)
+  const [refreshingDocs, setRefreshingDocs] = useState(false)
+  const [refreshDocsResult, setRefreshDocsResult] = useState(null)
   const saveTimer = useRef(null)
   const visibleFields = PRODUCT_FIELDS.filter(f => f.defaultVisible !== false)
 
@@ -153,6 +156,20 @@ export default function ProductDetail() {
     }, 300)
   }
 
+  async function confirmRefreshDocs() {
+    setRefreshingDocs(true)
+    setRefreshDocsResult(null)
+    try {
+      const r = await api.products.refreshInstallationDocs(id)
+      setProduct(p => ({ ...p, ...r.product }))
+      setRefreshDocsResult(r.results || [])
+    } catch (e) {
+      setRefreshDocsResult([{ field: '_global', status: 'error', error: e.message }])
+    } finally {
+      setRefreshingDocs(false)
+    }
+  }
+
   const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
   if (loading) return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
@@ -199,6 +216,7 @@ export default function ProductDetail() {
             { key: 'info', label: 'Informations' },
             { key: 'mouvements', label: 'Mouvements de stock' },
             { key: 'bom', label: 'BOM' },
+            { key: 'docs', label: 'Document d’installation' },
           ].map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
               className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
@@ -342,6 +360,82 @@ export default function ProductDetail() {
           />
         )}
 
+        {tab === 'docs' && (() => {
+          const docFields = [
+            { url: 'lien_pdf_installation_fr', local: 'lien_pdf_installation_fr_local', label: 'Lien PDF installation (FR)' },
+            { url: 'lien_pdf_installation_en', local: 'lien_pdf_installation_en_local', label: 'Lien PDF installation (EN)' },
+            { url: 'lien_pdf_remplacement_fr', local: 'lien_pdf_remplacement_fr_local', label: 'Lien PDF remplacement (FR)' },
+            { url: 'lien_pdf_remplacement_en', local: 'lien_pdf_remplacement_en_local', label: 'Lien PDF remplacement (EN)' },
+          ]
+          const filled = docFields.filter(f => product[f.url])
+          return (
+            <div className="card p-6">
+              <div className="flex items-center justify-between mb-4">
+                <div className="text-sm text-slate-500">
+                  Copies locales (mises à jour à la demande à partir des liens Airtable).
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowRefreshDocsModal(true)}
+                  disabled={filled.length === 0}
+                  className="btn-primary flex items-center gap-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={filled.length === 0 ? 'Aucun lien à télécharger' : 'Télécharger les PDFs depuis les liens'}
+                >
+                  <RefreshCw size={14} /> Mettre à jour les PDFs
+                </button>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                {docFields.map(f => {
+                  const urls = (product[f.url] || '').split(',').map(s => s.trim()).filter(Boolean)
+                  const locals = (product[f.local] || '').split(',').map(s => s.trim()).filter(Boolean)
+                  return (
+                    <Field key={f.url} label={f.label} span2>
+                      {urls.length === 0 ? (
+                        <div className={`${inp} bg-slate-50 text-slate-400 italic cursor-default`}>—</div>
+                      ) : (
+                        <div className="space-y-3">
+                          {urls.map((url, i) => {
+                            const localPath = locals[i] || null
+                            const localFilename = localPath ? localPath.replace(/^products\/docs\//, '') : null
+                            const localUrl = localFilename ? `/erp/api/product-docs/${localFilename}` : null
+                            return (
+                              <div key={i} className="space-y-1.5">
+                                <a
+                                  href={url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className={`${inp} inline-flex items-center gap-1.5 text-brand-600 hover:underline truncate`}
+                                  title={url}
+                                >
+                                  <ExternalLink size={14} className="shrink-0" />
+                                  <span className="truncate">{urls.length > 1 ? `[${i + 1}] ` : ''}{url}</span>
+                                </a>
+                                {localUrl ? (
+                                  <a
+                                    href={localUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-1.5 text-xs text-emerald-700 hover:underline"
+                                    title="Copie locale sur le serveur"
+                                  >
+                                    <Download size={12} /> Copie locale ({localFilename})
+                                  </a>
+                                ) : (
+                                  <div className="text-xs text-slate-400 italic">Aucune copie locale</div>
+                                )}
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </Field>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })()}
+
       </div>
 
       <PurchaseOrderModal
@@ -349,6 +443,82 @@ export default function ProductDetail() {
         isOpen={showPoModal}
         onClose={() => setShowPoModal(false)}
       />
+
+      {showRefreshDocsModal && (() => {
+        const docFields = [
+          { url: 'lien_pdf_installation_fr', label: 'PDF installation (FR)' },
+          { url: 'lien_pdf_installation_en', label: 'PDF installation (EN)' },
+          { url: 'lien_pdf_remplacement_fr', label: 'PDF remplacement (FR)' },
+          { url: 'lien_pdf_remplacement_en', label: 'PDF remplacement (EN)' },
+        ]
+        const parseUrls = v => (v || '').split(',').map(s => s.trim()).filter(Boolean)
+        const filled = docFields.map(f => ({ ...f, urls: parseUrls(product[f.url]) })).filter(f => f.urls.length > 0)
+        const empty = docFields.filter(f => parseUrls(product[f.url]).length === 0)
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+            <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto">
+              <h2 className="text-lg font-semibold text-slate-900 mb-1">Mettre à jour les PDFs ?</h2>
+              <p className="text-sm text-slate-500 mb-4">
+                Cette action effectue les opérations suivantes côté serveur :
+              </p>
+              <ul className="text-sm text-slate-700 space-y-2 mb-5 list-disc pl-5">
+                {filled.map(f => (
+                  <li key={f.url}>
+                    <strong>{f.label}</strong> : la (les) copie(s) locale(s) actuelle(s) sera supprimée puis
+                    remplacée par {f.urls.length === 1 ? 'le PDF téléchargé depuis' : `${f.urls.length} PDFs téléchargés depuis`} :
+                    <ul className="mt-1 ml-4 space-y-0.5 list-[circle]">
+                      {f.urls.map((u, i) => (
+                        <li key={i}>
+                          <a href={u} target="_blank" rel="noopener noreferrer" className="text-brand-600 underline break-all">{u}</a>
+                        </li>
+                      ))}
+                    </ul>
+                  </li>
+                ))}
+                {empty.map(f => (
+                  <li key={f.url} className="text-slate-400">
+                    <strong>{f.label}</strong> : aucun lien — la copie locale (si présente) sera supprimée.
+                  </li>
+                ))}
+              </ul>
+              {refreshDocsResult && (
+                <div className="mb-4 p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs space-y-1">
+                  {refreshDocsResult.map((r, i) => {
+                    const indexSuffix = typeof r.index === 'number' ? ` [${r.index + 1}]` : ''
+                    return (
+                      <div key={i} className={r.status === 'error' ? 'text-red-600' : r.status === 'downloaded' ? 'text-emerald-700' : 'text-slate-500'}>
+                        <strong>{r.field}{indexSuffix}</strong>: {r.status}
+                        {r.bytes ? ` (${(r.bytes / 1024).toFixed(1)} KB)` : ''}
+                        {r.error ? ` — ${r.error}` : ''}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => { setShowRefreshDocsModal(false); setRefreshDocsResult(null); }}
+                  disabled={refreshingDocs}
+                  className="px-4 py-1.5 text-sm text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-50"
+                >
+                  {refreshDocsResult ? 'Fermer' : 'Annuler'}
+                </button>
+                {!refreshDocsResult && (
+                  <button
+                    type="button"
+                    onClick={confirmRefreshDocs}
+                    disabled={refreshingDocs || filled.length === 0}
+                    className="btn-primary text-sm flex items-center gap-1.5 disabled:opacity-50"
+                  >
+                    {refreshingDocs ? (<><RefreshCw size={14} className="animate-spin" /> Téléchargement…</>) : (<><RefreshCw size={14} /> Confirmer</>)}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )
+      })()}
     </Layout>
   )
 }

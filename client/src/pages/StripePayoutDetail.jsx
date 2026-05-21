@@ -5,6 +5,7 @@ import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { ConfirmModal } from '../components/Modal.jsx'
+import { FactureQuickViewModal } from '../components/FactureQuickViewModal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 
 function fmtMoney(n, currency = 'CAD') {
@@ -432,7 +433,8 @@ export default function StripePayoutDetail() {
 }
 
 function PreviewPanel({ preview, currency }) {
-  const { summary, warnings, deposit, lineAccounts } = preview
+  const { summary, warnings, deposit, lineAccounts, lineRefs } = preview
+  const [factureModalId, setFactureModalId] = useState(null)
   return (
     <div className="border border-slate-200 rounded-lg overflow-hidden">
       <div className="bg-slate-50 px-4 py-2 border-b border-slate-200">
@@ -502,9 +504,25 @@ function PreviewPanel({ preview, currency }) {
                 const acctLabel = acct
                   ? (acct.acctNum ? `${acct.acctNum} ${acct.name}` : acct.name)
                   : '—'
+                const ref = lineRefs?.[i]
+                const factureId = ref?.factureId
                 return (
-                  <tr key={i}>
-                    <td className="px-3 py-1.5 text-slate-700">{l.Description || '—'}</td>
+                  <tr key={i} className={factureId ? 'hover:bg-slate-50' : ''}>
+                    <td className="px-3 py-1.5 text-slate-700">
+                      {factureId ? (
+                        <button
+                          type="button"
+                          onClick={() => setFactureModalId(factureId)}
+                          className="text-brand-600 hover:text-brand-700 hover:underline text-left"
+                          data-testid="deposit-line-facture-link"
+                          data-facture-id={factureId}
+                        >
+                          {l.Description || '—'}
+                        </button>
+                      ) : (
+                        l.Description || '—'
+                      )}
+                    </td>
                     <td className="px-3 py-1.5 text-slate-600 whitespace-nowrap">{acctLabel}</td>
                     <td className="px-3 py-1.5 text-right tabular-nums">{fmtMoney(l.Amount, currency)}</td>
                   </tr>
@@ -514,6 +532,12 @@ function PreviewPanel({ preview, currency }) {
           </table>
         </details>
       )}
+
+      <FactureQuickViewModal
+        factureId={factureModalId}
+        isOpen={!!factureModalId}
+        onClose={() => setFactureModalId(null)}
+      />
     </div>
   )
 }

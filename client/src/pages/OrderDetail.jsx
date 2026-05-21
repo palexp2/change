@@ -1,16 +1,16 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
-  ArrowLeft, Plus, Truck, Package, FileText, X,
+  ArrowLeft, Plus, Truck, Package, FileText, X, Printer,
   GripVertical, Copy, Check, Trash2, ScanBarcode, Boxes,
-  MapPin, Clock, ChevronDown, ChevronRight, AlertCircle, ExternalLink,
-  Key, Terminal as TerminalIcon
+  MapPin, Clock, ChevronDown, ChevronRight, AlertCircle
 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 
@@ -217,7 +217,7 @@ function AddShipmentModal({ orderId, onSave, onClose }) {
 
 // ── Expedition mode — Pick item row ───────────────────────────────────────────
 
-function PickItemRow({ item, onToggle, onHold, flashId }) {
+function PickItemRow({ item, onToggle, onHold, flashId, onUnship, onAddToShipment }) {
   const status = item.fulfillment_status || 'À prélever'
   const isPicked = status === 'Prélevé'
   const isOnHold = status === 'En attente'
@@ -227,11 +227,21 @@ function PickItemRow({ item, onToggle, onHold, flashId }) {
   const fulfilledQty = item.fulfilled_qty || 0
   const isPartial = !isPicked && !isLocked && !isOnHold && fulfilledQty > 0
 
+  // Locked rows accept a click only when an explicit `onUnship` handler is
+  // provided (used by the "Déjà expédié" section to let the user pull an
+  // article back out of its shipment). Otherwise locked rows stay inert.
+  const clickable = !isLocked || !!onUnship
+  const handleRowClick = () => {
+    if (isLocked) { if (onUnship) onUnship(item); return }
+    onToggle(item)
+  }
+
   return (
     <div
-      onClick={() => !isLocked && onToggle(item)}
+      onClick={() => clickable && handleRowClick()}
       className={`flex items-center gap-4 px-5 py-4 border-b border-slate-100 last:border-0 select-none transition-colors
-        ${isLocked ? 'opacity-50 cursor-default' : 'cursor-pointer'}
+        ${clickable ? 'cursor-pointer' : 'opacity-50 cursor-default'}
+        ${isLocked && onUnship ? 'opacity-80 hover:bg-slate-50' : ''}
         ${isPicked ? 'bg-emerald-50 hover:bg-emerald-100/70' : isOnHold ? 'bg-amber-50 hover:bg-amber-100/60' : isPartial ? 'bg-blue-50 hover:bg-blue-100/60' : 'bg-white hover:bg-slate-50'}
         ${isFlashing ? 'ring-2 ring-inset ring-emerald-400' : ''}
       `}
@@ -303,6 +313,17 @@ function PickItemRow({ item, onToggle, onHold, flashId }) {
             ${isOnHold ? 'text-amber-600 bg-amber-100 hover:bg-amber-200' : 'text-slate-300 hover:text-amber-500 hover:bg-amber-50'}`}
         >
           <AlertCircle size={18} />
+        </button>
+      )}
+
+      {/* Add-to-existing-shipment button — only for "Prélevé" items when at least one shipment exists */}
+      {isPicked && onAddToShipment && (
+        <button
+          onClick={e => { e.stopPropagation(); onAddToShipment(item) }}
+          title="Ajouter à un envoi existant"
+          className="flex-shrink-0 p-2 rounded-lg text-emerald-700 bg-emerald-100 hover:bg-emerald-200 transition-colors"
+        >
+          <Truck size={18} />
         </button>
       )}
     </div>
@@ -387,17 +408,168 @@ function ExpeditionCreateShipmentModal({ orderId, pickedItems, onSave, onClose }
   )
 }
 
+// ── Expedition mode — Unship confirmation modal ────────────────────────────────
+
+function shipmentLabel(s) {
+  if (!s) return ''
+  const bits = []
+  if (s.carrier) bits.push(s.carrier)
+  if (s.tracking_number) bits.push(s.tracking_number)
+  return bits.length ? bits.join(' · ') : `envoi ${s.id.slice(0, 6)}`
+}
+
+function UnshipConfirmModal({ item, shipment, onConfirm, onClose }) {
+  const [saving, setSaving] = useState(false)
+  const shipmentSent = shipment?.status === 'Envoyé'
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-600">
+        Retirer <span className="font-semibold text-slate-900">{item.product_name || 'cet article'}</span>
+        {item.qty > 1 ? <> (×{item.qty})</> : null} de son envoi ?
+      </p>
+      <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm">
+        <div className="font-semibold text-slate-700 mb-1.5">Cela va :</div>
+        <ul className="list-disc pl-5 text-slate-600 space-y-1">
+          <li>retirer l'article de l'envoi <span className="font-medium text-slate-800">{shipmentLabel(shipment)}</span> (statut : {shipment?.status || '—'})</li>
+          <li>remettre son statut à <span className="font-medium text-slate-800">« À prélever »</span></li>
+        </ul>
+        {shipmentSent && (
+          <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1.5">
+            ⚠ L'envoi est marqué <span className="font-semibold">Envoyé</span> — l'article a peut-être déjà été physiquement expédié.
+          </p>
+        )}
+      </div>
+      <div className="flex justify-end gap-3 pt-1">
+        <button type="button" onClick={onClose} className="btn-secondary" disabled={saving}>Annuler</button>
+        <button
+          type="button"
+          disabled={saving}
+          onClick={async () => { setSaving(true); try { await onConfirm() } finally { setSaving(false) } }}
+          className="btn-primary"
+        >
+          {saving ? '...' : 'Retirer de l\'envoi'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── Expedition mode — Add-to-existing-shipment modal ───────────────────────────
+
+function AddToShipmentModal({ item, shipments, onConfirm, onClose }) {
+  const [selectedId, setSelectedId] = useState(shipments.length === 1 ? shipments[0].id : '')
+  const [saving, setSaving] = useState(false)
+  const target = shipments.find(s => s.id === selectedId)
+  const targetSent = target?.status === 'Envoyé'
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-slate-600">
+        Ajouter <span className="font-semibold text-slate-900">{item.product_name || 'cet article'}</span>
+        {item.qty > 1 ? <> (×{item.qty})</> : null} à un envoi existant.
+      </p>
+      {shipments.length > 1 && (
+        <div className="space-y-2">
+          <div className="text-sm font-medium text-slate-600">Choisir l'envoi cible :</div>
+          <div className="space-y-1.5 max-h-64 overflow-auto">
+            {shipments.map(s => (
+              <label
+                key={s.id}
+                className={`flex items-center gap-3 p-2.5 rounded-lg border cursor-pointer transition-colors
+                  ${selectedId === s.id ? 'border-brand-300 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}
+              >
+                <input
+                  type="radio"
+                  name="ship-target"
+                  value={s.id}
+                  checked={selectedId === s.id}
+                  onChange={() => setSelectedId(s.id)}
+                  className="accent-brand-500"
+                />
+                <span className="flex-1 text-sm">
+                  <span className="font-medium text-slate-800">{shipmentLabel(s)}</span>
+                  <span className="ml-2 text-xs text-slate-500">{s.status}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+      {target && (
+        <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm">
+          <div className="font-semibold text-slate-700 mb-1.5">Cela va :</div>
+          <ul className="list-disc pl-5 text-slate-600 space-y-1">
+            <li>rattacher l'article à l'envoi <span className="font-medium text-slate-800">{shipmentLabel(target)}</span> (statut : {target.status})</li>
+            <li>passer son statut à <span className="font-medium text-slate-800">« Dans l'envoi »</span></li>
+            {targetSent && <li>figer le coût unitaire courant comme coût expédié</li>}
+          </ul>
+        </div>
+      )}
+      <div className="flex justify-end gap-3 pt-1">
+        <button type="button" onClick={onClose} className="btn-secondary" disabled={saving}>Annuler</button>
+        <button
+          type="button"
+          disabled={saving || !selectedId}
+          onClick={async () => { setSaving(true); try { await onConfirm(selectedId) } finally { setSaving(false) } }}
+          className="btn-primary"
+        >
+          {saving ? '...' : 'Ajouter à l\'envoi'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Expedition mode — Full view ────────────────────────────────────────────────
 
 function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, scanToast, setScanToast, flashItemId }) {
   const [showCreateShipment, setShowCreateShipment] = useState(false)
   const [showDoneSection, setShowDoneSection] = useState(false)
+  const [unshipItem, setUnshipItem] = useState(null)        // item from "Déjà expédié" awaiting confirmation
+  const [addToShipItem, setAddToShipItem] = useState(null)  // picked item awaiting target shipment selection
+  const [novoxConfigured, setNovoxConfigured] = useState(false)
+  const [labelEnvoi, setLabelEnvoi] = useState(null)        // full envoi (fetched on demand) for Novoxpress modal
+  const [openingLabelId, setOpeningLabelId] = useState(null) // shipment id currently being fetched
+  const [generatingDocs, setGeneratingDocs] = useState(false)
+  const [docsError, setDocsError] = useState(null)
+
+  useEffect(() => {
+    api.novoxpress.status().then(r => setNovoxConfigured(!!r.configured)).catch(() => {})
+  }, [])
+
+  async function openLabelModal(shipmentId) {
+    setOpeningLabelId(shipmentId)
+    try {
+      const full = await api.shipments.get(shipmentId)
+      setLabelEnvoi(full)
+    } catch (e) {
+      setScanToast({ type: 'error', message: e.message || 'Impossible de charger l\'envoi' })
+    } finally {
+      setOpeningLabelId(null)
+    }
+  }
+
+  async function handleGenerateInstallationDocs() {
+    setGeneratingDocs(true)
+    setDocsError(null)
+    try {
+      const { blob } = await api.orders.generateInstallationDocsBlob(orderId)
+      const url = URL.createObjectURL(blob)
+      window.open(url, '_blank', 'noopener')
+      // Note: ne pas révoquer immédiatement — le nouvel onglet en a besoin
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+    } catch (e) {
+      setDocsError(e.message || 'Erreur lors de la génération des documents')
+    } finally {
+      setGeneratingDocs(false)
+    }
+  }
 
   const items = order.items || []
   const toPick   = items.filter(i => (i.fulfillment_status || 'À prélever') === 'À prélever')
   const onHold   = items.filter(i => i.fulfillment_status === 'En attente')
   const picked   = items.filter(i => i.fulfillment_status === 'Prélevé')
   const done     = items.filter(i => i.fulfillment_status === "Dans l'envoi" || i.fulfillment_status === 'Envoyé')
+  const shipments = order.shipments || []
 
   const totalItems = items.length
   const doneCount  = picked.length + done.length
@@ -419,6 +591,34 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
     api.orders.updateItem(orderId, item.id, { fulfillment_status: next }).catch(() => {
       onPatchItem(item.id, { fulfillment_status: prev })
     })
+  }
+
+  async function confirmUnship() {
+    const item = unshipItem
+    if (!item) return
+    const prev = { shipment_id: item.shipment_id, fulfillment_status: item.fulfillment_status, fulfilled_qty: item.fulfilled_qty }
+    const next = { shipment_id: null, fulfillment_status: 'À prélever', fulfilled_qty: 0 }
+    onPatchItem(item.id, next)
+    setUnshipItem(null)
+    try {
+      await api.orders.updateItem(orderId, item.id, next)
+    } catch {
+      onPatchItem(item.id, prev)
+    }
+  }
+
+  async function confirmAddToShipment(shipmentId) {
+    const item = addToShipItem
+    if (!item || !shipmentId) return
+    const prev = { shipment_id: item.shipment_id, fulfillment_status: item.fulfillment_status }
+    const next = { shipment_id: shipmentId, fulfillment_status: "Dans l'envoi" }
+    onPatchItem(item.id, next)
+    setAddToShipItem(null)
+    try {
+      await api.orders.updateItem(orderId, item.id, next)
+    } catch {
+      onPatchItem(item.id, prev)
+    }
   }
 
   const pct = totalItems > 0 ? Math.round((doneCount / totalItems) * 100) : 0
@@ -516,9 +716,28 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
               </h2>
             </div>
             {picked.map(item => (
-              <PickItemRow key={item.id} item={item} onToggle={handleToggle} onHold={handleHold} flashId={flashItemId} />
+              <PickItemRow
+                key={item.id}
+                item={item}
+                onToggle={handleToggle}
+                onHold={handleHold}
+                flashId={flashItemId}
+                onAddToShipment={shipments.length > 0 ? setAddToShipItem : undefined}
+              />
             ))}
-            <div className="p-4 bg-emerald-50 border-t border-emerald-100">
+            <div className="p-4 bg-emerald-50 border-t border-emerald-100 space-y-2">
+              <button
+                onClick={handleGenerateInstallationDocs}
+                disabled={generatingDocs}
+                className="w-full flex items-center justify-center gap-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-medium text-sm py-2.5 rounded-xl transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Fusionne les PDFs d'installation/remplacement (copies locales) pour les articles prêts"
+              >
+                <FileText size={16} />
+                {generatingDocs ? 'Génération…' : 'Générer les documents'}
+              </button>
+              {docsError && (
+                <div className="text-xs text-red-600 px-2">{docsError}</div>
+              )}
               <button
                 onClick={() => setShowCreateShipment(true)}
                 className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-base py-3.5 rounded-xl transition-colors shadow-sm"
@@ -545,7 +764,14 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
               {showDoneSection ? <ChevronDown size={16} className="text-slate-400" /> : <ChevronRight size={16} className="text-slate-400" />}
             </button>
             {showDoneSection && done.map(item => (
-              <PickItemRow key={item.id} item={item} onToggle={() => {}} onHold={() => {}} flashId={flashItemId} />
+              <PickItemRow
+                key={item.id}
+                item={item}
+                onToggle={() => {}}
+                onHold={() => {}}
+                flashId={flashItemId}
+                onUnship={setUnshipItem}
+              />
             ))}
           </div>
         )}
@@ -562,6 +788,7 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
             {order.shipments.map(s => {
               const assignedItems = items.filter(i => i.shipment_id === s.id)
               const url = trackingUrl(s.carrier, s.tracking_number)
+              const isOpening = openingLabelId === s.id
               return (
                 <div key={s.id} className="px-5 py-3 border-b border-slate-100 last:border-0">
                   <div className="flex items-center gap-3 flex-wrap">
@@ -571,6 +798,25 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
                       url
                         ? <a href={url} target="_blank" rel="noreferrer" className="text-xs font-mono text-brand-600 hover:underline">{s.tracking_number}</a>
                         : <span className="text-xs font-mono text-slate-500">{s.tracking_number}</span>
+                    )}
+                    <Link
+                      to={`/envois/${s.id}`}
+                      className="ml-auto text-xs text-slate-500 hover:text-brand-600 hover:underline"
+                    >
+                      Détails →
+                    </Link>
+                    {novoxConfigured && (
+                      <button
+                        onClick={() => openLabelModal(s.id)}
+                        disabled={isOpening}
+                        className="btn-primary flex items-center gap-1.5 text-xs py-1 px-2.5 disabled:opacity-60"
+                        title={s.label_pdf_path ? 'Réimprimer l\'étiquette Novoxpress' : 'Acheter une étiquette Novoxpress'}
+                      >
+                        {isOpening
+                          ? <><div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white" /> …</>
+                          : <><Printer size={12} /> {s.label_pdf_path ? 'Réimprimer' : 'Étiquette Novoxpress'}</>
+                        }
+                      </button>
                     )}
                   </div>
                   {assignedItems.length > 0 && (
@@ -598,6 +844,43 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
           onSave={onUpdate}
           onClose={() => setShowCreateShipment(false)}
         />
+      </Modal>
+
+      <Modal isOpen={!!unshipItem} onClose={() => setUnshipItem(null)} title="Retirer l'article de l'envoi">
+        {unshipItem && (
+          <UnshipConfirmModal
+            item={unshipItem}
+            shipment={shipments.find(s => s.id === unshipItem.shipment_id)}
+            onConfirm={confirmUnship}
+            onClose={() => setUnshipItem(null)}
+          />
+        )}
+      </Modal>
+
+      <Modal isOpen={!!addToShipItem} onClose={() => setAddToShipItem(null)} title="Ajouter à un envoi existant">
+        {addToShipItem && (
+          <AddToShipmentModal
+            item={addToShipItem}
+            shipments={shipments}
+            onConfirm={confirmAddToShipment}
+            onClose={() => setAddToShipItem(null)}
+          />
+        )}
+      </Modal>
+
+      <Modal isOpen={!!labelEnvoi} onClose={() => setLabelEnvoi(null)} title="Créer une étiquette postale">
+        {labelEnvoi && (
+          <NovoxpressLabelModal
+            envoi={labelEnvoi}
+            orderItemsTotalWeight={
+              (labelEnvoi.order_items || [])
+                .filter(item => item.shipment_id === labelEnvoi.id)
+                .reduce((sum, item) => sum + (item.weight_lbs || 0) * (item.qty || 0), 0)
+            }
+            onClose={() => { setLabelEnvoi(null); onUpdate() }}
+            onDone={() => { onUpdate() }}
+          />
+        )}
       </Modal>
     </div>
   )
@@ -644,7 +927,14 @@ export default function OrderDetail() {
   // deleted we mutate `items` in place.
   useRealtimeChannel(id ? `order:${id}` : null, (msg) => {
     if (msg.type === 'order:updated') {
-      setOrder(o => o ? { ...o, ...msg.payload } : o)
+      // Le payload realtime est la list-row (`buildOrderListRow` côté serveur).
+      // La table `orders` contient une colonne legacy `items` (TEXT JSON
+      // Airtable d'IDs `recXXX`) qui écraserait le vrai tableau d'items
+      // chargé par GET /:id — d'où des crashes `items.map is not a function`
+      // au prochain rendu. On strip cette colonne du merge.
+      // eslint-disable-next-line no-unused-vars
+      const { items: _legacyItems, ...rest } = msg.payload || {}
+      setOrder(o => o ? { ...o, ...rest } : o)
     } else if (msg.type === 'order:deleted') {
       navigate('/orders')
     } else if (msg.type === 'order:item:created') {
@@ -863,21 +1153,6 @@ export default function OrderDetail() {
                   </Link>
                 </React.Fragment>
               ))}
-              {order.central_controllers?.map(cc => (
-                <React.Fragment key={cc.address}>
-                  <span className="text-slate-300">·</span>
-                  <a
-                    href={`https://app.orisha.io/#admin/${encodeURIComponent(cc.address)}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={cc.serial ? `Contrôleur ${cc.serial} · adresse ${cc.address}` : `Adresse ${cc.address}`}
-                    className="inline-flex items-center gap-1 text-brand-600 hover:underline"
-                  >
-                    <ExternalLink size={12} />
-                    {order.central_controllers.length === 1 ? 'Ouvrir dans Orisha' : `Orisha ${cc.address}`}
-                  </a>
-                </React.Fragment>
-              ))}
               <span className="text-slate-300">·</span>
               <span>Créée le {fmtDate(order.created_at)}</span>
               {order.date_commande && <><span className="text-slate-300">·</span><span>Commande du {fmtDate(order.date_commande)}</span></>}
@@ -1056,65 +1331,6 @@ export default function OrderDetail() {
             </tbody>
           </table>
         </div>
-
-        {/* Permissions section — items JWT de la commande + contrôleurs du client */}
-        {(() => {
-          const jwtItems = (order.items || []).filter(i => i.product_type === 'JWT')
-          if (jwtItems.length === 0) return null
-          const controllers = order.central_controllers || []
-          return (
-            <div className="card mb-4">
-              <div className="flex items-start justify-between gap-4 px-5 py-4 border-b border-slate-200 flex-wrap">
-                <div className="flex items-center gap-2">
-                  <Key size={16} className="text-slate-400" />
-                  <h2 className="font-semibold text-slate-900">Permissions ({jwtItems.length})</h2>
-                </div>
-                <div className="flex flex-col items-end gap-1.5">
-                  {controllers.length === 0 ? (
-                    <span className="text-xs text-slate-400 italic">Aucun contrôleur opérationnel</span>
-                  ) : (
-                    controllers.map(cc => (
-                      <div key={cc.address} className="flex items-center gap-2 text-sm">
-                        <span className="text-slate-500">Contrôleur</span>
-                        <span className="font-mono text-slate-800">{cc.address}</span>
-                        <a
-                          href={`orisha-config://configure?controller=${encodeURIComponent(cc.address)}`}
-                          className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-brand-50 text-brand-700 hover:bg-brand-100 text-xs font-medium border border-brand-200"
-                          title={`Ouvrir le terminal pour configurer ${cc.address}`}
-                        >
-                          <TerminalIcon size={12} />
-                          Configurer
-                        </a>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-100 bg-slate-50">
-                    <th className="text-left px-5 py-3 text-xs font-semibold text-slate-500">Permission</th>
-                    <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">SKU</th>
-                    <th className="text-center px-3 py-3 text-xs font-semibold text-slate-500 w-16">Qté</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {jwtItems.map(item => (
-                    <tr key={item.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                      <td className="px-5 py-2.5">
-                        {item.product_id
-                          ? <Link to={`/products/${item.product_id}`} className="text-slate-900 hover:text-brand-600 hover:underline">{item.product_name || 'Produit inconnu'}</Link>
-                          : <span className="text-slate-900">{item.product_name || 'Produit inconnu'}</span>}
-                      </td>
-                      <td className="px-3 py-2.5 hidden sm:table-cell font-mono text-xs text-slate-500">{item.sku || '—'}</td>
-                      <td className="px-3 py-2.5 text-center font-bold text-slate-900">{item.qty}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )
-        })()}
 
         {/* Shipments section */}
         <div className="card mb-4">

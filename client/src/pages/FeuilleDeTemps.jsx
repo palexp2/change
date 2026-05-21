@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronLeft, ChevronRight, Plus, Trash2, Clock, Search, X, Copy } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Trash2, Clock, Search, Copy } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -334,7 +334,7 @@ function TextCell({ value, onCommit, disabled, placeholder }) {
 
 export default function FeuilleDeTemps() {
   const { user } = useAuth()
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = ['admin', 'rh'].includes(user?.role)
   const [date, setDate] = useState(todayStr())
   const [day, setDay] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -396,7 +396,7 @@ export default function FeuilleDeTemps() {
   })
 
   // Charge 12 mois de feuilles : sert à la sidebar historique (filtrée à 12 semaines)
-  // ET au cumul mensuel par code en bas de page.
+  // ET au rapport RSDE mensuel en bas de page.
   const loadHistory = useCallback(async () => {
     if (!selectedUserId) return
     const t = new Date()
@@ -640,8 +640,6 @@ export default function FeuilleDeTemps() {
               />
             )}
 
-            <MonthlyCumul key={selectedUserId} history={history} activityCodes={activityCodes} userId={selectedUserId} />
-
             <RsdeReport history={history} />
           </main>
         </div>
@@ -753,141 +751,6 @@ function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPa
           <Plus size={14} /> Ajouter une activité
         </button>
       </div>
-    </div>
-  )
-}
-
-function MonthlyCumul({ history, activityCodes, userId }) {
-  // Sélection des codes affichés persistée par employé visualisé : permet à un admin
-  // de garder une sélection différente pour sa propre feuille vs celle d'un autre user.
-  // Le parent passe `key={selectedUserId}` pour forcer le remount lors d'un changement
-  // d'employé — l'init useState lit alors le bon storage key dès le départ.
-  const STORAGE_KEY = `fdt:cumul-codes:${userId || 'self'}`
-  const [selectedIds, setSelectedIds] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]') } catch { return [] }
-  })
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(selectedIds))
-  }, [selectedIds])
-
-  // 12 mois glissants (mois courant inclus)
-  const months = useMemo(() => {
-    const list = []
-    const t = new Date()
-    for (let i = 11; i >= 0; i--) {
-      const d = new Date(t.getFullYear(), t.getMonth() - i, 1)
-      list.push({
-        key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
-        label: d.toLocaleDateString('fr-CA', { month: 'short', year: '2-digit' }).replace('.', ''),
-      })
-    }
-    return list
-  }, [])
-
-  // Map<month, Map<codeId, totalMin>>
-  const byMonth = useMemo(() => {
-    const m = new Map()
-    for (const day of history || []) {
-      const month = (day.date || '').slice(0, 7)
-      if (!month) continue
-      for (const e of day.entries || []) {
-        if (!e.activity_code_id) continue
-        if (!m.has(month)) m.set(month, new Map())
-        const codes = m.get(month)
-        codes.set(e.activity_code_id, (codes.get(e.activity_code_id) || 0) + (Number(e.duration_minutes) || 0))
-      }
-    }
-    return m
-  }, [history])
-
-  const selectedCodes = activityCodes.filter(c => selectedIds.includes(c.id))
-  const availableCodes = activityCodes.filter(c => !selectedIds.includes(c.id))
-
-  const addCode = (id) => { if (id && !selectedIds.includes(id)) setSelectedIds([...selectedIds, id]) }
-  const removeCode = (id) => setSelectedIds(selectedIds.filter(x => x !== id))
-
-  return (
-    <div className="card p-4 mt-4" data-testid="monthly-cumul">
-      <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-        <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wide">Cumul mensuel par code</h2>
-        <div className="flex items-center gap-2 flex-wrap">
-          {selectedCodes.map(c => (
-            <span key={c.id} className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 text-xs bg-slate-100 text-slate-700 rounded-md">
-              {c.name}
-              <button
-                type="button"
-                onClick={() => removeCode(c.id)}
-                className="p-0.5 rounded text-slate-400 hover:text-red-500 hover:bg-slate-300/60"
-                aria-label={`Retirer ${c.name}`}
-                data-testid={`cumul-remove-${c.id}`}
-              ><X size={12} /></button>
-            </span>
-          ))}
-          <div className="w-48">
-            <RefPicker
-              value=""
-              items={availableCodes}
-              labelOf={a => a.name || '(sans nom)'}
-              placeholder="+ Ajouter un code"
-              onChange={addCode}
-            />
-          </div>
-        </div>
-      </div>
-
-      {selectedCodes.length === 0 ? (
-        <p className="text-xs text-slate-400 italic">Sélectionne un ou plusieurs codes pour voir le cumul mensuel.</p>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                <th className="px-2 py-2 text-left sticky left-0 bg-white">Code</th>
-                {months.map(m => (
-                  <th key={m.key} className="px-2 py-2 text-right tabular-nums capitalize">{m.label}</th>
-                ))}
-                <th className="px-2 py-2 text-right">Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {selectedCodes.map(c => {
-                const totals = months.map(m => byMonth.get(m.key)?.get(c.id) || 0)
-                const grand = totals.reduce((s, v) => s + v, 0)
-                return (
-                  <tr key={c.id} className="border-t border-slate-100" data-testid={`cumul-row-${c.id}`}>
-                    <td className="px-2 py-1.5 font-medium text-slate-700 sticky left-0 bg-white">{c.name}</td>
-                    {totals.map((v, i) => (
-                      <td key={i} className="px-2 py-1.5 text-right tabular-nums text-slate-700">
-                        {v > 0 ? formatMinutes(v) : <span className="text-slate-300">—</span>}
-                      </td>
-                    ))}
-                    <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-slate-900">{formatMinutes(grand)}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-            <tfoot>
-              {(() => {
-                const monthTotals = months.map(m =>
-                  selectedCodes.reduce((s, c) => s + (byMonth.get(m.key)?.get(c.id) || 0), 0)
-                )
-                const grandTotal = monthTotals.reduce((s, v) => s + v, 0)
-                return (
-                  <tr className="border-t-2 border-slate-200 bg-slate-50" data-testid="cumul-total-row">
-                    <td className="px-2 py-1.5 font-semibold text-slate-700 sticky left-0 bg-slate-50">Total</td>
-                    {monthTotals.map((v, i) => (
-                      <td key={i} className="px-2 py-1.5 text-right tabular-nums font-semibold text-slate-900">
-                        {v > 0 ? formatMinutes(v) : <span className="text-slate-300 font-normal">—</span>}
-                      </td>
-                    ))}
-                    <td className="px-2 py-1.5 text-right tabular-nums font-bold text-slate-900">{formatMinutes(grandTotal)}</td>
-                  </tr>
-                )
-              })()}
-            </tfoot>
-          </table>
-        </div>
-      )}
     </div>
   )
 }

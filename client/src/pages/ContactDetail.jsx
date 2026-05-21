@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Plus, Save, X } from 'lucide-react'
+import { ArrowLeft, Plus, Save, Star, X } from 'lucide-react'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
@@ -45,11 +45,125 @@ const CONTACT_FIELDS = [
   { key: 'phone',      label: 'Téléphone',   type: 'phone' },
   { key: 'mobile',     label: 'Mobile',      type: 'phone' },
   { key: 'language',   label: 'Langue',      type: 'select', options: ['French', 'English'] },
-  { key: 'company_id', label: 'Entreprise',  type: 'company', span2: true },
   { key: 'notes',      label: 'Notes',       type: 'textarea', span2: true, defaultVisible: false },
 ]
 
-function InlineField({ field, value, saving, onSave, companies = [] }) {
+function CompanyLinks({ contactId, companies, allCompanies, onChange }) {
+  const { addToast } = useToast()
+  const confirm = useConfirm()
+  const [saving, setSaving] = useState(false)
+  const linked = companies || []
+  const linkedIds = new Set(linked.map(l => l.company_id))
+  const available = useMemo(
+    () => allCompanies.filter(c => !linkedIds.has(c.id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allCompanies, linked.map(l => l.company_id).join(',')]
+  )
+
+  async function setPrimary(linkId) {
+    setSaving(true)
+    try {
+      const r = await api.contacts.updateCompany(contactId, linkId, { is_primary: true })
+      onChange(r)
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function remove(link) {
+    if (!(await confirm(`Retirer ${link.company_name} de ce contact ?`))) return
+    setSaving(true)
+    try {
+      const r = await api.contacts.removeCompany(contactId, link.link_id)
+      onChange(r)
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function add(companyId) {
+    if (!companyId) return
+    setSaving(true)
+    try {
+      const r = await api.contacts.addCompany(contactId, { company_id: companyId })
+      onChange(r)
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="sm:col-span-2" data-testid="contact-companies">
+      <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5 flex items-center gap-1">
+        Entreprises
+        {saving && <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />}
+      </div>
+      <div className="space-y-1.5">
+        {linked.length === 0 ? (
+          <div className="text-sm text-slate-400 italic">Aucune entreprise liée</div>
+        ) : linked.map(link => (
+          <div
+            key={link.link_id}
+            data-testid="contact-company-row"
+            data-company-id={link.company_id}
+            className="flex items-center gap-2 group"
+          >
+            <Link
+              to={`/companies/${link.company_id}`}
+              className="text-sm text-brand-600 hover:underline"
+            >
+              {link.company_name}
+            </Link>
+            {link.is_primary ? (
+              <Badge color="blue" size="sm">Principale</Badge>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setPrimary(link.link_id)}
+                disabled={saving}
+                className="text-xs text-slate-400 hover:text-brand-600 inline-flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition"
+                title="Définir comme principale"
+                data-testid="set-primary"
+              >
+                <Star size={11} /> rendre principale
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => remove(link)}
+              disabled={saving}
+              className="ml-auto text-slate-300 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100 transition"
+              title="Retirer"
+              data-testid="remove-company"
+            >
+              <X size={13} />
+            </button>
+          </div>
+        ))}
+        <div className="pt-1">
+          <LinkedRecordField
+            name="add_company"
+            value={null}
+            options={available}
+            labelFn={c => c.name}
+            placeholder="Ajouter une entreprise"
+            saving={saving}
+            onChange={add}
+            allowClear={false}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function InlineField({ field, value, saving, onSave }) {
   const [local, setLocal] = useState(String(value ?? ''))
   useEffect(() => { setLocal(String(value ?? '')) }, [value])
   function commit(val) { if (val === String(value ?? '')) return; onSave(val) }
@@ -60,20 +174,6 @@ function InlineField({ field, value, saving, onSave, companies = [] }) {
         <option value="">—</option>
         {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
       </select>
-    )
-  }
-  if (field.type === 'company') {
-    return (
-      <LinkedRecordField
-        name="company_id"
-        value={value}
-        options={companies}
-        labelFn={c => c.name}
-        getHref={c => `/companies/${c.id}`}
-        placeholder="Entreprise"
-        saving={saving}
-        onChange={onSave}
-      />
     )
   }
   if (field.type === 'textarea') {
@@ -93,7 +193,7 @@ function InlineField({ field, value, saving, onSave, companies = [] }) {
   )
 }
 
-function TaskModalContent({ contactId, editingTask, users, taskForm, setTaskForm, savingTask, setSavingTask, onClose, onRefresh }) {
+function TaskModalContent({ contactId, contactCompanies = [], editingTask, users, taskForm, setTaskForm, savingTask, setSavingTask, onClose, onRefresh }) {
   const isEdit = !!editingTask
   const [fieldSaving, setFieldSaving] = useState({})
   const confirm = useConfirm()
@@ -118,7 +218,8 @@ function TaskModalContent({ contactId, editingTask, users, taskForm, setTaskForm
     e.preventDefault()
     setSavingTask(true)
     try {
-      await api.tasks.create({ ...taskForm, contact_id: contactId })
+      const company_id = taskForm.company_id || (contactCompanies.find(c => c.is_primary)?.company_id ?? null)
+      await api.tasks.create({ ...taskForm, contact_id: contactId, company_id })
       await onRefresh()
       onClose()
     } catch (err) {
@@ -198,6 +299,23 @@ function TaskModalContent({ contactId, editingTask, users, taskForm, setTaskForm
           onChange={v => isEdit ? saveField('assigned_to', v) : setTaskForm(f => ({ ...f, assigned_to: v }))}
         />
       </div>
+      {!isEdit && contactCompanies.length > 1 && (
+        <div>
+          <label className="label">Entreprise</label>
+          <select
+            value={taskForm.company_id || (contactCompanies.find(c => c.is_primary)?.company_id || '')}
+            onChange={e => setTaskForm(f => ({ ...f, company_id: e.target.value }))}
+            className="select"
+            data-testid="task-company-picker"
+          >
+            {contactCompanies.map(c => (
+              <option key={c.company_id} value={c.company_id}>
+                {c.company_name}{c.is_primary ? ' (principale)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
       <div>
         <label className="label">Notes</label>
         <textarea
@@ -353,7 +471,7 @@ export default function ContactDetail() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
             {visibleFields.map(field => {
               const value = contact[field.key] ?? ''
-              const span2 = field.span2 || field.type === 'textarea' || field.type === 'company'
+              const span2 = field.span2 || field.type === 'textarea'
               return (
                 <div key={field.key} className={span2 ? 'sm:col-span-2' : ''}>
                   <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
@@ -364,12 +482,17 @@ export default function ContactDetail() {
                     field={field}
                     value={value}
                     saving={!!fieldSaving[field.key]}
-                    companies={companies}
                     onSave={val => saveField(field.key, val)}
                   />
                 </div>
               )
             })}
+            <CompanyLinks
+              contactId={id}
+              companies={contact.companies || []}
+              allCompanies={companies}
+              onChange={updated => setContact(c => ({ ...c, ...updated }))}
+            />
           </div>
         </div>
 
@@ -430,6 +553,7 @@ export default function ContactDetail() {
       {showTaskModal && (
         <TaskModalContent
           contactId={id}
+          contactCompanies={contact.companies || []}
           editingTask={editingTask}
           users={users}
           taskForm={taskForm}

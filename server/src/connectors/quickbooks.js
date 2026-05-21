@@ -163,3 +163,41 @@ export async function qbAttachmentDownloadUrl(attachmentId) {
   }
   return (await resp.text()).trim()
 }
+
+// Téléverse un fichier comme pièce jointe attachée à une entité QB (Bill, Purchase,
+// Invoice, etc.) via l'endpoint /upload. Retourne l'Attachable créé.
+export async function qbUploadAttachment({ entityType, entityId, fileBuffer, fileName, contentType }) {
+  const { default: FormData } = await import('form-data')
+  const { default: nodeFetch } = await import('node-fetch')
+  const { accessToken, realmId } = await getAccessToken()
+  const url = `${QB_API_BASE}/${realmId}/upload?minorversion=65`
+
+  const metadata = {
+    AttachableRef: [{ EntityRef: { type: entityType, value: String(entityId) } }],
+    FileName: fileName,
+    ContentType: contentType,
+  }
+
+  const form = new FormData()
+  form.append('file_metadata_01', JSON.stringify(metadata), {
+    contentType: 'application/json',
+    filename: 'metadata.json',
+  })
+  form.append('file_content_01', fileBuffer, { filename: fileName, contentType })
+
+  const resp = await nodeFetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: 'application/json',
+      ...form.getHeaders(),
+    },
+    body: form,
+  })
+  if (!resp.ok) {
+    const text = await resp.text()
+    throw new Error(`QB upload attachment ${resp.status}: ${text}`)
+  }
+  const data = await resp.json()
+  return data?.AttachableResponse?.[0]?.Attachable || null
+}

@@ -1,8 +1,42 @@
 import { v4 as uuid } from 'uuid'
+import { join, extname } from 'path'
+import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import db from '../db/database.js'
 import { getGmailClient } from '../connectors/google.js'
+import { runExtractionAndUpdate } from './saleReceiptExtraction.js'
+import { emitEntity } from './realtimeEmitters.js'
 
 const DOMAIN = 'orisha.io'
+const INVOICE_LABEL_NAME = 'ERP/Factures'
+const RECEIPT_ATTACHMENT_EXTS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp']
+const RECEIPT_MIME_PREFIXES = ['application/pdf', 'image/']
+
+const receiptsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')
+if (!existsSync(receiptsDir)) mkdirSync(receiptsDir, { recursive: true })
+
+async function resolveLabelId(gmail, name) {
+  const res = await gmail.users.labels.list({ userId: 'me' })
+  const label = (res.data.labels || []).find(l => l.name === name)
+  return label?.id || null
+}
+
+function collectAttachments(payload) {
+  const found = []
+  const walk = (part) => {
+    if (!part) return
+    const filename = part.filename || ''
+    const mime = part.mimeType || ''
+    const attachmentId = part.body?.attachmentId
+    const isReceipt = attachmentId && (
+      RECEIPT_MIME_PREFIXES.some(p => mime.startsWith(p)) ||
+      RECEIPT_ATTACHMENT_EXTS.includes(extname(filename).toLowerCase())
+    )
+    if (isReceipt) found.push({ filename, mimeType: mime, attachmentId })
+    if (part.parts) part.parts.forEach(walk)
+  }
+  walk(payload)
+  return found
+}
 
 function parseEmailAddress(raw) {
   if (!raw) return ''
@@ -55,6 +89,11 @@ async function syncAccount(oauthRow) {
   const ownerUser = db.prepare('SELECT id FROM users WHERE email=?').get(account_email)
   const userId = ownerUser?.id || null
 
+  // Le label "ERP/Factures" est traité séparément par syncInvoiceLabel — exclure ici
+  // pour éviter de polluer emails/interactions avec les factures fournisseurs.
+  let invoiceLabelId = null
+  try { invoiceLabelId = await resolveLabelId(gmail, INVOICE_LABEL_NAME) } catch {}
+
   const state = db.prepare('SELECT * FROM gmail_sync_state WHERE connector_oauth_id=?').get(oauthId)
 
   try {
@@ -89,6 +128,11 @@ async function syncAccount(oauthRow) {
         msg = await gmail.users.messages.get({ userId: 'me', id: msgRef.id, format: 'full' })
       } catch {
         // Message supprimé/inaccessible entre le list et le get — on skip
+        continue
+      }
+
+      if (invoiceLabelId && (msg.data.labelIds || []).includes(invoiceLabelId)) {
+        // Facture fournisseur — traité par syncInvoiceLabel, pas par le sync emails/interactions
         continue
       }
 
@@ -237,6 +281,90 @@ export async function sendEmail(to, subject, htmlBody, options = {}) {
   }
 }
 
+async function syncInvoiceLabel(oauthRow) {
+  const { id: oauthId, account_email } = oauthRow
+  let gmail
+  try { gmail = await getGmailClient(oauthId) }
+  catch (e) { console.error(`❌ Gmail invoice client ${account_email}:`, e.message); return }
+
+  const ownerUser = db.prepare('SELECT id FROM users WHERE email=?').get(account_email)
+  const userId = ownerUser?.id || null
+
+  let labelId
+  try { labelId = await resolveLabelId(gmail, INVOICE_LABEL_NAME) }
+  catch (e) { console.error(`❌ Gmail labels.list ${account_email}:`, e.message); return }
+  if (!labelId) return  // Label inexistant sur ce compte — rien à faire
+
+  let messages = []
+  try {
+    const list = await gmail.users.messages.list({
+      userId: 'me',
+      labelIds: [labelId],
+      q: 'has:attachment',
+      maxResults: 50,
+    })
+    messages = list.data.messages || []
+  } catch (e) {
+    console.error(`❌ Gmail invoice list ${account_email}:`, e.message)
+    return
+  }
+
+  let imported = 0
+  for (const msgRef of messages) {
+    const already = db.prepare('SELECT 1 FROM sale_receipts WHERE gmail_message_id=?').get(msgRef.id)
+    if (already) continue
+
+    let msg
+    try { msg = await gmail.users.messages.get({ userId: 'me', id: msgRef.id, format: 'full' }) }
+    catch { continue }
+
+    const attachments = collectAttachments(msg.data.payload)
+    if (attachments.length === 0) continue
+
+    for (const att of attachments) {
+      let ext = extname(att.filename).toLowerCase()
+      if (!RECEIPT_ATTACHMENT_EXTS.includes(ext)) {
+        // Mime-based fallback (ex: "application/pdf" sans extension)
+        if (att.mimeType === 'application/pdf') ext = '.pdf'
+        else if (att.mimeType?.startsWith('image/')) ext = '.' + att.mimeType.slice(6)
+        else continue
+      }
+
+      let data
+      try {
+        const r = await gmail.users.messages.attachments.get({
+          userId: 'me', messageId: msgRef.id, id: att.attachmentId,
+        })
+        data = r.data.data
+      } catch (e) {
+        console.error(`❌ Gmail attachment download ${msgRef.id}:`, e.message)
+        continue
+      }
+      if (!data) continue
+
+      const buffer = Buffer.from(data, 'base64url')
+      const id = uuid()
+      const storedName = `${id}${ext}`
+      const filePath = join(receiptsDir, storedName)
+      try { writeFileSync(filePath, buffer) }
+      catch (e) { console.error(`❌ Gmail attachment write ${msgRef.id}:`, e.message); continue }
+
+      db.prepare(`
+        INSERT INTO sale_receipts (id, filename, original_name, file_type, status, created_by, source, gmail_message_id)
+        VALUES (?, ?, ?, ?, 'processing', ?, 'email', ?)
+      `).run(id, storedName, att.filename || storedName, ext, userId, msgRef.id)
+
+      const created = db.prepare('SELECT * FROM sale_receipts WHERE id=?').get(id)
+      if (created) emitEntity('sale_receipt', 'created', id, { ...created, items: [] }, userId)
+
+      runExtractionAndUpdate({ saleReceiptId: id, filePath, fileExt: ext, userId })
+      imported++
+    }
+  }
+
+  if (imported > 0) console.log(`🧾 Gmail ${account_email}: ${imported} pièce(s) jointe(s) facture importée(s)`)
+}
+
 export async function syncAllMailboxes() {
   const accounts = db.prepare(`
     SELECT * FROM connector_oauth WHERE connector='google' AND refresh_token IS NOT NULL
@@ -244,5 +372,6 @@ export async function syncAllMailboxes() {
 
   for (const account of accounts) {
     await syncAccount(account)
+    await syncInvoiceLabel(account)
   }
 }

@@ -1,11 +1,12 @@
-// Génère des templates d'email de relance pour les entreprises ayant eu un
-// qualification call mais dont aucun projet n'a abouti (statut Perdu).
-//
-// Pas d'envoi — uniquement génération de subject + body personnalisés selon
-// les défis abordés pendant le QC. Le frontend affiche la liste; l'utilisateur
-// copie/colle dans son client mail.
+// Génération IA de courriels de relance pour les entreprises ayant eu un
+// qualification call et dont la phase HubSpot est "Quote Sent". Pas de template
+// statique : le courriel n'existe que si l'utilisateur a déclenché /regenerate
+// (qui appelle OpenAI et persiste un draft dans email_relance_drafts).
 
 import db from '../db/database.js'
+import { execFileSync } from 'child_process'
+import { existsSync, statSync } from 'fs'
+import { join } from 'path'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -79,88 +80,6 @@ function detectTopics(text) {
   return found.slice(0, 2)
 }
 
-// Étiquettes courtes pour les sujets de mail (les phrases prose sont trop
-// longues quand on les met direct dans un subject line).
-const TOPIC_LABELS = {
-  fr: {
-    humidity: "humidité", heat: "chaleur", ventilation: "aération",
-    disease: "maladies", remote: "suivi à distance", manual: "tout-manuel",
-    yield: "rendement", irrigation: "irrigation", labor: "heures de gestion",
-    energy: "énergie", pests: "ravageurs", flowering: "nouaison",
-  },
-  en: {
-    humidity: "humidity", heat: "heat", ventilation: "venting",
-    disease: "disease pressure", remote: "remote monitoring", manual: "manual control",
-    yield: "yield", irrigation: "irrigation", labor: "labor hours",
-    energy: "energy", pests: "pests", flowering: "fruit set",
-  },
-}
-
-// Phrases naturelles pour reformuler les défis détectés en prose (vs. liste à puces).
-const TOPIC_PHRASES = {
-  fr: {
-    humidity:    "la gestion de l'humidité",
-    heat:        "le contrôle de la chaleur",
-    ventilation: "l'aération qui suit pas le réel",
-    disease:     "la pression des maladies",
-    remote:      "l'envie de pouvoir suivre la serre à distance",
-    manual:      "le fait que tout passe par les bras",
-    yield:       "le rendement en serre",
-    irrigation:  "l'irrigation",
-    labor:       "la course aux heures",
-    energy:      "le poste énergie",
-    pests:       "les ravageurs",
-    flowering:   "des soucis de fleurs et de nouaison",
-  },
-  en: {
-    humidity:    "humidity management",
-    heat:        "heat control",
-    ventilation: "ventilation that doesn't follow what's actually happening",
-    disease:     "disease pressure",
-    remote:      "wanting to keep an eye on the greenhouse from anywhere",
-    manual:      "the fact that everything runs through your hands",
-    yield:       "greenhouse yield",
-    irrigation:  "irrigation",
-    labor:       "the hours pile",
-    energy:      "energy use",
-    pests:       "pest pressure",
-    flowering:   "flowering and fruit set issues",
-  },
-}
-
-// Petite ligne taillée par sujet, glissée dans le paragraphe d'insight quand il
-// y a un topic dominant. Pas de tirets (règle de marque), ton humble.
-const TOPIC_LINES = {
-  fr: {
-    humidity:    "L'humidité pilotée par seuils, c'est souvent ce qui débloque le reste.",
-    heat:        "Quand la chaleur suit la température réelle plutôt qu'une horloge, on récupère 1 ou 2 °C sans toucher au chauffage.",
-    ventilation: "Quand les ouvertures suivent la température au lieu d'un horaire fixe, ça change beaucoup la stabilité de la journée.",
-    disease:     "Plusieurs producteurs nous disent qu'avec un suivi humidité continu ils ont coupé leurs traitements de moitié.",
-    remote:      "Pouvoir vérifier la serre du téléphone, sans angle mort, c'est ce qui change le plus le quotidien.",
-    manual:      "Quitter le manuel, même partiellement, ça enlève les nuits où il faut sortir vérifier une porte.",
-    yield:       "Sur les fermes qu'on accompagne, les gains viennent surtout de la stabilité jour/nuit, pas d'une nouvelle variété.",
-    irrigation:  "L'irrigation pilotée par capteurs au lieu d'une minuterie, c'est typiquement moins d'eau pour un meilleur résultat.",
-    labor:       "L'objectif, c'est jamais de remplacer du monde. C'est de pas avoir à envoyer quelqu'un à la serre à 22h pour une porte.",
-    energy:      "Sur l'énergie, l'optimisation horaire et les ouvertures progressives donnent un retour rapide, même sur du chauffage existant.",
-    pests:       "Un suivi continu attrape la première hausse de population avant qu'elle soit visible. C'est là que les traitements coûtent le moins.",
-    flowering:   "Stabiliser l'humidité et la chaleur aux bons moments de la journée règle souvent les problèmes de nouaison.",
-  },
-  en: {
-    humidity:    "Driving humidity off setpoints is usually what unlocks the rest.",
-    heat:        "When heat tracks actual temperature instead of a clock, you tend to pick up 1 to 2 °C without touching heating.",
-    ventilation: "When the openings follow the temperature instead of a fixed schedule, it really changes how stable the day is.",
-    disease:     "Several growers tell us that continuous humidity tracking lets them cut treatments in half.",
-    remote:      "Being able to check the greenhouse from your phone, with no blind spot, is what changes daily life the most.",
-    manual:      "Even partially leaving manual behind takes out the nights where someone has to drive over to check a door.",
-    yield:       "On the farms we work with, the gains come mostly from day/night stability, not from a new variety.",
-    irrigation:  "Sensor-driven irrigation instead of a timer typically means less water for a better crop response.",
-    labor:       "It's never about replacing people. It's about not having to send someone out at 10 pm for a door.",
-    energy:      "On the energy side, peak/off-peak timing and staged openings pay back quickly, even on existing heating.",
-    pests:       "Continuous tracking catches the first jump in population before it's visible. That's when treatments cost the least.",
-    flowering:   "Stabilizing humidity and heat at the right time of day usually clears up fruit set issues.",
-  },
-}
-
 function firstName(full) {
   const t = nonPlaceholder(full)
   if (!t) return null
@@ -176,141 +95,19 @@ function fmtMonth(dateStr, lang) {
     : ['January','February','March','April','May','June','July','August','September','October','November','December']
   return `${months[d.getMonth()]} ${d.getFullYear()}`
 }
-// Élision FR : "en avril" reste "en avril", mais "de avril" → "d'avril".
-function enPrep(month, lang) {
-  if (lang !== 'fr') return month
-  return /^[aeiouhâéèêëîïôöûüÿ]/i.test(month) ? `en ${month}` : `en ${month}`
+
+// Nombre de mois écoulés depuis dateStr (basé sur année×12 + mois courant).
+// Utilisé pour injecter une référence temporelle relative dans le contexte
+// envoyé à l'IA : sans ça, le modèle a tendance à écrire "in April" alors que
+// l'appel a eu lieu plus d'un an avant, ce qui sonne faux côté destinataire.
+function monthsSince(dateStr) {
+  if (!dateStr) return null
+  const d = new Date(dateStr)
+  if (isNaN(d)) return null
+  const now = new Date()
+  const m = (now.getFullYear() - d.getFullYear()) * 12 + (now.getMonth() - d.getMonth())
+  return m >= 0 ? m : null
 }
-
-// Compose une liste FR ou EN à partir de fragments : "X, Y et Z" / "X, Y and Z".
-function joinList(items, lang) {
-  const arr = items.filter(Boolean)
-  if (arr.length === 0) return null
-  if (arr.length === 1) return arr[0]
-  const sep = lang === 'fr' ? ' et ' : ' and '
-  return arr.slice(0, -1).join(', ') + sep + arr[arr.length - 1]
-}
-
-// ── Templates ──────────────────────────────────────────────────────────────
-
-function buildEmail({ qc, lostProject, lang }) {
-  const challenges = nonPlaceholder(qc.challenges)
-  const farmDesc = nonPlaceholder(qc.farm_description)
-  const summary = nonPlaceholder(qc.summary)
-  const goals = nonPlaceholder(qc.short_term_goals)
-  const motivation = nonPlaceholder(qc.motivation_today) || nonPlaceholder(qc.motivation_why_now)
-  const decisionName = firstName(qc.decision_maker_name)
-  const callMonth = fmtMonth(qc.call_date, lang)
-  const lostMonth = fmtMonth(lostProject?.close_date, lang)
-
-  const allText = [challenges, farmDesc, summary, goals, motivation].filter(Boolean).join(' ')
-  const topics = detectTopics(allText)
-  const phrases = topics.map(t => TOPIC_PHRASES[lang][t]).filter(Boolean)
-  const topicList = joinList(phrases, lang)
-  const topicLine = topics.length ? TOPIC_LINES[lang][topics[0]] : null
-
-  if (lang === 'fr') {
-    // Salutation Québécois professionnelle.
-    const greeting = decisionName ? `Bonjour ${decisionName},` : 'Bonjour,'
-
-    // Référence à l'appel : « notre échange en X » (neutre Québécois).
-    const callRef = callMonth ? `notre échange ${enPrep(callMonth, 'fr')}` : 'notre échange au téléphone'
-
-    // Reformulation prose des défis (vs. liste à puces verbatim).
-    let challengeSentence
-    if (topicList) {
-      challengeSentence = `Ce qui revenait surtout, c'était ${topicList}.`
-    } else if (challenges) {
-      challengeSentence = "On avait fait le tour de votre saison et de ce qui pesait le plus sur votre temps."
-    } else {
-      challengeSentence = "On avait pris le temps de regarder votre saison ensemble."
-    }
-
-    // Paragraphe positionnement : pression libérée par le rendement, vie de
-    // famille reprise, histoire concrète d'un producteur (Drew). Aligné brand.
-    const positioning =
-      "Plusieurs fermes avec qui on travaille étaient au même point. " +
-      (topicLine ? topicLine + ' ' : '') +
-      "Drew, un producteur qu'on accompagne, a doublé sa production de tomates l'année passée. Sa conjointe a pu lâcher sa job à l'extérieur pour revenir travailler à la ferme à temps plein."
-
-    // CTA léger, ton Québécois, pas de pression.
-    const lostRef = lostMonth ? ` On s'était laissés ${enPrep(lostMonth, 'fr')} sans aller plus loin.` : ''
-    const closing =
-`Si jamais l'idée vous trotte encore en tête pour la prochaine saison, on prend 20 minutes ensemble?${lostRef} Pas de pression, juste pour faire le tour.
-
-Au plaisir,
-[Signature]`
-
-    // Sujet : minuscule, ton texto, sans tiret. Étiquette compacte du sujet.
-    const subjectLabel = topics[0] ? TOPIC_LABELS.fr[topics[0]] : null
-    let subject
-    if (subjectLabel) {
-      subject = `${subjectLabel}, ça a bougé de votre bord?`
-    } else if (callMonth) {
-      subject = `petite pensée avant la prochaine saison`
-    } else {
-      subject = `on se reprend avant la prochaine saison?`
-    }
-
-    const body =
-`${greeting}
-
-Je repense à ${callRef}. ${challengeSentence}
-
-${positioning}
-
-${closing}`
-
-    return { subject, body, language: 'fr' }
-  }
-
-  // ── EN ─────────────────────────────────────────────────────────────
-  const greeting = decisionName ? `Hi ${decisionName},` : 'Hi,'
-  const callRef = callMonth ? `our chat in ${callMonth}` : 'our call'
-
-  let challengeSentence
-  if (topicList) {
-    challengeSentence = `What kept coming up was ${topicList}.`
-  } else if (challenges) {
-    challengeSentence = "We'd walked through your season and what was eating the most of your time."
-  } else {
-    challengeSentence = "We'd taken time to look at your season together."
-  }
-
-  const positioning =
-    "A lot of the farms we work with were in the same place. " +
-    (topicLine ? topicLine + ' ' : '') +
-    "Drew, a grower we work with, doubled his tomato production last year. His wife was able to leave her off-farm job and come back to the farm full time."
-
-  const lostRef = lostMonth ? ` We'd left things in ${lostMonth} without taking it further.` : ''
-  const closing =
-`If the idea is still in the back of your mind for next season, want to grab 20 minutes?${lostRef} No pressure, just a check in.
-
-Talk soon,
-[Signature]`
-
-  const subjectLabel = topics[0] ? TOPIC_LABELS.en[topics[0]] : null
-  let subject
-  if (subjectLabel) {
-    subject = `${subjectLabel}, any movement on your end?`
-  } else if (callMonth) {
-    subject = `thinking ahead to next season`
-  } else {
-    subject = `want to pick up where we left off?`
-  }
-
-  const body =
-`${greeting}
-
-I was thinking back to ${callRef}. ${challengeSentence}
-
-${positioning}
-
-${closing}`
-
-  return { subject, body, language: 'en' }
-}
-
 // ── Régénération via OpenAI ────────────────────────────────────────────────
 //
 // Reprend la même intention (relance post-qualification d'un projet perdu) mais
@@ -334,9 +131,9 @@ Positionnement : "pressure relief through yield". Le maraîcher est le héros, O
 Elevator pitch FR (Québécois) : "Beaucoup de maraîchers doivent sacrifier leur temps en famille pour que la ferme arrive. On les aide à y arriver en 40h/semaine en augmentant leurs rendements en serre. Comme ça, ils peuvent couper dans le nombre de jardins à gérer sans perdre de revenu."
 
 Histoires-piliers (citations vérifiées de producteurs) :
-- Drew : "Our first spring in the hoop house was awful. It was miserable." → "We DOUBLED tomato production compared to last year." → "Allison quit her day job and we're both farming full time now."
-- Scott : "We were unable to accept a dinner invitation… we had to be around to open or close." → "Our automation freed us from all that stress… game changer."
-- Dan : "The tunnel will do a better job by itself… disease go down, yield went up dramatically." → "We wish we had done it sooner. I'd do this five years ago."
+- Drew, Ghost House Farm (Michigan Upper Peninsula) : "Our first spring in the hoop house was awful. It was miserable." → "We DOUBLED tomato production compared to last year." → "Allison quit her day job and we're both farming full time now."
+- Scott, Indian Creek Orchard Gardens (Ontario) : "We were unable to accept a dinner invitation… we had to be around to open or close." → "Our automation freed us from all that stress… game changer."
+- Dan, Broadfork Farm (Richmond, Virginie) : "The tunnel will do a better job by itself… disease go down, yield went up dramatically." → "We wish we had done it sooner. I'd do this five years ago."
 
 RÈGLES D'ÉCRITURE STRICTES :
 - AUCUN tiret cadratin (em-dash —) ni demi-cadratin (–) comme ponctuation stylistique. Utiliser virgule, point, point-virgule, parenthèses ou "et" à la place.
@@ -345,7 +142,28 @@ RÈGLES D'ÉCRITURE STRICTES :
 - Histoire concrète, pas d'abstraction. Pas d'exagération chiffrée non sourcée.
 - Ne pas mettre de mots dans la bouche du producteur.
 - Pas de fausse urgence, pas de "limited time", pas de superlatifs vides.
+- Pas de flatterie / sycophantie. Bannis : "That's a smart move", "Great question", "Smart approach", "I love that", "Ça c'est une bonne idée", "Bonne question". Le destinataire n'a pas besoin de validation, juste d'être pris au sérieux.
 - "ft²" pour les surfaces (anglais) / "pi²" (français).
+
+RÉFÉRENCE À LA DATE DE L'APPEL :
+- Si la date de l'appel est annotée "(il y a N mois)" / "(N months ago)" dans le contexte, ÇA VEUT DIRE que c'est lointain : utilise une formulation relative ("il y a un peu plus d'un an", "last spring", "a while back") plutôt que le mois sec.
+- N'écris JAMAIS juste "in April" ou "en avril" sans année quand l'appel a plus de 3 mois — le destinataire perd le fil.
+- Si pas d'annotation relative, le mois sec est OK (appel récent, même année).
+
+UTILISATION DE L'HISTORIQUE RÉCENT (priorité haute) :
+- Si la section "Historique récent" / "Recent history" est présente, scanne-la et identifie l'interaction la plus récente, quelle qu'elle soit.
+- **RÈGLE STRICTE** : s'il existe un courriel SORTANT (de notre côté) dans les 60 derniers jours, tu DOIS le reconnaître au début du courriel — même s'il s'agit d'un message promotionnel, automatique, ou marketing (factures, "rent-to-buy", offres). Sinon le destinataire pense qu'on a oublié qu'on lui a écrit la semaine passée et le relance sonne déconnectée. Exemple : "Je sais que tu as reçu notre courriel sur l'option de location-achat la semaine passée — je voulais quand même prendre 2 minutes pour revenir sur notre échange du printemps dernier…" / "I know our rent-to-buy note landed in your inbox last week — separately, I wanted to circle back on what we discussed last spring…"
+- Si un courriel ENTRANT (du prospect) est dans l'historique sans réponse de notre côté, c'est la priorité absolue : réponds-y directement plutôt que de partir sur un nouvel angle.
+- Pour tout autre échange concret (appel, courriel personnel), glisse une référence naturelle ("tu m'écrivais en mars que…", "on s'est parlé en septembre quand…") plutôt que de répéter une généralité du QC.
+- Ne paraphrase pas le contenu d'un courriel mot pour mot : référence-le brièvement et avance.
+- Si l'historique est vide, n'invente rien — reste sur le contenu du QC.
+
+RÈGLES SUR LES PRODUCTEURS CITÉS (strict) :
+- N'INVENTE JAMAIS de prénom ni de ferme. Seuls les producteurs présents dans la section "BANQUE DE TÉMOIGNAGES CLIENTS" (plus bas dans ce message) peuvent être cités. Si cette banque est absente, retombe sur Drew (Ghost House Farm), Scott (Indian Creek Orchard Gardens) et Dan (Broadfork Farm) uniquement. Aucun nom hors de ce périmètre.
+- Au PREMIER usage du prénom dans le courriel, ajoute toujours un ancrage minimal : prénom + ferme + région tels qu'apparus dans la banque (ex. "Catherine, de la Ferme des Quatre-Temps au Québec" / "Drew, de Ghost House Farm au Michigan"). Jamais le prénom seul, le destinataire ne connaît pas la personne.
+- Une seule histoire-pilier par courriel (deux maximum si vraiment pertinent), pas une parade de noms.
+- Si aucune histoire de la banque ne colle naturellement au contexte du QC, dis "un producteur qu'on accompagne" / "another grower we work with" sans nom — n'en force pas une.
+- Ne cite jamais textuellement plus d'une phrase courte ; reformule plutôt l'idée. Si une entrée de la banque est annotée "Pas l'autorisation de l'utiliser encore" ou équivalent, ne mentionne ni le nom ni la ferme ni le quote correspondant.
 
 QUÉBÉCOIS (si lang=fr) :
 - Pas de tournures France ("formidable", "ravi", "Bien à vous", "soit", "passer commande", "vingtaine de minutes").
@@ -356,18 +174,79 @@ OBJECTIF DE CE COURRIEL :
 Relancer un prospect avec qui on a fait un appel de qualification, dont le projet a fini en "Perdu" (statut). Pas une vente directe. Une porte ouverte avant la prochaine saison. Reformuler ce qu'il avait partagé pendant l'appel — sans citer mot pour mot, en intégrant ça dans la prose. Glisser une mini-preuve (Drew/Scott/Dan) si pertinente. Finir sur une invitation de 20 minutes sans pression.
 
 FORMAT DE SORTIE :
-JSON strict avec deux clés : "subject" (string) et "body" (string, signature incluse mais nom remplacé par "[Signature]").
+JSON strict avec deux clés : "subject" (string) et "body" (string). Termine le body par la salutation finale ("Au plaisir," en FR, "Talk soon," en EN) suivie de la signature (nom + rôle) telle que spécifiée dans les règles supplémentaires de l'utilisateur. Pas de "[Signature]" placeholder : écris la vraie signature.
 `.trim()
 
-function buildRegenContext({ qc, company, lostProject, lang }) {
+// Limites de l'historique injecté dans le prompt IA. 12 / 18 mois = ~1000 tokens
+// dans le pire cas (12 courriels longs), reste sous le budget contexte raisonnable.
+const HISTORY_MAX_ITEMS = 12
+const HISTORY_MAX_MONTHS = 18
+const HISTORY_BODY_CHARS = 400
+
+// Récupère les dernières interactions (emails + calls) de la company sur l'horizon
+// défini, et les formate en bloc lisible pour le prompt système. Le but : permettre
+// à l'IA de référencer un échange précis ("suite à ton courriel de la semaine
+// passée") au lieu de rester générique. On garde le sortant automatique (relances
+// précédentes, factures) — l'IA voit ainsi qu'on a déjà écrit et évite de
+// reproduire le même angle.
+function buildHistoryBlock(companyId, lang) {
+  if (!companyId) return null
+
+  const rows = db.prepare(`
+    SELECT i.id, i.type, i.direction, i.timestamp,
+           e.subject AS email_subject, e.body_text AS email_body,
+           c.summary AS call_summary, c.duration_seconds AS call_duration,
+           c.transcript_formatted AS call_transcript
+    FROM interactions i
+    LEFT JOIN emails e ON e.interaction_id = i.id
+    LEFT JOIN calls c ON c.interaction_id = i.id
+    WHERE i.company_id = ?
+      AND i.type IN ('email', 'call')
+      AND i.timestamp >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-${HISTORY_MAX_MONTHS} months')
+    ORDER BY i.timestamp DESC
+    LIMIT ?
+  `).all(companyId, HISTORY_MAX_ITEMS)
+
+  if (rows.length === 0) return null
+
+  // Inverse pour ordre chronologique (plus vieux → plus récent) — lecture naturelle.
+  const items = rows.reverse().map(r => {
+    const date = r.timestamp ? r.timestamp.slice(0, 10) : '?'
+    const dir = r.direction === 'in' ? (lang === 'fr' ? 'entrant' : 'inbound')
+              : r.direction === 'out' ? (lang === 'fr' ? 'sortant' : 'outbound')
+              : ''
+    if (r.type === 'email') {
+      const subj = (r.email_subject || '(sans sujet)').trim()
+      const body = (r.email_body || '').replace(/\s+/g, ' ').trim().slice(0, HISTORY_BODY_CHARS)
+      const ellipsis = (r.email_body || '').length > HISTORY_BODY_CHARS ? '…' : ''
+      return `- ${date} [courriel ${dir}] "${subj}" — ${body}${ellipsis}`
+    }
+    // call
+    const mins = r.call_duration ? `${Math.round(r.call_duration / 60)} min` : 'durée inconnue'
+    const content = r.call_summary
+      || (r.call_transcript ? r.call_transcript.replace(/\s+/g, ' ').slice(0, HISTORY_BODY_CHARS) + '…' : (lang === 'fr' ? 'pas de résumé disponible' : 'no summary available'))
+    return `- ${date} [appel ${dir}, ${mins}] ${content}`
+  })
+
+  const header = lang === 'fr'
+    ? `Historique récent (${rows.length} interaction(s), ordre chronologique, ${HISTORY_MAX_MONTHS} derniers mois) :`
+    : `Recent history (${rows.length} interaction(s), chronological, last ${HISTORY_MAX_MONTHS} months):`
+
+  return `${header}\n${items.join('\n')}`
+}
+
+function buildRegenContext({ qc, company, contact, lostProject, lang }) {
   const challenges = nonPlaceholder(qc.challenges)
   const farmDesc = nonPlaceholder(qc.farm_description)
   const summary = nonPlaceholder(qc.summary)
   const goals = nonPlaceholder(qc.short_term_goals)
   const motivation = nonPlaceholder(qc.motivation_today) || nonPlaceholder(qc.motivation_why_now)
-  const decisionName = firstName(qc.decision_maker_name)
+  // Prénom : le contact de l'entreprise est prioritaire (record CRM propre),
+  // fallback sur decision_maker_name (champ texte libre).
+  const decisionName = nonPlaceholder(contact?.first_name) || firstName(qc.decision_maker_name)
   const businessModels = parseList(qc.business_models)
   const callMonth = fmtMonth(qc.call_date, lang)
+  const callMonthsAgo = monthsSince(qc.call_date)
   const lostMonth = fmtMonth(lostProject?.close_date, lang)
   const allText = [challenges, farmDesc, summary, goals, motivation].filter(Boolean).join(' ')
   const topics = detectTopics(allText)
@@ -376,8 +255,20 @@ function buildRegenContext({ qc, company, lostProject, lang }) {
   const lines = []
   lines.push(`Langue de sortie : ${lang === 'fr' ? 'français québécois' : 'English'}`)
   lines.push(`Entreprise : ${company.name}${company.lifecycle_phase ? ` (phase: ${company.lifecycle_phase})` : ''}`)
-  if (decisionName) lines.push(`Prénom du décideur : ${decisionName}`)
-  if (callMonth) lines.push(`Date de l'appel de qualification : ${callMonth}`)
+  if (contact) {
+    const fullName = [contact.first_name, contact.last_name].filter(Boolean).join(' ').trim()
+    if (fullName) lines.push(`Contact principal : ${fullName}${contact.email ? ` (${contact.email})` : ''}`)
+  }
+  if (decisionName) lines.push(`Prénom à utiliser dans la salutation : ${decisionName}`)
+  if (callMonth) {
+    // On annote la date avec le nombre de mois écoulés pour que l'IA puisse
+    // formuler une référence relative naturelle ("il y a un peu plus d'un an"
+    // plutôt que "en avril" tout sec, qui sonne faux quand l'appel a >1 an).
+    const rel = callMonthsAgo != null && callMonthsAgo >= 3
+      ? (lang === 'fr' ? ` (il y a ${callMonthsAgo} mois)` : ` (${callMonthsAgo} months ago)`)
+      : ''
+    lines.push(`Date de l'appel de qualification : ${callMonth}${rel}`)
+  }
   if (lostProject) {
     const parts = [lostProject.project_number]
     if (lostMonth) parts.push(`fermé en ${lostMonth}`)
@@ -393,7 +284,70 @@ function buildRegenContext({ qc, company, lostProject, lang }) {
   if (summary) lines.push(`Résumé (verbatim) :\n${summary}`)
   if (topics.length) lines.push(`Thèmes détectés (à privilégier dans la prose) : ${topics.join(', ')}`)
 
+  const history = buildHistoryBlock(company.id, lang)
+  if (history) lines.push(history)
+
   return lines.join('\n\n')
+}
+
+// ── Banque de témoignages clients (PDF public) ────────────────────────────
+//
+// Le PDF "Feedbacks positifs.pdf" est uploadé dans la zone "Fichiers publics"
+// de l'app et référencé ici par son token. À chaque régénération, on lit le
+// fichier depuis uploads/public/, on en extrait le texte via pdftotext, et on
+// l'injecte comme bloc séparé dans le system prompt. Le cache module-level
+// évite de relancer pdftotext à chaque appel ; il s'invalide automatiquement
+// si le stored_name ou la mtime change.
+//
+// Pour swapper le PDF : uploader un nouveau fichier dans la page "Fichiers
+// publics", récupérer le nouveau token (segment final de l'URL /erp/p/<token>),
+// puis remplacer la constante ci-dessous. Le token actuel pointe sur
+// /erp/p/9f4b6a8de21508239eb6ee64e68bfbe8.
+const TESTIMONIALS_PUBLIC_TOKEN = '9f4b6a8de21508239eb6ee64e68bfbe8'
+
+const PUBLIC_UPLOADS_DIR = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'public')
+
+let testimonialsCache = { storedName: null, mtimeMs: 0, text: null }
+
+function loadTestimonialsContext() {
+  if (!TESTIMONIALS_PUBLIC_TOKEN) return null
+  const row = db.prepare(
+    'SELECT stored_name, mime_type FROM public_files WHERE token = ?'
+  ).get(TESTIMONIALS_PUBLIC_TOKEN)
+  if (!row) return null
+
+  const filePath = join(PUBLIC_UPLOADS_DIR, row.stored_name)
+  if (!existsSync(filePath)) return null
+
+  const mtimeMs = statSync(filePath).mtimeMs
+  if (
+    testimonialsCache.storedName === row.stored_name &&
+    testimonialsCache.mtimeMs === mtimeMs &&
+    testimonialsCache.text
+  ) {
+    return testimonialsCache.text
+  }
+
+  let text = null
+  try {
+    if ((row.mime_type || '').toLowerCase().includes('pdf')) {
+      text = execFileSync('pdftotext', ['-layout', filePath, '-'], {
+        encoding: 'utf8',
+        maxBuffer: 20 * 1024 * 1024,
+      })
+    } else {
+      // Fallback texte brut si quelqu'un upload un .txt à la place du PDF.
+      text = execFileSync('cat', [filePath], { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 })
+    }
+  } catch (e) {
+    console.error('[relanceEmail] Échec extraction banque de témoignages :', e.message)
+    return null
+  }
+
+  text = (text || '').trim()
+  if (!text) return null
+  testimonialsCache = { storedName: row.stored_name, mtimeMs, text }
+  return text
 }
 
 export async function regenerateEmail({ qcId, temperature = 0.7, generalRules, specificInstructions }) {
@@ -406,6 +360,16 @@ export async function regenerateEmail({ qcId, temperature = 0.7, generalRules, s
 
   const company = db.prepare('SELECT id, name, lifecycle_phase FROM companies WHERE id = ?').get(qc.company_id)
   if (!company) throw new Error('Company introuvable')
+
+  // Premier contact de l'entreprise (par ordre de création). Si plusieurs
+  // contacts existent, on prend le plus ancien — cf. CLAUDE.md / demande user.
+  const contact = db.prepare(`
+    SELECT id, first_name, last_name, email
+    FROM contacts
+    WHERE company_id = ?
+    ORDER BY created_at ASC
+    LIMIT 1
+  `).get(qc.company_id)
 
   const lostProject = db.prepare(`
     SELECT id, name AS project_number, status, close_date, value_cad, refusal_reason
@@ -420,16 +384,23 @@ export async function regenerateEmail({ qcId, temperature = 0.7, generalRules, s
     .map(nonPlaceholder).filter(Boolean).join(' ')
   const lang = detectLanguage(allText)
 
-  const context = buildRegenContext({ qc, company, lostProject, lang })
+  const context = buildRegenContext({ qc, company, contact, lostProject, lang })
 
   const t = Math.max(0, Math.min(1.5, Number(temperature) || 0))
 
-  // System prompt = brief de marque + règles générales utilisateur (si présentes).
-  // Ces dernières s'ajoutent après le brief pour pouvoir le nuancer sans le contredire.
+  // System prompt = brief de marque + règles générales utilisateur (si présentes)
+  // + banque de témoignages clients extraite du PDF public (si dispo).
+  // Les règles utilisateur s'ajoutent après le brief pour pouvoir le nuancer
+  // sans le contredire. La banque est appendée en dernier : elle ne contient
+  // que des données factuelles (citations, fermes), pas des règles d'écriture.
   const general = (generalRules || '').trim()
-  const systemMessage = general
+  const baseSystem = general
     ? `${BRAND_BRIEF}\n\nRÈGLES SUPPLÉMENTAIRES (définies par l'utilisateur, à respecter) :\n${general}`
     : BRAND_BRIEF
+  const testimonials = loadTestimonialsContext()
+  const systemMessage = testimonials
+    ? `${baseSystem}\n\nBANQUE DE TÉMOIGNAGES CLIENTS (extrait du document "Feedbacks positifs") :\n${testimonials}`
+    : baseSystem
 
   // User message = contexte + instructions spécifiques à ce prospect.
   const specific = (specificInstructions || '').trim()
@@ -467,6 +438,10 @@ export async function regenerateEmail({ qcId, temperature = 0.7, generalRules, s
   const body = typeof parsed.body === 'string' ? parsed.body.trim() : null
   if (!subject || !body) throw new Error('Réponse OpenAI incomplète (subject/body manquant)')
 
+  // Persistance : on stocke la régénération comme draft pour ce QC. Survit
+  // aux reloads ; "Restaurer le template" supprime cette ligne (DELETE route).
+  saveAiDraft(qcId, { subject, body, language: lang, model: REGEN_MODEL, temperature: t })
+
   return {
     subject,
     body,
@@ -487,6 +462,32 @@ db.exec(`
     updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
   );
 `)
+
+// Drafts persistés par QC : la régénération IA ET les éditions manuelles sont
+// stockées ici pour survivre aux reloads de la page. Colonnes ai_* gardent la
+// trace de la dernière baseline IA — permet de détecter "édité manuellement"
+// (subject ≠ ai_subject) et de réafficher le badge "Généré par IA · model · temp".
+// "Restaurer le template" = DELETE de la ligne (cf. routes).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS email_relance_drafts (
+    qc_id TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    ai_subject TEXT,
+    ai_body TEXT,
+    ai_language TEXT,
+    ai_model TEXT,
+    ai_temperature REAL,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  );
+`)
+// Suivi des envois — additif, idempotent. Ne pas DELETE le draft à l'envoi :
+// on garde la trace pour afficher "Envoyé le X" et permettre une réédition/renvoi.
+try { db.exec('ALTER TABLE email_relance_drafts ADD COLUMN sent_at TEXT') } catch {}
+try { db.exec('ALTER TABLE email_relance_drafts ADD COLUMN sent_to TEXT') } catch {}
+try { db.exec('ALTER TABLE email_relance_drafts ADD COLUMN sent_from TEXT') } catch {}
+try { db.exec('ALTER TABLE email_relance_drafts ADD COLUMN sent_message_id TEXT') } catch {}
 
 const GLOBAL_SCOPE = 'global'
 
@@ -521,18 +522,85 @@ export function getAllOverrides() {
 
 export { GLOBAL_SCOPE }
 
+// ── Drafts persistés (par QC) ────────────────────────────────────────────
+
+export function getDraft(qcId) {
+  return db.prepare(`
+    SELECT qc_id, subject, body, ai_subject, ai_body, ai_language, ai_model, ai_temperature,
+           sent_at, sent_to, sent_from, sent_message_id
+    FROM email_relance_drafts WHERE qc_id = ?
+  `).get(qcId) || null
+}
+
+// Marque un draft comme envoyé. Si le draft n'existe pas encore (cas où l'on
+// envoie directement le template sans édition préalable), on l'upsert avec le
+// contenu envoyé pour pouvoir afficher "Envoyé" et conserver l'historique.
+export function markDraftSent(qcId, { subject, body, to, from, messageId }) {
+  const existing = db.prepare('SELECT 1 FROM email_relance_drafts WHERE qc_id = ?').get(qcId)
+  const now = new Date().toISOString()
+  if (existing) {
+    db.prepare(`
+      UPDATE email_relance_drafts
+      SET sent_at = ?, sent_to = ?, sent_from = ?, sent_message_id = ?, updated_at = ?
+      WHERE qc_id = ?
+    `).run(now, to, from, messageId, now, qcId)
+  } else {
+    db.prepare(`
+      INSERT INTO email_relance_drafts
+        (qc_id, subject, body, sent_at, sent_to, sent_from, sent_message_id, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(qcId, subject, body, now, to, from, messageId, now, now)
+  }
+}
+
+// Upsert d'une régénération IA : on positionne ai_* ET subject/body sur la même
+// sortie IA (l'utilisateur n'a pas encore édité par-dessus).
+export function saveAiDraft(qcId, { subject, body, language, model, temperature }) {
+  db.prepare(`
+    INSERT INTO email_relance_drafts (qc_id, subject, body, ai_subject, ai_body, ai_language, ai_model, ai_temperature, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(qc_id) DO UPDATE SET
+      subject = excluded.subject,
+      body = excluded.body,
+      ai_subject = excluded.ai_subject,
+      ai_body = excluded.ai_body,
+      ai_language = excluded.ai_language,
+      ai_model = excluded.ai_model,
+      ai_temperature = excluded.ai_temperature,
+      updated_at = excluded.updated_at
+  `).run(qcId, subject, body, subject, body, language || null, model || null, temperature ?? null)
+}
+
+// Upsert d'une édition manuelle : on met à jour subject/body sans toucher aux
+// ai_* (s'il y en a). Premier save sans IA → ai_* restent null.
+export function saveUserDraft(qcId, { subject, body }) {
+  const existing = db.prepare('SELECT 1 FROM email_relance_drafts WHERE qc_id = ?').get(qcId)
+  if (existing) {
+    db.prepare(`
+      UPDATE email_relance_drafts
+      SET subject = ?, body = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE qc_id = ?
+    `).run(subject, body, qcId)
+  } else {
+    db.prepare(`
+      INSERT INTO email_relance_drafts (qc_id, subject, body)
+      VALUES (?, ?, ?)
+    `).run(qcId, subject, body)
+  }
+}
+
 // ── Public API ─────────────────────────────────────────────────────────────
 
 export function buildRelanceList() {
-  // Companies avec QC + au moins un projet Perdu. Pour chaque company :
+  // Companies avec QC + lifecycle_phase = 'Quote Sent' (HubSpot). Pour chaque company :
   //   - QC le plus récent (qui a le plus de signal)
-  //   - projet Perdu le plus récent (pour la date de référence)
+  //   - projet Perdu le plus récent s'il existe (optionnel — pour la date de
+  //     référence dans le template ; pas un filtre)
   const companies = db.prepare(`
     SELECT DISTINCT c.id, c.name, c.lifecycle_phase
     FROM qualification_calls q
     JOIN companies c ON c.id = q.company_id
-    JOIN projects p ON p.company_id = c.id
-    WHERE q.company_id IS NOT NULL AND p.status = 'Perdu'
+    WHERE q.company_id IS NOT NULL AND c.lifecycle_phase = 'Quote Sent'
     ORDER BY c.name
   `).all()
 
@@ -549,24 +617,47 @@ export function buildRelanceList() {
     ORDER BY COALESCE(close_date, created_at) DESC
     LIMIT 1
   `)
+  // Premier contact de l'entreprise (par ordre de création) — utilisé comme
+  // prénom de personnalisation du courriel, prioritaire sur decision_maker_name.
+  const contactStmt = db.prepare(`
+    SELECT id, first_name, last_name, email
+    FROM contacts
+    WHERE company_id = ?
+    ORDER BY created_at ASC
+    LIMIT 1
+  `)
 
   const out = []
   for (const c of companies) {
     const qc = qcStmt.get(c.id)
     if (!qc) continue
     const lostProject = projStmt.get(c.id)
-    // Important : on filtre les placeholders avant de détecter la langue,
-    // sinon les libellés FR du formulaire ("Avons-nous oublié…", "Fait un résumé…")
-    // forcent FR sur des QC dont le contenu réel est en anglais.
-    const allText = [qc.challenges, qc.farm_description, qc.summary, qc.short_term_goals,
-                     qc.motivation_today, qc.motivation_why_now]
-      .map(nonPlaceholder).filter(Boolean).join(' ')
-    const lang = detectLanguage(allText)
-    const email = buildEmail({ company: c, qc, lostProject, lang })
+    const contact = contactStmt.get(c.id)
+    const draft = getDraft(qc.id)
+
+    // email = le draft IA persisté, ou null si pas encore généré. La carte
+    // frontend affiche un état vide avec bouton 'Générer avec l'IA' quand null.
+    const email = draft
+      ? {
+          subject: draft.subject,
+          body: draft.body,
+          language: draft.ai_language || 'fr',
+          model: draft.ai_model,
+          temperature: draft.ai_temperature,
+          // userEdited = l'utilisateur a édité par-dessus la sortie IA d'origine.
+          userEdited: !!(draft.ai_subject && (draft.subject !== draft.ai_subject || draft.body !== draft.ai_body)),
+        }
+      : null
+
+    const sent = draft?.sent_at
+      ? { at: draft.sent_at, to: draft.sent_to, from: draft.sent_from, messageId: draft.sent_message_id }
+      : null
 
     out.push({
       company: { id: c.id, name: c.name, lifecycle_phase: c.lifecycle_phase },
+      contact: contact || null,
       project: lostProject || null,
+      sent,
       qualification_call: {
         id: qc.id,
         call_date: qc.call_date,
@@ -576,6 +667,8 @@ export function buildRelanceList() {
         timeline: qc.timeline,
         decision_maker_name: qc.decision_maker_name,
         short_term_goals: qc.short_term_goals,
+        motivation_today: qc.motivation_today,
+        motivation_why_now: qc.motivation_why_now,
       },
       email,
     })

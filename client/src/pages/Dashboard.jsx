@@ -7,7 +7,7 @@ import { useAuth } from '../lib/auth.jsx'
 import { GeoClientsMap } from '../components/GeoClientsMap.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { Modal } from '../components/Modal.jsx'
-import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
+import { AbonnementEventsTable } from '../components/AbonnementEventsTable.jsx'
 
 const WIDGET_DEFS = [
   { id: 'section_project_goal',     label: 'Objectif de projets',      group: 'Objectifs' },
@@ -401,6 +401,8 @@ function StripeRevenueChart({ data, onMonthClick, mode = 'all' }) {
   const totalCurr = months.reduce((s, m) => s + m.total, 0)
   const totalService = months.reduce((s, m) => s + m.service, 0)
   const totalAchat = months.reduce((s, m) => s + m.achat, 0)
+  const totalPrevService = months.reduce((s, m) => s + m.prevService, 0)
+  const totalPrevAchat = months.reduce((s, m) => s + m.prevAchat, 0)
   const maxVal = Math.max(...months.flatMap(m => [m.total, m.prevTotal]), 1)
 
   const W = 600, H = 200
@@ -457,16 +459,12 @@ function StripeRevenueChart({ data, onMonthClick, mode = 'all' }) {
             <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-amber-500" /> Vente <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalAchat)}</span></span>
           )}
           {showService && (
-            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-200" /> Abonnement an. préc.</span>
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-200" /> Abonnement an. préc. <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalPrevService)}</span></span>
           )}
           {showAchat && (
-            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-400" /> Vente an. préc.</span>
+            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-400" /> Vente an. préc. <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalPrevAchat)}</span></span>
           )}
         </div>
-        <span className="text-sm font-semibold text-slate-700">
-          Total <span className="text-slate-900">{fmtMoney(totalCurr)}</span>
-          <span className="text-xs font-normal text-slate-400 ml-1">12 derniers mois</span>
-        </span>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 220 }}>
         {gridVals.map((v, gi) => (
@@ -658,7 +656,7 @@ function StripeRevenueWithDrilldown({ data, mode = 'subscription' }) {
                     {selected.type === 'service' && (
                       <th className="px-3 py-2 text-left">Intervalle</th>
                     )}
-                    <th className="px-3 py-2 text-left whitespace-nowrap">Payout</th>
+                    <th className="px-3 py-2 text-left whitespace-nowrap">Date de constatation</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -713,13 +711,13 @@ function StripeRevenueWithDrilldown({ data, mode = 'subscription' }) {
                           </td>
                         )}
                         <td className="px-3 py-2 text-slate-500 whitespace-nowrap">
-                          {f.payout_arrival_date ? (
-                            f.payout_stripe_id ? (
+                          {f.recognition_date ? (
+                            f.recognition_date === f.payout_arrival_date && f.payout_stripe_id ? (
                               <Link to={`/stripe-payouts/${f.payout_stripe_id}`} className="text-brand-600 hover:underline">
-                                {fmtDate(f.payout_arrival_date)}
+                                {fmtDate(f.recognition_date)}
                               </Link>
                             ) : (
-                              fmtDate(f.payout_arrival_date)
+                              fmtDate(f.recognition_date)
                             )
                           ) : ''}
                         </td>
@@ -2133,7 +2131,7 @@ function InventoryValuationCard({ valuation }) {
     {
       key: 'pieces',
       label: 'Pièces',
-      sub: `${pieces?.count || 0} produits · valeur unitaire × stock`,
+      sub: `${pieces?.count || 0} produits · valeur FIFO (vue « Valeur inventaire »)`,
       value: piecesTotal,
       color: 'bg-slate-500',
     },
@@ -2189,209 +2187,35 @@ function fmtCad(n) {
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
 }
 
-// Panel "Mouvements d'abonnements" — affiche, par mois, le nombre de
-// nouveaux abonnements / annulations / win-backs et le delta MRR net.
-// Chaque ligne se déplie pour montrer la liste des entreprises concernées
-// avec montants et liens.
+// Panel "Mouvements d'abonnements" — un seul DataTable des events des 12
+// derniers mois, avec groupage imbriqué mois → catégorie. Les sommes par
+// niveau (Net MRR par mois, puis par catégorie) sont affichées dans les
+// en-têtes de groupe via `__sums` calculé par DataTable.
 function SubscriptionEventsPanel({ data }) {
-  const [openMonth, setOpenMonth] = useState(null)
-  const [aboModal, setAboModal] = useState(null)
-  const [loadingAboId, setLoadingAboId] = useState(null)
-
-  async function openAbo(subscriptionId) {
-    if (!subscriptionId || loadingAboId) return
-    setLoadingAboId(subscriptionId)
-    try {
-      const sub = await api.abonnements.get(subscriptionId)
-      setAboModal(sub)
-    } catch {
-      // sub introuvable (purgé/non synchronisé) — silencieux côté UI
-    } finally {
-      setLoadingAboId(null)
-    }
-  }
-
   if (!data) return <div className="text-slate-400 text-sm">Chargement...</div>
   const months = data.months || []
   if (months.length === 0) {
     return <div className="text-slate-400 text-sm py-4">Aucun mouvement d'abonnement enregistré.</div>
   }
-  // Affichage chronologique inverse (mois récent en haut)
-  const ordered = [...months].reverse()
 
-  function fmtMonth(m) {
-    const [y, mm] = m.split('-')
-    return new Date(Number(y), Number(mm) - 1, 1).toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })
+  // Aplatit categories.{creation,upgrade,downgrade,churn}.items[] en une liste
+  // unique d'events, en injectant `month` + `category` + `id` (pour DataTable).
+  const events = []
+  for (const m of months) {
+    for (const cat of ['creation', 'upgrade', 'downgrade', 'churn']) {
+      for (const item of (m.categories[cat]?.items || [])) {
+        events.push({ ...item, id: item.event_id, category: cat, month: m.month })
+      }
+    }
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-slate-200 text-xs text-slate-500 uppercase tracking-wide">
-            <th className="text-left py-2 pr-4 font-medium">Mois</th>
-            <th className="text-right py-2 px-3 font-medium">Net MRR</th>
-            <th className="text-right py-2 px-3 font-medium text-emerald-700">Nouveaux</th>
-            <th className="text-right py-2 px-3 font-medium text-blue-700">Upgrades</th>
-            <th className="text-right py-2 px-3 font-medium text-orange-700">Downgrades</th>
-            <th className="text-right py-2 px-3 font-medium text-rose-700">Annulations</th>
-            <th className="w-6"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {ordered.map(m => {
-            const isOpen = openMonth === m.month
-            const cats = m.categories
-            const net = m.net_mrr_delta_cad || 0
-            const netCls = net > 0 ? 'text-emerald-700' : net < 0 ? 'text-rose-700' : 'text-slate-500'
-            return (
-              <Fragment key={m.month}>
-                <tr
-                  data-testid={`sub-events-month-${m.month}`}
-                  className="border-b border-slate-100 hover:bg-slate-50 cursor-pointer"
-                  onClick={() => setOpenMonth(isOpen ? null : m.month)}
-                >
-                  <td className="py-2.5 pr-4 font-medium text-slate-700 capitalize">{fmtMonth(m.month)}</td>
-                  <td className={`py-2.5 px-3 text-right font-semibold tabular-nums ${netCls}`}>
-                    {net > 0 ? '+' : ''}{fmtCad(Math.abs(net) < 1 ? net : Math.round(net))}
-                  </td>
-                  <td className="py-2.5 px-3 text-right tabular-nums">
-                    {cats.creation.total_amount_cad > 0
-                      ? <span className="text-emerald-700 font-medium">+{fmtCad(cats.creation.total_amount_cad)}</span>
-                      : <span className="text-slate-300">—</span>}
-                  </td>
-                  <td className="py-2.5 px-3 text-right tabular-nums">
-                    {cats.upgrade?.total_amount_cad > 0
-                      ? <span className="text-blue-700 font-medium">+{fmtCad(cats.upgrade.total_amount_cad)}</span>
-                      : <span className="text-slate-300">—</span>}
-                  </td>
-                  <td className="py-2.5 px-3 text-right tabular-nums">
-                    {cats.downgrade?.total_amount_cad < 0
-                      ? <span className="text-orange-700 font-medium">{fmtCad(cats.downgrade.total_amount_cad)}</span>
-                      : <span className="text-slate-300">—</span>}
-                  </td>
-                  <td className="py-2.5 px-3 text-right tabular-nums">
-                    {cats.churn.total_amount_cad < 0
-                      ? <span className="text-rose-700 font-medium">{fmtCad(cats.churn.total_amount_cad)}</span>
-                      : <span className="text-slate-300">—</span>}
-                  </td>
-                  <td className="text-slate-400 text-center">{isOpen ? '▾' : '▸'}</td>
-                </tr>
-                {isOpen && (
-                  <tr>
-                    <td colSpan={7} className="bg-slate-50 px-4 py-3">
-                      <SubscriptionEventsDetail categories={cats} onOpenAbo={openAbo} loadingAboId={loadingAboId} />
-                    </td>
-                  </tr>
-                )}
-              </Fragment>
-            )
-          })}
-        </tbody>
-      </table>
-      <AbonnementDetailModal
-        abonnement={aboModal}
-        onClose={() => setAboModal(null)}
-      />
-    </div>
-  )
-}
-
-// Couleurs des badges rachat — alignées avec lib/subscriptionEvents.js mais
-// inlinées ici pour limiter les imports croisés sur le panel dashboard.
-const RACHAT_BADGE_STYLE = {
-  probable:  { label: 'Rachat probable',  cls: 'bg-yellow-100 text-yellow-800' },
-  confirmed: { label: 'Rachat confirmé',  cls: 'bg-green-100 text-green-800' },
-  none:      { label: 'Pas de rachat',    cls: 'bg-slate-100 text-slate-600' },
-}
-
-function SubscriptionEventsDetail({ categories, onOpenAbo, loadingAboId }) {
-  const sections = [
-    { key: 'creation', label: 'Nouveaux abonnements', color: 'text-emerald-700' },
-    { key: 'upgrade', label: 'Upgrades', color: 'text-blue-700' },
-    { key: 'downgrade', label: 'Downgrades', color: 'text-orange-700' },
-    { key: 'churn', label: 'Annulations', color: 'text-rose-700' },
-  ].filter(s => categories[s.key]?.count > 0)
-
-  if (sections.length === 0) return <div className="text-xs text-slate-400">Aucun mouvement ce mois.</div>
-
-  return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-      {sections.map(s => (
-        <div key={s.key}>
-          <div className={`text-xs font-semibold uppercase tracking-wide mb-1.5 ${s.color}`}>
-            {s.label} ({categories[s.key].count})
-          </div>
-          <ul className="space-y-2">
-            {categories[s.key].items.map(it => {
-              const label = it.company_name || (it.company_id ? '—' : '— sans client')
-              const isLoading = loadingAboId === it.subscription_id
-              return (
-              <li key={it.event_id} className="flex items-start justify-between gap-2 text-xs">
-                <div className="min-w-0">
-                  {it.subscription_id
-                    ? <button
-                        type="button"
-                        data-testid={`sub-event-open-${it.event_id}`}
-                        onClick={() => onOpenAbo?.(it.subscription_id)}
-                        disabled={isLoading}
-                        className="text-brand-600 hover:underline truncate block text-left disabled:opacity-50"
-                      >{label}</button>
-                    : it.company_id
-                      ? <Link to={`/companies/${it.company_id}`} className="text-brand-600 hover:underline truncate block">{label}</Link>
-                      : <span className="text-slate-400 truncate block">{label}</span>
-                  }
-                  {it.products && it.products.length > 0 && (
-                    <div className="text-slate-400 mt-0.5 leading-tight">
-                      {it.products.map((p, i) => (
-                        <span key={i}>
-                          {i > 0 && <span className="mx-1 text-slate-300">·</span>}
-                          <span>{p.product_name}{p.quantity > 1 ? ` ×${p.quantity}` : ''}</span>
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                  {s.key === 'churn' && it.rachat_status && RACHAT_BADGE_STYLE[it.rachat_status] && (
-                    <div className="mt-1 flex items-center gap-1.5 leading-tight" data-testid={`sub-event-rachat-${it.event_id}`}>
-                      <span className={`inline-flex items-center rounded-full font-medium text-[10px] px-1.5 py-0.5 ${RACHAT_BADGE_STYLE[it.rachat_status].cls}`}>
-                        {RACHAT_BADGE_STYLE[it.rachat_status].label}
-                      </span>
-                      {it.rachat_order_id && it.rachat_order_number && (it.rachat_status === 'probable' || it.rachat_status === 'confirmed') && (
-                        <Link
-                          to={`/orders/${it.rachat_order_id}`}
-                          data-testid={`sub-event-rachat-order-${it.event_id}`}
-                          className="text-[10px] text-brand-600 hover:underline tabular-nums"
-                        >#{it.rachat_order_number}</Link>
-                      )}
-                    </div>
-                  )}
-                </div>
-                <div className="flex flex-col items-end whitespace-nowrap pt-0.5">
-                  <span className="text-slate-500 tabular-nums">
-                    {it.amount_cad_delta != null
-                      ? (it.amount_cad_delta > 0 ? '+' : '') + fmtCad(it.amount_cad_delta)
-                      : '—'}
-                  </span>
-                  {it.interval_type && (
-                    <span
-                      data-testid={`sub-event-interval-${it.event_id}`}
-                      className={`text-[10px] mt-0.5 ${it.interval_type === 'year' ? 'text-amber-600' : 'text-slate-400'}`}
-                    >
-                      {it.interval_type === 'year'
-                        ? (it.amount_cad_delta != null
-                            ? `(${(it.amount_cad_delta * 12) > 0 ? '+' : ''}${fmtCad(it.amount_cad_delta * 12)}/an)`
-                            : 'Annuel')
-                        : 'Mensuel'}
-                    </span>
-                  )}
-                </div>
-              </li>
-              )
-            })}
-          </ul>
-        </div>
-      ))}
-    </div>
+    <AbonnementEventsTable
+      data={events}
+      initialGroupBy={['month', 'category']}
+      initialGroupOrder={['desc', 'default']}
+      forceAllView
+    />
   )
 }
 

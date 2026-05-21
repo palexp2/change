@@ -99,15 +99,25 @@ describe('Vues — retrait de l\'onglet « Tous »', () => {
     await page.goto(`${URL}/abonnements`, { waitUntil: 'networkidle' })
     await page.waitForSelector('text=/\\d+\\s+lignes?/', { timeout: 10000 })
 
-    // Récupérer l'id de la pill active via le state du localStorage ou l'API
+    // Récupérer l'id de la pill active et reset son group_by pour partir d'un
+    // état propre (les tests précédents ont pu laisser du group_by résiduel).
     const pillBefore = await page.evaluate(async () => {
       const lastView = localStorage.getItem('erp_lastView_abonnements')
       const token = localStorage.getItem('erp_token')
       const r = await fetch('/erp/api/views/abonnements', { headers: { Authorization: `Bearer ${token}` } })
       const { pills } = await r.json()
       const active = pills.find(p => p.id === lastView) || pills[0]
-      return { id: active.id, group_by: active.group_by }
+      await fetch(`/erp/api/views/abonnements/pills/${active.id}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group_by: null, group_order: null }),
+      })
+      return { id: active.id }
     })
+
+    // Recharge pour que l'UI prenne le reset en compte
+    await page.reload({ waitUntil: 'networkidle' })
+    await page.waitForSelector('text=/\\d+\\s+lignes?/', { timeout: 10000 })
 
     // Cliquer sur le bouton "Grouper" et choisir start_month
     await page.getByRole('button', { name: 'Grouper' }).click()
@@ -124,7 +134,9 @@ describe('Vues — retrait de l\'onglet « Tous »', () => {
     // Attendre l'autosave (debounce 600ms)
     await page.waitForTimeout(1500)
 
-    // Vérifier que group_by a été persisté côté serveur sur la pill active
+    // Vérifier que group_by a été persisté côté serveur sur la pill active.
+    // Le multi-level introduit a changé la sérialisation : accepte string
+    // (legacy single-level) OU array (nouveau format).
     const pillAfter = await page.evaluate(async (id) => {
       const token = localStorage.getItem('erp_token')
       const r = await fetch('/erp/api/views/abonnements', { headers: { Authorization: `Bearer ${token}` } })
@@ -132,16 +144,18 @@ describe('Vues — retrait de l\'onglet « Tous »', () => {
       return pills.find(p => p.id === id)
     }, pillBefore.id)
 
-    assert.equal(pillAfter.group_by, 'start_month',
-      `group_by attendu = "start_month" sur la pill active, got "${pillAfter.group_by}"`)
+    const gb = pillAfter.group_by
+    const ok = gb === 'start_month' || (Array.isArray(gb) && gb.length === 1 && gb[0] === 'start_month')
+    assert.ok(ok, `group_by attendu "start_month" (string ou [start_month] array), got ${JSON.stringify(gb)}`)
 
-    // Cleanup : retirer le groupage
-    await page.click('button:has-text("Grouper")')
-    await page.waitForTimeout(300)
-    const noneOption = page.locator('text=/^Aucun$/').last()
-    if (await noneOption.isVisible().catch(() => false)) {
-      await noneOption.click()
-      await page.waitForTimeout(1200)
-    }
+    // Cleanup : reset via API (le panneau multi-niveau n'a plus d'option « Aucun »)
+    await page.evaluate(async (id) => {
+      const token = localStorage.getItem('erp_token')
+      await fetch(`/erp/api/views/abonnements/pills/${id}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group_by: null, group_order: null }),
+      })
+    }, pillBefore.id)
   })
 })

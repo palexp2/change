@@ -11,6 +11,8 @@
 // Re-emits legacy global events as window CustomEvent for back-compat with
 // the previous Layout.jsx wiring (taskRunner, sync progress).
 
+import { markOffline, markOnline } from './serverStatus.js'
+
 const WS_PATH = '/erp/ws'
 const RECONNECT_BASE_MS = 1000
 const RECONNECT_MAX_MS = 30000
@@ -75,6 +77,7 @@ function open() {
 
     if (msg.type === 'auth:success') {
       state.authed = true
+      markOnline()
       flushSubscriptions()
       return
     }
@@ -103,9 +106,13 @@ function open() {
     }
   }
 
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     state.authed = false
     state.ws = null
+    // 4001 (auth timeout) and 4002 (invalid token) are auth failures, not server-down.
+    // Anything else (1006 abnormal closure, etc.) after we had a token means the
+    // server is likely restarting or unreachable — flip the global offline flag.
+    if (ev && ev.code !== 4001 && ev.code !== 4002 && token()) markOffline()
     if (token()) scheduleReconnect()
   }
 

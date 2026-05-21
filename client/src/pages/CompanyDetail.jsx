@@ -4,12 +4,14 @@ import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, Chevro
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import { CreateInvoiceModal } from '../components/CreateInvoiceModal.jsx'
 import api from '../lib/api.js'
+import { invalidate } from '../lib/prefetch.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, phaseBadgeColor, orderStatusColor, ticketStatusColor, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { SubscriptionHistory } from '../components/SubscriptionHistory.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -627,7 +629,11 @@ function QualificationCallsPanel({ calls }) {
                   <div className="text-xs text-slate-500">
                     {c.call_date ? fmtDate(c.call_date) : fmtDate(c.airtable_created_at)}
                     {c.assignee ? ` · ${c.assignee}` : ''}
-                    {c.company_name_raw ? ` · saisi sous "${c.company_name_raw}"` : ''}
+                    {/* "saisi sous X" n'a de sens que quand X diffère du nom courant
+                        (cas des records Airtable importés sous un nom historique).
+                        Pour un record local créé depuis cette même fiche, c'est du bruit. */}
+                    {c.company_name_raw && (!c.airtable_record_id || !c.airtable_record_id.startsWith('local_'))
+                      ? ` · saisi sous "${c.company_name_raw}"` : ''}
                   </div>
                 </div>
               </div>
@@ -687,7 +693,9 @@ function QualificationCallsPanel({ calls }) {
                 )}
 
                 <div className="text-xs text-slate-400 pt-2 border-t border-slate-100">
-                  Source : Airtable « Communication interne » · record {c.airtable_record_id}
+                  {c.airtable_record_id && c.airtable_record_id.startsWith('local_')
+                    ? <>Source : ERP · saisi via le module Appel de qualification</>
+                    : <>Source : Airtable « Communication interne » · record {c.airtable_record_id}</>}
                 </div>
               </div>
             )}
@@ -765,6 +773,12 @@ export default function CompanyDetail() {
       setCompany(c => c ? { ...c, ...msg.payload } : c)
     } else if (msg.type === 'company:deleted') {
       navigate('/companies')
+    } else if (msg.type === 'company:contacts_changed') {
+      // Re-fetch la fiche pour rafraîchir le sous-tableau `contacts`
+      // (link/délink/rename d'un contact lié, depuis un autre onglet/user).
+      // Invalide le cache prefetch sinon le GET retournerait la version stale.
+      invalidate(`/companies/${id}`)
+      api.companies.get(id).then(setCompany).catch(() => {})
     }
   })
 
@@ -845,16 +859,9 @@ export default function CompanyDetail() {
     e.preventDefault()
     if (contactMode === 'link') {
       if (!linkSelected) return
-      await api.contacts.update(linkSelected.id, {
-        first_name: linkSelected.first_name || '',
-        last_name: linkSelected.last_name || '',
-        email: linkSelected.email || '',
-        phone: linkSelected.phone || '',
-        mobile: linkSelected.mobile || '',
-        language: linkSelected.language || '',
-        notes: linkSelected.notes || '',
-        company_id: id,
-      })
+      // Lien non-destructif : on ajoute l'entreprise au contact sans toucher
+      // à son entreprise principale existante.
+      await api.contacts.addCompany(linkSelected.id, { company_id: id })
     } else {
       await api.contacts.create({ ...contactForm, company_id: id })
     }
@@ -962,6 +969,29 @@ export default function CompanyDetail() {
           isOpen={invoiceModalOpen}
           onClose={() => setInvoiceModalOpen(false)}
         />
+
+        {company.central_controllers?.some(cc => cc.permissions && Object.keys(cc.permissions).length > 0) && (
+          <div className="card p-4 mb-4">
+            <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-3">
+              Permissions des contrôleurs centraux
+            </div>
+            <div className="space-y-3">
+              {company.central_controllers
+                .filter(cc => cc.permissions && Object.keys(cc.permissions).length > 0)
+                .map(cc => (
+                  <div key={cc.address} className="border-l-2 border-brand-100 pl-3">
+                    <div className="text-sm font-medium text-slate-700 mb-1.5">
+                      {cc.serial ? (
+                        <Link to={`/serials/${cc.id}`} className="text-brand-600 hover:underline font-mono">{cc.serial}</Link>
+                      ) : <span className="font-mono">—</span>}
+                      <span className="ml-2 text-xs text-slate-400">adresse {cc.address}</span>
+                    </div>
+                    <CentralControllerPermissions permissions={cc.permissions} />
+                  </div>
+                ))}
+            </div>
+          </div>
+        )}
 
         {/* Tabs + Content */}
         <div className="flex gap-6 items-start">
@@ -1087,7 +1117,14 @@ export default function CompanyDetail() {
                   <tbody>
                     {company.contacts.map(c => (
                       <tr key={c.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer" onClick={() => navigate(`/contacts/${c.id}`)}>
-                        <td className="px-4 py-3 font-medium text-brand-600">{c.first_name} {c.last_name}</td>
+                        <td className="px-4 py-3 font-medium text-brand-600">
+                          <span className="inline-flex items-center gap-1.5">
+                            {c.first_name} {c.last_name}
+                            {c.link_is_primary === 0 && (
+                              <Badge color="gray" size="sm" title="Entreprise secondaire pour ce contact">Secondaire</Badge>
+                            )}
+                          </span>
+                        </td>
                         <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{c.email || '—'}</td>
                         <td className="px-4 py-3 hidden md:table-cell text-slate-500 font-mono text-sm">{fmtPhone(c.phone || c.mobile) || '—'}</td>
                         <td className="px-4 py-3">
@@ -1232,7 +1269,11 @@ export default function CompanyDetail() {
                 </thead>
                 <tbody>
                   {factures.map(f => (
-                    <tr key={f.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                    <tr
+                      key={f.id}
+                      className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer"
+                      onClick={() => navigate(`/factures/${f.id}`)}
+                    >
                       <td className="px-4 py-3 font-mono font-medium text-slate-900">{f.document_number || '—'}</td>
                       <td className="px-4 py-3 text-slate-600">{f.status || '—'}</td>
                       <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{fmtDate(f.document_date)}</td>
@@ -1704,8 +1745,8 @@ export default function CompanyDetail() {
                 </ul>
               )}
               {linkSelected?.company_id && linkSelected.company_id !== id && (
-                <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                  Ce contact est déjà lié à une autre entreprise. Le rattacher ici remplacera ce lien.
+                <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                  Ce contact a déjà <span className="font-medium">{linkSelected.company_name}</span> comme entreprise principale — elle le restera. Cette entreprise sera ajoutée en lien secondaire.
                 </p>
               )}
             </div>

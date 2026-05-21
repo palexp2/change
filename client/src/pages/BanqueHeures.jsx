@@ -6,6 +6,7 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { useAuth } from '../lib/auth.jsx'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
@@ -17,6 +18,8 @@ function fmtHours(h) {
 }
 
 export default function BanqueHeures() {
+  const { user } = useAuth()
+  const isHR = ['admin', 'rh'].includes(user?.role)
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState({}) // employeeId → boolean
@@ -126,6 +129,7 @@ export default function BanqueHeures() {
                               onAdd={handleAdd}
                               onPatch={handlePatch}
                               onDelete={handleDelete}
+                              canEdit={isHR}
                             />
                           </td>
                         </tr>
@@ -142,7 +146,7 @@ export default function BanqueHeures() {
   )
 }
 
-function EntryList({ employeeId, details, isAdding, onStartAdd, onCancelAdd, onAdd, onPatch, onDelete }) {
+function EntryList({ employeeId, details, isAdding, onStartAdd, onCancelAdd, onAdd, onPatch, onDelete, canEdit }) {
   if (!details) return <div className="text-sm text-slate-400">Chargement…</div>
   const { entries = [] } = details
   return (
@@ -151,13 +155,13 @@ function EntryList({ employeeId, details, isAdding, onStartAdd, onCancelAdd, onA
         <div className="text-xs text-slate-500">
           Solde : <span className="font-semibold text-slate-900 tabular-nums">{fmtHours(details.balance_hours)}</span>
         </div>
-        {!isAdding && (
+        {canEdit && !isAdding && (
           <button onClick={onStartAdd} className="text-xs text-brand-600 hover:underline flex items-center gap-1">
             <Plus size={12} /> Ajouter un ajustement manuel
           </button>
         )}
       </div>
-      {isAdding && <AddForm employeeId={employeeId} onCancel={onCancelAdd} onAdd={onAdd} />}
+      {canEdit && isAdding && <AddForm employeeId={employeeId} onCancel={onCancelAdd} onAdd={onAdd} />}
       {entries.length === 0 ? (
         <div className="text-xs text-slate-400 italic">Aucun ajustement.</div>
       ) : (
@@ -176,20 +180,28 @@ function EntryList({ employeeId, details, isAdding, onStartAdd, onCancelAdd, onA
             {entries.map(e => (
               <tr key={e.id} className="border-t border-slate-100">
                 <td className="px-2 py-1">
-                  <input type="date" className={inp + ' w-32'} defaultValue={e.date} onBlur={ev => ev.target.value !== e.date && onPatch(employeeId, e.id, { date: ev.target.value })} />
+                  {canEdit
+                    ? <input type="date" className={inp + ' w-32'} defaultValue={e.date} onBlur={ev => ev.target.value !== e.date && onPatch(employeeId, e.id, { date: ev.target.value })} />
+                    : <span className="text-slate-700">{fmtDate(e.date)}</span>}
                 </td>
                 <td className="px-2 py-1">
-                  <input type="number" step="0.25" className={inp + ' w-24 text-right'} defaultValue={e.hours} onBlur={ev => Number(ev.target.value) !== Number(e.hours) && onPatch(employeeId, e.id, { hours: Number(ev.target.value) })} />
+                  {canEdit
+                    ? <input type="number" step="0.25" className={inp + ' w-24 text-right'} defaultValue={e.hours} onBlur={ev => Number(ev.target.value) !== Number(e.hours) && onPatch(employeeId, e.id, { hours: Number(ev.target.value) })} />
+                    : <span className="text-slate-700 tabular-nums">{fmtHours(e.hours)}</span>}
                 </td>
                 <td className="px-2 py-1 text-xs">
                   {e.source === 'timesheet_import' ? <span className="text-brand-600">Feuilles de temps</span> : e.source === 'manual' ? <span className="text-slate-500">Manuel</span> : <span className="text-slate-400">{e.source || '—'}</span>}
                 </td>
                 <td className="px-2 py-1 text-xs text-slate-500">{e.paie_number ? `#${e.paie_number}` : '—'}</td>
                 <td className="px-2 py-1">
-                  <input className={inp} defaultValue={e.notes || ''} onBlur={ev => (ev.target.value || '') !== (e.notes || '') && onPatch(employeeId, e.id, { notes: ev.target.value || null })} />
+                  {canEdit
+                    ? <input className={inp} defaultValue={e.notes || ''} onBlur={ev => (ev.target.value || '') !== (e.notes || '') && onPatch(employeeId, e.id, { notes: ev.target.value || null })} />
+                    : <span className="text-slate-600 text-sm">{e.notes || '—'}</span>}
                 </td>
                 <td className="px-1">
-                  <button onClick={() => onDelete(employeeId, e.id)} className="p-1 text-slate-300 hover:text-red-500" title="Supprimer"><Trash2 size={13} /></button>
+                  {canEdit && (
+                    <button onClick={() => onDelete(employeeId, e.id)} className="p-1 text-slate-300 hover:text-red-500" title="Supprimer"><Trash2 size={13} /></button>
+                  )}
                 </td>
               </tr>
             ))}

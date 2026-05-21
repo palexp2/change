@@ -1,5 +1,6 @@
 import { cacheGet, cacheSet, invalidate } from './prefetch.js'
 import { invalidateStale } from './swr.js'
+import { markOffline, markOnline } from './serverStatus.js'
 
 const BASE = '/erp/api'
 
@@ -17,14 +18,35 @@ function rawRequest(method, path, body) {
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   }).then(async (res) => {
+    // 502/503/504 = server restarting or upstream down. nginx returns these
+    // when erp-server isn't accepting connections yet. Flip the offline flag
+    // and bubble the error.
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      markOffline()
+      const err = new Error(`HTTP ${res.status}`)
+      err.status = res.status
+      throw err
+    }
+    // Any other response (even 4xx) means the server is up.
+    markOnline()
     if (res.status === 401) {
       localStorage.removeItem('erp_token')
       window.location.href = '/erp/login'
       return
     }
     const data = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+    if (!res.ok) {
+      const err = new Error(data.error || `HTTP ${res.status}`)
+      err.details = data
+      err.status = res.status
+      throw err
+    }
     return data
+  }, (err) => {
+    // fetch() rejects with TypeError for network errors (server unreachable,
+    // DNS failure, CORS issues). Treat as offline.
+    markOffline()
+    throw err
   })
 }
 
@@ -38,10 +60,18 @@ function request(method, path, body) {
     cacheSet(path, promise)
     return promise
   }
-  const resource = path.split('?')[0].split('/').filter(Boolean)[0]
+  // Pour PATCH /admin/<resource>/... ou POST /admin/<resource>/..., on
+  // invalide aussi la ressource sous-jacente (et pas seulement /admin), sinon
+  // les GET /<resource>/... suivants servent le cache obsolète.
+  const segments = path.split('?')[0].split('/').filter(Boolean)
+  const resource = segments[0]
   if (resource) {
     invalidate('/' + resource)
     invalidateStale(resource)
+    if (resource === 'admin' && segments[1]) {
+      invalidate('/' + segments[1])
+      invalidateStale(segments[1])
+    }
   }
   return rawRequest(method, path, body)
 }
@@ -81,6 +111,10 @@ export const api = {
     create: (data) => post('/contacts', data),
     update: (id, data) => put(`/contacts/${id}`, data),
     delete: (id) => del(`/contacts/${id}`),
+    listCompanies: (id) => get(`/contacts/${id}/companies`),
+    addCompany: (id, data) => post(`/contacts/${id}/companies`, data),
+    updateCompany: (id, linkId, data) => patch(`/contacts/${id}/companies/${linkId}`, data),
+    removeCompany: (id, linkId) => del(`/contacts/${id}/companies/${linkId}`),
   },
 
   // Projects
@@ -114,6 +148,7 @@ export const api = {
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`)
       return await res.blob()
     },
+    refreshInstallationDocs: (id) => post(`/products/${id}/refresh-installation-docs`, {}),
   },
 
   // Orders
@@ -133,6 +168,23 @@ export const api = {
     scan: (orderId, value, mode = 'add') => post(`/orders/${orderId}/scan`, { value, mode }),
     delete: (id) => del(`/orders/${id}`),
     generateBonLivraison: (id) => post(`/orders/${id}/bon-livraison`, {}),
+    generateInstallationDocsBlob: async (id) => {
+      const token = localStorage.getItem('erp_token')
+      const headers = {}
+      if (token) headers['Authorization'] = `Bearer ${token}`
+      const res = await fetch(`${BASE}/orders/${id}/generate-installation-docs`, { method: 'POST', headers })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        const e = new Error(err.error || `HTTP ${res.status}`)
+        e.payload = err
+        throw e
+      }
+      return {
+        blob: await res.blob(),
+        included: parseInt(res.headers.get('X-Docs-Included') || '0', 10),
+        skipped: parseInt(res.headers.get('X-Docs-Skipped') || '0', 10),
+      }
+    },
   },
 
   // Tasks
@@ -185,6 +237,21 @@ export const api = {
     purgeTrash: () => del('/admin/trash'),
     clearFactureDeferredRevenue: (id) => post(`/admin/factures/${id}/clear-deferred-revenue`, {}),
     clearFactureRevenueRecognition: (id) => post(`/admin/factures/${id}/clear-revenue-recognition`, {}),
+    clearFacturePaidStatus: (id) => post(`/admin/factures/${id}/clear-paid-status`, {}),
+    factureRawSchema: (id) => get(`/admin/factures/${id}/raw-schema`),
+    factureRawUpdate: (id, data) => patch(`/admin/factures/${id}/raw`, data),
+    paymentRawSchema: (id) => get(`/admin/payments/${id}/raw-schema`),
+    paymentRawUpdate: (id, data) => patch(`/admin/payments/${id}/raw`, data),
+  },
+
+  // Field visibility rules — règles conditionnelles de masquage des champs
+  // dans les pages détail. Configurées globalement (admin), évaluées côté
+  // client via <FieldGuard> à partir du record courant.
+  fieldVisibilityRules: {
+    list: (context) => get('/field-visibility-rules' + (context ? `?context=${encodeURIComponent(context)}` : '')),
+    create: (data) => post('/field-visibility-rules', data),
+    update: (id, data) => put(`/field-visibility-rules/${id}`, data),
+    delete: (id) => del(`/field-visibility-rules/${id}`),
   },
 
   // Interactions
@@ -244,6 +311,7 @@ export const api = {
     deleteToken: () => del('/connectors/hubspot'),
     sync: (full = false) => post('/connectors/sync/hubspot', { full }),
     setMapping: (user_id, hubspot_owner_id) => put('/connectors/hubspot/mapping', { user_id, hubspot_owner_id }),
+    createContactSegment: (name, emails) => post('/hubspot/contact-segment', { name, emails }),
   },
 
   // Novoxpress shipping labels
@@ -387,7 +455,8 @@ export const api = {
     list: (params = {}) => get('/projets/factures?' + new URLSearchParams(params)),
     get: (id) => get(`/projets/factures/${id}`),
     update: (id, data) => patch(`/projets/factures/${id}`, data),
-    recognizeRevenue: (id) => post(`/projets/factures/${id}/recognize-revenue`, {}),
+    delete: (id) => del(`/projets/factures/${id}`),
+    recognizeRevenue: (id, opts = {}) => post(`/projets/factures/${id}/recognize-revenue`, opts),
     qbState: (id) => get(`/projets/factures/${id}/qb-state`),
   },
 
@@ -396,6 +465,8 @@ export const api = {
     listForFacture: (factureId) => get(`/payments/facture/${factureId}`),
     create: (data) => post('/payments', data),
     retryQb: (id) => post(`/payments/${id}/retry-qb`, {}),
+    qbLinkSuggestions: (id) => get(`/payments/${id}/qb-link-suggestions`),
+    qbCreditAccount: (id) => get(`/payments/${id}/qb-credit-account`),
     delete: (id) => del(`/payments/${id}`),
   },
 
@@ -447,7 +518,13 @@ export const api = {
   },
 
   qualificationCalls: {
+    list: () => get('/qualification-calls'),
     byCompany: (companyId) => get(`/qualification-calls/by-company/${companyId}`),
+    get: (id) => get(`/qualification-calls/${id}`),
+    create: (data) => post('/qualification-calls', data),
+    update: (id, data) => patch(`/qualification-calls/${id}`, data),
+    subscribeCard: (id, body) => post(`/qualification-calls/${id}/subscribe-card`, body),
+    delete: (id) => del(`/qualification-calls/${id}`),
   },
 
   emailRelance: {
@@ -459,6 +536,9 @@ export const api = {
       post('/email-relance/regenerate', {
         qualification_call_id, temperature, general_rules, specific_instructions,
       }),
+    saveDraft: (qcId, subject, body) => put(`/email-relance/draft/${qcId}`, { subject, body }),
+    gmailAccount: () => get('/email-relance/gmail-account'),
+    send: (qcId, to) => post(`/email-relance/send/${qcId}`, to ? { to } : {}),
   },
 
   timesheets: {
@@ -652,6 +732,27 @@ export const api = {
 
   syncLog: {
     list: (params = {}) => get('/connectors/sync-log?' + new URLSearchParams(params)),
+  },
+
+  // Fichiers publics — upload, list, edit, delete par n'importe quel user
+  // authentifié. L'accès au fichier lui-même est public via /erp/p/<token>/<name>.
+  publicFiles: {
+    list: (params = {}) => get('/public-files?' + new URLSearchParams(params)),
+    folders: () => get('/public-files/folders'),
+    update: (id, data) => patch(`/public-files/${id}`, data),
+    delete: (id) => del(`/public-files/${id}`),
+    upload: (formData) => {
+      const token = getToken()
+      return fetch('/erp/api/public-files/upload', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      }).then(async r => {
+        const d = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
+        return d
+      })
+    },
   },
 
   stripePayouts: {

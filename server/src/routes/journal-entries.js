@@ -232,13 +232,19 @@ router.get('/pending-operations', requireAuth, (req, res) => {
     // --- 4. Solde ERP des pièces (hors produits sérialisés et hors obsolètes) ---
     // Sert à rapprocher le solde comptable « Stock de Pièces » avec la réalité
     // de l'inventaire ERP et à générer une écriture d'ajustement si besoin.
+    // Filtre aligné sur la vue Airtable « Valeur inventaire » (viwkMP62uPrBcAAtE) :
+    // exclut JWT, SYSTEM et les obsolètes en plus des sérialisés.
+    // Source du montant : colonne `valeur_inventaire` (formule Airtable FIFO
+    // déjà synchronisée), pas `stock_qty × unit_cost`. La formule Airtable
+    // plafonne à 0 les stocks négatifs et utilise la valeur FIFO live, ce qui
+    // évite les divergences pour les produits assemblés et les stocks négatifs.
     const erpParts = db.prepare(`
       SELECT
         COUNT(*) AS product_count,
-        SUM(COALESCE(stock_qty, 0) * COALESCE(unit_cost, 0)) AS total_value
+        SUM(COALESCE(CAST(valeur_inventaire AS REAL), 0)) AS total_value
       FROM products
       WHERE (besoin_d_un_numero_de_serie IS NULL OR besoin_d_un_numero_de_serie != '1.0')
-        AND (type IS NULL OR type NOT LIKE '%OBSOL%')
+        AND (type IS NULL OR type NOT IN ('JWT', 'SYSTEM', 'PIÈCE OBSOLÈTE', 'PRODUIT OBSOLÈTE'))
         AND deleted_at IS NULL
     `).get()
 
@@ -258,7 +264,7 @@ router.get('/pending-operations', requireAuth, (req, res) => {
     // --- 6. Solde ERP des produits finis reconditionnés (sérials dispo location) ---
     // Somme des manufacture_value des numéros de série en statut
     // « Disponible - Location ». Sert à rapprocher le compte comptable
-    // « Stock de Produits finis reconditionnés ».
+    // « Stock de Produits reconditionnés ».
     const erpRefurbished = db.prepare(`
       SELECT
         COUNT(*) AS serial_count,

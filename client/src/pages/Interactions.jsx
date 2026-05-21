@@ -312,7 +312,7 @@ export default function Interactions() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Interactions</h1>
           </div>
-          <TableConfigModal table="interactions" />
+          <TableConfigModal table="interactions" bulkDelete />
         </div>
 
         <DataTable

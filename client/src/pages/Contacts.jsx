@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { Plus } from 'lucide-react'
+import { Plus, Send } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
@@ -9,6 +9,7 @@ import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import { HubSpotExportModal } from '../components/HubSpotExportModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
@@ -103,6 +104,8 @@ export default function Contacts() {
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
+  const [showHubspotExport, setShowHubspotExport] = useState(false)
+  const [filteredContacts, setFilteredContacts] = useState([])
   const undoableDelete = useUndoableDelete()
 
   const load = useCallback(async () => {
@@ -132,7 +135,14 @@ export default function Contacts() {
             <h1 className="text-2xl font-bold text-slate-900">Contacts</h1>
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="contacts" />
+            <TableConfigModal table="contacts" bulkDelete />
+            <button
+              onClick={() => setShowHubspotExport(true)}
+              className="btn-secondary"
+              title="Créer une liste statique HubSpot avec la vue filtrée"
+            >
+              <Send size={16} /> Exporter vers HubSpot
+            </button>
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouveau contact
             </button>
@@ -146,6 +156,7 @@ export default function Contacts() {
           loading={loading}
           onRowClick={row => navigate(`/contacts/${row.id}`)}
           searchFields={['first_name', 'last_name', 'email', 'phone', 'mobile', 'company_name']}
+          onFilteredDataChange={setFilteredContacts}
           onBulkDelete={async (ids) => {
             await undoableDelete({
               table: 'contacts',
@@ -161,6 +172,12 @@ export default function Contacts() {
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau contact">
         <ContactForm companies={companies} onSave={handleCreate} onClose={() => setShowModal(false)} />
       </Modal>
+
+      <HubSpotExportModal
+        isOpen={showHubspotExport}
+        onClose={() => setShowHubspotExport(false)}
+        filteredContacts={filteredContacts}
+      />
     </Layout>
   )
 }

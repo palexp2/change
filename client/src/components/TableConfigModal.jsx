@@ -6,7 +6,7 @@ import { TABLE_LABELS } from '../lib/tableDefs.js'
 import { Modal } from './Modal.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
 
-export function TableConfigModal({ table }) {
+export function TableConfigModal({ table, bulkDelete = false }) {
   const { user } = useAuth()
   const confirm = useConfirm()
   const [open, setOpen]               = useState(false)
@@ -155,18 +155,20 @@ export function TableConfigModal({ table }) {
                 ))}
               </div>
 
-              <div className="border-t border-slate-200 pt-3">
-                <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    checked={bulkDeleteEnabled}
-                    onChange={toggleBulkDelete}
-                    className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
-                  />
-                  Autoriser la suppression en lot
-                </label>
-                <p className="text-xs text-slate-400 mt-1 ml-6">Quand activé, des cases à cocher apparaissent sur chaque ligne et un bouton permet de supprimer plusieurs enregistrements à la fois.</p>
-              </div>
+              {bulkDelete && (
+                <div className="border-t border-slate-200 pt-3">
+                  <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={bulkDeleteEnabled}
+                      onChange={toggleBulkDelete}
+                      className="h-4 w-4 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                    />
+                    Autoriser la suppression en lot
+                  </label>
+                  <p className="text-xs text-slate-400 mt-1 ml-6">Quand activé, des cases à cocher apparaissent sur chaque ligne et un bouton permet de supprimer plusieurs enregistrements à la fois.</p>
+                </div>
+              )}
 
               <div className="border-t border-slate-200 pt-3">
                 {addingView ? (

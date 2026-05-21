@@ -219,7 +219,7 @@ export default function Factures() {
           table="factures"
           columns={COLUMNS_WITH_CUSTOM}
           data={displayedFactures}
-          searchFields={['document_number', 'company_name', 'project_name', 'order_number']}
+          searchFields={['document_number', 'company_name', 'project_name', 'order_number', 'total_amount', 'amount_before_tax_cad', 'balance_due']}
           loading={loading}
           onRowClick={row => navigate(`/factures/${row.id}`)}
           customFieldsByColumn={customFieldsByColumn}

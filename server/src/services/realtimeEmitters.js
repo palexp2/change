@@ -65,6 +65,25 @@ export function emitCompany(verb, id, actorUserId = null) {
 }
 
 /**
+ * Notifie qu'un des sous-tableaux d'une fiche entreprise a changé (ex. liste
+ * des contacts liés via contact_companies). Charge utile minimale — le client
+ * choisit de re-fetcher s'il a la fiche ouverte. Plusieurs `companyIds`
+ * peuvent être passés (un PATCH de principale touche deux entreprises).
+ */
+export function emitCompanyContactsChanged(companyIds, actorUserId = null) {
+  const ids = (Array.isArray(companyIds) ? companyIds : [companyIds]).filter(Boolean)
+  if (!ids.length) return
+  for (const id of ids) {
+    emit([`company:${id}`], {
+      type: 'company:contacts_changed',
+      payload: { id },
+      actorUserId,
+      ts: Date.now(),
+    })
+  }
+}
+
+/**
  * Generic emitter for any entity. The route is responsible for shaping the
  * payload (typically a SELECT with the same JOINs as the GET /api/<entity>
  * list endpoint, so the client can splice it into table state without

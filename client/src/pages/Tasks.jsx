@@ -136,7 +136,7 @@ export default function Tasks() {
             <p className="text-sm text-slate-500 mt-0.5">{tasks.length} tâche{tasks.length !== 1 ? 's' : ''}</p>
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="tasks" />
+            <TableConfigModal table="tasks" bulkDelete />
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouvelle tâche
             </button>

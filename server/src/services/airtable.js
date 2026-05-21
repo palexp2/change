@@ -9,6 +9,8 @@ import { broadcastAll } from './realtime.js'
 import { emitCompany, emitOrder } from './realtimeEmitters.js'
 import { evaluateFieldRules } from './fieldRuleEngine.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
+import { reconcileFacturesForOrder } from './quickbooks.js'
+import { logSystemRun } from './systemAutomations.js'
 
 // Cache live SQLite columns per table — read once at module level, refreshed
 // only when an UPDATE/INSERT references an unknown column (rare, indicates a
@@ -305,6 +307,7 @@ export async function syncOrders(changes = null) {
     const records = await fetchAllRecords(config.base_id, config.orders_table_id, accessToken, 'orders', _orderIds)
     let fm = config.field_map_orders ? JSON.parse(config.field_map_orders) : null
     let imported = 0, updated = 0
+    const touchedOrderIds = []
 
     // Max order_number for auto-increment
     const maxNum = () => (db.prepare('SELECT MAX(order_number) as m FROM orders').get()?.m || 0)
@@ -387,6 +390,7 @@ export async function syncOrders(changes = null) {
           db.prepare(`UPDATE orders SET company_id=?, project_id=?, status=?, priority=?, notes=?, address_id=COALESCE(?,address_id), is_subscription=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
             .run(companyId, projectId, status, priority, notes, addressId, isSubscription, existing.id)
           emitOrder('updated', existing.id, null)
+          touchedOrderIds.push(existing.id)
           updated++
         } else {
           const rawNum = fm?.order_number ? parseInt(String(rec.fields[fm.order_number] ?? '').replace(/[^0-9]/g, '')) : NaN
@@ -395,6 +399,7 @@ export async function syncOrders(changes = null) {
           db.prepare('INSERT INTO orders (id, order_number, company_id, project_id, status, priority, notes, address_id, airtable_id, is_subscription) VALUES (?,?,?,?,?,?,?,?,?,?)')
             .run(newId, orderNumber, companyId, projectId, status, priority, notes, addressId, rec.id, isSubscription)
           emitOrder('created', newId, null)
+          touchedOrderIds.push(newId)
           imported++
         }
       }
@@ -407,6 +412,35 @@ export async function syncOrders(changes = null) {
       updateDynamicFields('orders', fm, records)
     }
     await evaluateFieldRules({ erpTable: 'orders', tableId: config.orders_table_id, changes })
+
+    // Constat de vente QB — pour chaque commande touchée par le sync Airtable,
+    // tente de poser la JE Dr 23900|AR / Cr 40000 sur ses factures kind='order'.
+    // reconcileFacturesForOrder est idempotent et filtre lui-même : skip si pas
+    // d'envoi lié, déjà constatée, abonnement, ou payout Stripe en attente.
+    // Fire-and-forget pour ne pas bloquer la fin du sync si QB est indisponible.
+    for (const orderId of touchedOrderIds) {
+      reconcileFacturesForOrder(orderId).then(r => {
+        if (r.recognized.length || r.errors.length) {
+          logSystemRun('sys_revenue_recognition', {
+            status: r.errors.length ? 'error' : 'success',
+            result: [
+              `Commande ${orderId} (sync Airtable)`,
+              `Constatées : ${r.recognized.length} (${r.recognized.map(x => `#${x.document_number || x.facture_id} ${x.amount} ${x.currency} via ${x.debit_account}`).join(', ') || '—'})`,
+              `Skip : ${r.skipped.length}`,
+              r.errors.length ? `Erreurs : ${r.errors.map(e => `${e.facture_id}: ${e.error}`).join(' | ')}` : null,
+            ].filter(Boolean).join('\n'),
+            error: r.errors.length ? r.errors.map(e => e.error).join(' | ') : undefined,
+            triggerData: { order_id: orderId, source: 'airtable_sync' },
+          })
+        }
+      }).catch(err => {
+        console.error('reconcileFacturesForOrder (airtable sync) error:', err.message)
+        logSystemRun('sys_revenue_recognition', {
+          status: 'error', error: err.message,
+          triggerData: { order_id: orderId, source: 'airtable_sync' },
+        })
+      })
+    }
   } catch (e) { console.error('❌ Orders sync:', e.message) }
   } // end if (!changes || _orderIds?.length)
 

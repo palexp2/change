@@ -750,9 +750,18 @@ export function backfillRefundsToFactures({ dryRun = false } = {}) {
     "SELECT id, document_number, airtable_id, amount_before_tax_cad, total_amount FROM factures WHERE invoice_id=? AND sync_source='Remboursements Stripe'"
   )
 
+  // Refunds déjà matérialisés en payments (webhook ou migration) — à ne pas recréer en facture.
+  const findExistingPayment = db.prepare(
+    'SELECT 1 FROM payments WHERE stripe_refund_id = ? LIMIT 1'
+  )
+
   for (const bt of refundBts) {
     const refundId = bt.source_id
     if (!refundId) { skipped++; continue }
+
+    // Si ce refund est déjà en payments (webhook charge.refunded ou migration),
+    // on ne re-crée pas la facture standalone — sinon on annule la migration.
+    if (findExistingPayment.get(refundId)) { skipped++; continue }
 
     let chargeId = null
     try {
@@ -875,4 +884,148 @@ export function backfillRefundsToFactures({ dryRun = false } = {}) {
 
   console.log(`✅ Backfill remboursements: ${created} créés, ${promoted} promus AT→native, ${mergedDups} doublons fusionnés, ${patched} numéros patchés, ${skipped} skip, ${unmatched} sans company sur ${refundBts.length}`)
   return { total: refundBts.length, created, promoted, mergedDups, patched, skipped, unmatched, details: details.slice(0, 50) }
+}
+
+// Migre les factures standalone de remboursement (sync_source='Remboursements Stripe')
+// vers des lignes `payments` (direction='out') attachées à la facture d'origine.
+// C'est l'inverse de backfillRefundsToFactures : on consolide les refunds vers le
+// même format que le webhook charge.refunded moderne. Voir stripe-webhooks.js:334.
+//
+// Matching de la facture d'origine, dans l'ordre :
+//   1. via stripe_balance_transactions.stripe_invoice_id (lien direct fiable)
+//   2. via pattern document_number "XXX-R" → facture "XXX" (héritage Airtable)
+//
+// Skip (laisse la ligne standalone intacte) :
+//   - PayoutReversal (invoice_id commence par 'pyr_') — pas un refund de charge
+//   - amount = 0
+//   - aucune facture d'origine trouvée
+//
+// Idempotent : si une ligne payments existe déjà pour ce stripe_refund_id, on
+// se contente de supprimer la facture standalone (l'index UNIQUE sur
+// stripe_refund_id empêche tout doublon).
+export function migrateRefundsToPayments({ dryRun = false } = {}) {
+  const refundFactures = db.prepare(`
+    SELECT id, invoice_id, document_number, document_date, total_amount,
+           amount_before_tax_cad, currency, company_id
+    FROM factures
+    WHERE sync_source = 'Remboursements Stripe' AND status = 'Remboursement'
+  `).all()
+
+  let migrated = 0
+  let skippedExists = 0
+  let skippedPyr = 0
+  let skippedZero = 0
+  let skippedNoMatch = 0
+  const details = []
+
+  const findBT = db.prepare(`
+    SELECT id, stripe_id, source_id, stripe_invoice_id, raw, created_date
+    FROM stripe_balance_transactions
+    WHERE source_id = ? AND type IN ('refund', 'payment_refund') LIMIT 1
+  `)
+  const findOrigByInvoiceId = db.prepare(`
+    SELECT id, document_number FROM factures
+    WHERE invoice_id = ? AND sync_source != 'Remboursements Stripe' LIMIT 1
+  `)
+  const findOrigByDoc = db.prepare(`
+    SELECT id, document_number FROM factures
+    WHERE document_number = ? AND sync_source != 'Remboursements Stripe' LIMIT 1
+  `)
+  const findExistingPayment = db.prepare(
+    'SELECT id FROM payments WHERE stripe_refund_id = ? LIMIT 1'
+  )
+
+  for (const rf of refundFactures) {
+    const refundId = rf.invoice_id
+    const amount = Number(rf.total_amount) || 0
+
+    if (refundId && refundId.startsWith('pyr_')) {
+      skippedPyr++
+      details.push({ facture_id: rf.id, doc: rf.document_number, refund_id: refundId, reason: 'payout_reversal' })
+      continue
+    }
+    if (amount === 0) {
+      skippedZero++
+      details.push({ facture_id: rf.id, doc: rf.document_number, refund_id: refundId, reason: 'zero_amount' })
+      continue
+    }
+
+    // 1) Lookup BT to find original Stripe invoice + charge
+    const bt = refundId ? findBT.get(refundId) : null
+    let chargeId = null
+    if (bt?.raw) {
+      try { chargeId = JSON.parse(bt.raw)?.source?.charge || null } catch {}
+    }
+
+    // 2) Find original facture
+    let orig = null
+    if (bt?.stripe_invoice_id) {
+      orig = findOrigByInvoiceId.get(bt.stripe_invoice_id)
+    }
+    if (!orig && rf.document_number && rf.document_number.endsWith('-R')) {
+      orig = findOrigByDoc.get(rf.document_number.slice(0, -2))
+    }
+    if (!orig) {
+      skippedNoMatch++
+      details.push({ facture_id: rf.id, doc: rf.document_number, refund_id: refundId, reason: 'no_orig_facture' })
+      continue
+    }
+
+    // 3) Already a payment row for this refund? Just delete the standalone facture.
+    const existing = refundId ? findExistingPayment.get(refundId) : null
+    if (existing) {
+      if (!dryRun) {
+        db.prepare('DELETE FROM factures WHERE id = ?').run(rf.id)
+      }
+      skippedExists++
+      details.push({ facture_id: rf.id, doc: rf.document_number, refund_id: refundId, orig_doc: orig.document_number, action: 'payment_exists_facture_deleted' })
+      continue
+    }
+
+    // 4) Insert payment + delete standalone facture (transactional)
+    const currency = (rf.currency || 'CAD').toUpperCase()
+    const receivedAt = bt?.created_date || rf.document_date || new Date().toISOString()
+    const noteParts = [`Remboursement Stripe ${refundId}`]
+    if (chargeId) noteParts.push(`(charge ${chargeId})`)
+    noteParts.push(`— migré depuis facture standalone ${rf.document_number || rf.id}`)
+    const notes = noteParts.join(' ')
+
+    if (dryRun) {
+      migrated++
+      details.push({ facture_id: rf.id, doc: rf.document_number, refund_id: refundId, orig_doc: orig.document_number, amount, would_migrate: true })
+      continue
+    }
+
+    const tx = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO payments (
+          id, facture_id, direction, method, received_at, amount, currency,
+          stripe_refund_id, stripe_charge_id, stripe_balance_tx_id, notes,
+          created_at, updated_at
+        ) VALUES (?, ?, 'out', 'stripe', ?, ?, ?, ?, ?, ?, ?,
+                  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                  strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      `).run(
+        uuid(), orig.id, receivedAt, amount, currency,
+        refundId, chargeId, bt?.stripe_id || null, notes
+      )
+      db.prepare('DELETE FROM factures WHERE id = ?').run(rf.id)
+    })
+    tx()
+
+    migrated++
+    details.push({ facture_id: rf.id, doc: rf.document_number, refund_id: refundId, orig_doc: orig.document_number, amount, action: 'migrated' })
+  }
+
+  console.log(`✅ Migration refunds → payments: ${migrated} migrés, ${skippedExists} payment existant (facture supprimée), ${skippedPyr} payout-reversal, ${skippedZero} montant nul, ${skippedNoMatch} sans match — sur ${refundFactures.length}${dryRun ? ' (DRY-RUN)' : ''}`)
+  return {
+    total: refundFactures.length,
+    migrated,
+    skipped_payment_exists: skippedExists,
+    skipped_payout_reversal: skippedPyr,
+    skipped_zero_amount: skippedZero,
+    skipped_no_match: skippedNoMatch,
+    details,
+    dry_run: dryRun,
+  }
 }

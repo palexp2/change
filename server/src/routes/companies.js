@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { getCentralControllers } from '../utils/centralController.js';
+import { CC_PERMISSION_SELECT, CC_PERMISSIONS_JOIN } from '../utils/ccPermissions.js';
 import { emitCompany } from '../services/realtimeEmitters.js';
 
 const router = Router();
@@ -71,8 +72,11 @@ router.get('/', (req, res) => {
     `SELECT c.*,
       (SELECT COUNT(*) FROM contacts ct WHERE ct.company_id = c.id) as contacts_count,
       (SELECT COUNT(*) FROM projects p WHERE p.company_id = c.id) as projects_count,
-      (SELECT COUNT(*) FROM orders o WHERE o.company_id = c.id) as orders_count
-     FROM companies c ${where}
+      (SELECT COUNT(*) FROM orders o WHERE o.company_id = c.id) as orders_count,
+      ${CC_PERMISSION_SELECT}
+     FROM companies c
+     ${CC_PERMISSIONS_JOIN} ON ccp.company_id = c.id
+     ${where}
      ORDER BY c.updated_at DESC
      LIMIT ? OFFSET ?`
   ).all(...params, limitVal, offset);
@@ -85,7 +89,16 @@ router.get('/:id', (req, res) => {
   const company = db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id);
   if (!company) return res.status(404).json({ error: 'Company not found' });
 
-  const contacts = db.prepare('SELECT * FROM contacts WHERE company_id = ? ORDER BY first_name').all(req.params.id);
+  // Liste les contacts liés via la jointure (inclut les contacts dont
+  // l'entreprise principale est ailleurs). `is_primary` indique si c'est
+  // l'entreprise principale du contact.
+  const contacts = db.prepare(
+    `SELECT ct.*, cc.role as link_role, cc.is_primary as link_is_primary
+     FROM contact_companies cc
+     JOIN contacts ct ON ct.id = cc.contact_id
+     WHERE cc.company_id = ? AND ct.deleted_at IS NULL
+     ORDER BY cc.is_primary DESC, ct.first_name COLLATE NOCASE`
+  ).all(req.params.id);
   const projects = db.prepare(
     'SELECT p.* FROM projects p WHERE p.company_id = ? ORDER BY p.created_at DESC'
   ).all(req.params.id);
@@ -115,7 +128,7 @@ router.get('/:id', (req, res) => {
 // POST /api/companies
 router.post('/', (req, res) => {
   const { name, type, lifecycle_phase, phone, email, website, address, city, province, country, notes, currency, language } = req.body;
-  if (!name) return res.status(400).json({ error: 'Name is required' });
+  if (name === undefined || name === null) return res.status(400).json({ error: 'Name is required' });
 
   const id = uuidv4();
   db.prepare(

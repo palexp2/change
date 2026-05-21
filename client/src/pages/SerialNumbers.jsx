@@ -5,6 +5,7 @@ import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 
@@ -17,6 +18,15 @@ const RENDERS = {
   company_name: row => row.company_id
     ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
+  address: row => row.address
+    ? <span className="font-mono text-slate-700">{row.address}</span>
+    : <span className="text-slate-400">—</span>,
+  permissions: row => {
+    if (!row.permissions || typeof row.permissions !== 'object' || Object.keys(row.permissions).length === 0) {
+      return <span className="text-slate-400">—</span>
+    }
+    return <CentralControllerPermissions permissions={row.permissions} compact />
+  },
   manufacture_date: row => <span className="text-slate-500">{fmtDate(row.manufacture_date)}</span>,
 }
 

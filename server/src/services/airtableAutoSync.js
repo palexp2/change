@@ -193,6 +193,11 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
 
   // 2. Determine which fields are NOT in the hardcoded map
   const mappedAirtableFields = new Set(Object.values(hardcodedFieldMap || {}).filter(v => typeof v === 'string'))
+  // Colonnes ERP gérées par la sync hardcodée — interdire qu'une def dynamique
+  // pointe vers la même colonne sous un autre nom Airtable, sinon elle écrase
+  // (ex : ancien champ Airtable "Coût unitaire" vs nouveau "Coût unitaire (FIFO)"
+  // tous deux mappés vers products.unit_cost).
+  const mappedErpColumns = new Set(Object.keys(hardcodedFieldMap || {}))
   const existingCols = liveColumns(erpTable)
   const existingDefs = db.prepare(
     'SELECT * FROM airtable_field_defs WHERE erp_table=?'
@@ -232,6 +237,10 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
     if (existingDef.import_disabled === 1) continue
     // Defensive: if the column was dropped manually, skip rather than crash.
     if (!existingCols.has(existingDef.column_name)) continue
+    // Si une autre def Airtable mappe vers une colonne ERP gérée par le hardcoded
+    // map, on l'ignore : sinon elle écraserait la valeur écrite par la sync
+    // hardcodée (souvent avec NULL, quand l'ancien champ Airtable a été remplacé).
+    if (mappedErpColumns.has(existingDef.column_name)) continue
 
     let defOptions = {}
     try { defOptions = JSON.parse(existingDef.options || '{}') } catch {}
@@ -277,6 +286,9 @@ export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
 
   const defs = db.prepare('SELECT * FROM airtable_field_defs WHERE erp_table=?').all(erpTable)
   const mappedFields = new Set(Object.values(hardcodedFieldMap || {}).filter(v => typeof v === 'string'))
+  // Voir syncDynamicFields pour la motivation : deux noms de champs Airtable
+  // ne doivent pas se disputer la même colonne ERP.
+  const mappedErpColumns = new Set(Object.keys(hardcodedFieldMap || {}))
   const existingCols = liveColumns(erpTable)
 
   // Build dynamic field list from existing defs only, en filtrant les champs
@@ -289,6 +301,7 @@ export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
   for (const d of defs) {
     if (d.import_disabled === 1) continue
     if (mappedFields.has(d.airtable_field_name)) continue
+    if (mappedErpColumns.has(d.column_name)) continue
     if (d.column_name === '__pending__') continue
     if (!existingCols.has(d.column_name)) continue
     let defOptions = {}

@@ -185,7 +185,7 @@ export default function Companies() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="companies" />
+            <TableConfigModal table="companies" bulkDelete />
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouvelle entreprise
             </button>

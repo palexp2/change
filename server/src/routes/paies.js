@@ -1,9 +1,19 @@
 import { Router } from 'express'
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAuth, isHROrAdmin } from '../middleware/auth.js'
 import { importTimesheetsForPaie } from '../services/paieTimesheetImport.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
+
+function myEmployeeId(userId) {
+  const row = db.prepare('SELECT employee_id FROM users WHERE id = ?').get(userId)
+  return row?.employee_id || null
+}
+
+function ensureHR(req, res, next) {
+  if (!isHROrAdmin(req.user)) return res.status(403).json({ error: 'Accès RH requis' })
+  next()
+}
 
 function buildPaieListRow(id) {
   return db.prepare(`
@@ -35,25 +45,39 @@ router.get('/', (req, res) => {
   const { q, page = 1, limit = 100 } = req.query
   const limitVal = parseInt(limit)
   const offset = (parseInt(page) - 1) * limitVal
-  let where = ''
+  const hr = isHROrAdmin(req.user)
+  const empId = hr ? null : myEmployeeId(req.user.id)
+  if (!hr && !empId) return res.json({ data: [], total: 0, page: parseInt(page), limit: limitVal })
+
+  const conditions = []
   const params = []
   if (q) {
-    where = 'WHERE (p.status LIKE ? OR CAST(p.number AS TEXT) LIKE ?)'
+    conditions.push('(p.status LIKE ? OR CAST(p.number AS TEXT) LIKE ?)')
     const like = `%${q}%`
     params.push(like, like)
   }
+  if (!hr) {
+    conditions.push('EXISTS (SELECT 1 FROM paie_items pi WHERE pi.paie_id = p.id AND pi.employee_id = ?)')
+    params.push(empId)
+  }
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : ''
 
   const total = db.prepare(`SELECT COUNT(*) c FROM paies p ${where}`).get(...params).c
+
+  // Pour les non-RH, les agrégats (total_regular_hours, items_count, etc.) sont
+  // limités à leur propre paie_item afin de ne pas exposer les volumes globaux.
+  const itemFilter = hr ? '' : 'AND employee_id = ?'
+  const itemParams = hr ? [] : [empId]
   const rows = db.prepare(`
     SELECT p.*,
-      (SELECT COUNT(*) FROM paie_items WHERE paie_id = p.id) AS items_count,
-      (SELECT SUM(regular_hours) FROM paie_items WHERE paie_id = p.id) AS total_regular_hours,
-      (SELECT SUM(COALESCE(regular_hours,0) * COALESCE(hourly_rate,0)) FROM paie_items WHERE paie_id = p.id) AS total_regular_amount
+      (SELECT COUNT(*) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS items_count,
+      (SELECT SUM(regular_hours) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS total_regular_hours,
+      (SELECT SUM(COALESCE(regular_hours,0) * COALESCE(hourly_rate,0)) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS total_regular_amount
     FROM paies p
     ${where}
     ORDER BY p.period_end DESC, p.number DESC
     LIMIT ? OFFSET ?
-  `).all(...params, limitVal, offset)
+  `).all(...itemParams, ...itemParams, ...itemParams, ...params, limitVal, offset)
 
   res.json({ data: rows, total, page: parseInt(page), limit: limitVal })
 })
@@ -61,13 +85,18 @@ router.get('/', (req, res) => {
 router.get('/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM paies WHERE id=?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
+  const hr = isHROrAdmin(req.user)
+  const empId = hr ? null : myEmployeeId(req.user.id)
+  const itemFilter = hr ? '' : 'AND pi.employee_id = ?'
+  const itemParams = hr ? [req.params.id] : [req.params.id, empId]
   const items = db.prepare(`
     SELECT pi.*, e.first_name, e.last_name, e.matricule, e.accounting_department
     FROM paie_items pi
     LEFT JOIN employees e ON e.id = pi.employee_id
-    WHERE pi.paie_id = ?
+    WHERE pi.paie_id = ? ${itemFilter}
     ORDER BY e.last_name, e.first_name
-  `).all(req.params.id)
+  `).all(...itemParams)
+  if (!hr && items.length === 0) return res.status(403).json({ error: 'Accès refusé' })
   res.json({ ...row, items })
 })
 
@@ -94,7 +123,7 @@ const last2HoursStmt = db.prepare(`
   )
 `)
 
-router.post('/', (req, res) => {
+router.post('/', ensureHR, (req, res) => {
   if (!req.body.period_end) return res.status(400).json({ error: 'Fin de période requise' })
   const id = randomUUID()
   const cols = ['id', ...ALLOWED.filter(k => k in req.body)]
@@ -162,8 +191,8 @@ router.post('/', (req, res) => {
   res.status(201).json({ ...paie, items_created: itemIds, timesheet_import: importResult })
 })
 
-// POST /api/paies/:id/import-timesheets — resynchronisation manuelle
-router.post('/:id/import-timesheets', (req, res) => {
+// POST /api/paies/:id/import-timesheets — resynchronisation manuelle (admin/rh)
+router.post('/:id/import-timesheets', ensureHR, (req, res) => {
   const paie = db.prepare('SELECT id FROM paies WHERE id=?').get(req.params.id)
   if (!paie) return res.status(404).json({ error: 'Not found' })
   try {
@@ -176,7 +205,7 @@ router.post('/:id/import-timesheets', (req, res) => {
   }
 })
 
-router.patch('/:id', (req, res) => {
+router.patch('/:id', ensureHR, (req, res) => {
   const existing = db.prepare('SELECT id FROM paies WHERE id=?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
   const fields = ["updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"]
@@ -190,7 +219,7 @@ router.patch('/:id', (req, res) => {
   res.json(updated)
 })
 
-router.delete('/:id', (req, res) => {
+router.delete('/:id', ensureHR, (req, res) => {
   const existing = db.prepare('SELECT id FROM paies WHERE id=?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
   // hour_bank_entries.paie_id n'a pas de ON DELETE — soft-delete + délier avant
@@ -221,13 +250,21 @@ router.get('/items/list', (req, res) => {
   const { q, page = 1, limit = 100 } = req.query
   const limitVal = parseInt(limit)
   const offset = (parseInt(page) - 1) * limitVal
-  let where = ''
+  const hr = isHROrAdmin(req.user)
+  const empId = hr ? null : myEmployeeId(req.user.id)
+  if (!hr && !empId) return res.json({ data: [], total: 0, page: parseInt(page), limit: limitVal })
+  const conditions = []
   const params = []
   if (q) {
-    where = 'WHERE (e.first_name LIKE ? OR e.last_name LIKE ?)'
+    conditions.push('(e.first_name LIKE ? OR e.last_name LIKE ?)')
     const like = `%${q}%`
     params.push(like, like)
   }
+  if (!hr) {
+    conditions.push('pi.employee_id = ?')
+    params.push(empId)
+  }
+  const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : ''
   const total = db.prepare(`
     SELECT COUNT(*) c FROM paie_items pi LEFT JOIN employees e ON e.id=pi.employee_id ${where}
   `).get(...params).c

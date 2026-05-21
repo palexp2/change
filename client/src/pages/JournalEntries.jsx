@@ -60,7 +60,7 @@ function CreateJournalEntryForm({ accounts, onSaved, onCancel }) {
   const SHIPPED_SALE_DEBIT = 'Coût des produits vendus'
   const STOCK_ACCOUNT = 'Stock de Pièces'
   const FINISHED_GOODS_ACCOUNT = 'Stock de Produits finis'
-  const REFURBISHED_GOODS_ACCOUNT = 'Stock de Produits finis reconditionnés'
+  const REFURBISHED_GOODS_ACCOUNT = 'Stock de Produits reconditionnés'
   const IN_TRANSIT_ACCOUNT = 'Stock d\'équip. en transit'
   const LEASED_EQUIPMENT_ACCOUNT = 'Équipements prêtés aux abonnés'
   const ADJUSTMENT_OFFSET_ACCOUNT = 'Ajustements (Coûts des produits vendus)'
@@ -1017,7 +1017,7 @@ export default function JournalEntries() {
           columns={COLUMNS}
           data={entries}
           loading={loading}
-          searchFields={['doc_number', 'memo']}
+          searchFields={['doc_number', 'memo', 'total']}
           onRowClick={row => setSelectedId(row.id)}
         />
       </div>

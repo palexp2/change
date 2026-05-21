@@ -162,26 +162,19 @@ describe("Rachat post-churn — UI Mouvements + Dashboard", () => {
     }, churnEventId)
 
     await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
-    // Attend que le panel charge
-    await page.waitForSelector('[data-testid^="sub-events-month-"]', { timeout: 15000 })
+    // Attend que le panel charge (DataTable rend les groupes mois niveau 0)
+    await page.waitForSelector('[data-testid^="datatable-group-"][data-group-level="0"]', { timeout: 15000 })
+    await page.waitForTimeout(500)
 
-    // Trouve le mois courant et déplie
-    const now = new Date()
-    const thisMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`
-    const monthRow = page.locator(`[data-testid="sub-events-month-${thisMonth}"]`)
-    if (await monthRow.count() > 0) {
-      await monthRow.click()
-      await page.waitForTimeout(500)
-    }
-
-    // Le badge rachat doit apparaître
-    const badge = page.locator(`[data-testid="sub-event-rachat-${churnEventId}"]`)
+    // Le badge rachat doit apparaître (RachatPicker partagé avec la page Mouvements).
+    // Les groupes mois sont dépliés par défaut, donc le badge devrait être directement visible.
+    const badge = page.locator(`[data-testid="rachat-picker-${churnEventId}"]`)
     await badge.waitFor({ state: 'visible', timeout: 5000 })
     const txt = await badge.innerText()
     assert.match(txt, /Rachat confirmé/i, `attendu 'Rachat confirmé' dans le badge dashboard, vu: ${txt}`)
 
-    // Lien commande visible
-    const link = page.locator(`[data-testid="sub-event-rachat-order-${churnEventId}"]`)
+    // Lien commande visible (même testid que sur la page Mouvements)
+    const link = page.locator(`[data-testid="rachat-order-link-${churnEventId}"]`)
     assert.ok(await link.count() > 0, 'lien commande attendu dans le panel dashboard')
   })
 })

@@ -75,7 +75,7 @@ export default function StockMovements() {
           columns={COLUMNS}
           data={rows}
           loading={loading}
-          searchFields={['product_sku', 'product_name', 'reason', 'reference_id']}
+          searchFields={['product_sku', 'product_name', 'reason', 'reference_id', 'movement_value', 'unit_cost']}
         />
       </div>
     </Layout>

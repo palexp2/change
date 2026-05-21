@@ -23,16 +23,19 @@ describe('FactureDetail — affichage Revenu perçu d\'avance (3 états)', () =>
   before(async () => {
     db = new Database(DB_PATH, { readonly: false })
 
-    // Trouve une facture qui a un envoi sur une commande liée (has_linked_shipment = 1)
+    // Trouve une facture kind='order' qui a un envoi sur une commande liée (has_linked_shipment = 1).
+    // Exclut les subscriptions : pour celles-ci, le bouton de constat n'est pas affiché
+    // (constat fait à invoice.paid, pas à l'expédition).
     const fac = db.prepare(`
       SELECT f.id
       FROM factures f
-      WHERE EXISTS (
-        SELECT 1 FROM shipments sh
-        LEFT JOIN orders od ON od.id = f.order_id
-        LEFT JOIN orders op ON op.project_id = f.project_id AND f.project_id IS NOT NULL
-        WHERE sh.order_id = od.id OR sh.order_id = op.id
-      )
+      WHERE (f.kind = 'order' OR f.kind IS NULL)
+        AND EXISTS (
+          SELECT 1 FROM shipments sh
+          LEFT JOIN orders od ON od.id = f.order_id
+          LEFT JOIN orders op ON op.project_id = f.project_id AND f.project_id IS NOT NULL
+          WHERE sh.order_id = od.id OR sh.order_id = op.id
+        )
       LIMIT 1
     `).get()
     if (!fac) throw new Error('Aucune facture avec un envoi lié — impossible de tester ce flow')
@@ -78,7 +81,7 @@ describe('FactureDetail — affichage Revenu perçu d\'avance (3 états)', () =>
     await browser?.close()
   })
 
-  test('aucun badge si pas de deferred_revenue_at', async () => {
+  test('aucun badge dans le header si pas de deferred_revenue_at', async () => {
     db.prepare(`
       UPDATE factures SET deferred_revenue_at=NULL, deferred_revenue_amount_native=NULL,
         deferred_revenue_amount_cad=NULL, deferred_revenue_currency=NULL,
@@ -86,11 +89,10 @@ describe('FactureDetail — affichage Revenu perçu d\'avance (3 états)', () =>
     `).run(factureId)
     await page.goto(`${URL}/factures/${factureId}`, { waitUntil: 'networkidle' })
     assert.equal(await page.locator('[data-testid="revenue-status-deferred"]').count(), 0)
-    assert.equal(await page.locator('[data-testid="revenue-recognize-btn"]').count(), 0)
     assert.equal(await page.locator('[data-testid="revenue-status-recognized"]').count(), 0)
   })
 
-  test('bouton orange "Constater la vente" si déféré + envoi lié', async () => {
+  test('badge "Revenu perçu d\'avance" dans le header si déféré + envoi lié', async () => {
     db.prepare(`
       UPDATE factures SET
         deferred_revenue_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
@@ -102,13 +104,16 @@ describe('FactureDetail — affichage Revenu perçu d\'avance (3 états)', () =>
       WHERE id = ?
     `).run(factureId)
     await page.goto(`${URL}/factures/${factureId}`, { waitUntil: 'networkidle' })
-    const btn = page.locator('[data-testid="revenue-recognize-btn"]')
-    await btn.waitFor({ timeout: 5000 })
-    assert.match(await btn.innerText(), /Constater la vente/)
+    const badge = page.locator('[data-testid="revenue-status-deferred"]')
+    await badge.waitFor({ timeout: 5000 })
+    assert.match(await badge.innerText(), /Revenu perçu d.avance/)
     assert.equal(await page.locator('[data-testid="revenue-status-recognized"]').count(), 0)
+    // Le bouton d'action est maintenant dans la section comptable, pas dans le header
+    const accountingBtn = page.locator('[data-testid="facture-accounting-section"] [data-testid="accounting-recognize-btn"]')
+    await accountingBtn.waitFor({ timeout: 5000 })
   })
 
-  test('badge vert "Vente constatée" si revenue_recognized_at', async () => {
+  test('aucun badge dans le header si revenue_recognized_at (état visible dans la timeline)', async () => {
     db.prepare(`
       UPDATE factures SET
         revenue_recognized_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
@@ -116,16 +121,24 @@ describe('FactureDetail — affichage Revenu perçu d\'avance (3 états)', () =>
       WHERE id = ?
     `).run(factureId)
     await page.goto(`${URL}/factures/${factureId}`, { waitUntil: 'networkidle' })
-    const badge = page.locator('[data-testid="revenue-status-recognized"]')
-    await badge.waitFor({ timeout: 5000 })
-    assert.match(await badge.innerText(), /Vente constatée/)
-    assert.equal(await page.locator('[data-testid="revenue-recognize-btn"]').count(), 0)
+    // Le badge « Vente constatée » a été retiré du header — l'état est désormais
+    // visible dans la section « Historique des événements » plus bas dans la page.
+    assert.equal(await page.locator('[data-testid="revenue-status-recognized"]').count(), 0)
+    // Le badge « Revenu perçu d'avance » non plus, puisque la vente est constatée.
+    assert.equal(await page.locator('[data-testid="revenue-status-deferred"]').count(), 0)
+    // Plus de bouton d'action quand déjà constatée
+    assert.equal(await page.locator('[data-testid="accounting-recognize-btn"]').count(), 0)
   })
 
-  test('endpoint recognize-revenue refuse si pas de deferred_revenue_at', async () => {
+  test('endpoint recognize-revenue refuse si déjà constatée', async () => {
+    // On choisit une condition de refus qui throw AVANT toute requête vers QuickBooks
+    // (sinon le test poste une vraie JE en prod). « Vente déjà constatée » échoue
+    // localement à postRevenueRecognitionJE — pas de qbPost, pas de side effect.
     db.prepare(`
-      UPDATE factures SET deferred_revenue_at=NULL, revenue_recognized_at=NULL,
-        revenue_recognized_je_id=NULL WHERE id=?
+      UPDATE factures SET
+        revenue_recognized_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        revenue_recognized_je_id = 'TEST-ALREADY-RECOGNIZED'
+      WHERE id = ?
     `).run(factureId)
     const res = await page.evaluate(async ({ id }) => {
       const tok = localStorage.getItem('erp_token')
@@ -135,6 +148,6 @@ describe('FactureDetail — affichage Revenu perçu d\'avance (3 états)', () =>
       return { status: r.status, body: await r.json() }
     }, { id: factureId })
     assert.equal(res.status, 400)
-    assert.match(res.body.error || '', /reçu d.avance|perçu d.avance/)
+    assert.match(res.body.error || '', /déjà constatée/)
   })
 })

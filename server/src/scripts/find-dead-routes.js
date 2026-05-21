@@ -51,6 +51,12 @@ const EXTERNAL_ROUTES = new Set([
   'GET /erp/pay/:pendingId',
   // Pending invoice consulté côté FactureDetail via api.factures.get
   'GET /api/stripe-invoices/pending/:pendingId',
+  // Stripe publishable key — consommée depuis client/public/qualification-call-guide/index.html
+  // (static, hors client/src/) pour monter les Stripe Elements.
+  'GET /api/connectors/stripe/publishable-key',
+  // Désaffectation du lien QuickBooks d'un reçu de vente — appelée via console/curl
+  // par l'admin pour repartir d'un état propre quand un sync QB s'est mal fini.
+  'DELETE /api/sale-receipts/:id/quickbooks-link',
 ])
 
 // Même table que _auth-audit.test.js — garder synchro.

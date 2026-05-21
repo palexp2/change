@@ -36,11 +36,13 @@ const PUBLIC_ROUTES = new Map([
   ['POST /api/customer/post-payment/:sessionId/save',     'Customer onboarding autosave (Stripe session id auth)'],
   ['POST /api/customer/post-payment/:sessionId/submit',   'Customer onboarding final submit (Stripe session id auth)'],
   ['POST /api/customer/post-payment/:sessionId/extras',   'Customer onboarding extras → new pending invoice (Stripe session id auth)'],
+  ['GET /api/connectors/stripe/publishable-key',     'Stripe publishable key — public by design (used by client to mount Stripe Elements)'],
+  ['GET /erp/p/:token{/:filename}',                  'Public file serve — token-based access embedded in URL, no JWT required'],
 ])
 
 // Middleware names that count as "this route is protected". If a route's
 // first-positional-arg-after-path matches one of these tokens, it's OK.
-const AUTH_TOKENS = new Set(['requireAuth', 'requireAdmin'])
+const AUTH_TOKENS = new Set(['requireAuth', 'requireAdmin', 'requireHROrAdmin'])
 
 // Mount paths, must stay in sync with index.js. Derived from routes/ filenames
 // where trivial (e.g. companies.js → /api/companies), overridden for the rest.
@@ -64,11 +66,17 @@ const MOUNTS = {
   'employees.js':               '/api/employees',
   'field-visibility-rules.js':  '/api/field-visibility-rules',
   'hour-bank.js':               '/api/hour-bank',
+  'hubspot.js':                 '/api/hubspot',
   'installation-feedback.js':   '/api/public/installation-feedback',
   'interactions.js':            '/api/interactions',
   'journal-entries.js':         '/api/journal-entries',
   'novoxpress.js':              '/api/novoxpress',
   'orders.js':                  '/api/orders',
+  'places.js':                  '/api/places',
+  // public-files.js exporte deux routers : publicFilesRouter (auth) monté
+  // sur /api/public-files, et publicFileServeRouter (token-based) monté
+  // sur /erp/p. Le parser distingue les routes par variable de routeur.
+  'public-files.js':            { publicFilesRouter: '/api/public-files', publicFileServeRouter: '/erp/p' },
   'paies.js':                   '/api/paies',
   'payments.js':                '/api/payments',
   'products.js':                '/api/products',
@@ -99,28 +107,35 @@ const MOUNTS = {
 }
 
 // Parse one route file. Returns:
-// { routes: [{ method, path, firstArg, line, protected: bool }], blanket: 'requireAuth'|'requireAdmin'|null }
+// { routes: [{ method, path, firstArg, line, protected: bool, routerVar }] }
+// Le parser supporte plusieurs variables de routeur dans un même fichier (ex.
+// public-files.js qui exporte publicFilesRouter + publicFileServeRouter). Le
+// blanket middleware est tracké par variable de routeur — seuls les `router.use`
+// du même nom de variable comptent comme protection blanket.
 function parseFile(content) {
   const lines = content.split('\n')
-  let blanket = null
+  const blanketByVar = Object.create(null)
   const routes = []
+  const ROUTER_NAME = '([a-zA-Z_]\\w*[Rr]outer|router)'
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
 
-    // Blanket middleware applied to all routes that follow in this router.
-    // e.g. `router.use(requireAuth)` or `router.use(requireAdmin)`
-    const blanketMatch = line.match(/router\.use\(\s*(requireAuth|requireAdmin)\s*\)/)
+    // Blanket middleware applied to all routes that follow on the same routeur.
+    // e.g. `router.use(requireAuth)` ou `publicFilesRouter.use(requireAuth)`
+    const blanketMatch = line.match(new RegExp(`${ROUTER_NAME}\\.use\\(\\s*(${[...AUTH_TOKENS].join('|')})\\s*\\)`))
     if (blanketMatch) {
-      blanket = blanketMatch[1]
+      const [, varName, token] = blanketMatch
+      blanketByVar[varName] = token
       continue
     }
 
-    // Route definition: router.<method>('<path>', <firstArg>, ...)
+    // Route definition: <router>.<method>('<path>', <firstArg>, ...)
     // firstArg is either an auth middleware or the handler itself.
-    const routeMatch = line.match(/^\s*router\.(get|post|put|patch|delete)\(\s*['"]([^'"]+)['"]\s*,\s*([A-Za-z_][\w]*)/)
+    const routeMatch = line.match(new RegExp(`^\\s*${ROUTER_NAME}\\.(get|post|put|patch|delete)\\(\\s*['"]([^'"]+)['"]\\s*,\\s*([A-Za-z_][\\w]*)`))
     if (routeMatch) {
-      const [, method, path, firstArg] = routeMatch
+      const [, routerVar, method, path, firstArg] = routeMatch
+      const blanket = blanketByVar[routerVar] || null
       const hasAuth = AUTH_TOKENS.has(firstArg) || blanket !== null
       routes.push({
         method: method.toUpperCase(),
@@ -129,15 +144,17 @@ function parseFile(content) {
         line: i + 1,
         protected: hasAuth,
         blanket,
+        routerVar,
       })
       continue
     }
 
     // Route with inline handler on the same line: `router.post('/x', (req, res) => {`
     // Treated as unprotected unless blanket applies.
-    const inlineHandlerMatch = line.match(/^\s*router\.(get|post|put|patch|delete)\(\s*['"]([^'"]+)['"]\s*,\s*(async\s*)?\(/)
+    const inlineHandlerMatch = line.match(new RegExp(`^\\s*${ROUTER_NAME}\\.(get|post|put|patch|delete)\\(\\s*['"]([^'"]+)['"]\\s*,\\s*(async\\s*)?\\(`))
     if (inlineHandlerMatch) {
-      const [, method, path] = inlineHandlerMatch
+      const [, routerVar, method, path] = inlineHandlerMatch
+      const blanket = blanketByVar[routerVar] || null
       routes.push({
         method: method.toUpperCase(),
         path,
@@ -145,11 +162,20 @@ function parseFile(content) {
         line: i + 1,
         protected: blanket !== null,
         blanket,
+        routerVar,
       })
     }
   }
 
-  return { routes, blanket }
+  return { routes }
+}
+
+// Résout le mount path d'une route donnée. MOUNTS[file] peut être une string
+// (un seul routeur dans le fichier) ou un objet {routerVar: mount}.
+function resolveMount(mountSpec, routerVar) {
+  if (typeof mountSpec === 'string') return mountSpec
+  if (mountSpec && typeof mountSpec === 'object') return mountSpec[routerVar]
+  return undefined
 }
 
 function normalizeKey(method, mount, path) {
@@ -167,8 +193,8 @@ test('chaque route HTTP est protégée par requireAuth/requireAdmin ou dans la w
   const allRoutes = []
 
   for (const file of files) {
-    const mount = MOUNTS[file]
-    if (!mount) {
+    const mountSpec = MOUNTS[file]
+    if (!mountSpec) {
       offenders.push(`${file}: pas de mount path dans MOUNTS — mettre à jour le test`)
       continue
     }
@@ -176,6 +202,11 @@ test('chaque route HTTP est protégée par requireAuth/requireAdmin ou dans la w
     const { routes } = parseFile(content)
 
     for (const r of routes) {
+      const mount = resolveMount(mountSpec, r.routerVar)
+      if (!mount) {
+        offenders.push(`${file}:${r.line}  routeur "${r.routerVar}" sans mount — mettre à jour MOUNTS`)
+        continue
+      }
       const key = normalizeKey(r.method, mount, r.path)
       allRoutes.push(key)
       if (r.protected) continue
@@ -204,11 +235,15 @@ test('chaque entrée de PUBLIC_ROUTES correspond à une route existante', () => 
 
   const existing = new Set()
   for (const file of files) {
-    const mount = MOUNTS[file]
-    if (!mount) continue
+    const mountSpec = MOUNTS[file]
+    if (!mountSpec) continue
     const content = readFileSync(join(ROUTES_DIR, file), 'utf8')
     const { routes } = parseFile(content)
-    for (const r of routes) existing.add(normalizeKey(r.method, mount, r.path))
+    for (const r of routes) {
+      const mount = resolveMount(mountSpec, r.routerVar)
+      if (!mount) continue
+      existing.add(normalizeKey(r.method, mount, r.path))
+    }
   }
 
   const stale = []

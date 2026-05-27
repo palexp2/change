@@ -13,7 +13,7 @@ import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { VendorSelect } from '../components/VendorSelect.jsx'
 import { LineItemsTable } from '../components/LineItemsTable.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
-import { fmtDate } from '../lib/formatDate.js'
+import { fmtDate, localISODate } from '../lib/formatDate.js'
 
 const STATUS_COLORS = {
   'Brouillon': 'gray',
@@ -64,7 +64,7 @@ const RENDERS = {
 const COLUMNS = TABLE_COLUMN_META.achats_fournisseurs.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
 function emptyForm(type) {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localISODate()
   return type === 'bill'
     ? { type: 'bill', date_achat: today, due_date: '', vendor: '', vendor_id: null, vendor_invoice_number: '', bill_number: '', category: '', amount_cad: '', tax_cad: '', amount_paid_cad: '', status: 'Reçue', notes: '' }
     : { type: 'purchase', date_achat: today, vendor: '', vendor_id: null, reference: '', description: '', category: '', payment_method: '', amount_cad: '', tax_cad: '', status: 'Brouillon', notes: '' }

@@ -3,6 +3,7 @@ import db from '../db/database.js';
 import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { getUsdCadRate } from '../services/fx.js';
 import { diffSnapshots, enrichItemsWithErpProductId } from '../services/subscriptionItemsSnapshot.js';
+import { qbGet, onQbMutation } from '../connectors/quickbooks.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -1426,6 +1427,80 @@ router.get('/top-products', async (req, res) => {
       max_date: new Date().toISOString().slice(0, 10),
     },
   })
+})
+
+// GET /api/dashboard/balance-sheet
+// Récupère le rapport BalanceSheet QuickBooks (à la date du jour, méthode Accrual)
+// et renvoie une structure aplatie prête à afficher en arborescence côté client.
+//
+// QB Reports renvoie un arbre Rows.Row[] où chaque Row a :
+//   - type: 'Section' (groupe avec sous-rows + Summary) ou 'Data' (compte feuille)
+//   - Header.ColData[]   (libellé du groupe)
+//   - Rows.Row[]         (sous-rangs)
+//   - Summary.ColData[]  (totaux de groupe)
+//   - ColData[]          (ligne de données : [{value:libellé,id:acctId},{value:montant}])
+// Permanent cache keyed by as_of. Invalidated on any QB write via onQbMutation
+// below, and on `?refresh=1` (manual refresh button). Humans editing QB
+// directly in the QB UI won't trigger invalidation — use ?refresh=1 then.
+const balanceSheetCache = new Map()
+onQbMutation(() => balanceSheetCache.clear())
+
+router.get('/balance-sheet', async (req, res) => {
+  try {
+    const params = new URLSearchParams({ accounting_method: 'Accrual' })
+    if (req.query.as_of) params.set('end_date', String(req.query.as_of))
+    const cacheKey = params.toString()
+    if (!req.query.refresh) {
+      const hit = balanceSheetCache.get(cacheKey)
+      if (hit) return res.json(hit)
+    }
+    const data = await qbGet(`/reports/BalanceSheet?${params}`)
+    const report = data?.Report || data
+
+    let nodeIdSeq = 0
+    function walkRows(rows, depth) {
+      const out = []
+      for (const row of (rows?.Row || [])) {
+        if (row.type === 'Section') {
+          const label = row.Header?.ColData?.[0]?.value || ''
+          const total = row.Summary?.ColData?.[1]?.value ?? null
+          const node = {
+            id: `n${nodeIdSeq++}`,
+            kind: 'section',
+            label,
+            total: total !== null && total !== '' ? Number(total) : null,
+            depth,
+            children: walkRows(row.Rows, depth + 1),
+          }
+          out.push(node)
+        } else {
+          const cols = row.ColData || []
+          out.push({
+            id: `n${nodeIdSeq++}`,
+            kind: 'data',
+            label: cols[0]?.value || '',
+            account_id: cols[0]?.id || null,
+            total: cols[1]?.value !== undefined && cols[1]?.value !== '' ? Number(cols[1].value) : null,
+            depth,
+          })
+        }
+      }
+      return out
+    }
+
+    const rows = walkRows(report?.Rows, 0)
+    const payload = {
+      currency: report?.Header?.Currency || 'CAD',
+      as_of: report?.Header?.EndPeriod || null,
+      generated_at: report?.Header?.Time || new Date().toISOString(),
+      rows,
+    }
+    balanceSheetCache.set(cacheKey, payload)
+    res.json(payload)
+  } catch (e) {
+    console.error('[dashboard/balance-sheet]', e)
+    res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
+  }
 })
 
 export default router;

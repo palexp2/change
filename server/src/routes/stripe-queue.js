@@ -132,7 +132,8 @@ router.post('/batch-enrich', async (req, res) => {
         const invoiceId = inv.id
         const status = mapStripeStatus(inv.status)
         const total = (inv.total || 0) / 100
-        const subtotal = (inv.subtotal || 0) / 100
+        // HT — voir stripe-webhooks.js / upsertFactureFromStripeInvoice.
+        const subtotal = (inv.subtotal_excluding_tax ?? inv.subtotal ?? 0) / 100
         const balanceDue = (inv.amount_remaining || 0) / 100
         const currency = (inv.currency || 'cad').toUpperCase()
         const date = inv.created ? new Date(inv.created * 1000).toISOString().slice(0, 10) : null

@@ -39,8 +39,13 @@ router.get('/vendeur-options', (req, res) => {
 })
 
 // GET /api/projects
+// ?lite=1 → renvoie seulement les colonnes affichées par défaut dans la liste,
+// sans les sous-requêtes coûteuses (orders json_group_array, vendeur_label CASE,
+// notes). Pipeline.jsx l'utilise pour la première peinture, puis recharge en
+// silence la version complète.
 router.get('/', (req, res) => {
   const { search, status, company_id, page = 1, limit = 100 } = req.query;
+  const lite = req.query.lite === '1' || req.query.lite === 'true';
   const limitAll = limit === 'all';
   const limitVal = limitAll ? -1 : parseInt(limit);
   const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
@@ -69,31 +74,45 @@ router.get('/', (req, res) => {
     `SELECT COUNT(*) as c FROM projects p LEFT JOIN companies c ON p.company_id = c.id ${where}`
   ).get(...params).c;
 
-  const projects = db.prepare(
-    `SELECT p.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name,
-            CASE
-              WHEN p.vendeur_ref LIKE 'employee:%' THEN (
-                SELECT TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,''))
-                FROM employees e WHERE e.id = substr(p.vendeur_ref, 10)
-              )
-              WHEN p.vendeur_ref LIKE 'company:%' THEN (
-                SELECT vc.name FROM companies vc WHERE vc.id = substr(p.vendeur_ref, 9)
-              )
-            END AS vendeur_label,
-            (SELECT json_group_array(json_object('id', o.id, 'order_number', o.order_number))
-               FROM orders o WHERE o.project_id = p.id) as orders_json
-     FROM projects p
-     LEFT JOIN companies c ON p.company_id = c.id
-     LEFT JOIN contacts ct ON p.contact_id = ct.id
-     ${where}
-     ORDER BY p.updated_at DESC
-     LIMIT ? OFFSET ?`
-  ).all(...params, limitVal, offset);
+  const liteSelect = `
+    SELECT p.id, p.name, p.company_id, p.contact_id, p.type, p.status,
+           p.probability, p.value_cad, p.monthly_cad, p.nb_greenhouses,
+           p.close_date, p.creation, p.updated_at, p.refusal_reason, p.vendeur_ref,
+           c.name as company_name
+    FROM projects p
+    LEFT JOIN companies c ON p.company_id = c.id
+    ${where}
+    ORDER BY p.updated_at DESC
+    LIMIT ? OFFSET ?`
 
-  for (const p of projects) {
-    try { p.orders = p.orders_json ? JSON.parse(p.orders_json).filter(o => o.id) : []; }
-    catch { p.orders = []; }
-    delete p.orders_json;
+  const fullSelect = `
+    SELECT p.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name,
+           CASE
+             WHEN p.vendeur_ref LIKE 'employee:%' THEN (
+               SELECT TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,''))
+               FROM employees e WHERE e.id = substr(p.vendeur_ref, 10)
+             )
+             WHEN p.vendeur_ref LIKE 'company:%' THEN (
+               SELECT vc.name FROM companies vc WHERE vc.id = substr(p.vendeur_ref, 9)
+             )
+           END AS vendeur_label,
+           (SELECT json_group_array(json_object('id', o.id, 'order_number', o.order_number))
+              FROM orders o WHERE o.project_id = p.id) as orders_json
+    FROM projects p
+    LEFT JOIN companies c ON p.company_id = c.id
+    LEFT JOIN contacts ct ON p.contact_id = ct.id
+    ${where}
+    ORDER BY p.updated_at DESC
+    LIMIT ? OFFSET ?`
+
+  const projects = db.prepare(lite ? liteSelect : fullSelect).all(...params, limitVal, offset);
+
+  if (!lite) {
+    for (const p of projects) {
+      try { p.orders = p.orders_json ? JSON.parse(p.orders_json).filter(o => o.id) : []; }
+      catch { p.orders = []; }
+      delete p.orders_json;
+    }
   }
 
   res.json({ data: projects, total, page: parseInt(page), limit: parseInt(limit) });

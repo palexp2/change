@@ -8,6 +8,7 @@ import { execSync } from 'child_process';
 import os from 'os';
 import Stripe from 'stripe';
 import { postPaymentDeposit, stripeInvoiceNetHtCents } from '../services/quickbooks.js';
+import { qbGet } from '../connectors/quickbooks.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
 
 const router = Router();
@@ -131,6 +132,97 @@ router.post('/factures/:id/clear-revenue-recognition', (req, res) => {
     WHERE id = ?
   `).run(req.params.id)
   res.json({ ok: true })
+})
+
+// POST /api/admin/factures/:id/link-revenue-recognition  body: { je_id }
+// Lie une Journal Entry QuickBooks *déjà existante* à la facture, sans rien
+// créer côté QB. Cas d'usage : la JE 23900→40000 a été saisie manuellement
+// dans QuickBooks (avant l'ERP, ou hors-flux automatique), on veut juste
+// enregistrer la référence locale pour que l'historique des événements
+// l'affiche correctement.
+// Valide que la JE existe dans QB ; refuse sinon. Utilise la TxnDate de la JE
+// comme `revenue_recognized_at`.
+router.post('/factures/:id/link-revenue-recognition', async (req, res) => {
+  const jeIdRaw = req.body?.je_id
+  const jeId = jeIdRaw == null ? '' : String(jeIdRaw).trim()
+  if (!jeId) return res.status(400).json({ error: 'je_id requis' })
+  const f = db.prepare('SELECT id, revenue_recognized_at, revenue_recognized_je_id FROM factures WHERE id=?').get(req.params.id)
+  if (!f) return res.status(404).json({ error: 'Facture introuvable' })
+  if (f.revenue_recognized_at) {
+    return res.status(409).json({ error: `Vente déjà constatée (JE ${f.revenue_recognized_je_id || '?'})` })
+  }
+  let je
+  try {
+    const data = await qbGet(`/journalentry/${jeId}`)
+    je = data?.JournalEntry
+  } catch (err) {
+    if (/\b(404|6240|invalid|not.?found)\b/i.test(err.message) || /"code"\s*:\s*"610"/.test(err.message)) {
+      return res.status(404).json({ error: `Journal Entry ${jeId} introuvable dans QuickBooks.` })
+    }
+    return res.status(500).json({ error: `Erreur QB : ${err.message}` })
+  }
+  if (!je) return res.status(404).json({ error: `Journal Entry ${jeId} introuvable dans QuickBooks.` })
+  const txnDate = je.TxnDate || new Date().toISOString().slice(0, 10)
+  const recognizedAt = `${txnDate}T12:00:00.000Z`
+  db.prepare(`
+    UPDATE factures
+    SET revenue_recognized_at = ?,
+        revenue_recognized_je_id = ?,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = ?
+  `).run(recognizedAt, jeId, req.params.id)
+  const fresh = db.prepare('SELECT * FROM factures WHERE id=?').get(req.params.id)
+  emitEntity('facture', 'updated', req.params.id, fresh, req.user?.id)
+  res.json({ ok: true, je_id: jeId, txn_date: txnDate })
+})
+
+// POST /api/admin/factures/:id/link-deferred-revenue  body: { qb_ref }
+// Lie une transaction QB *déjà existante* (Deposit, Sales Receipt ou Journal
+// Entry) qui pose le passif 23900 pour cette facture. Aucun push QB ; pose
+// uniquement les colonnes locales deferred_revenue_*.
+// `qb_ref` doit avoir la forme « <type>:<id> » avec type ∈ deposit, salesreceipt, journal.
+router.post('/factures/:id/link-deferred-revenue', async (req, res) => {
+  const refRaw = req.body?.qb_ref
+  const ref = refRaw == null ? '' : String(refRaw).trim()
+  const idx = ref.indexOf(':')
+  if (idx < 0) return res.status(400).json({ error: 'qb_ref requis (format « deposit:123 », « salesreceipt:456 » ou « journal:789 »)' })
+  const type = ref.slice(0, idx)
+  const qbId = ref.slice(idx + 1)
+  const endpoint = type === 'deposit' ? 'deposit' : type === 'salesreceipt' ? 'salesreceipt' : type === 'journal' ? 'journalentry' : null
+  if (!endpoint || !qbId) return res.status(400).json({ error: 'Type de référence non supporté — utiliser deposit, salesreceipt ou journal' })
+  const f = db.prepare('SELECT id, currency, amount_before_tax_cad, deferred_revenue_at FROM factures WHERE id=?').get(req.params.id)
+  if (!f) return res.status(404).json({ error: 'Facture introuvable' })
+  if (f.deferred_revenue_at) {
+    return res.status(409).json({ error: 'Revenu perçu d\'avance déjà posté pour cette facture' })
+  }
+  let entity
+  try {
+    const data = await qbGet(`/${endpoint}/${qbId}`)
+    entity = data?.Deposit || data?.SalesReceipt || data?.JournalEntry
+  } catch (err) {
+    if (/\b(404|6240|invalid|not.?found)\b/i.test(err.message) || /"code"\s*:\s*"610"/.test(err.message)) {
+      return res.status(404).json({ error: `${type} ${qbId} introuvable dans QuickBooks.` })
+    }
+    return res.status(500).json({ error: `Erreur QB : ${err.message}` })
+  }
+  if (!entity) return res.status(404).json({ error: `${type} ${qbId} introuvable dans QuickBooks.` })
+  const txnDate = entity.TxnDate || new Date().toISOString().slice(0, 10)
+  const deferredAt = `${txnDate}T12:00:00.000Z`
+  const amountCad = Number(f.amount_before_tax_cad) || 0
+  const currency = f.currency || 'CAD'
+  db.prepare(`
+    UPDATE factures
+    SET deferred_revenue_at = ?,
+        deferred_revenue_qb_ref = ?,
+        deferred_revenue_amount_native = ?,
+        deferred_revenue_amount_cad = ?,
+        deferred_revenue_currency = ?,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = ?
+  `).run(deferredAt, `${type}:${qbId}`, amountCad, amountCad, currency, req.params.id)
+  const fresh = db.prepare('SELECT * FROM factures WHERE id=?').get(req.params.id)
+  emitEntity('facture', 'updated', req.params.id, fresh, req.user?.id)
+  res.json({ ok: true, qb_ref: `${type}:${qbId}`, txn_date: txnDate })
 })
 
 // Pattern « édition avancée » par table — schéma brut via PRAGMA table_info +
@@ -492,10 +584,33 @@ router.get('/health', (req, res) => {
     }
   } catch {}
 
-  res.json({ disk, ram, cpu, uptime, processes, dbSize, whisper, recentErrors, diskBreakdown })
+  // ── Chargements de page lents (>500ms) ────────────────────────────────────
+  let slowLoads = []
+  try {
+    slowLoads = db.prepare(`
+      SELECT id, created_at, user_id, user_name, url, load_ms
+      FROM slow_page_loads
+      ORDER BY created_at DESC
+      LIMIT 50
+    `).all()
+  } catch {}
+
+  res.json({ disk, ram, cpu, uptime, processes, dbSize, whisper, recentErrors, diskBreakdown, slowLoads })
 })
 
 
+
+// DELETE /api/admin/slow-loads/:id — purge d'un enregistrement de chargement lent
+router.delete('/slow-loads/:id', (req, res) => {
+  const r = db.prepare(`DELETE FROM slow_page_loads WHERE id = ?`).run(req.params.id)
+  res.json({ deleted: r.changes })
+})
+
+// DELETE /api/admin/slow-loads — purge complète
+router.delete('/slow-loads', (req, res) => {
+  const r = db.prepare(`DELETE FROM slow_page_loads`).run()
+  res.json({ deleted: r.changes })
+})
 
 // GET /api/admin/trash — enregistrements supprimés de toutes les tables
 router.get('/trash', (req, res) => {

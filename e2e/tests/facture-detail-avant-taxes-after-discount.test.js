@@ -34,13 +34,16 @@ describe('FactureDetail — Avant taxes inclut le rabais', () => {
   after(async () => { await browser?.close() })
 
   test('"Avant taxes" = subtotal stocké − somme des rabais affichés', async () => {
-    // Charge les données via l'API pour connaître les valeurs attendues
+    // Charge les données via l'API pour connaître les valeurs attendues.
+    // Les rabais sont sur une route séparée (chargée en parallèle côté front
+    // pour ne pas bloquer le rendu sur l'appel Stripe live).
     const detail = await page.evaluate(async (id) => {
       const token = localStorage.getItem('erp_token')
-      const r = await fetch(`/erp/api/projets/factures/${id}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      return r.json()
+      const [main, disc] = await Promise.all([
+        fetch(`/erp/api/projets/factures/${id}`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()),
+        fetch(`/erp/api/projets/factures/${id}/discounts`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json()),
+      ])
+      return { ...main, discounts: disc.discounts || [] }
     }, FACTURE_ID)
 
     assert.ok(Array.isArray(detail.discounts) && detail.discounts.length > 0,
@@ -55,6 +58,9 @@ describe('FactureDetail — Avant taxes inclut le rabais', () => {
 
     await page.goto(`${URL}/factures/${FACTURE_ID}`, { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('[data-testid="facture-line-subtotal"]', { timeout: 10000 })
+    // Les rabais sont chargés via une route séparée (round-trip Stripe live).
+    // Attendre l'apparition de la ligne "Rabais" avant de lire "Avant taxes".
+    await page.locator('[data-testid="facture-items"]').getByText(/Rabais/).first().waitFor({ timeout: 10000 })
 
     const cell = page.locator('[data-testid="facture-line-subtotal"] td').last()
     const rendered = (await cell.innerText()).trim()

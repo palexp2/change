@@ -112,7 +112,7 @@ router.get('/:id', (req, res) => {
     LEFT JOIN companies c ON o.company_id = c.id
     LEFT JOIN adresses a ON s.address_id = a.id
     LEFT JOIN contacts ct ON a.contact_id = ct.id
-    WHERE s.id = ?
+    WHERE s.id = ? AND s.deleted_at IS NULL
   `).get(req.params.id)
 
   if (!row) return res.status(404).json({ error: 'Envoi introuvable' })
@@ -151,7 +151,7 @@ router.post('/', (req, res) => {
 // PATCH /api/shipments/:id
 router.patch('/:id', (req, res) => {
   const { tracking_number, carrier, status, shipped_at, notes, address_id, pays } = req.body
-  const existing = db.prepare('SELECT id FROM shipments WHERE id = ?').get(req.params.id)
+  const existing = db.prepare('SELECT id FROM shipments WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Envoi introuvable' })
 
   db.prepare(`

@@ -173,9 +173,27 @@ function sanitizeXmlText(s) {
 }
 
 function buildRecipient(shipment) {
-  // Sanitize phone
-  const raw = (shipment.company_phone || '').replace(/\D/g, '')
+  // Préférence : contact rattaché à l'adresse > company (le contact est le
+  // destinataire physique du colis, ses coordonnées sont les bonnes).
+  const rawEmail = shipment.address_contact_email || shipment.company_email || ''
+  const rawPhoneSource = shipment.address_contact_phone || shipment.address_contact_mobile || shipment.company_phone || ''
+  const raw = rawPhoneSource.replace(/\D/g, '')
   const phone = raw.length === 11 && raw.startsWith('1') ? raw.slice(1) : raw
+
+  // Validation — Novoxpress exige un courriel et un numéro de 10 chiffres
+  // valides. Avant on injectait silencieusement '5550000000', ce qui causait
+  // des étiquettes avec de fausses coordonnées. Maintenant on lève une erreur
+  // claire pour que l'utilisateur corrige la fiche contact/company.
+  const missing = []
+  if (!rawEmail) missing.push('courriel')
+  if (phone.length !== 10) missing.push('numéro de téléphone (10 chiffres)')
+  if (missing.length) {
+    throw new Error(
+      `Coordonnées du destinataire manquantes — ${missing.join(' et ')}. ` +
+      `Ajoutez ${missing.join(' et ')} sur le contact rattaché à l'adresse de livraison ` +
+      `(ou à défaut sur la fiche entreprise « ${shipment.company_name || 'Client'} ») avant d'acheter l'étiquette.`
+    )
+  }
 
   // Normalize country to 2-letter code
   const countryMap = { 'Canada': 'CA', 'United States': 'US', 'États-Unis': 'US' }
@@ -190,7 +208,7 @@ function buildRecipient(shipment) {
 
   return {
     company_name: sanitizeXmlText(shipment.company_name || 'Client').slice(0, 30),
-    email_address: shipment.company_email || '',
+    email_address: rawEmail,
     address: {
       street_address: sanitizeXmlText(street).slice(0, 35),
       city: sanitizeXmlText(city).slice(0, 35),
@@ -198,7 +216,7 @@ function buildRecipient(shipment) {
       country,
       postal_code: (shipment.address_postal_code || '').replace(/\s/g, ''),
       phone_code: '1',
-      phone_number: phone || '5550000000'
+      phone_number: phone
     },
     residential: false
   }
@@ -257,9 +275,13 @@ export async function cancelPickup(pickupId) {
 }
 
 export async function schedulePickup(novoxpressShipmentId, { date, ready_at, ready_until, quantity, weight, pickup_location, pickup_instructions }) {
+  // L'endpoint /pickup/create-pickup rejette `sender.residential` (alors que
+  // /shipment/create-shipment et /services/rate-estimate l'acceptent). On
+  // strippe ce champ ici uniquement.
+  const { residential: _residential, ...senderForPickup } = SENDER
   const body = {
     shipment_id: novoxpressShipmentId,
-    sender: SENDER,
+    sender: senderForPickup,
     pickup_details: {
       date,
       ready_at,

@@ -106,6 +106,15 @@ describe('EnvoisDetail — supprimer un envoi depuis la modale Modifier', () => 
     const stillThere = (list.body.data || []).some(s => s.id === createdShipmentId)
     assert.equal(stillThere, false, 'shipment ne devrait plus apparaître dans la liste après soft-delete')
 
+    // GET /api/shipments/:id doit retourner 404 après soft-delete (sinon
+    // revisiter l'URL /envois/:id ré-affichait l'envoi pourtant supprimé).
+    const detail = await apiFetch(page, `/api/shipments/${createdShipmentId}`)
+    assert.equal(detail.status, 404, `GET shipment supprimé devrait retourner 404 — reçu: ${detail.status}`)
+
+    // /envois/:id doit afficher "Envoi introuvable" si on revisite l'URL.
+    await page.goto(`${URL}/envois/${createdShipmentId}`, { waitUntil: 'networkidle' })
+    await page.locator('text=Envoi introuvable').first().waitFor({ state: 'visible', timeout: 5000 })
+
     // On marque comme déjà supprimé pour le after() — pas besoin du filet de sécurité.
     createdShipmentId = null
   })

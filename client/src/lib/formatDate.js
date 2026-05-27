@@ -27,6 +27,17 @@ export function fmtDate(d, opts = {}) {
   })
 }
 
+// Date locale (fuseau du navigateur) au format YYYY-MM-DD.
+// NE PAS utiliser `new Date().toISOString().slice(0, 10)` pour ça : ça renvoie l'UTC,
+// donc à 23:00 EST le jour J, on obtient J+1 — les défauts de formulaires (date
+// d'écriture comptable, date de paiement, etc.) partent au lendemain.
+export function localISODate(d = new Date()) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 export function fmtDateTime(d) {
   if (!d) return '—'
   return new Date(d).toLocaleDateString('fr-CA', {

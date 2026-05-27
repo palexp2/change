@@ -97,7 +97,7 @@ async function buildCheckoutLineItems(stripe, { items, shipping_province, shippi
 // on this so the link stays "permanent" even after Stripe sessions expire.
 //
 // Returns { sessionId, url, expiresAt }.
-export async function createOrRefreshCheckoutSession({ stripe, pending, baseAppUrl }) {
+export async function createOrRefreshCheckoutSession({ stripe, pending, baseAppUrl, successUrl: successUrlOverride, cancelUrl: cancelUrlOverride }) {
   const { default: db } = await import('../db/database.js')
 
   // Reuse the current session if still valid + same items
@@ -124,8 +124,8 @@ export async function createOrRefreshCheckoutSession({ stripe, pending, baseAppU
     shipping_country: pending.shipping_country,
   })
 
-  const successUrl = `${baseAppUrl}/erp/customer/post-payment?session_id={CHECKOUT_SESSION_ID}`
-  const cancelUrl = `${baseAppUrl}/erp/pay/${pending.id}?cancelled=1`
+  const successUrl = successUrlOverride || `${baseAppUrl}/erp/customer/post-payment?session_id={CHECKOUT_SESSION_ID}`
+  const cancelUrl = cancelUrlOverride || `${baseAppUrl}/erp/pay/${pending.id}?cancelled=1`
 
   // Stripe max expires_at is 24h for hosted Checkout Sessions. Beyond that the
   // /pay endpoint creates a fresh one.

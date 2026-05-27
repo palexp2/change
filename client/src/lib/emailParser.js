@@ -17,14 +17,22 @@ export function stripEmailHtml(html) {
   if (!html) return { html: '', hasQuoted: false, hasSignature: false, hasHidden: false }
   try {
     const doc = new DOMParser().parseFromString(html, 'text/html')
+    // Strip <img src="cid:..."> — RFC 2392 Content-ID refs that only resolve
+    // inside an email client. Le navigateur émet une erreur ERR_UNKNOWN_URL_SCHEME
+    // par image, ce qui pollue la console sans rien apporter.
+    removeCidImages(doc)
     const hasQuoted = removeQuotedHtml(doc)
     const hasSignature = removeSignatureHtml(doc)
-    if (!hasQuoted && !hasSignature) return { html, hasQuoted, hasSignature, hasHidden: false }
     const stripped = (doc.body ? doc.body.innerHTML : doc.documentElement.innerHTML).trim()
-    return { html: stripped, hasQuoted, hasSignature, hasHidden: true }
+    return { html: stripped, hasQuoted, hasSignature, hasHidden: hasQuoted || hasSignature }
   } catch {
     return { html, hasQuoted: false, hasSignature: false, hasHidden: false }
   }
+}
+
+function removeCidImages(doc) {
+  const imgs = doc.querySelectorAll('img[src^="cid:" i]')
+  for (const img of imgs) img.remove()
 }
 
 export function stripEmailText(text) {

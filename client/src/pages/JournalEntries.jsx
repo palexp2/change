@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, ExternalLink, Trash2, RefreshCw, BookOpen, AlertCircle, Wand2, ChevronDown, ChevronRight } from 'lucide-react'
+import { Plus, ExternalLink, Trash2, RefreshCw, BookOpen, AlertCircle, Wand2, ChevronDown, ChevronRight, Save } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -8,7 +8,7 @@ import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { fmtDate } from '../lib/formatDate.js'
+import { fmtDate, localISODate } from '../lib/formatDate.js'
 
 function fmtCad(n, currency = 'CAD') {
   if (n == null) return '—'
@@ -20,7 +20,7 @@ function fmtCad(n, currency = 'CAD') {
 }
 
 function todayISO() {
-  return new Date().toISOString().slice(0, 10)
+  return localISODate()
 }
 
 function emptyLine(posting = 'Debit') {
@@ -29,10 +29,32 @@ function emptyLine(posting = 'Debit') {
 
 function firstOfMonthISO() {
   const d = new Date()
-  return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10)
+  return localISODate(new Date(d.getFullYear(), d.getMonth(), 1))
 }
 
-function CreateJournalEntryForm({ accounts, onSaved, onCancel }) {
+// Clés d'opération pour les défauts de comptes débit/crédit (table journal_entry_defaults).
+const OP_KEYS = {
+  shippedReplacement: 'shipped.replacement',
+  shippedSale: 'shipped.sale',
+}
+function movementOpKey(reason) { return `movement.${reason}` }
+
+// Picker compact de compte QB pour les cellules de la prépopulation.
+function AccountPicker({ value, accounts, name, onChange }) {
+  return (
+    <LinkedRecordField
+      name={name}
+      value={value || ''}
+      options={accounts.map(a => ({ id: a.Id, _name: a.Name, _type: a.AccountType }))}
+      labelFn={a => a._name}
+      placeholder="— compte —"
+      onChange={onChange}
+      allowClear={false}
+    />
+  )
+}
+
+function CreateJournalEntryForm({ accounts, initialDefaults, onSaved, onCancel, onDefaultsSaved }) {
   const [txnDate, setTxnDate] = useState(todayISO())
   const [docNumber, setDocNumber] = useState('')
   const [memo, setMemo] = useState('')
@@ -55,27 +77,89 @@ function CreateJournalEntryForm({ accounts, onSaved, onCancel }) {
   const [includeAdjustmentRefurbished, setIncludeAdjustmentRefurbished] = useState(true)
   const [includeAdjustmentInTransit, setIncludeAdjustmentInTransit] = useState(true)
   const [includeAdjustmentLeased, setIncludeAdjustmentLeased] = useState(true)
-  // Comptes hardcodés par nom (résolus via accounts list)
+  // Comptes hardcodés par nom (résolus via accounts list) — fallback si pas de défaut en DB
   const SHIPPED_REPL_DEBIT = 'Envoi de pièces de remplacement'
-  const SHIPPED_SALE_DEBIT = 'Coût des produits vendus'
+  const SHIPPED_SALE_DEBIT = '50001'
   const STOCK_ACCOUNT = 'Stock de Pièces'
   const FINISHED_GOODS_ACCOUNT = 'Stock de Produits finis'
   const REFURBISHED_GOODS_ACCOUNT = 'Stock de Produits reconditionnés'
   const IN_TRANSIT_ACCOUNT = 'Stock d\'équip. en transit'
   const LEASED_EQUIPMENT_ACCOUNT = 'Équipements prêtés aux abonnés'
   const ADJUSTMENT_OFFSET_ACCOUNT = 'Ajustements (Coûts des produits vendus)'
-  // Mapping reason → { account, direction } pour les mouvements d'inventaire
+  // Mapping reason → { account, direction } pour les mouvements d'inventaire (fallback).
   // direction 'out' (stock diminue) → Débit compte, Crédit Stock
   // direction 'in'  (stock augmente) → Débit Stock, Crédit compte
-  const MOVEMENT_MAP = {
+  const MOVEMENT_MAP_FALLBACK = {
     'Ajustement (augmentation)': { account: 'Ajustements (Coûts des produits vendus)', direction: 'in' },
     'Ajustement (diminution)':   { account: 'Ajustements (Coûts des produits vendus)', direction: 'out' },
     'Utilisation de pièces usagés': { account: 'Récupération de pièces', direction: 'out' },
     'Utilisation pour le reconditionnement': { account: 'Utilisation de pièces pour le reconditionnement', direction: 'out' },
     'Prélèvement pour R&D': { account: 'Fournitures R&D', direction: 'out' },
   }
-  const findAccountId = (name) => accounts.find(a => a.Name === name)?.Id || ''
+  const findAccountId = useCallback((name) => accounts.find(a => a.Name === name)?.Id || '', [accounts])
   const findAccount = (name) => accounts.find(a => a.Name === name) || null
+  const accountById = useCallback((id) => accounts.find(a => String(a.Id) === String(id)) || null, [accounts])
+
+  // Défauts éditables pour les comptes débit/crédit de la prépopulation.
+  // Indexés par operation_key (ex. 'shipped.replacement', 'movement.Ajustement (augmentation)').
+  // Initialisés depuis la DB (initialDefaults) avec fallback sur les noms hardcodés
+  // une fois la liste accounts disponible.
+  const [editedDefaults, setEditedDefaults] = useState(() => ({ ...(initialDefaults || {}) }))
+  const [defaultsDirty, setDefaultsDirty] = useState(false)
+  const [savingDefaults, setSavingDefaults] = useState(false)
+
+  // Une fois accounts chargés, on hydrate editedDefaults avec les fallbacks pour les clés
+  // d'opération absentes. Les clés des mouvements proviennent de prepData (donc faits ci-dessous).
+  useEffect(() => {
+    if (!accounts.length) return
+    setEditedDefaults(prev => {
+      const next = { ...prev }
+      const findByNameOrAcctNum = (key) => {
+        // Une clé numérique-only est interprétée comme AcctNum QB ; sinon match par Name.
+        if (/^\d+$/.test(String(key))) {
+          return accounts.find(a => String(a.AcctNum) === String(key)) || null
+        }
+        return accounts.find(a => a.Name === key) || null
+      }
+      const ensureFallback = (key, debitKey, creditKey) => {
+        if (next[key]?.debit_account_id && next[key]?.credit_account_id) return
+        const debitAcc = findByNameOrAcctNum(debitKey)
+        const creditAcc = findByNameOrAcctNum(creditKey)
+        next[key] = {
+          debit_account_id: next[key]?.debit_account_id || debitAcc?.Id || '',
+          debit_account_name: next[key]?.debit_account_name || debitAcc?.Name || '',
+          credit_account_id: next[key]?.credit_account_id || creditAcc?.Id || '',
+          credit_account_name: next[key]?.credit_account_name || creditAcc?.Name || '',
+        }
+      }
+      ensureFallback(OP_KEYS.shippedReplacement, SHIPPED_REPL_DEBIT, STOCK_ACCOUNT)
+      ensureFallback(OP_KEYS.shippedSale, SHIPPED_SALE_DEBIT, STOCK_ACCOUNT)
+      for (const [reason, m] of Object.entries(MOVEMENT_MAP_FALLBACK)) {
+        const key = movementOpKey(reason)
+        const debitName = m.direction === 'out' ? m.account : STOCK_ACCOUNT
+        const creditName = m.direction === 'out' ? STOCK_ACCOUNT : m.account
+        ensureFallback(key, debitName, creditName)
+      }
+      return next
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accounts])
+
+  // Helpers pour lire/écrire les défauts.
+  const getOpDebitId = (key) => editedDefaults[key]?.debit_account_id || ''
+  const getOpCreditId = (key) => editedDefaults[key]?.credit_account_id || ''
+  function setOpAccount(key, side, accountId) {
+    const acc = accountById(accountId)
+    setEditedDefaults(prev => ({
+      ...prev,
+      [key]: {
+        ...(prev[key] || {}),
+        [`${side}_account_id`]: accountId || '',
+        [`${side}_account_name`]: acc?.FullyQualifiedName || acc?.Name || '',
+      },
+    }))
+    setDefaultsDirty(true)
+  }
 
   // Impact net des opérations sélectionnées sur un compte de stock donné.
   // Convention : positif = augmente le solde QB (débit - crédit).
@@ -95,19 +179,24 @@ function CreateJournalEntryForm({ accounts, onSaved, onCancel }) {
         if (t.rule.credit_account_id === accId) impact -= t.total_amount
       }
     }
-    // Les envois et mouvements ne touchent que Stock de Pièces (par construction
-    // côté mapping). On ne compte donc leur effet que pour ce compte.
-    if (accountName === STOCK_ACCOUNT) {
-      if (includeShipped && prepData.shipped_items) {
-        impact -= (prepData.shipped_items.replacement?.total_amount || 0)
-        impact -= (prepData.shipped_items.sale?.total_amount || 0)
+    if (includeShipped && prepData.shipped_items) {
+      for (const [opKey, src] of [
+        [OP_KEYS.shippedReplacement, prepData.shipped_items.replacement],
+        [OP_KEYS.shippedSale, prepData.shipped_items.sale],
+      ]) {
+        const amt = src?.total_amount || 0
+        if (!(amt > 0)) continue
+        if (getOpDebitId(opKey) === accId) impact += amt
+        if (getOpCreditId(opKey) === accId) impact -= amt
       }
-      if (includeMovements && prepData.stock_movements?.groups) {
-        for (const g of prepData.stock_movements.groups) {
-          const m = MOVEMENT_MAP[g.reason]
-          if (!m || !(g.total_amount > 0)) continue
-          impact += (m.direction === 'in' ? g.total_amount : -g.total_amount)
-        }
+    }
+    if (includeMovements && prepData.stock_movements?.groups) {
+      for (const g of prepData.stock_movements.groups) {
+        if (!(g.total_amount > 0)) continue
+        const key = movementOpKey(g.reason)
+        if (!(getOpDebitId(key) || getOpCreditId(key))) continue
+        if (getOpDebitId(key) === accId) impact += g.total_amount
+        if (getOpCreditId(key) === accId) impact -= g.total_amount
       }
     }
     return impact
@@ -125,6 +214,29 @@ function CreateJournalEntryForm({ accounts, onSaved, onCancel }) {
   }
   function removeLine(idx) {
     setLines(ls => ls.length > 2 ? ls.filter((_, i) => i !== idx) : ls)
+  }
+
+  async function handleSaveDefaults() {
+    setSavingDefaults(true)
+    setPrepError('')
+    try {
+      const list = Object.entries(editedDefaults)
+        .filter(([, v]) => v && (v.debit_account_id || v.credit_account_id))
+        .map(([operation_key, v]) => ({
+          operation_key,
+          debit_account_id: v.debit_account_id || null,
+          debit_account_name: v.debit_account_name || null,
+          credit_account_id: v.credit_account_id || null,
+          credit_account_name: v.credit_account_name || null,
+        }))
+      const r = await api.journalEntries.saveDefaults(list)
+      setDefaultsDirty(false)
+      if (onDefaultsSaved) onDefaultsSaved(r.data || {})
+    } catch (e) {
+      setPrepError(`Sauvegarde des défauts: ${e.message}`)
+    } finally {
+      setSavingDefaults(false)
+    }
   }
 
   async function loadPrep() {
@@ -168,64 +280,48 @@ function CreateJournalEntryForm({ accounts, onSaved, onCancel }) {
     }
 
     if (includeShipped && prepData.shipped_items) {
-      const stockId = findAccountId(STOCK_ACCOUNT)
-      const repl = prepData.shipped_items.replacement
-      const sale = prepData.shipped_items.sale
+      const jobs = [
+        { op: OP_KEYS.shippedReplacement, src: prepData.shipped_items.replacement, labelFn: c => `Envoi pièces de remplacement (${c})` },
+        { op: OP_KEYS.shippedSale, src: prepData.shipped_items.sale, labelFn: c => `Pièces vendues sans série (${c})` },
+      ]
       const missing = []
-      if ((repl?.total_amount > 0 || sale?.total_amount > 0) && !stockId) missing.push(STOCK_ACCOUNT)
-      if (repl?.total_amount > 0 && !findAccountId(SHIPPED_REPL_DEBIT)) missing.push(SHIPPED_REPL_DEBIT)
-      if (sale?.total_amount > 0 && !findAccountId(SHIPPED_SALE_DEBIT)) missing.push(SHIPPED_SALE_DEBIT)
+      for (const j of jobs) {
+        if (!(j.src?.total_amount > 0)) continue
+        if (!getOpDebitId(j.op)) missing.push(`${j.op} — débit`)
+        if (!getOpCreditId(j.op)) missing.push(`${j.op} — crédit`)
+      }
       if (missing.length) {
-        setPrepError(`Comptes QB introuvables: ${missing.join(', ')}`)
+        setPrepError(`Comptes requis manquants: ${missing.join(', ')}`)
         return
       }
-      if (repl?.total_amount > 0) {
-        const amt = repl.total_amount.toFixed(2)
-        const label = `Envoi pièces de remplacement (${repl.count})`
-        generated.push({ posting_type: 'Debit', amount: amt, account_id: findAccountId(SHIPPED_REPL_DEBIT), description: label })
-        generated.push({ posting_type: 'Credit', amount: amt, account_id: stockId, description: label })
-      }
-      if (sale?.total_amount > 0) {
-        const amt = sale.total_amount.toFixed(2)
-        const label = `Pièces vendues sans série (${sale.count})`
-        generated.push({ posting_type: 'Debit', amount: amt, account_id: findAccountId(SHIPPED_SALE_DEBIT), description: label })
-        generated.push({ posting_type: 'Credit', amount: amt, account_id: stockId, description: label })
+      for (const j of jobs) {
+        if (!(j.src?.total_amount > 0)) continue
+        const amt = j.src.total_amount.toFixed(2)
+        const label = j.labelFn(j.src.count)
+        generated.push({ posting_type: 'Debit', amount: amt, account_id: getOpDebitId(j.op), description: label })
+        generated.push({ posting_type: 'Credit', amount: amt, account_id: getOpCreditId(j.op), description: label })
       }
     }
 
     if (includeMovements && prepData.stock_movements?.groups) {
-      const stockId = findAccountId(STOCK_ACCOUNT)
       const missingMov = []
-      const unmapped = []
       for (const g of prepData.stock_movements.groups) {
         if (!(g.total_amount > 0)) continue
-        const mapping = MOVEMENT_MAP[g.reason]
-        if (!mapping) { unmapped.push(g.reason || '(sans raison)'); continue }
-        if (!findAccountId(mapping.account)) missingMov.push(mapping.account)
+        const key = movementOpKey(g.reason)
+        if (!getOpDebitId(key)) missingMov.push(`${g.reason || '(sans raison)'} — débit`)
+        if (!getOpCreditId(key)) missingMov.push(`${g.reason || '(sans raison)'} — crédit`)
       }
-      const hasAny = prepData.stock_movements.groups.some(g => g.total_amount > 0 && MOVEMENT_MAP[g.reason])
-      if (hasAny && !stockId) missingMov.push(STOCK_ACCOUNT)
-      if (missingMov.length || unmapped.length) {
-        const parts = []
-        if (missingMov.length) parts.push(`Comptes QB introuvables: ${[...new Set(missingMov)].join(', ')}`)
-        if (unmapped.length) parts.push(`Raisons non mappées: ${[...new Set(unmapped)].join(', ')}`)
-        setPrepError(parts.join(' · '))
+      if (missingMov.length) {
+        setPrepError(`Comptes requis manquants pour les mouvements: ${[...new Set(missingMov)].join(', ')}`)
         return
       }
       for (const g of prepData.stock_movements.groups) {
-        const amt = g.total_amount
-        if (!(amt > 0)) continue
-        const mapping = MOVEMENT_MAP[g.reason]
-        if (!mapping) continue
+        if (!(g.total_amount > 0)) continue
+        const key = movementOpKey(g.reason)
         const label = `${g.reason} (${g.count})`
-        const accId = findAccountId(mapping.account)
-        if (mapping.direction === 'out') {
-          generated.push({ posting_type: 'Debit', amount: amt.toFixed(2), account_id: accId, description: label })
-          generated.push({ posting_type: 'Credit', amount: amt.toFixed(2), account_id: stockId, description: label })
-        } else {
-          generated.push({ posting_type: 'Debit', amount: amt.toFixed(2), account_id: stockId, description: label })
-          generated.push({ posting_type: 'Credit', amount: amt.toFixed(2), account_id: accId, description: label })
-        }
+        const amt = g.total_amount.toFixed(2)
+        generated.push({ posting_type: 'Debit', amount: amt, account_id: getOpDebitId(key), description: label })
+        generated.push({ posting_type: 'Credit', amount: amt, account_id: getOpCreditId(key), description: label })
       }
     }
 
@@ -475,24 +571,32 @@ function CreateJournalEntryForm({ accounts, onSaved, onCancel }) {
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100">
-                          {(prepData.shipped_items.replacement?.count || 0) > 0 && (
-                            <tr>
-                              <td className="px-2 py-1 text-slate-700">Remplacement</td>
-                              <td className="px-2 py-1 text-right tabular-nums">{prepData.shipped_items.replacement.count}</td>
-                              <td className="px-2 py-1 text-slate-600">{SHIPPED_REPL_DEBIT}</td>
-                              <td className="px-2 py-1 text-slate-600">{STOCK_ACCOUNT}</td>
-                              <td className="px-2 py-1 text-right tabular-nums">{fmtCad(prepData.shipped_items.replacement.total_amount)}</td>
+                          {[
+                            { op: OP_KEYS.shippedReplacement, label: 'Remplacement', src: prepData.shipped_items.replacement },
+                            { op: OP_KEYS.shippedSale, label: 'Vente', src: prepData.shipped_items.sale },
+                          ].filter(row => (row.src?.count || 0) > 0).map(row => (
+                            <tr key={row.op}>
+                              <td className="px-2 py-1 text-slate-700">{row.label}</td>
+                              <td className="px-2 py-1 text-right tabular-nums">{row.src.count}</td>
+                              <td className="px-2 py-1">
+                                <AccountPicker
+                                  name={`def-${row.op}-debit`}
+                                  value={getOpDebitId(row.op)}
+                                  accounts={accounts}
+                                  onChange={v => setOpAccount(row.op, 'debit', v)}
+                                />
+                              </td>
+                              <td className="px-2 py-1">
+                                <AccountPicker
+                                  name={`def-${row.op}-credit`}
+                                  value={getOpCreditId(row.op)}
+                                  accounts={accounts}
+                                  onChange={v => setOpAccount(row.op, 'credit', v)}
+                                />
+                              </td>
+                              <td className="px-2 py-1 text-right tabular-nums">{fmtCad(row.src.total_amount)}</td>
                             </tr>
-                          )}
-                          {(prepData.shipped_items.sale?.count || 0) > 0 && (
-                            <tr>
-                              <td className="px-2 py-1 text-slate-700">Vente</td>
-                              <td className="px-2 py-1 text-right tabular-nums">{prepData.shipped_items.sale.count}</td>
-                              <td className="px-2 py-1 text-slate-600">{SHIPPED_SALE_DEBIT}</td>
-                              <td className="px-2 py-1 text-slate-600">{STOCK_ACCOUNT}</td>
-                              <td className="px-2 py-1 text-right tabular-nums">{fmtCad(prepData.shipped_items.sale.total_amount)}</td>
-                            </tr>
-                          )}
+                          ))}
                         </tbody>
                       </table>
                     </div>
@@ -522,21 +626,27 @@ function CreateJournalEntryForm({ accounts, onSaved, onCancel }) {
                         </thead>
                         <tbody className="divide-y divide-slate-100">
                           {prepData.stock_movements.groups.map((g, i) => {
-                            const m = MOVEMENT_MAP[g.reason]
-                            const debit = m ? (m.direction === 'out' ? m.account : STOCK_ACCOUNT) : null
-                            const credit = m ? (m.direction === 'out' ? STOCK_ACCOUNT : m.account) : null
+                            const key = movementOpKey(g.reason)
                             return (
                               <tr key={i}>
                                 <td className="px-2 py-1 text-slate-700">{g.reason || <em className="text-slate-400">sans raison</em>}</td>
                                 <td className="px-2 py-1 text-right tabular-nums">{g.count}</td>
-                                {m ? (
-                                  <>
-                                    <td className="px-2 py-1 text-slate-600">{debit}</td>
-                                    <td className="px-2 py-1 text-slate-600">{credit}</td>
-                                  </>
-                                ) : (
-                                  <td className="px-2 py-1 text-amber-600" colSpan={2}>Non mappé</td>
-                                )}
+                                <td className="px-2 py-1">
+                                  <AccountPicker
+                                    name={`def-mov-${i}-debit`}
+                                    value={getOpDebitId(key)}
+                                    accounts={accounts}
+                                    onChange={v => setOpAccount(key, 'debit', v)}
+                                  />
+                                </td>
+                                <td className="px-2 py-1">
+                                  <AccountPicker
+                                    name={`def-mov-${i}-credit`}
+                                    value={getOpCreditId(key)}
+                                    accounts={accounts}
+                                    onChange={v => setOpAccount(key, 'credit', v)}
+                                  />
+                                </td>
                                 <td className="px-2 py-1 text-right tabular-nums">{fmtCad(g.total_amount)}</td>
                               </tr>
                             )
@@ -691,7 +801,16 @@ function CreateJournalEntryForm({ accounts, onSaved, onCancel }) {
                   )
                 })}
 
-                <div className="flex justify-end">
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveDefaults}
+                    disabled={!defaultsDirty || savingDefaults}
+                    className="btn-secondary text-sm"
+                    title={defaultsDirty ? 'Sauvegarder les comptes choisis comme valeurs par défaut pour les prochaines écritures' : 'Aucune modification à sauvegarder'}
+                  >
+                    {savingDefaults ? <><RefreshCw size={14} className="animate-spin" /> Sauvegarde…</> : <><Save size={14} /> Sauvegarder comme défauts</>}
+                  </button>
                   <button
                     type="button"
                     onClick={applyPrepopulation}
@@ -953,6 +1072,7 @@ export default function JournalEntries() {
   const [selectedId, setSelectedId] = useState(null)
   const [creating, setCreating] = useState(false)
   const [accounts, setAccounts] = useState([])
+  const [journalDefaults, setJournalDefaults] = useState({})
 
   const decorate = (rows) => (rows || []).map(r => ({
     ...r,
@@ -970,14 +1090,19 @@ export default function JournalEntries() {
   useEffect(() => { load() }, [load])
 
   async function openCreate() {
-    setCreating(true)
-    if (accounts.length === 0) {
-      try {
-        const list = await api.quickbooks.accounts({ all: '1' })
+    try {
+      const tasks = []
+      if (accounts.length === 0) tasks.push(api.quickbooks.accounts({ all: '1' }).then(list => {
         setAccounts(list.filter(a => a.Active).sort((a, b) => a.Name.localeCompare(b.Name)))
-      } catch (e) {
-        setError(e.message)
-      }
+      }))
+      tasks.push(api.journalEntries.getDefaults().then(r => setJournalDefaults(r.data || {})))
+      await Promise.all(tasks)
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      // On ouvre la modale APRÈS la résolution des deux fetchs pour que le formulaire
+      // s'initialise avec les défauts sauvegardés (sinon il tomberait sur les fallbacks hardcodés).
+      setCreating(true)
     }
   }
 
@@ -1027,8 +1152,10 @@ export default function JournalEntries() {
       <Modal isOpen={creating} onClose={() => setCreating(false)} title="Nouvelle écriture de journal" size="xl">
         <CreateJournalEntryForm
           accounts={accounts}
+          initialDefaults={journalDefaults}
           onSaved={handleCreated}
           onCancel={() => setCreating(false)}
+          onDefaultsSaved={(d) => setJournalDefaults(d)}
         />
       </Modal>
     </Layout>

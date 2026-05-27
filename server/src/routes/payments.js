@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { postPaymentDeposit, processRefund } from '../services/quickbooks.js'
 import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { recomputeFactureBalance } from '../services/factureBalance.js'
+import { naiveLocalToUtcIso } from '../utils/datetime.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -165,8 +166,22 @@ router.post('/', async (req, res) => {
   if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: 'amount doit être un nombre > 0' })
   const cur = String(currency || 'CAD').toUpperCase()
   if (!VALID_CURRENCIES.has(cur)) return res.status(400).json({ error: 'currency doit être CAD ou USD' })
-  const receivedIso = received_at ? new Date(received_at).toISOString() : new Date().toISOString()
-  if (Number.isNaN(Date.parse(receivedIso))) return res.status(400).json({ error: 'received_at invalide' })
+  // Une date-only "YYYY-MM-DD" venue d'un <input type="date"> représente une
+  // journée calendaire locale (Montréal), pas un instant UTC. La parser via
+  // new Date() la traite comme minuit UTC, ce qui s'affiche en J-1 20:00 en EDT.
+  // On force l'interprétation locale → conversion UTC.
+  let receivedIso
+  if (received_at) {
+    const s = String(received_at)
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      receivedIso = naiveLocalToUtcIso(`${s}T00:00:00`)
+    } else {
+      receivedIso = new Date(s).toISOString()
+    }
+  } else {
+    receivedIso = new Date().toISOString()
+  }
+  if (!receivedIso || Number.isNaN(Date.parse(receivedIso))) return res.status(400).json({ error: 'received_at invalide' })
 
   const facture = db.prepare('SELECT id FROM factures WHERE id = ?').get(facture_id)
   if (!facture) return res.status(404).json({ error: 'Facture introuvable' })

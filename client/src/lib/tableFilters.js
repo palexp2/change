@@ -1,6 +1,8 @@
 // Logique pure de filtrage des tables — extrait de useTableView.js pour pouvoir
 // être unit-testée sans charger React.
 
+import { localISODate } from './formatDate.js'
+
 function norm(s) {
   return String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
 }
@@ -114,14 +116,14 @@ export function applyFilter(row, filter, ctx = {}) {
     }
     case 'today': {
       if (!v) return false
-      const d = new Date(v).toISOString().slice(0, 10)
-      const t = new Date().toISOString().slice(0, 10)
+      const d = localISODate(new Date(v))
+      const t = localISODate()
       return d === t
     }
     case 'yesterday': {
       if (!v) return false
-      const d = new Date(v).toISOString().slice(0, 10)
-      const y = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+      const d = localISODate(new Date(v))
+      const y = localISODate(new Date(Date.now() - 86400000))
       return d === y
     }
     case 'this_week': {

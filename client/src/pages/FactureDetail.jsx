@@ -10,7 +10,6 @@ import { SendPaymentLinkModal } from '../components/SendPaymentLinkModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import FacturePaymentsSection from '../components/FacturePaymentsSection.jsx'
 import FactureAccountingSection from '../components/FactureAccountingSection.jsx'
-import FactureRawEditSection from '../components/FactureRawEditSection.jsx'
 import { FieldGuard, FieldGuardProvider } from '../components/FieldGuard.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { fmtDate } from '../lib/formatDate.js'
@@ -87,6 +86,43 @@ const STATUS_COLORS = {
   'Uncollectible': 'red',
 }
 
+function FactureNotesField({ value, onSave }) {
+  const [local, setLocal] = useState(value || '')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+  useEffect(() => { setLocal(value || '') }, [value])
+  async function commit(val) {
+    if (val === (value || '')) return
+    setSaving(true)
+    setError(null)
+    try {
+      await onSave(val)
+    } catch (e) {
+      setError(e?.message || 'Erreur d\'enregistrement')
+    } finally {
+      setSaving(false)
+    }
+  }
+  return (
+    <div className="p-5">
+      <div className="flex items-center gap-2 mb-1">
+        <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Notes</p>
+        {saving && <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />}
+      </div>
+      <textarea
+        data-testid="facture-notes-input"
+        value={local}
+        onChange={e => setLocal(e.target.value)}
+        onBlur={e => commit(e.target.value)}
+        placeholder="Ajouter une note interne sur cette facture…"
+        rows={3}
+        className="input text-sm w-full resize-y"
+      />
+      {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
+    </div>
+  )
+}
+
 export default function FactureDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -104,7 +140,7 @@ export default function FactureDetail() {
   const [subscriptionModal, setSubscriptionModal] = useState(null)
   const [loadingSubscription, setLoadingSubscription] = useState(false)
   const [sendModalOpen, setSendModalOpen] = useState(false)
-  const [factureIds, setFactureIds] = useState([])
+  const [neighbors, setNeighbors] = useState({ prev: null, next: null })
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState(null)
@@ -142,10 +178,14 @@ export default function FactureDetail() {
 
   useEffect(() => {
     setLoading(true)
+    setProjects([])
+    setOrders([])
     api.factures.get(id)
-      .then(async data => {
+      .then(data => {
         setFacture(data)
         setSelectedProjectId(data.project_id || '')
+        // Affichage débloqué ici — le reste se charge en arrière-plan.
+        setLoading(false)
         if (data.airtable_pdf_path) {
           const token = localStorage.getItem('erp_token')
           fetch(`/erp/api/projets/factures/${id}/pdf`, {
@@ -154,20 +194,27 @@ export default function FactureDetail() {
             .then(blob => blob && setPdfBlobUrl(URL.createObjectURL(blob)))
             .catch(() => {})
         }
+        // Rabais Stripe — round-trip live, chargé en parallèle pour ne pas
+        // bloquer le rendu de la page.
+        api.factures.discounts(id)
+          .then(r => setFacture(f => f ? { ...f, discounts: r.discounts || [] } : f))
+          .catch(() => {})
+        // Projets + commandes de l'entreprise pour les pickers. Pas nécessaires
+        // au premier rendu — chargés en différé.
         if (data.company_id) {
-          const [projectsRes, ordersRes] = await Promise.all([
+          Promise.all([
             api.projects.list({ company_id: data.company_id, limit: 'all' }),
             api.orders.list({ company_id: data.company_id, limit: 'all' }),
-          ])
-          setProjects(projectsRes.data || [])
-          setOrders(ordersRes.data || [])
-        } else {
-          setProjects([])
-          setOrders([])
+          ]).then(([projectsRes, ordersRes]) => {
+            setProjects(projectsRes.data || [])
+            setOrders(ordersRes.data || [])
+          }).catch(() => {})
         }
       })
-      .catch(() => setFacture(null))
-      .finally(() => setLoading(false))
+      .catch(() => {
+        setFacture(null)
+        setLoading(false)
+      })
   }, [id])
 
   useRealtimeChannel(id ? `facture:${id}` : null, (msg) => {
@@ -180,14 +227,14 @@ export default function FactureDetail() {
   }, [])
 
   useEffect(() => {
-    api.factures.list({ limit: 'all' })
-      .then(res => setFactureIds((res.data || []).map(f => String(f.id))))
+    setNeighbors({ prev: null, next: null })
+    api.factures.neighbors(id)
+      .then(r => setNeighbors({ prev: r.prev || null, next: r.next || null }))
       .catch(() => {})
-  }, [])
+  }, [id])
 
-  const currentIdx = factureIds.indexOf(String(id))
-  const prevId = currentIdx > 0 ? factureIds[currentIdx - 1] : null
-  const nextId = currentIdx >= 0 && currentIdx < factureIds.length - 1 ? factureIds[currentIdx + 1] : null
+  const prevId = neighbors.prev
+  const nextId = neighbors.next
 
   async function handleProjectChange(newProjectId) {
     setSelectedProjectId(newProjectId || '')
@@ -483,13 +530,15 @@ export default function FactureDetail() {
             </p>
           </div>
 
-          {/* Notes */}
-          {facture.notes && (
-            <div className="p-5">
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Notes</p>
-              <p className="text-sm text-slate-700 whitespace-pre-wrap">{facture.notes}</p>
-            </div>
-          )}
+          {/* Notes — éditable, autosave on blur */}
+          <FactureNotesField
+            value={facture.notes || ''}
+            onSave={async (val) => {
+              const updated = await api.factures.update(id, { notes: val })
+              setFacture(updated)
+            }}
+          />
+
         </div>
 
         {/* Lignes de la facture — 1 par produit (Stripe items ou pending items) + sommaires */}
@@ -596,17 +645,6 @@ export default function FactureDetail() {
             setFacture(fresh)
           }}
         />
-
-        {user?.role === 'admin' && (
-          <FactureRawEditSection
-            factureId={id}
-            facture={facture}
-            onChanged={async () => {
-              const fresh = await api.factures.get(id)
-              setFacture(fresh)
-            }}
-          />
-        )}
 
         {user?.role === 'admin' && (
           <div className="mt-8 pt-6 border-t border-slate-200 flex justify-end">

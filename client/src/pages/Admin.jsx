@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Trash2, Plug, Zap, Bot, Users } from 'lucide-react'
+import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Trash2, Plug, Zap, Bot, Users, Timer } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
@@ -196,14 +196,43 @@ function HealthDashboard() {
           </div>
         </div>
 
+        {/* Chargements de page lents (>500ms) */}
+        {data.slowLoads?.length > 0 && (
+          <div>
+            <p className="text-xs font-medium text-slate-500 mb-2 flex items-center gap-1">
+              <Timer size={11} className="text-orange-500" /> Chargements lents (&gt; 500 ms)
+            </p>
+            <div className="bg-slate-900 rounded-xl p-3 space-y-1 max-h-64 overflow-y-auto">
+              {data.slowLoads.map(r => {
+                const d = new Date(r.created_at)
+                const stamp = isNaN(d) ? r.created_at : d.toLocaleString('fr-CA', {
+                  year: 'numeric', month: '2-digit', day: '2-digit',
+                  hour: '2-digit', minute: '2-digit', second: '2-digit',
+                  timeZone: 'America/Toronto', hour12: false,
+                })
+                const slow = r.load_ms >= 2000
+                return (
+                  <p key={r.id} className="text-xs font-mono text-slate-300 leading-relaxed break-all flex flex-wrap gap-x-2">
+                    <span className="text-slate-500">{stamp}</span>
+                    <span className="text-slate-400">{r.user_name || `#${r.user_id ?? '?'}`}</span>
+                    <span className="text-slate-200">{r.url}</span>
+                    <span className={slow ? 'text-red-400 font-semibold' : 'text-amber-400'}>{r.load_ms} ms</span>
+                  </p>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Dernières erreurs */}
         {data.recentErrors.length > 0 && (
           <div>
             <p className="text-xs font-medium text-slate-500 mb-2 flex items-center gap-1"><AlertTriangle size={11} className="text-amber-500" /> Dernières erreurs</p>
             <div className="bg-slate-900 rounded-xl p-3 space-y-1 max-h-48 overflow-y-auto">
               {data.recentErrors.map((line, i) => {
-                const m = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?:?\s*(.*)$/s)
-                const time = m ? new Date(m[1]).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : null
+                const m = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?):?\s*(.*)$/s)
+                const parsed = m ? new Date(m[1]) : null
+                const time = parsed && !isNaN(parsed) ? parsed.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'America/Toronto' }) : null
                 const msg = m ? m[2] : line
                 return (
                   <p key={i} className="text-xs font-mono text-slate-300 leading-relaxed break-all">

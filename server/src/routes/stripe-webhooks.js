@@ -188,7 +188,9 @@ function mapStripeInvoiceStatus(s) {
 // latest Stripe state. Downloads the Stripe PDF the first time it appears.
 async function upsertFactureFromStripeInvoice(invoice) {
   const total = (invoice.total || 0) / 100
-  const subtotal = (invoice.subtotal || 0) / 100
+  // HT — pour les prix Stripe avec tax_behavior="inclusive", `invoice.subtotal` est
+  // le TTC ; `subtotal_excluding_tax` est universellement le HT.
+  const subtotal = (invoice.subtotal_excluding_tax ?? invoice.subtotal ?? 0) / 100
   const balanceDue = (invoice.amount_remaining ?? invoice.amount_due ?? 0) / 100
   const currency = (invoice.currency || 'cad').toUpperCase()
   const invoiceDate = invoice.created ? new Date(invoice.created * 1000).toISOString().slice(0, 10) : null
@@ -607,6 +609,9 @@ async function handleWebhook(req, res) {
   if (event.type === 'invoice.deleted') {
     const existing = db.prepare('SELECT id FROM factures WHERE invoice_id=?').get(invoice.id)
     if (existing) {
+      // stripe_invoice_items.facture_id n'a pas d'ON DELETE CASCADE — nettoyer
+      // manuellement avant le DELETE factures sinon FK constraint failed.
+      db.prepare('DELETE FROM stripe_invoice_items WHERE facture_id=?').run(existing.id)
       db.prepare('DELETE FROM factures WHERE id=?').run(existing.id)
     }
     logSystemRun('sys_stripe_invoice_paid', {

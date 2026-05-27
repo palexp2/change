@@ -11,8 +11,6 @@ import { AbonnementEventsTable } from '../components/AbonnementEventsTable.jsx'
 
 const WIDGET_DEFS = [
   { id: 'section_project_goal',     label: 'Objectif de projets',      group: 'Objectifs' },
-  { id: 'section_stripe_subscriptions', label: 'Abonnements',          group: 'Graphiques' },
-  { id: 'section_stripe_sales',         label: 'Ventes',                group: 'Graphiques' },
   { id: 'section_subscription_events', label: 'Mouvements d\'abonnements', group: 'Graphiques' },
   { id: 'section_profitability',    label: 'Rentabilité',              group: 'Graphiques' },
   { id: 'section_replacement_rate', label: 'Taux de remplacement',     group: 'Graphiques' },
@@ -23,6 +21,7 @@ const WIDGET_DEFS = [
   { id: 'section_geo_map',       label: 'Carte des clients',     group: 'Graphiques' },
   { id: 'section_top_products', label: 'Meilleurs vendeurs',     group: 'Graphiques' },
   { id: 'section_inventory_valuation', label: 'Valeur de l\'inventaire', group: 'Inventaire' },
+  { id: 'section_balance_sheet', label: 'Bilan QuickBooks',         group: 'Comptabilité' },
   { id: 'section_tickets_monthly', label: 'Billets par mois',       group: 'Support' },
   { id: 'section_support_weekly', label: 'Amélioration du support', group: 'Support' },
 ]
@@ -335,414 +334,6 @@ function GoalEditorModal({ isOpen, onClose, onSave }) {
         </div>
       </form>
     </Modal>
-  )
-}
-
-
-
-// SVG path helper — rectangle with independent corner radii, used to draw
-// stacked bars where the junction between the two segments stays sharp while
-// the outer top + bottom of the combined bar remain rounded.
-function roundedRectPath(x, y, w, h, rTL, rTR, rBR, rBL) {
-  const tl = Math.min(rTL, w / 2, h / 2)
-  const tr = Math.min(rTR, w / 2, h / 2)
-  const br = Math.min(rBR, w / 2, h / 2)
-  const bl = Math.min(rBL, w / 2, h / 2)
-  return `M${x + tl},${y}
-          L${x + w - tr},${y} Q${x + w},${y} ${x + w},${y + tr}
-          L${x + w},${y + h - br} Q${x + w},${y + h} ${x + w - br},${y + h}
-          L${x + bl},${y + h} Q${x},${y + h} ${x},${y + h - bl}
-          L${x},${y + tl} Q${x},${y} ${x + tl},${y} Z`
-}
-
-// Stripe revenue chart — last 12 months bucketed on document_date, split into
-// service (subscription) and achat (one-shot order). Each month is paired with
-// the matching month of the previous year, also stacked service+achat but
-// rendered in two grays (pâle = service, foncé = achat) so the comparison bar
-// carries the same breakdown as the current year.
-// Backend converts USD → CAD at the document_date BoC rate, taxes excluded.
-// `mode` controls which series are rendered : 'all' (stacked sub+vente),
-// 'subscription' (abonnements seuls) ou 'sale' (ventes seules).
-function StripeRevenueChart({ data, onMonthClick, mode = 'all' }) {
-  const [tooltip, setTooltip] = useState(null)
-
-  const showService = mode === 'all' || mode === 'subscription'
-  const showAchat = mode === 'all' || mode === 'sale'
-
-  const byMonth = {}
-  for (const r of data || []) byMonth[r.month] = r
-
-  const now = new Date()
-  const months = []
-  for (let i = 11; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-    const prev = new Date(d.getFullYear() - 1, d.getMonth(), 1)
-    const prevKey = `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`
-    const curr = byMonth[key] || { service: 0, achat: 0 }
-    const prevRow = byMonth[prevKey] || { service: 0, achat: 0 }
-    const service = showService ? (curr.service || 0) : 0
-    const achat = showAchat ? (curr.achat || 0) : 0
-    const prevService = showService ? (prevRow.service || 0) : 0
-    const prevAchat = showAchat ? (prevRow.achat || 0) : 0
-    months.push({
-      key, prevKey,
-      label: d.toLocaleDateString('fr-CA', { month: 'short' }),
-      year: d.getFullYear(),
-      service,
-      achat,
-      total: service + achat,
-      prevService,
-      prevAchat,
-      prevTotal: prevService + prevAchat,
-    })
-  }
-
-  const totalCurr = months.reduce((s, m) => s + m.total, 0)
-  const totalService = months.reduce((s, m) => s + m.service, 0)
-  const totalAchat = months.reduce((s, m) => s + m.achat, 0)
-  const totalPrevService = months.reduce((s, m) => s + m.prevService, 0)
-  const totalPrevAchat = months.reduce((s, m) => s + m.prevAchat, 0)
-  const maxVal = Math.max(...months.flatMap(m => [m.total, m.prevTotal]), 1)
-
-  const W = 600, H = 200
-  const padL = 44, padR = 8, padT = 12, padB = 32
-  const chartW = W - padL - padR
-  const chartH = H - padT - padB
-  const n = months.length
-  const groupW = chartW / n
-  const barW = Math.max(Math.floor((groupW - 6) / 2), 6)
-
-  const yPos = v => padT + chartH - (v / maxVal) * chartH
-  const groupCenter = i => padL + (i + 0.5) * groupW
-
-  const niceStep = (() => {
-    if (maxVal <= 1000) return 200
-    if (maxVal <= 5000) return 1000
-    if (maxVal <= 20000) return 5000
-    if (maxVal <= 50000) return 10000
-    if (maxVal <= 100000) return 20000
-    return Math.ceil(maxVal / 5 / 10000) * 10000
-  })()
-  const gridVals = []
-  for (let v = 0; v <= maxVal; v += niceStep) gridVals.push(v)
-  if (gridVals[gridVals.length - 1] < maxVal) gridVals.push(maxVal)
-
-  const fmtAxis = v => {
-    if (v >= 1000) return `${Math.round(v / 1000)}k$`
-    return `${Math.round(v)}$`
-  }
-  const fmtMoney = v => new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(v)
-
-  const hasAny = totalCurr > 0
-  if (!hasAny) {
-    const emptyMsg = mode === 'subscription'
-      ? 'Aucun abonnement Stripe sur les 12 derniers mois'
-      : mode === 'sale'
-        ? 'Aucune vente Stripe sur les 12 derniers mois'
-        : 'Aucune vente ni abonnement Stripe sur les 12 derniers mois'
-    return (
-      <div className="flex items-center justify-center h-40 text-slate-300 text-sm">
-        {emptyMsg}
-      </div>
-    )
-  }
-
-  return (
-    <div className="relative w-full">
-      <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
-        <div className="flex gap-4 text-xs text-slate-500 flex-wrap">
-          {showService && (
-            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-brand-500" /> Abonnement <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalService)}</span></span>
-          )}
-          {showAchat && (
-            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-amber-500" /> Vente <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalAchat)}</span></span>
-          )}
-          {showService && (
-            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-200" /> Abonnement an. préc. <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalPrevService)}</span></span>
-          )}
-          {showAchat && (
-            <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-400" /> Vente an. préc. <span className="font-semibold text-slate-700 ml-1">{fmtMoney(totalPrevAchat)}</span></span>
-          )}
-        </div>
-      </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 220 }}>
-        {gridVals.map((v, gi) => (
-          <g key={gi}>
-            <line x1={padL} x2={W - padR} y1={yPos(v)} y2={yPos(v)} stroke={v === 0 ? '#cbd5e1' : '#f1f5f9'} strokeWidth={v === 0 ? 0.8 : 1} />
-            <text x={padL - 4} y={yPos(v) + 3.5} textAnchor="end" fontSize="9" fill="#94a3b8">{fmtAxis(v)}</text>
-          </g>
-        ))}
-        {months.map((m, i) => {
-          const cx = groupCenter(i)
-          const xCurr = cx - barW - 1
-          const xPrev = cx + 1
-          const hService = (m.service / maxVal) * chartH
-          const hAchat = (m.achat / maxVal) * chartH
-          const hPrevService = (m.prevService / maxVal) * chartH
-          const hPrevAchat = (m.prevAchat / maxVal) * chartH
-          const isHovered = tooltip?.i === i
-          const yServiceTop = padT + chartH - hService - hAchat
-          const yAchatTop = padT + chartH - hAchat
-          const yPrevServiceTop = padT + chartH - hPrevService - hPrevAchat
-          const yPrevAchatTop = padT + chartH - hPrevAchat
-          return (
-            <g key={m.key}
-              data-testid={`stripe-revenue-month-${m.key}`}
-              onMouseEnter={() => setTooltip({ i, x: cx, m })}
-              onMouseLeave={() => setTooltip(null)}
-            >
-              <rect x={padL + i * groupW} y={0} width={groupW} height={H} fill="transparent" />
-              {/* Previous-year — stacked : service (gris pâle) en haut, achat (gris foncé)
-                  en bas (sur la ligne de base). Outer corners rounded ; jonction carrée. */}
-              {m.prevService > 0 && (
-                <path d={roundedRectPath(xPrev, yPrevAchatTop - hPrevService, barW, hPrevService,
-                  2, 2, m.prevAchat > 0 ? 0 : 2, m.prevAchat > 0 ? 0 : 2)}
-                  fill={isHovered ? '#cbd5e1' : '#e2e8f0'}
-                />
-              )}
-              {m.prevAchat > 0 && (
-                <path d={roundedRectPath(xPrev, yPrevAchatTop, barW, hPrevAchat,
-                  m.prevService > 0 ? 0 : 2, m.prevService > 0 ? 0 : 2, 2, 2)}
-                  fill={isHovered ? '#64748b' : '#94a3b8'}
-                />
-              )}
-              {/* Current month — stacked : service en haut, achat en bas (sur la ligne
-                  de base). Outer corners rounded ; jonction service↔achat carrée. */}
-              {m.service > 0 && (
-                <path d={roundedRectPath(xCurr, yAchatTop - hService, barW, hService,
-                  2, 2, m.achat > 0 ? 0 : 2, m.achat > 0 ? 0 : 2)}
-                  fill={isHovered ? '#1B8E3C' : '#21B14B'}
-                  style={{ cursor: onMonthClick ? 'pointer' : 'default' }}
-                  onClick={() => onMonthClick && onMonthClick(m.key, 'service')}
-                />
-              )}
-              {m.achat > 0 && (
-                <path d={roundedRectPath(xCurr, yAchatTop, barW, hAchat,
-                  m.service > 0 ? 0 : 2, m.service > 0 ? 0 : 2, 2, 2)}
-                  fill={isHovered ? '#d97706' : '#f59e0b'}
-                  style={{ cursor: onMonthClick ? 'pointer' : 'default' }}
-                  onClick={() => onMonthClick && onMonthClick(m.key, 'achat')}
-                />
-              )}
-              <text x={cx} y={H - 18} textAnchor="middle" fontSize="9" fill={i === n - 1 ? '#0f172a' : '#94a3b8'} fontWeight={i === n - 1 ? '600' : 'normal'}>{m.label}</text>
-              <text x={cx} y={H - 6} textAnchor="middle" fontSize="8" fill="#cbd5e1">{m.year}</text>
-            </g>
-          )
-        })}
-        {tooltip && (() => {
-          const m = tooltip.m
-          const tx = Math.min(Math.max(tooltip.x, 95), W - 95)
-          const ty = padT + 8
-          const delta = m.prevTotal > 0 ? Math.round(((m.total - m.prevTotal) / m.prevTotal) * 100) : null
-          const lines = []
-          if (showService) lines.push({ label: 'Abonnement', color: '#21B14B', value: m.service })
-          if (showAchat) lines.push({ label: 'Vente', color: '#f59e0b', value: m.achat })
-          if (showService) lines.push({ label: 'Abonnement an. préc.', color: '#cbd5e1', value: m.prevService, prev: true })
-          if (showAchat) lines.push({ label: 'Vente an. préc.', color: '#94a3b8', value: m.prevAchat, prev: true })
-          const boxH = 28 + lines.length * 15 + (delta !== null ? 17 : 0)
-          return (
-            <g pointerEvents="none">
-              <rect x={tx - 90} y={ty - 4} width={180} height={boxH} rx="5" fill="#1e293b" opacity="0.93" />
-              <text x={tx} y={ty + 9} textAnchor="middle" fontSize="10" fill="#cbd5e1">{m.label} {m.year}</text>
-              {lines.map((l, idx) => {
-                const ly = ty + 25 + idx * 15 + (l.prev && idx > 0 && !lines[idx - 1].prev ? 3 : 0)
-                return (
-                  <Fragment key={l.label}>
-                    <text x={tx - 80} y={ly} textAnchor="start" fontSize="10" fill={l.color}>{l.label}</text>
-                    <text x={tx + 80} y={ly} textAnchor="end" fontSize="11" fontWeight="bold" fill={l.prev ? '#cbd5e1' : 'white'}>{fmtMoney(l.value)}</text>
-                  </Fragment>
-                )
-              })}
-              {delta !== null && (
-                <text x={tx} y={ty + 25 + lines.length * 15 + 8} textAnchor="middle" fontSize="9" fill={delta >= 0 ? '#4ade80' : '#f87171'}>
-                  {delta >= 0 ? '+' : ''}{delta}% vs an. préc.
-                </text>
-              )}
-            </g>
-          )
-        })()}
-      </svg>
-      {onMonthClick && <p className="text-xs text-slate-400 text-right mt-1">Cliquer sur une portion pour voir les factures correspondantes</p>}
-    </div>
-  )
-}
-
-function fmtMoneyInCurrency(amount, currency) {
-  if (amount == null) return '—'
-  try {
-    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: (currency || 'CAD').toUpperCase(), maximumFractionDigits: 2 }).format(amount)
-  } catch {
-    return new Intl.NumberFormat('fr-CA', { maximumFractionDigits: 2 }).format(amount) + ' ' + (currency || '')
-  }
-}
-
-// Wrapper qui affiche la liste des factures correspondantes en bas du graphique
-// quand l'utilisateur clique sur un mois — sans quitter le dashboard.
-// Données fournies par /api/dashboard/stripe-revenue/factures : montant natif,
-// devise originale, montant CAD converti et date du payout associé (si payé).
-function StripeRevenueWithDrilldown({ data, mode = 'subscription' }) {
-  const [selected, setSelected] = useState(null) // { month, type }
-  const [cache, setCache] = useState({}) // key=`${type}:${month}` → array
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    if (!selected) return
-    const key = `${selected.type}:${selected.month}`
-    if (cache[key]) return
-    let cancelled = false
-    setLoading(true)
-    setError(null)
-    api.dashboard.stripeRevenueFactures({ month: selected.month, type: selected.type })
-      .then(res => { if (!cancelled) setCache(prev => ({ ...prev, [key]: res.data || [] })) })
-      .catch(e => { if (!cancelled) setError(e?.message || 'Erreur de chargement') })
-      .finally(() => { if (!cancelled) setLoading(false) })
-    return () => { cancelled = true }
-  }, [selected, cache])
-
-  const handleMonthClick = (month, type) => {
-    setSelected(prev => prev && prev.month === month && prev.type === type ? null : { month, type })
-  }
-
-  const rows = selected ? (cache[`${selected.type}:${selected.month}`] || []) : []
-
-  const monthLabel = (() => {
-    if (!selected) return null
-    const [y, mo] = selected.month.split('-')
-    const d = new Date(Number(y), Number(mo) - 1, 1)
-    return d.toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })
-  })()
-
-  return (
-    <div>
-      <StripeRevenueChart data={data} mode={mode} onMonthClick={handleMonthClick} />
-      {selected && (
-        <div className="mt-4 pt-4 border-t border-slate-100" data-testid="stripe-revenue-drilldown">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold text-slate-700">
-              {selected.type === 'service' ? 'Abonnements' : 'Ventes'} de {monthLabel}
-              {!loading && !error && (
-                <span className="text-slate-400 font-normal ml-2">
-                  · {rows.length} facture{rows.length !== 1 ? 's' : ''}
-                </span>
-              )}
-            </h3>
-            <button
-              onClick={() => setSelected(null)}
-              className="text-slate-400 hover:text-slate-600 p-1 rounded"
-              aria-label="Fermer la liste"
-            >
-              <X size={14} />
-            </button>
-          </div>
-          {loading ? (
-            <div className="text-slate-400 text-sm py-4 text-center">Chargement…</div>
-          ) : error ? (
-            <div className="text-red-500 text-sm py-4 text-center">{error}</div>
-          ) : rows.length === 0 ? (
-            <div className="text-slate-400 text-sm py-4 text-center">Aucune facture pour ce mois</div>
-          ) : (
-            <div className="border border-slate-200 rounded-lg overflow-hidden">
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50 text-xs font-medium uppercase tracking-wide text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2 text-left">Date</th>
-                    <th className="px-3 py-2 text-left">N°</th>
-                    <th className="px-3 py-2 text-left">Client</th>
-                    <th className="px-3 py-2 text-left">Statut</th>
-                    <th className="px-3 py-2 text-right whitespace-nowrap">Montant HT (orig.)</th>
-                    <th className="px-3 py-2 text-right whitespace-nowrap">Montant HT (CAD)</th>
-                    {selected.type === 'service' && (
-                      <th className="px-3 py-2 text-left">Intervalle</th>
-                    )}
-                    <th className="px-3 py-2 text-left whitespace-nowrap">Date de constatation</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map(f => {
-                    const isRefund = f.sync_source === 'Remboursements Stripe'
-                    const amountClass = isRefund
-                      ? 'px-3 py-2 text-right font-medium whitespace-nowrap text-rose-600'
-                      : 'px-3 py-2 text-right font-medium whitespace-nowrap'
-                    return (
-                      <tr key={f.id} className="border-t border-slate-100 hover:bg-slate-50">
-                        <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtDate(f.document_date)}</td>
-                        <td className="px-3 py-2 font-mono text-xs">
-                          <Link to={`/factures/${f.id}`} className="text-brand-600 hover:underline">
-                            {f.document_number || '—'}
-                          </Link>
-                        </td>
-                        <td className="px-3 py-2">
-                          {f.company_id ? (
-                            <Link to={`/companies/${f.company_id}`} className="text-brand-600 hover:underline">
-                              {f.company_name || '—'}
-                            </Link>
-                          ) : (
-                            <span className="text-slate-400">{f.company_name || '—'}</span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2">
-                          {isRefund ? (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-rose-50 text-rose-700 border border-rose-200">
-                              Remboursement
-                            </span>
-                          ) : (
-                            <span className="text-slate-600">{f.status || '—'}</span>
-                          )}
-                        </td>
-                        <td className={amountClass} data-testid={isRefund ? `drilldown-refund-native-${f.id}` : undefined}>
-                          {fmtMoneyInCurrency(f.amount_native, f.currency)}
-                        </td>
-                        <td className={amountClass} data-testid={isRefund ? `drilldown-refund-cad-${f.id}` : undefined}>
-                          {fmtMoneyInCurrency(f.amount_cad, 'CAD')}
-                        </td>
-                        {selected.type === 'service' && (
-                          <td className="px-3 py-2" data-testid={`drilldown-interval-${f.id}`}>
-                            {f.interval_type === 'year' ? (
-                              <span className="text-amber-700">Annuel</span>
-                            ) : f.interval_type === 'month' ? (
-                              <span className="text-slate-600">Mensuel</span>
-                            ) : f.interval_type ? (
-                              <span className="text-slate-500">{f.interval_type}</span>
-                            ) : (
-                              <span className="text-slate-300">—</span>
-                            )}
-                          </td>
-                        )}
-                        <td className="px-3 py-2 text-slate-500 whitespace-nowrap">
-                          {f.recognition_date ? (
-                            f.recognition_date === f.payout_arrival_date && f.payout_stripe_id ? (
-                              <Link to={`/stripe-payouts/${f.payout_stripe_id}`} className="text-brand-600 hover:underline">
-                                {fmtDate(f.recognition_date)}
-                              </Link>
-                            ) : (
-                              fmtDate(f.recognition_date)
-                            )
-                          ) : ''}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-                <tfoot className="bg-slate-50 border-t-2 border-slate-200 text-xs font-semibold text-slate-700">
-                  <tr>
-                    <td className="px-3 py-2" colSpan={5}>
-                      Total net{rows.some(f => f.sync_source === 'Remboursements Stripe') ? ' (ventes − remboursements)' : ''}
-                    </td>
-                    <td className="px-3 py-2 text-right whitespace-nowrap" data-testid="drilldown-total-cad">
-                      {fmtMoneyInCurrency(rows.reduce((s, f) => s + (Number(f.amount_cad) || 0), 0), 'CAD')}
-                    </td>
-                    {selected.type === 'service' && <td />}
-                    <td />
-                  </tr>
-                </tfoot>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
   )
 }
 
@@ -2289,6 +1880,102 @@ const PRESETS = [
   { id: 'all',  label: 'Tout',   days: null },
 ]
 
+function fmtMoney(n, currency) {
+  if (n === null || n === undefined || Number.isNaN(n)) return ''
+  try {
+    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: currency || 'CAD', minimumFractionDigits: 2 }).format(n)
+  } catch {
+    return `${Number(n).toFixed(2)} ${currency || ''}`.trim()
+  }
+}
+
+function BalanceSheetRow({ node, currency, expanded, onToggle }) {
+  const isSection = node.kind === 'section'
+  const isOpen = expanded[node.id] !== false // sections ouvertes par défaut
+  const hasChildren = isSection && node.children && node.children.length > 0
+  const padding = 12 + node.depth * 16
+  const rowClass = isSection
+    ? (node.depth === 0 ? 'font-semibold text-slate-900 bg-slate-50' : 'font-medium text-slate-800')
+    : 'text-slate-600'
+  return (
+    <>
+      <tr className={`border-b border-slate-100 ${rowClass}`}>
+        <td className="py-1.5 pr-3" style={{ paddingLeft: padding }}>
+          {hasChildren ? (
+            <button
+              type="button"
+              onClick={() => onToggle(node.id)}
+              className="text-slate-400 hover:text-slate-700 -ml-4 mr-1 align-middle"
+              aria-label={isOpen ? 'Replier' : 'Déplier'}
+            >
+              <ChevronDown size={12} className={`inline transition-transform ${isOpen ? '' : '-rotate-90'}`} />
+            </button>
+          ) : null}
+          {node.label}
+        </td>
+        <td className="py-1.5 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
+          {node.total !== null ? fmtMoney(node.total, currency) : ''}
+        </td>
+      </tr>
+      {hasChildren && isOpen && node.children.map(child => (
+        <BalanceSheetRow key={child.id} node={child} currency={currency} expanded={expanded} onToggle={onToggle} />
+      ))}
+    </>
+  )
+}
+
+function BalanceSheetPanel() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [expanded, setExpanded] = useState({})
+
+  const load = (opts = {}) => {
+    setLoading(true)
+    setError(null)
+    api.dashboard.balanceSheet(opts)
+      .then(r => { setData(r); setLoading(false) })
+      .catch(e => { setError(e?.message || 'Erreur'); setLoading(false) })
+  }
+
+  useEffect(() => { load() }, [])
+
+  const toggle = id => setExpanded(prev => ({ ...prev, [id]: prev[id] === false ? true : false }))
+
+  if (loading && !data) {
+    return <div className="h-32 flex items-center justify-center text-slate-400 text-sm">Chargement du bilan…</div>
+  }
+  if (error) {
+    return (
+      <div className="text-sm text-rose-600">
+        Impossible de charger le bilan QuickBooks : {error}
+        <button onClick={load} className="ml-2 underline">Réessayer</button>
+      </div>
+    )
+  }
+  if (!data?.rows?.length) {
+    return <div className="text-sm text-slate-500">Aucune donnée renvoyée par QuickBooks.</div>
+  }
+
+  return (
+    <div data-testid="dashboard-balance-sheet">
+      <div className="flex items-center justify-between mb-3 text-xs text-slate-500">
+        <span>Au {data.as_of ? fmtDate(data.as_of) : '—'} · Devise {data.currency}</span>
+        <button onClick={() => load({ refresh: true })} className="text-brand-600 hover:underline">Rafraîchir</button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <tbody>
+            {data.rows.map(node => (
+              <BalanceSheetRow key={node.id} node={node} currency={data.currency} expanded={expanded} onToggle={toggle} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
 function TopProductsPanel() {
   const [range, setRange] = useState({ from: null, to: null, min: null, max: null })
   const [products, setProducts] = useState([])
@@ -2482,7 +2169,6 @@ function fmtDateShort(d) {
 
 export default function Dashboard() {
   const [data, setData] = useState(null)
-  const [stripeRevenue, setStripeRevenue] = useState(null)
   const [subscriptionEvents, setSubscriptionEvents] = useState(null)
   const [loading, setLoading] = useState(true)
   const [showEditor, setShowEditor] = useState(false)
@@ -2495,7 +2181,6 @@ export default function Dashboard() {
   const refresh = () => {
     setLoading(true)
     api.dashboard.get().then(setData).catch(console.error).finally(() => setLoading(false))
-    api.dashboard.stripeRevenue().then(setStripeRevenue).catch(console.error)
     api.dashboard.subscriptionEvents({ months: 12 }).then(setSubscriptionEvents).catch(console.error)
   }
 
@@ -2548,30 +2233,6 @@ export default function Dashboard() {
         description="Items facturables envoyés — 16 dernières semaines · Rolling 28 jours"
       >
         <ProfitabilityChart data={data?.weeklyProfitability} recentOrders={data?.recentShippedOrders} />
-      </CollapsibleCard>
-    ),
-    section_stripe_subscriptions: (
-      <CollapsibleCard
-        {...cardProps('section_stripe_subscriptions')}
-        title="Abonnements"
-        description="Encaissements Stripe d'abonnements sur les 12 derniers mois · remboursements déduits · USD converti au taux BoC du jour du document · taxes exclues · comparé au mois équivalent l'année précédente"
-      >
-        <StripeRevenueWithDrilldown
-          data={stripeRevenue?.byMonth}
-          mode="subscription"
-        />
-      </CollapsibleCard>
-    ),
-    section_stripe_sales: (
-      <CollapsibleCard
-        {...cardProps('section_stripe_sales')}
-        title="Ventes"
-        description="Encaissements Stripe de ventes ponctuelles sur les 12 derniers mois · remboursements déduits · USD converti au taux BoC du jour du document · taxes exclues · comparé au mois équivalent l'année précédente"
-      >
-        <StripeRevenueWithDrilldown
-          data={stripeRevenue?.byMonth}
-          mode="sale"
-        />
       </CollapsibleCard>
     ),
     section_subscription_events: (
@@ -2662,6 +2323,15 @@ export default function Dashboard() {
         description="Basé sur la première adresse de livraison — cliquer pour filtrer"
       >
         <GeoClientsMap geoData={data?.geoClients || []} unplacedCount={data?.geoClientsUnplaced || 0} />
+      </CollapsibleCard>
+    ),
+    section_balance_sheet: (
+      <CollapsibleCard
+        {...cardProps('section_balance_sheet', { testId: 'section-balance-sheet' })}
+        title="Bilan QuickBooks"
+        description="Rapport BalanceSheet temps réel — méthode Accrual · cliquer sur une section pour la replier"
+      >
+        <BalanceSheetPanel />
       </CollapsibleCard>
     ),
     section_tickets_monthly: (

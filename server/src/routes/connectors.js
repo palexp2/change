@@ -1486,7 +1486,7 @@ router.get('/quickbooks/accounts', requireAuth, async (req, res) => {
     const all = req.query.all === '1' || req.query.all === 'true'
     const query = all
       ? "SELECT * FROM Account WHERE Active = true MAXRESULTS 1000"
-      : "SELECT * FROM Account WHERE AccountType IN ('Expense', 'Other Expense', 'Cost of Goods Sold', 'Bank', 'Credit Card') MAXRESULTS 200"
+      : "SELECT * FROM Account WHERE AccountType IN ('Expense', 'Other Expense', 'Cost of Goods Sold', 'Other Current Asset', 'Bank', 'Credit Card') MAXRESULTS 300"
     const q = new URLSearchParams({ query })
     const data = await qbGet(`/query?${q}`)
     res.json(data.QueryResponse?.Account || [])
@@ -1512,12 +1512,21 @@ router.get('/quickbooks/tax-codes', requireAuth, async (req, res) => {
   }
 })
 
-// GET /api/connectors/quickbooks/vendors — liste des fournisseurs QB
+// GET /api/connectors/quickbooks/vendors — liste des fournisseurs QB (paginé)
 router.get('/quickbooks/vendors', requireAuth, async (req, res) => {
   try {
-    const q = new URLSearchParams({ query: "SELECT * FROM Vendor WHERE Active = true MAXRESULTS 200" })
-    const data = await qbGet(`/query?${q}`)
-    res.json(data.QueryResponse?.Vendor || [])
+    const pageSize = 1000
+    let startPos = 1
+    const all = []
+    while (true) {
+      const q = encodeURIComponent(`SELECT * FROM Vendor WHERE Active = true STARTPOSITION ${startPos} MAXRESULTS ${pageSize}`)
+      const data = await qbGet(`/query?query=${q}`)
+      const batch = data.QueryResponse?.Vendor || []
+      all.push(...batch)
+      if (batch.length < pageSize) break
+      startPos += pageSize
+    }
+    res.json(all)
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

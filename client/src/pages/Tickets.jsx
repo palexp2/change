@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
+import { useTable, isTableHydrated } from '../lib/dataStore.js'
+import { sync as syncStore } from '../lib/dataSync.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, ticketStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -125,31 +126,33 @@ function TicketForm({ initial = {}, meta = {}, companies = [], users = [], conta
 }
 
 export default function Tickets() {
-  const [tickets, setTickets] = useState([])
-  const [companies, setCompanies] = useState([])
-  const [contacts, setContacts] = useState([])
-  const [users, setUsers] = useState([])
   const [meta, setMeta] = useState({ types: [], statuses: [] })
-  const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const navigate = useNavigate()
 
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.tickets.list({ limit, page }),
-      setTickets, setLoading
-    )
-  }, [])
+  const ticketsRaw = useTable('tickets')
+  const companies = useTable('companies')
+  const contacts = useTable('contacts')
+  const users = useTable('users')
+  const loading = !isTableHydrated('tickets')
 
-  useEffect(() => { load() }, [load])
+  const tickets = useMemo(() => {
+    const cById = new Map(companies.map(c => [c.id, c.name]))
+    const ctById = new Map(contacts.map(c => [c.id, `${c.first_name || ''} ${c.last_name || ''}`.trim()]))
+    const uById = new Map(users.map(u => [u.id, u.name]))
+    return ticketsRaw.map(r => ({
+      ...r,
+      company_name: cById.get(r.company_id) || r.company_name,
+      contact_name: ctById.get(r.contact_id) || r.contact_name,
+      assigned_name: uById.get(r.assigned_to) || r.assigned_name,
+    }))
+  }, [ticketsRaw, companies, contacts, users])
+
   useEffect(() => {
-    api.companies.lookup().then(setCompanies).catch(() => {})
-    api.contacts.lookup().then(setContacts).catch(() => {})
-    api.admin.listUsers().then(setUsers).catch(() => {})
     api.tickets.meta().then(setMeta).catch(() => {})
   }, [])
 
-  async function handleCreate(form) { await api.tickets.create(form); load() }
+  async function handleCreate(form) { await api.tickets.create(form); await syncStore() }
 
   return (
     <Layout>

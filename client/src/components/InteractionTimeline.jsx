@@ -108,6 +108,7 @@ function Bubble({ item, showContact, onOpen }) {
           {item.call_id && (item.recording_path || item.drive_file_id) && (
             <audio
               controls
+              preload="none"
               className="mt-2 w-full h-8"
               src={`/erp/api/calls/${item.call_id}/recording?token=${localStorage.getItem('erp_token')}`}
               onClick={e => e.stopPropagation()}
@@ -230,7 +231,7 @@ function InteractionDetail({ item }) {
 
       {/* Audio */}
       {item.call_id && (item.recording_path || item.drive_file_id) && (
-        <audio controls className="w-full h-10 rounded"
+        <audio controls preload="none" className="w-full h-10 rounded"
           src={`/erp/api/calls/${item.call_id}/recording?token=${localStorage.getItem('erp_token')}`} />
       )}
 

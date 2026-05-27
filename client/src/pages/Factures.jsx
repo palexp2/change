@@ -76,6 +76,9 @@ const RENDERS = {
     if (v === 'En attente') return <Badge color="yellow">En attente</Badge>
     return <span className="text-slate-300">—</span>
   },
+  notes: row => row.notes
+    ? <span className="text-slate-600 line-clamp-2 whitespace-pre-wrap" title={row.notes}>{row.notes}</span>
+    : <span className="text-slate-300">—</span>,
 }
 
 const COLUMNS = TABLE_COLUMN_META.factures.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
@@ -219,7 +222,7 @@ export default function Factures() {
           table="factures"
           columns={COLUMNS_WITH_CUSTOM}
           data={displayedFactures}
-          searchFields={['document_number', 'company_name', 'project_name', 'order_number', 'total_amount', 'amount_before_tax_cad', 'balance_due']}
+          searchFields={['document_number', 'company_name', 'project_name', 'order_number', 'total_amount', 'amount_before_tax_cad', 'balance_due', 'notes']}
           loading={loading}
           onRowClick={row => navigate(`/factures/${row.id}`)}
           customFieldsByColumn={customFieldsByColumn}

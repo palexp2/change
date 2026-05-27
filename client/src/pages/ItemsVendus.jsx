@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
+import { useTable, isTableHydrated } from '../lib/dataStore.js'
+import { sync as syncStore } from '../lib/dataSync.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
@@ -22,31 +23,32 @@ function fmtMoney(cents, currency) {
 }
 
 export default function ItemsVendus() {
-  const [items, setItems] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [products, setProducts] = useState([])
   const [savingId, setSavingId] = useState(null)
 
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.stripeInvoiceItems.list({ limit, page }),
-      setItems, setLoading
-    )
-  }, [])
+  const itemsRaw = useTable('stripe_invoice_items')
+  const factures = useTable('factures')
+  const productsAll = useTable('products')
+  const loading = !isTableHydrated('stripe_invoice_items')
 
-  useEffect(() => { load() }, [load])
+  const products = useMemo(() => productsAll.filter(p => p.active), [productsAll])
 
-  useEffect(() => {
-    api.products.list({ limit: 'all', active: 'true' })
-      .then(r => setProducts(r.data || []))
-      .catch(() => {})
-  }, [])
+  const items = useMemo(() => {
+    const fById = new Map(factures.map(f => [f.id, f]))
+    return itemsRaw.map(r => {
+      const f = r.facture_id ? fById.get(r.facture_id) : null
+      return {
+        ...r,
+        facture_document_number: f?.document_number || r.facture_document_number,
+        facture_invoice_id: f?.invoice_id || r.facture_invoice_id,
+      }
+    })
+  }, [itemsRaw, factures])
 
   const handleProductChange = useCallback(async (itemId, productId) => {
     setSavingId(itemId)
     try {
-      const updated = await api.stripeInvoiceItems.update(itemId, { product_id: productId || null })
-      setItems(prev => prev.map(it => (it.id === itemId ? { ...it, ...updated } : it)))
+      await api.stripeInvoiceItems.update(itemId, { product_id: productId || null })
+      await syncStore()
     } catch (err) {
       alert('Échec de la mise à jour : ' + (err.message || 'erreur inconnue'))
     } finally {

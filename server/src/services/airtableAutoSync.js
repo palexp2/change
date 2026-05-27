@@ -162,6 +162,15 @@ function liveColumns(table) {
   return new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name))
 }
 
+// Colonnes NOT NULL : la sync dynamique ne doit jamais y écrire — `convertValue`
+// peut produire null pour un champ Airtable vide, ce qui violerait la contrainte
+// et ferait rollback toute la transaction. Cf. incident projects.name de mai 2026
+// où une def dynamique « Projet → name » écrasait la valeur posée par le sync
+// hardcodé dès que le field_map_projects était vide.
+function notNullColumns(table) {
+  return new Set(db.prepare(`PRAGMA table_info(${table})`).all().filter(c => c.notnull === 1).map(c => c.name))
+}
+
 // ── Main: sync all fields for a module ──────────────────────────────────────
 
 /**
@@ -252,9 +261,10 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
     })
   }
 
-  // 3. Populate dynamic fields for all records (skip frozen columns)
+  // 3. Populate dynamic fields for all records (skip frozen + NOT NULL columns)
   const frozen = getFrozenColumns(erpTable)
-  const writable = dynamicFieldMap.filter(f => !frozen.has(f.columnName))
+  const notNull = notNullColumns(erpTable)
+  const writable = dynamicFieldMap.filter(f => !frozen.has(f.columnName) && !notNull.has(f.columnName))
   if (writable.length > 0 && records.length > 0) {
     const updateStmt = writable.map(f => `${f.columnName}=?`).join(', ')
     const stmt = db.prepare(
@@ -312,7 +322,8 @@ export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
   if (!dynamicFields.length) return
 
   const frozen = getFrozenColumns(erpTable)
-  const writable = dynamicFields.filter(f => !frozen.has(f.columnName))
+  const notNull = notNullColumns(erpTable)
+  const writable = dynamicFields.filter(f => !frozen.has(f.columnName) && !notNull.has(f.columnName))
   if (!writable.length) return
 
   const updateStmt = writable.map(f => `${f.columnName}=?`).join(', ')

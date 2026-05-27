@@ -19,9 +19,12 @@ function buildQbUrl(row) {
 }
 
 function serializeRow(row) {
+  let items = []
+  try { items = JSON.parse(row.items || '[]') }
+  catch (e) { console.error(`sale_receipts.items malformed for id=${row.id}: ${e.message}`) }
   return {
     ...row,
-    items: JSON.parse(row.items || '[]'),
+    items,
     quickbooks_url: buildQbUrl(row),
   }
 }
@@ -77,6 +80,72 @@ router.get('/:id', (req, res) => {
     .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(serializeRow(row))
+})
+
+router.patch('/:id', (req, res) => {
+  const row = db.prepare('SELECT id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+
+  const editable = ['currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'quickbooks_id', 'quickbooks_type']
+  const numericFields = new Set(['subtotal', 'tps', 'tvq', 'other_taxes', 'total'])
+  const sets = []
+  const values = []
+  for (const key of editable) {
+    if (key in req.body) {
+      let v = req.body[key]
+      if (key === 'currency') {
+        v = v == null ? null : String(v).trim().toUpperCase() || null
+        if (v && !/^[A-Z]{3}$/.test(v)) return res.status(400).json({ error: 'currency: code ISO 3 lettres attendu' })
+      } else if (numericFields.has(key)) {
+        if (v === '' || v == null) {
+          v = null
+        } else {
+          const n = Number(v)
+          if (!Number.isFinite(n) || n < 0) return res.status(400).json({ error: `${key}: nombre positif attendu` })
+          v = n
+        }
+      } else if (key === 'quickbooks_id' || key === 'quickbooks_type') {
+        v = v == null || v === '' ? null : String(v)
+        if (key === 'quickbooks_type' && v != null && !['purchase', 'bill'].includes(v)) {
+          return res.status(400).json({ error: 'quickbooks_type: purchase|bill|null attendu' })
+        }
+      } else if (key === 'items') {
+        if (!Array.isArray(v)) return res.status(400).json({ error: 'items: tableau attendu' })
+        const normalized = []
+        for (const it of v) {
+          if (!it || typeof it !== 'object') return res.status(400).json({ error: 'items: objet attendu par ligne' })
+          const num = x => {
+            if (x === '' || x == null) return null
+            const n = Number(x)
+            if (!Number.isFinite(n) || n < 0) throw new Error('items: nombres positifs attendus')
+            return n
+          }
+          try {
+            normalized.push({
+              description: it.description == null ? '' : String(it.description),
+              quantity:    num(it.quantity),
+              unit_price:  num(it.unit_price),
+              total:       num(it.total),
+            })
+          } catch (e) {
+            return res.status(400).json({ error: e.message })
+          }
+        }
+        v = JSON.stringify(normalized)
+      }
+      sets.push(`${key}=?`)
+      values.push(v)
+    }
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
+
+  sets.push(`updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
+  values.push(req.params.id)
+  db.prepare(`UPDATE sale_receipts SET ${sets.join(', ')} WHERE id=?`).run(...values)
+
+  const updated = fetchSaleReceiptRow(req.params.id)
+  if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
 })
 
 router.post('/upload', upload.single('file'), async (req, res) => {

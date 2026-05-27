@@ -100,6 +100,11 @@ export async function getAccessToken() {
   return refreshPromise
 }
 
+// Subscribers notified whenever a QB write happens. Used by report caches
+// (balance sheet, etc.) to invalidate themselves.
+const qbMutationListeners = new Set()
+export function onQbMutation(fn) { qbMutationListeners.add(fn); return () => qbMutationListeners.delete(fn) }
+
 export async function qbRequest(method, path, body) {
   const { accessToken, realmId } = await getAccessToken()
   const sep = path.includes('?') ? '&' : '?'
@@ -116,6 +121,9 @@ export async function qbRequest(method, path, body) {
   if (!resp.ok) {
     const text = await resp.text()
     throw new Error(`QB API ${method} ${path} ${resp.status}: ${text}`)
+  }
+  if (method !== 'GET') {
+    for (const fn of qbMutationListeners) { try { fn({ method, path }) } catch {} }
   }
   return resp.json()
 }

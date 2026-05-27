@@ -438,6 +438,7 @@ export function ViewToolbar({
   onReorderViews,
   activeViewId,
   setActiveViewId,
+  patchLocalView,
   processedCount,
   visibleCols, setVisibleCols,
   groupBy, setGroupBy,
@@ -522,13 +523,18 @@ export function ViewToolbar({
     const normGroupOrder = Array.isArray(p.groupOrder)
       ? (p.groupOrder.length > 0 ? p.groupOrder : null)
       : (p.groupOrder || null)
-    api.views.updatePill(p.table, p.viewId, {
+    const payload = {
       sort: p.sorts,
       filters: p.filters || [],
       visible_columns: p.visibleCols || [],
       group_by: normGroupBy,
       group_order: normGroupOrder,
-    }).catch(() => {})
+    }
+    api.views.updatePill(p.table, p.viewId, payload).catch(() => {})
+    // Sync l'état local — sinon, au retour sur cette vue après en avoir
+    // visité une autre, on relit la version pré-drag du `views` state et
+    // l'autosave qui suit écrase la sauvegarde qu'on vient de faire.
+    patchLocalView?.(p.viewId, payload)
   }
   flushSaveRef.current = flushSave
 

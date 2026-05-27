@@ -57,6 +57,26 @@ const EXTERNAL_ROUTES = new Set([
   // Désaffectation du lien QuickBooks d'un reçu de vente — appelée via console/curl
   // par l'admin pour repartir d'un état propre quand un sync QB s'est mal fini.
   'DELETE /api/sale-receipts/:id/quickbooks-link',
+  // Customer onboarding by-token — URL utilise encodeURIComponent(token) côté client,
+  // ce qui échappe au matcher (qui cherche ':token' littéral ou ${id}). Routes vivantes.
+  'POST /api/customer/post-payment/by-token/:token/save',
+  'POST /api/customer/post-payment/by-token/:token/submit',
+  'POST /api/customer/post-payment/by-token/:token/valve-blocks-checkout',
+  // Routes session — appelées depuis CustomerPostPayment.jsx via baseUrl construit
+  // dynamiquement, le matcher ne les détecte pas.
+  'POST /api/customer/post-payment/:sessionId/save',
+  'POST /api/customer/post-payment/:sessionId/submit',
+  // Admin diagnostic — purge manuelle des entrées slow-load depuis l'UI Admin
+  'DELETE /api/admin/slow-loads/:id',
+  // Dashboard stripe-revenue — appelées depuis le widget revenu Stripe (URL construite dynamiquement)
+  'GET /api/dashboard/stripe-revenue',
+  'GET /api/dashboard/stripe-revenue/factures',
+  // Places API — appelée depuis le guide d'appel statique (client/public/qualification-call-guide/index.html),
+  // hors client/src/.
+  'GET /api/places/autocomplete',
+  'GET /api/places/details',
+  // Bootstrap info — endpoint diagnostic appelé via curl/admin inspection.
+  'GET /api/bootstrap/info',
 ])
 
 // Même table que _auth-audit.test.js — garder synchro.
@@ -108,6 +128,16 @@ const MOUNTS = {
   'track.js':                   '/api/track',
   'vacations.js':               '/api/vacations',
   'views.js':                   '/api/views',
+  'airtable-fields.js':         '/api/airtable-fields',
+  'bootstrap.js':               '/api/bootstrap',
+  'discovery-forms.js':         '/api/discovery-forms',
+  'email-relance.js':           '/api/email-relance',
+  'field-visibility-rules.js':  '/api/field-visibility-rules',
+  'hubspot.js':                 '/api/hubspot',
+  'places.js':                  '/api/places',
+  'public-files.js':            '/api/public-files',
+  'qualification-calls.js':     '/api/qualification-calls',
+  'telemetry.js':               '/api/telemetry',
 }
 
 function parseRoutes(content) {

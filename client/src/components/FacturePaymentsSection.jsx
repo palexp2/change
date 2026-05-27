@@ -1,21 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Plus, ArrowDownCircle, ArrowUpCircle, AlertCircle, RefreshCw, ExternalLink, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Plus, ArrowDownCircle, ArrowUpCircle, AlertCircle, RefreshCw, ExternalLink, RotateCcw } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
-import { fmtDate } from '../lib/formatDate.js'
+import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { Modal } from './Modal.jsx'
-import RawEditPanel from './RawEditPanel.jsx'
-
-const PAYMENT_GROUPS = [
-  { title: 'Identifiants', cols: ['id', 'facture_id', 'created_by'] },
-  { title: 'Type', cols: ['direction', 'method', 'currency'] },
-  { title: 'Montants', cols: ['amount', 'amount_cad', 'exchange_rate'] },
-  { title: 'Dates', cols: ['received_at', 'created_at', 'updated_at'] },
-  { title: 'Stripe', cols: ['stripe_balance_tx_id', 'stripe_charge_id', 'stripe_refund_id'] },
-  { title: 'QuickBooks', cols: ['qb_deposit_id', 'qb_journal_entry_id', 'qb_payment_id', 'qb_invoice_id'] },
-  { title: 'Notes', cols: ['notes'] },
-]
 
 function fmtMoney(n, currency = 'CAD') {
   if (n == null) return '—'
@@ -54,7 +43,7 @@ export default function FacturePaymentsSection({
 
   // Form state
   const [method, setMethod] = useState('cheque')
-  const [receivedAt, setReceivedAt] = useState(() => new Date().toISOString().slice(0, 10))
+  const [receivedAt, setReceivedAt] = useState(() => localISODate())
   const [amount, setAmount] = useState('')
   const [currency, setCurrency] = useState(factureCurrency)
   const [notes, setNotes] = useState('')
@@ -92,7 +81,7 @@ export default function FacturePaymentsSection({
 
   function openForm(direction, opts = {}) {
     setMethod(opts.method || 'cheque')
-    setReceivedAt(opts.receivedAt || new Date().toISOString().slice(0, 10))
+    setReceivedAt(opts.receivedAt || localISODate())
     setAmount(opts.amount != null ? String(opts.amount) : '')
     setCurrency(opts.currency || factureCurrency)
     setNotes(opts.notes || '')
@@ -112,7 +101,7 @@ export default function FacturePaymentsSection({
       // skipQb par défaut : si l'invoice a été marquée paid-out-of-band dans
       // Stripe, l'encaissement réel est souvent déjà entré manuellement dans QB
       // — l'utilisateur décoche s'il veut au contraire qu'on poste le Deposit.
-      const prefillDate = facturePaidAt ? facturePaidAt.slice(0, 10) : new Date().toISOString().slice(0, 10)
+      const prefillDate = facturePaidAt ? facturePaidAt.slice(0, 10) : localISODate()
       openForm('in', {
         method: 'interac',
         receivedAt: prefillDate,
@@ -718,7 +707,6 @@ function QbCreditAccountInline({ payment, isAdmin, onChanged }) {
 }
 
 function PaymentList({ title, rows, icon: Icon, colorClass, onRetryQb, isAdmin, onChanged }) {
-  const [expandedId, setExpandedId] = useState(null)
   return (
     <div>
       <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2 flex items-center gap-1.5">
@@ -727,7 +715,6 @@ function PaymentList({ title, rows, icon: Icon, colorClass, onRetryQb, isAdmin, 
       <table className="w-full text-sm">
         <thead className="text-xs text-slate-400 uppercase tracking-wide">
           <tr>
-            {isAdmin && <th className="w-6 pb-2"></th>}
             <th className="text-left pb-2 font-medium">Date</th>
             <th className="text-left pb-2 font-medium">Mode</th>
             <th className="text-right pb-2 font-medium w-32">Montant</th>
@@ -741,8 +728,6 @@ function PaymentList({ title, rows, icon: Icon, colorClass, onRetryQb, isAdmin, 
               key={p.id}
               p={p}
               isAdmin={isAdmin}
-              expanded={expandedId === p.id}
-              onToggleExpand={() => setExpandedId(prev => prev === p.id ? null : p.id)}
               onRetryQb={onRetryQb}
               onChanged={onChanged}
             />
@@ -753,24 +738,10 @@ function PaymentList({ title, rows, icon: Icon, colorClass, onRetryQb, isAdmin, 
   )
 }
 
-function PaymentRow({ p, isAdmin, expanded, onToggleExpand, onRetryQb, onChanged }) {
+function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
   return (
     <>
       <tr className="border-t border-slate-100">
-        {isAdmin && (
-          <td className="py-2 align-top">
-            {p.synthetic ? null : (
-              <button
-                onClick={onToggleExpand}
-                className="p-0.5 text-slate-400 hover:text-slate-700 rounded"
-                title="Édition avancée (admin)"
-                data-testid={`payment-raw-edit-toggle-${p.id}`}
-              >
-                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              </button>
-            )}
-          </td>
-        )}
         <td className="py-2 text-slate-700 whitespace-nowrap">{fmtDate(p.received_at)}</td>
         <td className="py-2 text-slate-600">
           {METHOD_LABELS[p.method] || p.method}
@@ -910,36 +881,6 @@ function PaymentRow({ p, isAdmin, expanded, onToggleExpand, onRetryQb, onChanged
           })()}
         </td>
       </tr>
-      {isAdmin && expanded && !p.synthetic && (
-        <tr className="bg-slate-50/60">
-          <td colSpan={6} className="px-4 py-4">
-            <PaymentRawEdit paymentId={p.id} payment={p} onChanged={onChanged} />
-          </td>
-        </tr>
-      )}
     </>
-  )
-}
-
-function PaymentRawEdit({ paymentId, payment, onChanged }) {
-  const schemaLoader = useCallback(() => api.admin.paymentRawSchema(paymentId), [paymentId])
-  const onSave = useCallback(async (col, value) => {
-    const res = await api.admin.paymentRawUpdate(paymentId, { [col]: value })
-    if (!res?.rejected?.[col] && onChanged) await onChanged()
-    return res
-  }, [paymentId, onChanged])
-  return (
-    <div>
-      <div className="text-[11px] text-amber-700 bg-amber-50 px-2 py-1 rounded mb-3 inline-block">
-        Édition avancée — aucune validation métier (qb_*_id, amount, direction… cassent l'idempotence si modifiés)
-      </div>
-      <RawEditPanel
-        schemaLoader={schemaLoader}
-        record={payment}
-        onSave={onSave}
-        groups={PAYMENT_GROUPS}
-        testIdPrefix={`payment-raw-edit-${paymentId}`}
-      />
-    </div>
   )
 }

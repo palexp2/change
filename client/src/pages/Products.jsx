@@ -1,10 +1,10 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
+import { useTable, isTableHydrated } from '../lib/dataStore.js'
+import { sync as syncStore } from '../lib/dataSync.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -152,30 +152,23 @@ function StockAdjustModal({ product, onSave, onClose }) {
 
 export default function Products() {
   const navigate = useNavigate()
-  const [products, setProducts] = useState([])
-  const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [stockProduct, setStockProduct] = useState(null)
   const undoableDelete = useUndoableDelete()
 
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.products.list({ limit, page, active: true }),
-      setProducts, setLoading
-    )
-  }, [])
-
-  useEffect(() => { load() }, [load])
-
-  // The Products list page filters server-side on `active=true` — skip events
-  // for inactive products so we don't accidentally show them.
-  useEntityListRealtime('product', setProducts, { predicate: p => p.active !== 0 })
+  // Cache global (lib/dataStore) : hydraté au login par /api/bootstrap, mis à
+  // jour par delta polling toutes les 10s. La page filtre l'état "inactif"
+  // côté client (l'ancien endpoint le faisait via ?active=true).
+  const allProducts = useTable('products')
+  const products = useMemo(() => allProducts.filter(p => p.active !== 0), [allProducts])
+  const loading = !isTableHydrated('products')
 
   const COLUMNS = useMemo(() => TABLE_COLUMN_META.products, [])
 
   async function handleCreate(form) {
     await api.products.create(form)
-    load()
+    // Synchro immédiate pour voir le nouveau produit sans attendre le poll.
+    await syncStore()
   }
 
   return (
@@ -206,7 +199,7 @@ export default function Products() {
               ids,
               deleteFn: () => Promise.all(ids.map(id => api.products.delete(id))),
               label: `${ids.length} produit${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`,
-              onChange: load,
+              onChange: syncStore,
             })
           }}
         />
@@ -220,7 +213,7 @@ export default function Products() {
         {stockProduct && (
           <StockAdjustModal
             product={stockProduct}
-            onSave={() => { load(); setStockProduct(null) }}
+            onSave={() => { syncStore(); setStockProduct(null) }}
             onClose={() => setStockProduct(null)}
           />
         )}

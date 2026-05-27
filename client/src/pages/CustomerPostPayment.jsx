@@ -1,8 +1,11 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useParams } from 'react-router-dom'
 
-// Public page (no auth) — onboarding wizard shown after a customer pays.
-// Branches based on detected products + answers. Autosaves per change.
+// Public page (no auth). Deux entrées :
+//   - /customer/post-payment?session_id=cs_xxx  → flow Stripe Checkout (legacy)
+//   - /d/:token                                  → formulaire de découverte standalone
+// Dans les deux cas, mêmes étapes ; en mode by-token le nb de serres est verrouillé
+// (les cartes sont pré-créées 1-pour-1 à partir des Helper/Chief commandés).
 
 const inputCls = 'w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500'
 const btnPrimary = 'inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50'
@@ -22,7 +25,15 @@ const FURNACE_BRANDS = [
 
 export default function CustomerPostPayment() {
   const [search] = useSearchParams()
+  const { token } = useParams()
   const sessionId = search.get('session_id')
+  const mode = token ? 'by-token' : 'by-session'
+  const identifier = token || sessionId
+
+  const baseUrl = mode === 'by-token'
+    ? `/erp/api/customer/post-payment/by-token/${encodeURIComponent(token || '')}`
+    : `/erp/api/customer/post-payment/${encodeURIComponent(sessionId || '')}`
+
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -32,8 +43,13 @@ export default function CustomerPostPayment() {
   const saveTimer = useRef(null)
 
   useEffect(() => {
-    if (!sessionId) { setError('Lien invalide — paramètre session_id manquant.'); setLoading(false); return }
-    fetch(`/erp/api/customer/post-payment/${encodeURIComponent(sessionId)}`)
+    if (!identifier) {
+      const reason = mode === 'by-token' ? 'token manquant.' : 'paramètre session_id manquant.'
+      setError(`Lien invalide — ${reason}`)
+      setLoading(false)
+      return
+    }
+    fetch(baseUrl)
       .then(async r => {
         if (!r.ok) throw new Error((await r.json()).error || 'Erreur')
         return r.json()
@@ -48,7 +64,7 @@ export default function CustomerPostPayment() {
       })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false))
-  }, [sessionId])
+  }, [identifier, baseUrl, mode])
 
   // Autosave (debounced)
   const queueSave = useCallback((patch) => {
@@ -56,14 +72,14 @@ export default function CustomerPostPayment() {
     clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(async () => {
       try {
-        await fetch(`/erp/api/customer/post-payment/${encodeURIComponent(sessionId)}/save`, {
+        await fetch(`${baseUrl}/save`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(patch),
         })
       } catch (e) { /* silent — they can retry */ }
     }, 600)
-  }, [sessionId])
+  }, [baseUrl])
 
   if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-500">Chargement…</div>
   if (error) return (
@@ -80,20 +96,23 @@ export default function CustomerPostPayment() {
   const detected = data.detected || {}
   const permission = resp.permission_level || detected.permission_level
   const hasMobileController = detected.has_mobile_controller
+  const lockedCount = !!data.greenhouse_count_locked
+  const isDiscoveryMode = mode === 'by-token'
 
   return (
     <div className="min-h-screen bg-slate-50 py-10 px-4">
       <div className="max-w-2xl mx-auto space-y-5">
-        <Header data={data} />
+        <Header data={data} isDiscoveryMode={isDiscoveryMode} />
         {submitted ? (
-          <SubmittedSummary resp={resp} extrasResult={extrasResult} setExtrasResult={setExtrasResult} sessionId={sessionId} permission={permission} />
+          <SubmittedSummary resp={resp} extrasResult={extrasResult} setExtrasResult={setExtrasResult} sessionId={identifier} permission={permission} isDiscoveryMode={isDiscoveryMode} />
         ) : (
           <Wizard
             resp={resp}
             queueSave={queueSave}
             permission={permission}
             hasMobileController={hasMobileController}
-            sessionId={sessionId}
+            lockedCount={lockedCount}
+            baseUrl={baseUrl}
             submitting={submitting}
             setSubmitting={setSubmitting}
             onSubmitted={() => setResp(r => ({ ...r, status: 'submitted', submitted_at: new Date().toISOString() }))}
@@ -104,8 +123,16 @@ export default function CustomerPostPayment() {
   )
 }
 
-function Header({ data }) {
+function Header({ data, isDiscoveryMode }) {
   const inv = data.invoice
+  if (isDiscoveryMode) {
+    return (
+      <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+        <h1 className="text-2xl font-bold text-slate-900">Formulaire de découverte technique</h1>
+        <p className="text-slate-600 mt-1">Ces informations nous permettent de pré-programmer votre contrôleur et de préparer votre installation.</p>
+      </div>
+    )
+  }
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
       <h1 className="text-2xl font-bold text-slate-900">Merci pour votre achat</h1>
@@ -139,7 +166,7 @@ function fmtMoney(amount, currency) {
 
 // ─── Wizard ───────────────────────────────────────────────────────────────
 
-function Wizard({ resp, queueSave, permission, hasMobileController, sessionId, submitting, setSubmitting, onSubmitted }) {
+function Wizard({ resp, queueSave, permission, hasMobileController, lockedCount, baseUrl, submitting, setSubmitting, onSubmitted }) {
   const [error, setError] = useState(null)
 
   // Determine if we have all required answers to enable submit
@@ -149,7 +176,7 @@ function Wizard({ resp, queueSave, permission, hasMobileController, sessionId, s
     setError(null)
     setSubmitting(true)
     try {
-      const r = await fetch(`/erp/api/customer/post-payment/${encodeURIComponent(sessionId)}/submit`, { method: 'POST' })
+      const r = await fetch(`${baseUrl}/submit`, { method: 'POST' })
       if (!r.ok) {
         const j = await r.json().catch(() => ({}))
         throw new Error(j.error || 'Erreur')
@@ -177,7 +204,9 @@ function Wizard({ resp, queueSave, permission, hasMobileController, sessionId, s
       {resp.is_new_site === 'add_to_existing' && (
         <Step_ShippingAddress resp={resp} queueSave={queueSave} title="Adresse de livraison" />
       )}
-      {resp.is_new_site && <Step_Greenhouses resp={resp} queueSave={queueSave} permission={permission} />}
+      {resp.is_new_site && <Step_Greenhouses resp={resp} queueSave={queueSave} permission={permission} lockedCount={lockedCount} />}
+
+      {resp.is_new_site && <Step_ValveBlocksPayment resp={resp} baseUrl={baseUrl} />}
 
       {error && <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">{error}</div>}
 
@@ -209,7 +238,81 @@ function canSubmit(resp, hasMobileController) {
     if (!ship?.line1 || !ship?.province) return false
   }
   if (!Number.isFinite(Number(resp.num_greenhouses)) || Number(resp.num_greenhouses) <= 0) return false
+  // Si des blocs de 4 valves supplémentaires sont requis, soit ils sont payés,
+  // soit le client doit baisser à ≤ 4 zones. Sinon on bloque la soumission.
+  const blocksNeeded = Number(resp.valve_blocks_needed) || 0
+  if (blocksNeeded > 0 && !resp.valve_blocks_paid) return false
   return true
+}
+
+function Step_ValveBlocksPayment({ resp, baseUrl }) {
+  const blocksNeeded = Number(resp.valve_blocks_needed) || 0
+  const paid = !!resp.valve_blocks_paid
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState(null)
+  if (blocksNeeded <= 0 && !paid) return null
+
+  async function handlePay() {
+    setErr(null); setLoading(true)
+    try {
+      const r = await fetch(`${baseUrl}/valve-blocks-checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pricing: 'one_time' }),
+      })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(j.error || 'Erreur de paiement')
+      if (j.checkout_url) {
+        window.location.href = j.checkout_url
+        return
+      }
+      throw new Error('URL de paiement manquante')
+    } catch (e) {
+      setErr(e.message)
+      setLoading(false)
+    }
+  }
+
+  if (paid) {
+    return (
+      <Card title="Blocs de valves supplémentaires">
+        <div className="rounded-lg bg-green-50 border border-green-200 p-3 text-sm text-green-800">
+          ✓ Paiement reçu — vos {blocksNeeded} bloc{blocksNeeded > 1 ? 's' : ''} de 4 valves supplémentaire{blocksNeeded > 1 ? 's' : ''} {blocksNeeded > 1 ? 'ont' : 'a'} été {blocksNeeded > 1 ? 'achetés' : 'acheté'}.
+        </div>
+      </Card>
+    )
+  }
+
+  const unitPriceCad = 400
+  const totalCad = unitPriceCad * blocksNeeded
+  return (
+    <Card title="Blocs de valves supplémentaires">
+      <p className="text-sm text-slate-700">
+        Vous avez configuré plus de 4 zones d'irrigation dans au moins une serre. Pour soumettre, vous devez payer <strong>{blocksNeeded} bloc{blocksNeeded > 1 ? 's' : ''} de 4 valves supplémentaire{blocksNeeded > 1 ? 's' : ''}</strong>, ou baisser à 4 zones par serre.
+      </p>
+
+      <div className="rounded-lg border border-slate-200 p-4 space-y-2">
+        <div className="flex items-baseline justify-between">
+          <div>
+            <div className="font-medium text-slate-900">Achat unique</div>
+            <div className="text-xs text-slate-500">{blocksNeeded} × 400 $ CAD</div>
+          </div>
+          <div className="text-lg font-semibold text-slate-900">{totalCad} $ CAD</div>
+        </div>
+        <button onClick={handlePay} disabled={loading} className={btnPrimary + ' w-full'}>
+          {loading ? 'Redirection…' : `Payer ${totalCad} $ par Stripe`}
+        </button>
+        {err && <div className="text-sm text-red-700">{err}</div>}
+      </div>
+
+      <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm text-slate-700">
+        <div className="font-medium text-slate-800">Préférez l'option mensuelle (25 $/mois par bloc) ?</div>
+        <p className="mt-1 text-xs text-slate-600">
+          Cette option s'ajoute à votre abonnement existant — contactez votre conseiller @orisha pour qu'il l'active de son côté.
+        </p>
+      </div>
+    </Card>
+  )
 }
 
 // ─── Steps ────────────────────────────────────────────────────────────────
@@ -348,7 +451,7 @@ function Step_Network({ resp, queueSave }) {
   )
 }
 
-function Step_Greenhouses({ resp, queueSave, permission }) {
+function Step_Greenhouses({ resp, queueSave, permission, lockedCount }) {
   const n = Number(resp.num_greenhouses) || 0
   const greenhouses = resp.greenhouses || []
 
@@ -367,11 +470,13 @@ function Step_Greenhouses({ resp, queueSave, permission }) {
 
   return (
     <>
-      <Card title="Serres à automatiser">
-        <Field label="Combien de serres voulez-vous automatiser avec Orisha ?">
-          <input type="number" min={1} max={50} className={inputCls} value={n || ''} onChange={e => setN(e.target.value)} />
-        </Field>
-      </Card>
+      {!lockedCount && (
+        <Card title="Serres à automatiser">
+          <Field label="Combien de serres voulez-vous automatiser avec Orisha ?">
+            <input type="number" min={1} max={50} className={inputCls} value={n || ''} onChange={e => setN(e.target.value)} />
+          </Field>
+        </Card>
+      )}
       {greenhouses.map((g, i) => (
         <GreenhouseCard key={i} idx={i} g={g} onChange={(patch) => setGreenhouse(i, patch)} permission={permission} />
       ))}
@@ -380,50 +485,88 @@ function Step_Greenhouses({ resp, queueSave, permission }) {
 }
 
 function GreenhouseCard({ idx, g, onChange, permission }) {
+  // Si la carte a son propre permission_level (flow découverte avec cartes
+  // pré-créées), il prime sur le permission global du customer.
+  const cardPermission = g.permission_level || permission
+  const hasSideVents = g.has_side_vents
+  function setHasSideVents(yes) {
+    if (yes) {
+      onChange({ has_side_vents: true })
+    } else {
+      // On efface les sous-réponses pour éviter les données orphelines.
+      onChange({
+        has_side_vents: false,
+        side_vent_height: '',
+        side_pipe_type: '',
+        side_pipe_diameter: '',
+        guide_pipes_state: '',
+        guide_pipe_diameter: '',
+        wants_compatible_guide_pipes: false,
+      })
+    }
+  }
   return (
-    <Card title={`Serre #${idx + 1}`}>
+    <Card title={`Serre #${idx + 1}${g.permission_level === 'chief_grower' ? ' (Chief)' : g.permission_level === 'helper' ? ' (Helper)' : ''}`}>
       {/* Helper questions (always shown — chief grower includes helper questions) */}
-      <div className="grid grid-cols-2 gap-3">
-        <Field label="Longueur de la serre (pi)">
-          <input type="number" className={inputCls} value={g.length || ''} onChange={e => onChange({ length: e.target.value })} />
-        </Field>
-        <Field label="Hauteur des côtés ouvrants (pi)">
-          <input type="number" className={inputCls} value={g.side_vent_height || ''} onChange={e => onChange({ side_vent_height: e.target.value })} />
-        </Field>
-      </div>
-      <Field label="Type de tuyau de côté">
-        <select className={inputCls} value={g.side_pipe_type || ''} onChange={e => onChange({ side_pipe_type: e.target.value, side_pipe_diameter: '' })}>
+      <Field label="Longueur de la serre (pi)">
+        <input type="number" className={inputCls} value={g.length || ''} onChange={e => onChange({ length: e.target.value })} />
+      </Field>
+
+      <Field label="Cette serre a-t-elle des côtés ouvrants à automatiser ?">
+        <select
+          className={inputCls}
+          value={hasSideVents == null ? '' : (hasSideVents ? 'yes' : 'no')}
+          onChange={e => {
+            if (e.target.value === '') return
+            setHasSideVents(e.target.value === 'yes')
+          }}
+        >
           <option value="">—</option>
-          <option value="aluminum_C">Aluminium extrudé (profil C)</option>
-          <option value="steel_O">Acier (profil rond / O)</option>
+          <option value="yes">Oui, il y a des côtés ouvrants</option>
+          <option value="no">Non, pas de côtés ouvrants</option>
         </select>
       </Field>
-      {g.side_pipe_type === 'aluminum_C' && (
-        <DiameterPicker label="Diamètre du tuyau aluminium" defaultOption='2"' value={g.side_pipe_diameter} onChange={(v) => onChange({ side_pipe_diameter: v })} />
-      )}
-      {g.side_pipe_type === 'steel_O' && (
-        <DiameterPicker label="Diamètre du tuyau acier" defaultOption='1 5/16"' value={g.side_pipe_diameter} onChange={(v) => onChange({ side_pipe_diameter: v })} />
-      )}
 
-      <div className="pt-2 border-t border-slate-100">
-        <Field label="Tuyaux guides">
-          <select className={inputCls} value={g.guide_pipes_state || ''} onChange={e => onChange({ guide_pipes_state: e.target.value, guide_pipe_diameter: '' })}>
-            <option value="">—</option>
-            <option value="present">Déjà présents</option>
-            <option value="needed">À fournir</option>
-          </select>
-        </Field>
-        {g.guide_pipes_state === 'present' && (
-          <>
-            <DiameterPicker label="Diamètre des tuyaux guides existants" defaultOption='1 5/16"' value={g.guide_pipe_diameter} onChange={(v) => onChange({ guide_pipe_diameter: v })} />
-            {g.guide_pipe_diameter && g.guide_pipe_diameter.startsWith('Autre:') && (
-              <CompatibilityWarning value={g.guide_pipe_diameter.replace('Autre:', '').trim()} onAccept={() => onChange({ wants_compatible_guide_pipes: true })} accepted={!!g.wants_compatible_guide_pipes} />
+      {hasSideVents === true && (
+        <>
+          <Field label="Hauteur des côtés ouvrants (pi)">
+            <input type="number" className={inputCls} value={g.side_vent_height || ''} onChange={e => onChange({ side_vent_height: e.target.value })} />
+          </Field>
+          <Field label="Type de tuyau de côté">
+            <select className={inputCls} value={g.side_pipe_type || ''} onChange={e => onChange({ side_pipe_type: e.target.value, side_pipe_diameter: '' })}>
+              <option value="">—</option>
+              <option value="aluminum_C">Aluminium extrudé (profil C)</option>
+              <option value="steel_O">Acier (profil rond / O)</option>
+            </select>
+          </Field>
+          {g.side_pipe_type === 'aluminum_C' && (
+            <DiameterPicker label="Diamètre du tuyau aluminium" defaultOption='2"' value={g.side_pipe_diameter} onChange={(v) => onChange({ side_pipe_diameter: v })} />
+          )}
+          {g.side_pipe_type === 'steel_O' && (
+            <DiameterPicker label="Diamètre du tuyau acier" defaultOption='1 5/16"' value={g.side_pipe_diameter} onChange={(v) => onChange({ side_pipe_diameter: v })} />
+          )}
+
+          <div className="pt-2 border-t border-slate-100">
+            <Field label="Tuyaux guides">
+              <select className={inputCls} value={g.guide_pipes_state || ''} onChange={e => onChange({ guide_pipes_state: e.target.value, guide_pipe_diameter: '' })}>
+                <option value="">—</option>
+                <option value="present">Déjà présents</option>
+                <option value="needed">À fournir</option>
+              </select>
+            </Field>
+            {g.guide_pipes_state === 'present' && (
+              <>
+                <DiameterPicker label="Diamètre des tuyaux guides existants" defaultOption='1 5/16"' value={g.guide_pipe_diameter} onChange={(v) => onChange({ guide_pipe_diameter: v })} />
+                {g.guide_pipe_diameter && g.guide_pipe_diameter.startsWith('Autre:') && (
+                  <CompatibilityWarning value={g.guide_pipe_diameter.replace('Autre:', '').trim()} onAccept={() => onChange({ wants_compatible_guide_pipes: true })} accepted={!!g.wants_compatible_guide_pipes} />
+                )}
+              </>
             )}
-          </>
-        )}
-      </div>
+          </div>
+        </>
+      )}
 
-      {permission === 'chief_grower' && (
+      {cardPermission === 'chief_grower' && (
         <ChiefGrowerSection g={g} onChange={onChange} />
       )}
     </Card>
@@ -471,8 +614,16 @@ function CompatibilityWarning({ value, onAccept, accepted }) {
 function ChiefGrowerSection({ g, onChange }) {
   const numFurnaces = Number(g.num_furnaces) || 0
   const furnaces = g.furnaces || []
+  const hasFurnaces = g.has_furnaces
+  function setHasFurnaces(yes) {
+    if (yes) {
+      onChange({ has_furnaces: true })
+    } else {
+      onChange({ has_furnaces: false, num_furnaces: 0, furnaces: [] })
+    }
+  }
   function setNumFurnaces(n) {
-    const clamped = Math.max(0, Math.min(20, parseInt(n) || 0))
+    const clamped = Math.max(0, Math.min(2, parseInt(n) || 0))
     const arr = [...furnaces]
     while (arr.length < clamped) arr.push({})
     arr.length = clamped
@@ -489,20 +640,44 @@ function ChiefGrowerSection({ g, onChange }) {
   return (
     <div className="pt-3 border-t border-slate-100 space-y-3">
       <h3 className="text-sm font-semibold text-slate-800">Fournaises</h3>
-      <Field label="Nombre de fournaises dans cette serre">
-        <input type="number" min={0} max={20} className={inputCls} value={numFurnaces || ''} onChange={e => setNumFurnaces(e.target.value)} />
+      <Field label="Cette serre a-t-elle des fournaises à automatiser ?">
+        <select
+          className={inputCls}
+          value={hasFurnaces == null ? '' : (hasFurnaces ? 'yes' : 'no')}
+          onChange={e => {
+            if (e.target.value === '') return
+            setHasFurnaces(e.target.value === 'yes')
+          }}
+        >
+          <option value="">—</option>
+          <option value="yes">Oui, il y a des fournaises</option>
+          <option value="no">Non, pas de fournaises</option>
+        </select>
       </Field>
-      {furnaces.map((f, i) => (
-        <FurnaceForm key={i} idx={i} f={f} onChange={(patch) => setFurnace(i, patch)} />
-      ))}
+      {hasFurnaces === true && (
+        <>
+          <Field label="Nombre de fournaises dans cette serre">
+            <input type="number" min={1} max={2} className={inputCls} value={numFurnaces || ''} onChange={e => setNumFurnaces(e.target.value)} />
+          </Field>
+          {furnaces.map((f, i) => (
+            <FurnaceForm key={i} idx={i} f={f} onChange={(patch) => setFurnace(i, patch)} />
+          ))}
+        </>
+      )}
 
       <h3 className="text-sm font-semibold text-slate-800 pt-2 border-t border-slate-100">Irrigation</h3>
       <Field label="Combien de zones d'irrigation pour cette serre ?">
         <input type="number" min={0} max={50} className={inputCls} value={irrZones || ''} onChange={e => onChange({ irrigation_zones: e.target.value })} />
       </Field>
       {irrZones > baseZones && (
-        <div className="rounded-lg bg-blue-50 border border-blue-200 p-3 text-sm text-blue-800">
-          Plus de {baseZones} zones — il faudra {extraBlocks} bloc{extraBlocks > 1 ? 's' : ''} de 4 valves supplémentaires (400 $ unique ou 25 $/mois par bloc). Vous pourrez choisir à la fin.
+        <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-900 space-y-1">
+          <p className="font-medium">Plus de {baseZones} zones — {extraBlocks} bloc{extraBlocks > 1 ? 's' : ''} de 4 valves supplémentaire{extraBlocks > 1 ? 's' : ''} requis.</p>
+          <p>Pour pouvoir soumettre le formulaire avec ce nombre de zones, deux options :</p>
+          <ul className="list-disc pl-5">
+            <li><strong>Payer plus bas dans le formulaire</strong> (avant Soumettre) — 400 $ par bloc en achat unique.</li>
+            <li><strong>Aviser votre conseiller @orisha</strong> pour ajouter les blocs à votre abonnement (25 $/mois par bloc).</li>
+          </ul>
+          <p className="text-xs">Sinon, baissez à {baseZones} zones ou moins pour soumettre sans paiement supplémentaire.</p>
         </div>
       )}
       {irrZones > 0 && (
@@ -565,8 +740,10 @@ function FurnaceForm({ idx, f, onChange }) {
 
 // ─── Submitted summary + extras flow ──────────────────────────────────────
 
-function SubmittedSummary({ resp, extrasResult, setExtrasResult, sessionId, permission }) {
-  const extras = computeExtras(resp, permission)
+function SubmittedSummary({ resp, extrasResult, setExtrasResult, sessionId, permission, isDiscoveryMode }) {
+  // Le flow extras est lié au Stripe Checkout (création d'un pending_invoice +
+  // redirection Checkout Session). Pas applicable au flow qualification.
+  const extras = isDiscoveryMode ? { items: [] } : computeExtras(resp, permission)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState(null)
 

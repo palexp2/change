@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { ChevronRight, CheckCircle, Download, Package } from 'lucide-react'
+import { ChevronRight, CheckCircle, Download, Package, AlertTriangle } from 'lucide-react'
 import api from '../lib/api.js'
+import { localISODate } from '../lib/formatDate.js'
 
 const BOX_PRESETS = {
   enveloppe: { label: 'Enveloppe (documents légers)', length: '13', width: '10', depth: '1', packagingType: 'envelope' },
@@ -484,11 +485,16 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
           })()}
         </div>
       ) : autoPickupError ? (
-        <div className="border border-amber-200 bg-amber-50 rounded-xl p-4 space-y-2">
-          <p className="text-sm font-semibold text-amber-900">Ramassage automatique échoué</p>
-          <p className="text-xs text-amber-800">{autoPickupError}</p>
-          <button onClick={() => setStep('pickup')} className="btn-secondary text-xs flex items-center gap-1.5">
-            <Package size={12} /> Planifier manuellement
+        <div className="border-2 border-red-300 bg-red-50 rounded-xl p-4 space-y-2">
+          <p className="text-sm font-semibold text-red-900 flex items-center gap-1.5">
+            <AlertTriangle size={16} /> Le ramassage automatique a échoué
+          </p>
+          <p className="text-xs text-red-800 whitespace-pre-wrap break-words">{autoPickupError}</p>
+          <p className="text-xs text-red-700">
+            L'étiquette est bien achetée, mais aucun coursier ne viendra. Planifiez le ramassage manuellement ou réessayez plus tard.
+          </p>
+          <button onClick={() => setStep('pickup')} className="btn-primary text-xs flex items-center gap-1.5">
+            <Package size={12} /> Planifier le ramassage manuellement
           </button>
         </div>
       ) : (
@@ -544,7 +550,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
         <div className="grid grid-cols-2 gap-4">
           <div className="col-span-2">
             <label className="label">Date de ramassage</label>
-            <input type="date" className="input" value={pickupDate} onChange={e => setPickupDate(e.target.value)} min={new Date().toISOString().slice(0, 10)} />
+            <input type="date" className="input" value={pickupDate} onChange={e => setPickupDate(e.target.value)} min={localISODate()} />
           </div>
           <div>
             <label className="label">Prêt à partir de</label>

@@ -2,8 +2,43 @@ import { Router } from 'express'
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { getStripeClient, ensureStripeCustomer } from '../services/stripeInvoices.js'
+import { normalizeShortToken } from '../utils/shortToken.js'
 
 const router = Router()
+
+// Coerce + JSON-encode helpers, partagés entre les flows by-session et by-token.
+const FIELD_COERCERS = {
+  is_new_site:        (v) => (v === 'new' || v === 'add_to_existing') ? v : null,
+  farm_address:       (v) => v && typeof v === 'object' ? JSON.stringify(v) : null,
+  shipping_same_as_farm: (v) => v == null ? null : (v ? 1 : 0),
+  shipping_address:   (v) => v && typeof v === 'object' ? JSON.stringify(v) : null,
+  network_access:     (v) => typeof v === 'string' ? v : null,
+  wifi_ssid:          (v) => v == null ? null : String(v),
+  wifi_password:      (v) => v == null ? null : String(v),
+  num_greenhouses:    (v) => v == null ? null : Math.max(0, parseInt(v) || 0),
+  greenhouses:        (v) => Array.isArray(v) ? JSON.stringify(v) : null,
+  extras:             (v) => Array.isArray(v) ? JSON.stringify(v) : null,
+}
+const FIELD_TO_COLUMN = {
+  farm_address:     'farm_address_json',
+  shipping_address: 'shipping_address_json',
+  greenhouses:      'greenhouses_json',
+  extras:           'extras_json',
+}
+
+// Construit l'UPDATE partiel à partir d'un body. Retourne { updates, values } prêts à concat.
+function buildPartialUpdate(body) {
+  const updates = []
+  const values = []
+  for (const [key, coerce] of Object.entries(FIELD_COERCERS)) {
+    if (key in (body || {})) {
+      const column = FIELD_TO_COLUMN[key] || key
+      updates.push(`${column}=?`)
+      values.push(coerce(body[key]))
+    }
+  }
+  return { updates, values }
+}
 
 // Validate a Checkout Session id by retrieving it from Stripe and confirming
 // payment_status === 'paid'. Returns { session, invoice } or throws.
@@ -63,8 +98,27 @@ function loadOrInitResponse(sessionId, invoice) {
   return db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(id)
 }
 
+// Total blocks de 4 valves supplémentaires nécessaires d'après les serres.
+// Chaque carte chief_grower compte (zones - 4)/4 blocs au-delà de 4 zones.
+function computeValveBlocksNeeded(greenhouses) {
+  let total = 0
+  for (const g of (greenhouses || [])) {
+    if (g?.permission_level !== 'chief_grower') continue
+    const z = Number(g?.irrigation_zones) || 0
+    if (z > 4) total += Math.ceil((z - 4) / 4)
+  }
+  return total
+}
+
 function shapeResponse(row) {
   if (!row) return null
+  const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
+  const valveBlocksNeeded = computeValveBlocksNeeded(greenhouses)
+  let valveBlocksPaid = false
+  if (row.extras_pending_invoice_id) {
+    const pi = db.prepare('SELECT status FROM pending_invoices WHERE id=?').get(row.extras_pending_invoice_id)
+    valveBlocksPaid = pi?.status === 'paid'
+  }
   return {
     id: row.id,
     status: row.status,
@@ -77,9 +131,11 @@ function shapeResponse(row) {
     wifi_password: row.wifi_password,
     permission_level: row.permission_level,
     num_greenhouses: row.num_greenhouses,
-    greenhouses: row.greenhouses_json ? JSON.parse(row.greenhouses_json) : [],
+    greenhouses,
     extras: row.extras_json ? JSON.parse(row.extras_json) : [],
     extras_pending_invoice_id: row.extras_pending_invoice_id,
+    valve_blocks_needed: valveBlocksNeeded,
+    valve_blocks_paid: valveBlocksPaid,
     submitted_at: row.submitted_at,
   }
 }
@@ -147,35 +203,7 @@ router.post('/:sessionId/save', async (req, res) => {
     const row = loadOrInitResponse(req.params.sessionId, invoice)
     if (row.status === 'submitted') return res.status(400).json({ error: 'Déjà soumis' })
 
-    const allowed = {
-      is_new_site: v => (v === 'new' || v === 'add_to_existing') ? v : null,
-      farm_address: v => v && typeof v === 'object' ? JSON.stringify(v) : null,
-      shipping_same_as_farm: v => v == null ? null : (v ? 1 : 0),
-      shipping_address: v => v && typeof v === 'object' ? JSON.stringify(v) : null,
-      network_access: v => typeof v === 'string' ? v : null,
-      wifi_ssid: v => v == null ? null : String(v),
-      wifi_password: v => v == null ? null : String(v),
-      num_greenhouses: v => v == null ? null : Math.max(0, parseInt(v) || 0),
-      greenhouses: v => Array.isArray(v) ? JSON.stringify(v) : null,
-      extras: v => Array.isArray(v) ? JSON.stringify(v) : null,
-    }
-
-    const updates = []
-    const values = []
-    for (const [key, coerce] of Object.entries(allowed)) {
-      if (key in (req.body || {})) {
-        const dbKey = ['farm_address', 'shipping_address', 'greenhouses', 'extras'].includes(key) ? `${key === 'greenhouses' ? 'greenhouses' : key === 'extras' ? 'extras' : key + '_address'}_json`
-          : key
-        // Map JSON column names
-        const finalKey = key === 'farm_address' ? 'farm_address_json'
-          : key === 'shipping_address' ? 'shipping_address_json'
-          : key === 'greenhouses' ? 'greenhouses_json'
-          : key === 'extras' ? 'extras_json'
-          : key
-        updates.push(`${finalKey}=?`)
-        values.push(coerce(req.body[key]))
-      }
-    }
+    const { updates, values } = buildPartialUpdate(req.body)
     if (updates.length === 0) return res.json({ ok: true, saved: 0 })
     updates.push("updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
     values.push(row.id)
@@ -295,6 +323,227 @@ router.post('/:sessionId/extras', async (req, res) => {
     res.json({ ok: true, pending_invoice_id: id, checkout_url: url, pay_url: `${baseUrl}/erp/pay/${id}` })
   } catch (e) {
     if (e.message === 'not_paid') return res.status(402).json({ error: 'Paiement non confirmé' })
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ─── Flow by-token (qualification call) ───────────────────────────────────
+// Auth = possession du token public court. Pas de validation Stripe (le token
+// est créé au moment où l'agent charge la carte avec succès).
+
+function loadByToken(token) {
+  const norm = normalizeShortToken(token)
+  if (!norm) return null
+  return db.prepare('SELECT * FROM customer_onboarding_responses WHERE public_token=?').get(norm)
+}
+
+// Pour le flow qualification, les rôles (chief/helper) sont déterminés par
+// chaque carte serre pré-créée (permission_level), pas par les line items Stripe.
+function detectFromGreenhouses(row) {
+  const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
+  const hasChief = greenhouses.some(g => g.permission_level === 'chief_grower')
+  const hasHelper = greenhouses.some(g => g.permission_level === 'helper')
+  return {
+    has_helper: hasHelper,
+    has_chief_grower: hasChief,
+    has_mobile_controller: false, // qualification ne vend pas le contrôleur mobile
+    permission_level: hasChief ? 'chief_grower' : hasHelper ? 'helper' : null,
+  }
+}
+
+// GET /api/customer/post-payment/by-token/:token — payload identique à la
+// route by-session, sauf que la source des rôles est greenhouses_json.
+router.get('/by-token/:token', (req, res) => {
+  try {
+    const row = loadByToken(req.params.token)
+    if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+    const ctx = loadCompanyContext(row.company_id)
+    res.json({
+      source: 'qualification',
+      session_id: null,
+      invoice: null,
+      customer_email: null,
+      detected: detectFromGreenhouses(row),
+      context: ctx,
+      response: shapeResponse(row),
+      // Côté front : le nombre de serres est verrouillé (1 carte par Helper/Chief vendu).
+      greenhouse_count_locked: true,
+    })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /api/customer/post-payment/by-token/:token/save — autosave partiel.
+router.post('/by-token/:token/save', (req, res) => {
+  try {
+    const row = loadByToken(req.params.token)
+    if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+    if (row.status === 'submitted') return res.status(400).json({ error: 'Déjà soumis' })
+
+    const { updates, values } = buildPartialUpdate(req.body)
+    if (updates.length === 0) return res.json({ ok: true, saved: 0 })
+    updates.push("updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+    values.push(row.id)
+    db.prepare(`UPDATE customer_onboarding_responses SET ${updates.join(', ')} WHERE id=?`).run(...values)
+    const refreshed = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)
+    res.json({ ok: true, response: shapeResponse(refreshed) })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /api/customer/post-payment/by-token/:token/submit — finalise et upsert les adresses.
+router.post('/by-token/:token/submit', (req, res) => {
+  try {
+    const row = loadByToken(req.params.token)
+    if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+    if (row.status === 'submitted') {
+      return res.json({ ok: true, already_submitted: true, response: shapeResponse(row) })
+    }
+    if (!row.is_new_site) return res.status(400).json({ error: 'is_new_site requis avant soumission' })
+
+    // Si une serre dépasse 4 zones d'irrigation, on exige soit le paiement
+    // d'autant de blocs de 4 valves supplémentaires, soit que le client baisse
+    // à 4. (L'autre chemin "aviser conseiller" se fait hors-formulaire.)
+    const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
+    const blocksNeeded = computeValveBlocksNeeded(greenhouses)
+    if (blocksNeeded > 0) {
+      let paid = false
+      if (row.extras_pending_invoice_id) {
+        const pi = db.prepare('SELECT status FROM pending_invoices WHERE id=?').get(row.extras_pending_invoice_id)
+        paid = pi?.status === 'paid'
+      }
+      if (!paid) {
+        return res.status(400).json({
+          error: `Vous avez ${blocksNeeded} bloc(s) de 4 valves supplémentaires à payer avant de soumettre. Baissez à 4 zones par serre ou complétez le paiement plus bas dans le formulaire.`,
+          code: 'valve_blocks_unpaid',
+          valve_blocks_needed: blocksNeeded,
+        })
+      }
+    }
+
+    if (row.company_id) {
+      const farm = row.farm_address_json ? JSON.parse(row.farm_address_json) : null
+      const ship = row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null
+      const sameAsShipping = !!row.shipping_same_as_farm
+      function upsertAddress(type, addr) {
+        if (!addr || !addr.line1 || !addr.province) return
+        const existing = db.prepare(
+          "SELECT id FROM adresses WHERE company_id=? AND address_type=? ORDER BY created_at DESC LIMIT 1"
+        ).get(row.company_id, type)
+        if (existing) {
+          db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
+            .run(addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada', existing.id)
+        } else {
+          db.prepare(`INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country) VALUES (?,?,?,?,?,?,?,?)`)
+            .run(randomUUID(), row.company_id, type, addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada')
+        }
+      }
+      if (row.is_new_site === 'new' && farm) upsertAddress('Ferme', farm)
+      if (row.is_new_site === 'new' && sameAsShipping && farm) upsertAddress('Livraison', farm)
+      else if (ship) upsertAddress('Livraison', ship)
+    }
+
+    db.prepare(`UPDATE customer_onboarding_responses SET status='submitted', submitted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(row.id)
+    const refreshed = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)
+    res.json({ ok: true, response: shapeResponse(refreshed) })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// POST /by-token/:token/valve-blocks-checkout — Stripe Checkout pour les blocs
+// de 4 valves d'irrigation supplémentaires (achat unique à 400 $/bloc).
+//
+// Pourquoi seulement le one-time : modifier l'abonnement Stripe existant pour
+// ajouter une ligne 25 $/mois nécessite une intervention sur la subscription
+// (prorations, anchor billing, etc.) que le client ne peut pas approuver
+// facilement dans Checkout. Pour cette option, on lui demande de contacter
+// son conseiller — le frontend affiche le message correspondant.
+router.post('/by-token/:token/valve-blocks-checkout', async (req, res) => {
+  try {
+    const row = loadByToken(req.params.token)
+    if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+    if (row.status === 'submitted') return res.status(400).json({ error: 'Formulaire déjà soumis' })
+    if (!row.company_id) return res.status(400).json({ error: 'Aucune entreprise associée' })
+
+    const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
+    const blocksNeeded = computeValveBlocksNeeded(greenhouses)
+    if (blocksNeeded <= 0) {
+      return res.status(400).json({ error: 'Aucun bloc supplémentaire requis — toutes vos serres ont ≤ 4 zones' })
+    }
+
+    // Si on a déjà un pending_invoice payé pour ce form, refuser (évite les doublons).
+    if (row.extras_pending_invoice_id) {
+      const existing = db.prepare('SELECT status FROM pending_invoices WHERE id=?').get(row.extras_pending_invoice_id)
+      if (existing?.status === 'paid') {
+        return res.status(400).json({ error: 'Les blocs supplémentaires ont déjà été payés' })
+      }
+    }
+
+    const product = db.prepare("SELECT id, sku, name_fr, price_cad FROM products WHERE role='valve_block_onetime' AND active=1 LIMIT 1").get()
+    if (!product) return res.status(500).json({ error: 'Produit valve_block_onetime introuvable au catalogue' })
+    const unitPrice = Number(product.price_cad || 0)
+    if (unitPrice <= 0) return res.status(500).json({ error: 'Prix du bloc de valves non configuré au catalogue' })
+
+    // Résoudre la province/pays pour les taxes (depuis l'adresse de livraison déjà saisie).
+    const ship = row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null
+    const farm = row.farm_address_json ? JSON.parse(row.farm_address_json) : null
+    const province = ship?.province || farm?.province
+    const country = ship?.country || farm?.country || 'Canada'
+    if (!province) {
+      return res.status(400).json({ error: 'Adresse de livraison requise avant le paiement — complétez les sections du haut.' })
+    }
+
+    const items = [{
+      product_id: product.id,
+      qty: blocksNeeded,
+      unit_price: unitPrice,
+      description: `${blocksNeeded} × ${product.name_fr || 'Bloc 4 valves supplémentaires'}`,
+    }]
+
+    // Réutilise extras_pending_invoice_id si présent (et pas encore payé) pour
+    // éviter d'empiler des pending_invoices à chaque refresh du Checkout.
+    let pendingId = row.extras_pending_invoice_id
+    if (pendingId) {
+      db.prepare(`
+        UPDATE pending_invoices
+          SET items_json=?, currency='CAD', shipping_province=?, shipping_country=?,
+              status='sent', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE id=?
+      `).run(JSON.stringify(items), province, country, pendingId)
+    } else {
+      pendingId = randomUUID()
+      db.prepare(`
+        INSERT INTO pending_invoices (id, company_id, currency, items_json, shipping_province, shipping_country, due_days, status, created_by)
+        VALUES (?,?,?,?,?,?,?,?,?)
+      `).run(pendingId, row.company_id, 'CAD', JSON.stringify(items), province, country, 30, 'sent', null)
+      db.prepare('UPDATE customer_onboarding_responses SET extras_pending_invoice_id=?, updated_at=strftime(\'%Y-%m-%dT%H:%M:%fZ\',\'now\') WHERE id=?').run(pendingId, row.id)
+    }
+
+    const stripe = getStripeClient()
+    const { createOrRefreshCheckoutSession } = await import('../services/stripeInvoices.js')
+    const baseUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+    const pending = db.prepare('SELECT * FROM pending_invoices WHERE id=?').get(pendingId)
+    const { url } = await createOrRefreshCheckoutSession({
+      stripe,
+      pending,
+      baseAppUrl: baseUrl,
+      successUrl: `${baseUrl}/erp/d/${row.public_token}?paid=1`,
+      cancelUrl: `${baseUrl}/erp/d/${row.public_token}?cancelled=1`,
+    })
+    await ensureStripeCustomer(stripe, row.company_id).catch(() => {})
+
+    res.json({
+      ok: true,
+      pending_invoice_id: pendingId,
+      checkout_url: url,
+      blocks: blocksNeeded,
+      unit_price: unitPrice,
+      total: unitPrice * blocksNeeded,
+    })
+  } catch (e) {
     res.status(500).json({ error: e.message })
   }
 })

@@ -18,7 +18,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = Router()
 router.use(requireAuth)
 
-// Load shipment with full address + company info
+// Load shipment with full address + company info + contact attaché à l'adresse
+// (le contact de l'adresse prime sur l'email/tel de la company — c'est lui le
+// destinataire physique du colis).
 function getShipmentWithAddress(shipmentId) {
   return db.prepare(`
     SELECT
@@ -27,12 +29,18 @@ function getShipmentWithAddress(shipmentId) {
       a.line1 as address_line1, a.city as address_city,
       a.province as address_province, a.postal_code as address_postal_code,
       a.country as address_country,
-      co.name as company_name, co.phone as company_phone, co.email as company_email
+      co.name as company_name, co.phone as company_phone, co.email as company_email,
+      ct.first_name as address_contact_first_name,
+      ct.last_name as address_contact_last_name,
+      ct.email as address_contact_email,
+      ct.phone as address_contact_phone,
+      ct.mobile as address_contact_mobile
     FROM shipments s
     LEFT JOIN orders o ON s.order_id = o.id
     LEFT JOIN companies co ON o.company_id = co.id
     LEFT JOIN adresses a ON s.address_id = a.id
-    WHERE s.id = ?
+    LEFT JOIN contacts ct ON a.contact_id = ct.id
+    WHERE s.id = ? AND s.deleted_at IS NULL
   `).get(shipmentId)
 }
 
@@ -79,7 +87,10 @@ router.post('/rates/:shipmentId', async (req, res) => {
     res.json(result)
   } catch (e) {
     console.error('Novoxpress getRates error:', e.message)
-    res.status(502).json({
+    // Erreur de validation locale (avant l'appel API Novoxpress) → 400.
+    // Erreur Novoxpress côté upstream → 502.
+    const isLocalValidation = !e.responseBody && !e.status
+    res.status(isLocalValidation ? 400 : 502).json({
       error: e.message,
       sent: e.sentPayload || null,
       responseBody: e.responseBody || null,
@@ -148,7 +159,8 @@ router.post('/label/:shipmentId', async (req, res) => {
     })
   } catch (e) {
     console.error('Novoxpress createLabel error:', e.message)
-    res.status(502).json({
+    const isLocalValidation = !e.responseBody && !e.status
+    res.status(isLocalValidation ? 400 : 502).json({
       error: e.message,
       sent: e.sentPayload || null,
       responseBody: e.responseBody || null,

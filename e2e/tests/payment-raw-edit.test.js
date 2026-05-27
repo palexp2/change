@@ -10,18 +10,14 @@ const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 const DB_PATH = process.env.ERP_DB_PATH || '/home/ec2-user/erp/server/data/erp.db'
 
-// Vérifie l'expander « édition avancée » par paiement dans FacturePaymentsSection :
-// un admin déplie une row payments, modifie la colonne `notes` via le panneau
-// générique, et la valeur est persistée en DB.
-//
-// Un payment factice (notes="E2E …") est inséré avant le test et supprimé en
-// cleanup — pas d'impact sur les rows réelles de la DB.
-describe('FacturePayments — édition avancée par paiement', () => {
+// L'expander « édition avancée » par paiement/remboursement a été retiré de
+// FacturePaymentsSection. Ce test vérifie que le toggle n'est plus rendu,
+// y compris pour un admin, même quand une row payments existe.
+describe('FacturePayments — édition avancée par paiement (retirée)', () => {
   let browser, ctx, page, db
   let factureId
   const paymentId = crypto.randomUUID()
   const initialNotes = `E2E init ${Date.now()}`
-  const targetNotes = `E2E edited ${Date.now()}`
 
   before(async () => {
     db = new Database(DB_PATH, { readonly: false })
@@ -57,30 +53,11 @@ describe('FacturePayments — édition avancée par paiement', () => {
     await browser?.close()
   })
 
-  test('l\'expander raw-edit est visible pour un admin', async () => {
+  test('le toggle raw-edit n\'est plus rendu sur la fiche facture', async () => {
     await page.goto(`${URL}/factures/${factureId}`, { waitUntil: 'networkidle' })
+    // S'assure que la section paiements a chargé : le montant inséré apparaît.
+    await page.waitForSelector('text=50,00', { timeout: 10000 })
     const toggle = page.locator(`[data-testid="payment-raw-edit-toggle-${paymentId}"]`)
-    await toggle.waitFor({ timeout: 5000 })
-    assert.equal(await toggle.isVisible(), true)
-  })
-
-  test('déplier le payment expose les colonnes via le panneau générique', async () => {
-    await page.goto(`${URL}/factures/${factureId}`, { waitUntil: 'networkidle' })
-    await page.click(`[data-testid="payment-raw-edit-toggle-${paymentId}"]`)
-    await page.waitForSelector(`[data-testid="payment-raw-edit-${paymentId}-input-notes"]`, { timeout: 5000 })
-    await page.waitForSelector(`[data-testid="payment-raw-edit-${paymentId}-input-qb_deposit_id"]`, { timeout: 5000 })
-    await page.waitForSelector(`[data-testid="payment-raw-edit-${paymentId}-input-direction"]`, { timeout: 5000 })
-  })
-
-  test('éditer la colonne notes persiste via autosave', async () => {
-    await page.goto(`${URL}/factures/${factureId}`, { waitUntil: 'networkidle' })
-    await page.click(`[data-testid="payment-raw-edit-toggle-${paymentId}"]`)
-    const input = page.locator(`[data-testid="payment-raw-edit-${paymentId}-input-notes"]`)
-    await input.waitFor({ timeout: 5000 })
-    await input.fill(targetNotes)
-    await input.blur()
-    await page.waitForTimeout(800)
-    const inDb = db.prepare('SELECT notes FROM payments WHERE id=?').get(paymentId)
-    assert.equal(inDb.notes, targetNotes, `Notes attendues: ${targetNotes}, lues: ${inDb.notes}`)
+    assert.equal(await toggle.count(), 0, 'Le toggle d\'édition avancée par paiement devrait avoir disparu')
   })
 })

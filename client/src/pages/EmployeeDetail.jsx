@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Plus, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
+import { localISODate } from '../lib/formatDate.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -319,7 +320,7 @@ function VacationsSection({ employeeId }) {
 
   async function addVacation() {
     try {
-      const today = new Date().toISOString().slice(0, 10)
+      const today = localISODate()
       const created = await api.vacations.create({
         employee_id: employeeId,
         start_date: today,

@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useMemo } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { Plus } from 'lucide-react'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
+import { useTable, isTableHydrated } from '../lib/dataStore.js'
+import { sync as syncStore } from '../lib/dataSync.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -11,7 +12,6 @@ import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
-import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 
 
 const RENDERS = {
@@ -94,40 +94,37 @@ function NewOrderModal({ companies, users, onSave, onClose }) {
 
 export default function Orders() {
   const navigate = useNavigate()
-  const [orders, setOrders] = useState([])
-  const [companies, setCompanies] = useState([])
-  const [users, setUsers] = useState([])
-  const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
 
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.orders.list({ limit, page }),
-      setOrders, setLoading
-    )
-  }, [])
+  // Cache global : hydraté au login par /api/bootstrap, rafraîchi par delta
+  // polling toutes les 10s. Pas de WS direct ici — lag max ~10s acceptable
+  // pour une liste de commandes.
+  const ordersRaw = useTable('orders')
+  const companies = useTable('companies')
+  const users = useTable('users')
+  const orderItems = useTable('order_items')
+  const loading = !isTableHydrated('orders')
 
-  useEffect(() => { load() }, [load])
-  useEffect(() => {
-    api.companies.lookup().then(setCompanies).catch(() => {})
-    api.admin.listUsers().then(setUsers).catch(() => {})
-  }, [])
-
-  useRealtimeChannel('orders:list', (msg) => {
-    // No self-event filter: the same user can be in multiple tabs, and the
-    // merges below are idempotent (created skips dup ids, updated is a
-    // shallow merge, deleted filters by id).
-    if (msg.type === 'order:created') {
-      setOrders(prev => prev.some(o => o.id === msg.payload.id) ? prev : [msg.payload, ...prev])
-    } else if (msg.type === 'order:updated') {
-      setOrders(prev => prev.map(o => o.id === msg.payload.id ? { ...o, ...msg.payload } : o))
-    } else if (msg.type === 'order:deleted') {
-      setOrders(prev => prev.filter(o => o.id !== msg.payload.id))
+  // Enrichissement : company_name, assigned_name, items_count — joints
+  // côté client depuis les autres tables en cache (vs server-side LEFT JOIN).
+  const orders = useMemo(() => {
+    const cById = new Map(companies.map(c => [c.id, c.name]))
+    const uById = new Map(users.map(u => [u.id, u.name]))
+    const itemCountByOrder = new Map()
+    for (const it of orderItems) {
+      itemCountByOrder.set(it.order_id, (itemCountByOrder.get(it.order_id) || 0) + 1)
     }
-  })
+    return ordersRaw.map(r => ({
+      ...r,
+      company_name: cById.get(r.company_id) || r.company_name,
+      assigned_name: uById.get(r.assigned_to) || r.assigned_name,
+      items_count: itemCountByOrder.get(r.id) || 0,
+    }))
+  }, [ordersRaw, companies, users, orderItems])
 
   async function handleCreate(form) {
     const order = await api.orders.create(form)
+    await syncStore()
     navigate(`/orders/${order.id}`)
   }
 

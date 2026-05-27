@@ -1,8 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { Plus, CheckCircle2, Circle, Clock, AlertCircle, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
+import { useTable, isTableHydrated } from '../lib/dataStore.js'
+import { sync as syncStore } from '../lib/dataSync.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -11,7 +13,6 @@ import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import TaskForm from '../components/TaskForm.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 
@@ -74,45 +75,40 @@ const COLUMNS = TABLE_COLUMN_META.tasks.map(meta => ({ ...meta, render: RENDERS[
 
 export default function Tasks() {
   const { user } = useAuth()
-  const [tasks, setTasks] = useState([])
-  const [companies, setCompanies] = useState([])
-  const [contacts, setContacts] = useState([])
-  const [users, setUsers] = useState([])
-  const [tickets, setTickets] = useState([])
-  const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState(null)
   const undoableDelete = useUndoableDelete()
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const data = await api.tasks.list({ limit: 'all' })
-      setTasks(data.data || [])
-    } finally {
-      setLoading(false)
-    }
-  }, [])
+  const tasksRaw = useTable('tasks')
+  const companies = useTable('companies')
+  const contacts = useTable('contacts')
+  const users = useTable('users')
+  const tickets = useTable('tickets')
+  const loading = !isTableHydrated('tasks')
 
-  useEffect(() => { load() }, [load])
-
-  useEntityListRealtime('task', setTasks)
-
-  useEffect(() => {
-    api.auth.users().then(u => setUsers(u || [])).catch(() => {})
-    api.companies.lookup().then(setCompanies).catch(() => {})
-    api.contacts.lookup().then(setContacts).catch(() => {})
-    api.tickets.list({ limit: 'all' }).then(r => setTickets(r.data || [])).catch(() => {})
-  }, [])
+  const tasks = useMemo(() => {
+    const cById = new Map(companies.map(c => [c.id, c.name]))
+    const ctById = new Map(contacts.map(c => [c.id, `${c.first_name || ''} ${c.last_name || ''}`.trim()]))
+    const uById = new Map(users.map(u => [u.id, u.name]))
+    const tkById = new Map(tickets.map(t => [t.id, t.title]))
+    const list = tasksRaw.filter(t => !t.deleted_at)
+    return list.map(r => ({
+      ...r,
+      company_name: cById.get(r.company_id) || r.company_name,
+      contact_name: ctById.get(r.contact_id) || r.contact_name,
+      assigned_name: uById.get(r.assigned_to) || r.assigned_name,
+      ticket_title: tkById.get(r.ticket_id) || r.ticket_title,
+    }))
+  }, [tasksRaw, companies, contacts, users, tickets])
 
   async function handleCreate(form) {
     await api.tasks.create(form)
-    await load()
+    await syncStore()
   }
 
   async function handleEdit(form) {
     await api.tasks.update(editing.id, form)
-    await load()
+    await syncStore()
     setEditing(null)
   }
 
@@ -123,7 +119,7 @@ export default function Tasks() {
       id: row.id,
       deleteFn: () => api.tasks.delete(row.id),
       label: 'Tâche supprimée',
-      onChange: load,
+      onChange: syncStore,
     })
   }
 
@@ -156,7 +152,7 @@ export default function Tasks() {
               ids,
               deleteFn: () => Promise.all(ids.map(id => api.tasks.delete(id))),
               label: `${ids.length} tâche${ids.length > 1 ? 's' : ''} supprimée${ids.length > 1 ? 's' : ''}`,
-              onChange: load,
+              onChange: syncStore,
             })
           }}
         />

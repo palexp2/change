@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useMemo } from 'react'
+import { useTable, isTableHydrated } from '../lib/dataStore.js'
+import { sync as syncStore } from '../lib/dataSync.js'
 import { Link, useNavigate } from 'react-router-dom'
 import { Plus, Send } from 'lucide-react'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
@@ -12,7 +13,6 @@ import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { HubSpotExportModal } from '../components/HubSpotExportModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 
 const RENDERS = {
   full_name: row => (
@@ -100,31 +100,35 @@ function ContactForm({ initial = {}, companies = [], onSave, onClose }) {
 
 export default function Contacts() {
   const navigate = useNavigate()
-  const [contacts, setContacts] = useState([])
   const [companies, setCompanies] = useState([])
-  const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [showHubspotExport, setShowHubspotExport] = useState(false)
   const [filteredContacts, setFilteredContacts] = useState([])
   const undoableDelete = useUndoableDelete()
 
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.contacts.list({ limit, page }),
-      setContacts, setLoading
-    )
-  }, [])
+  // Cache global : hydraté au login par /api/bootstrap, rafraîchi par delta
+  // polling toutes les 10s + sync() manuel après une mutation locale.
+  const contactsRaw = useTable('contacts')
+  const companiesRaw = useTable('companies')
+  const loading = !isTableHydrated('contacts')
 
-  useEffect(() => { load() }, [load])
+  // Le bootstrap envoie les colonnes brutes — on joint company_name côté client
+  // depuis le cache companies pour que la colonne "Entreprise" s'affiche.
+  const contacts = useMemo(() => {
+    if (!companiesRaw.length) return contactsRaw
+    const cById = new Map(companiesRaw.map(c => [c.id, c.name]))
+    return contactsRaw.map(r => r.company_id
+      ? { ...r, company_name: cById.get(r.company_id) || r.company_name }
+      : r)
+  }, [contactsRaw, companiesRaw])
+
   useEffect(() => {
     api.companies.lookup().then(setCompanies).catch(() => {})
   }, [])
 
-  useEntityListRealtime('contact', setContacts)
-
   async function handleCreate(form) {
     await api.contacts.create(form)
-    load()
+    await syncStore()
   }
 
   return (
@@ -163,7 +167,7 @@ export default function Contacts() {
               ids,
               deleteFn: () => Promise.all(ids.map(id => api.contacts.delete(id))),
               label: `${ids.length} contact${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`,
-              onChange: load,
+              onChange: syncStore,
             })
           }}
         />

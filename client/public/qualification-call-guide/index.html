@@ -270,6 +270,40 @@ html:not(.assistant-mode) .step-header{display:none;}
 
 /* ===== SLIDES ===== */
 .slide{display:none;animation:fadeIn 0.25s ease;}
+/* Slide pleine page : marges négatives qui compensent le padding de .main pour
+   un fond edge-to-edge (.main a padding:2.5rem 3rem 2rem). */
+.transition-bg{
+  position:relative;overflow:hidden;
+  margin:-2.5rem -3rem -2rem;
+  min-height:100vh;
+}
+.transition-bg-img{
+  position:absolute;inset:0;width:100%;height:100%;
+  object-fit:cover;opacity:0.75;
+  filter:blur(6px);
+  /* scale légèrement plus grand pour que les bords flous du blur restent hors
+     du conteneur (overflow:hidden les coupe) — évite la bande claire au pourtour. */
+  transform:scale(1.06);
+  user-select:none;-webkit-user-drag:none;
+  z-index:0;
+}
+.transition-slide{
+  position:relative;z-index:1;
+  min-height:100vh;
+  display:flex;align-items:center;justify-content:center;
+  padding:2rem;
+}
+.transition-question{
+  font-size:64px;font-weight:700;line-height:1.15;
+  color:#fff;text-align:center;
+  max-width:1100px;letter-spacing:-0.02em;
+  margin:0;
+  text-shadow:0 2px 18px rgba(0,0,0,0.55),0 0 4px rgba(0,0,0,0.25);
+}
+@media (max-width: 900px){
+  .transition-bg{margin:-1.25rem;}
+  .transition-question{font-size:42px;}
+}
 .slide.visible{display:block;}
 @keyframes fadeIn{
   from{opacity:0;}
@@ -1045,9 +1079,22 @@ html:not(.assistant-mode) .testimonial-split-body{
 .proposal-qty-logo{
   height:32px;width:auto;display:block;
 }
+.proposal-total-amount-wrap{
+  display:inline-flex;flex-direction:column;align-items:flex-end;gap:2px;
+}
+.proposal-total-original{
+  font-family:'Rubik',sans-serif;font-size:18px;font-weight:600;color:#999;
+  text-decoration:line-through;
+  font-variant-numeric:tabular-nums;
+}
 .proposal-total-amount{
   font-family:'Rubik',sans-serif;font-size:32px;font-weight:700;
   color:#2EAA4A;letter-spacing:-0.01em;font-variant-numeric:tabular-nums;
+}
+.proposal-discount-summary{
+  font-family:'Rubik',sans-serif;font-size:12px;font-weight:700;
+  color:#0F6E56;letter-spacing:0.08em;text-transform:uppercase;
+  margin-top:4px;
 }
 
 /* ===== QUOTE BUILDER (assistant view, onglet Quote du step Proposal) ===== */
@@ -1104,8 +1151,74 @@ html:not(.assistant-mode) .testimonial-split-body{
   font-size:12px;letter-spacing:0.14em;text-transform:uppercase;
   color:#2EAA4A;font-weight:700;
 }
+.quote-total-row-amounts{
+  display:inline-flex;flex-direction:column;align-items:flex-end;gap:2px;
+}
+.quote-total-original{
+  font-size:14px;font-weight:500;color:#999;
+  text-decoration:line-through;
+  font-variant-numeric:tabular-nums;
+}
 .quote-total-row-amount{
   font-size:22px;font-weight:700;color:#2EAA4A;
+  font-variant-numeric:tabular-nums;
+}
+.quote-discount-summary{
+  align-self:flex-end;
+  font-size:11px;font-weight:700;color:#0F6E56;
+  letter-spacing:0.08em;text-transform:uppercase;
+  margin-top:4px;
+}
+/* Lifetime buyout — bloc info uniquement (vue assistant, quote tab). Pas un CTA. */
+.quote-lifetime{
+  margin-top:1rem;padding:0.85rem 1rem;
+  background:#fafafa;border:1px dashed #d4d4d4;border-radius:8px;
+  display:flex;flex-direction:column;gap:6px;
+  font-family:'Rubik',sans-serif;
+}
+.quote-lifetime-title{
+  font-size:10px;font-weight:700;color:#888;
+  letter-spacing:0.1em;text-transform:uppercase;
+  margin-bottom:2px;
+}
+.quote-lifetime-row{
+  display:grid;grid-template-columns:1fr auto auto;gap:0.75rem;
+  align-items:baseline;
+}
+.quote-lifetime-label{
+  font-size:14px;font-weight:500;color:#555;
+}
+.quote-lifetime-mult{
+  color:#888;margin-left:4px;font-weight:600;
+  font-variant-numeric:tabular-nums;
+}
+.quote-lifetime-unit{
+  font-size:12px;color:#999;
+  font-variant-numeric:tabular-nums;
+}
+.quote-lifetime-price{
+  font-size:15px;font-weight:600;color:#333;
+  font-variant-numeric:tabular-nums;
+  min-width:80px;text-align:right;
+}
+.quote-lifetime-total-row{
+  display:flex;justify-content:space-between;align-items:baseline;gap:1rem;
+  padding-top:8px;margin-top:2px;
+  border-top:1px solid #e0e0e0;
+}
+.quote-lifetime-total-label{
+  font-size:11px;font-weight:700;color:#666;
+  letter-spacing:0.08em;text-transform:uppercase;
+}
+.quote-lifetime-total-amounts{
+  display:inline-flex;flex-direction:column;align-items:flex-end;gap:1px;
+}
+.quote-lifetime-total-original{
+  font-size:12px;font-weight:500;color:#999;
+  text-decoration:line-through;font-variant-numeric:tabular-nums;
+}
+.quote-lifetime-total-amount{
+  font-size:17px;font-weight:700;color:#333;
   font-variant-numeric:tabular-nums;
 }
 
@@ -1184,6 +1297,35 @@ html:not(.assistant-mode) .testimonial-split-body{
 .quote-paid-summary{font-size:15px;font-weight:500;color:#1e6b30;line-height:1.5;}
 .quote-paid-summary strong{font-weight:700;}
 .quote-paid-receipt{font-size:13px;color:#3b7a4d;margin-top:0.25rem;}
+
+/* Raccourci de création du formulaire de découverte après paiement */
+.discovery-form-section{
+  margin-top:1.5rem;padding-top:1.5rem;border-top:1px solid #b9e5c4;width:100%;
+  display:flex;flex-direction:column;align-items:center;gap:0.75rem;
+}
+.discovery-form-section .label{font-size:13px;font-weight:600;color:#1e6b30;}
+.discovery-form-create-btn{
+  appearance:none;border:none;cursor:pointer;
+  background:#1e6b30;color:#fff;font-family:'Rubik',sans-serif;
+  font-size:14px;font-weight:600;padding:0.7rem 1.25rem;border-radius:8px;
+  transition:background 0.15s;
+}
+.discovery-form-create-btn:hover{background:#155224;}
+.discovery-form-create-btn:disabled{background:#7da38b;cursor:wait;}
+.discovery-form-url{
+  font-family:ui-monospace,Menlo,Consolas,monospace;font-size:14px;
+  background:#fff;border:1px solid #b9e5c4;border-radius:6px;
+  padding:0.5rem 0.75rem;color:#1e6b30;word-break:break-all;max-width:100%;
+}
+.discovery-form-actions{display:flex;gap:0.5rem;flex-wrap:wrap;justify-content:center;}
+.discovery-form-actions a, .discovery-form-actions button{
+  appearance:none;border:1px solid #b9e5c4;background:#fff;color:#1e6b30;
+  font-family:'Rubik',sans-serif;font-size:13px;font-weight:600;
+  text-decoration:none;cursor:pointer;padding:0.45rem 0.85rem;border-radius:6px;
+  transition:background 0.15s;
+}
+.discovery-form-actions a:hover, .discovery-form-actions button:hover{background:#e8f8ed;}
+.discovery-form-error{color:#a01b1b;font-size:13px;}
 
 /* Rabais ad-hoc — le vendeur peut appliquer un coupon Stripe à la volée */
 .quote-pay-discount{
@@ -1352,6 +1494,55 @@ html:not(.assistant-mode) .testimonial-split-body{
    sur quote, cache tout sauf le quote. */
 .step-zero[data-tab-set="proposal"][data-active-tab="script"] .phase-block[data-phase="quote"] > *{display:none;}
 .step-zero[data-tab-set="proposal"][data-active-tab="quote"] .phase-block:not([data-phase="quote"]) > *{display:none;}
+.step-zero[data-tab-set="proposal"][data-active-tab="script"] .phase-block[data-phase="rabais"] > *{display:none;}
+.step-zero[data-tab-set="proposal"][data-active-tab="rabais"] .phase-block:not([data-phase="rabais"]) > *{display:none;}
+
+/* ===== RABAIS TABLE (assistant view, onglet Rabais du step Proposal) ===== */
+.rabais-table{
+  margin-top:8px;display:flex;flex-direction:column;
+  border-top:1px solid #e8e8e8;
+}
+.rabais-row{
+  display:grid;grid-template-columns:1.4fr 0.4fr 0.5fr 2fr;gap:14px;
+  padding:12px 0;border-bottom:1px solid #f0f0f0;align-items:start;
+}
+.rabais-apply-cell{display:flex;align-items:flex-start;justify-content:center;}
+.rabais-row.rabais-head > div:nth-child(2){text-align:center;}
+.rabais-apply{
+  appearance:none;-webkit-appearance:none;
+  width:18px;height:18px;
+  border:1.5px solid #c4c4c4;border-radius:4px;
+  background:#fff;cursor:pointer;position:relative;
+  transition:background 0.15s,border-color 0.15s;
+}
+.rabais-apply:hover{border-color:#2EAA4A;}
+.rabais-apply:checked{background:#2EAA4A;border-color:#2EAA4A;}
+.rabais-apply:checked::after{
+  content:'';position:absolute;left:5px;top:1px;
+  width:5px;height:10px;border:solid #fff;border-width:0 2px 2px 0;
+  transform:rotate(45deg);
+}
+.rabais-row[data-rabais-partner].rabais-row-active{
+  background:#f0fff4;
+}
+.rabais-row:last-child{border-bottom:0;}
+.rabais-row.rabais-head{
+  font-size:11px;font-weight:700;color:#2EAA4A;
+  letter-spacing:0.08em;text-transform:uppercase;
+  padding:10px 0 8px;border-bottom:1px solid #e8e8e8;
+}
+.rabais-partner{font-size:14px;font-weight:600;color:#0F6E56;line-height:1.4;}
+.rabais-amount{
+  font-size:14px;font-weight:700;color:#0F6E56;
+  font-variant-numeric:tabular-nums;
+}
+.rabais-notes{font-size:13px;line-height:1.5;color:#555;}
+.rabais-notes code{
+  display:inline-block;
+  background:#f0fff4;border:1px solid #d4ebd9;border-radius:4px;
+  padding:1px 6px;font-family:'Rubik',monospace;font-size:12px;
+  color:#0F6E56;font-weight:600;
+}
 .step-intent{font-size:15px;font-weight:600;color:#555;line-height:1.5;}
 .step-quote{
   font-size:15px;line-height:1.6;color:#555;font-style:italic;
@@ -1530,7 +1721,7 @@ html:not(.assistant-mode) .testimonial-split-body{
         <div class="step-duration">~10 min</div>
       </div>
       <h1 class="page-title">What is the biggest challenge on your farm?</h1>
-      <div class="section-label">Answers <span class="section-label-count">· click to check</span></div>
+      <div class="section-label">Answers <span class="section-label-count">· click to check (max 2)</span></div>
       <ul class="q-list" id="discovery-list">
         <li data-pain="tied_to_farm"><span class="q-check"></span><span class="q-text">Feeling tied to the farm and unable to step away</span></li>
         <li data-pain="living_far"><span class="q-check"></span><span class="q-text">Living far from the farm</span></li>
@@ -1586,10 +1777,9 @@ html:not(.assistant-mode) .testimonial-split-body{
           </div>
         </div>
       </div>
-      <img src="jean-martin.png" alt="Jean-Martin Fortier" class="testimonial-split-img">
+      <img src="/erp/p/6a79d74237df27f3d91cd1c3c70ffd90" alt="Orisha Team" class="testimonial-split-img">
       <div class="how-quote-card">
-        <div class="testimonial-split-text">"At both Ferme des Quatre-Temps and Les Jardins de la Grelinette, we've equipped our greenhouses with Orisha systems. For us, using their services is a real investment."</div>
-        <div class="testimonial-split-author">Jean-Martin Fortier</div>
+        <div class="testimonial-split-author">Orisha Team</div>
       </div>
     </section>
 
@@ -1731,7 +1921,11 @@ html:not(.assistant-mode) .testimonial-split-body{
       </div>
       <div class="proposal-total" id="proposal-total">
         <span class="proposal-total-quantities" id="proposal-total-quantities"></span>
-        <span class="proposal-total-amount" id="proposal-total-amount">$0 USD/mo</span>
+        <span class="proposal-total-amount-wrap">
+          <span class="proposal-total-original" id="proposal-total-original" hidden></span>
+          <span class="proposal-total-amount" id="proposal-total-amount">$0 USD/mo</span>
+          <span class="proposal-discount-summary" id="proposal-discount-summary" hidden></span>
+        </span>
       </div>
     </section>
 
@@ -1749,6 +1943,14 @@ html:not(.assistant-mode) .testimonial-split-body{
         </div>
       </div>
       <img src="Kilpatrick.png" alt="Michael Kilpatrick" class="testimonial-split-img">
+    </section>
+
+    <!-- SLIDE 7 : Transition proposal (sous-étape entre Demo et Proposal) -->
+    <section class="slide transition-bg" id="slide-8">
+      <img src="/erp/p/a4be902a1db8a70adaad9870fc0ec0d0" class="transition-bg-img" alt="">
+      <div class="transition-slide">
+        <h1 class="transition-question">Would you like to see what Orisha looks like on your farm?</h1>
+      </div>
     </section>
 
     <!-- Assistant-only panel (visible only when ?view=assistant) -->
@@ -1823,8 +2025,11 @@ const labels=[
   {name:'Demo',dur:'5 min'},
   {name:'Proposal',dur:'5 min'},
   {name:'Conclusion',dur:'3 min'},
-  {name:'Transition demo',dur:'2 min',hidden:true,aliasOf:4,insertAfter:4},
-  {name:'Transition proposal',dur:'2 min',hidden:true,aliasOf:5,insertAfter:5}
+  // Transition proposal a sa propre slide (slide-8). Reste hidden pour ne pas
+  // apparaître dans la sidebar du client, mais insertAfter:5 la place après
+  // Demo dans LOGICAL_NAV_ORDER, donc Next → après Demo affiche bien slide-8
+  // avant de passer à Proposal.
+  {name:'Transition proposal',dur:'2 min',hidden:true,insertAfter:5}
 ];
 const total=labels.length;
 // Map internal index → client-facing position (1-based, seulement les vrais
@@ -1843,6 +2048,9 @@ function slideIdFor(i){
 }
 function isDemoSlide(i){return labels[i]&&labels[i].name==='Demo';}
 let cur=0;
+// helpIdx déclaré tôt car broadcast({...helpIdx}) dans goTo(0) (init) le lit
+// avant que renderHowWeHelp ne soit défini plus bas — sinon TDZ.
+let helpIdx=0;
 const done=new Set();
 
 // Build nav. Vue client (slide view) : seules les étapes visibles. Vue assistant :
@@ -1914,9 +2122,16 @@ function goTo(n){
   [...nav.children].forEach(el=>{
     const idx=parseInt(el.dataset.idx);
     el.classList.remove('active','done');
+    // Les help-sub items (slide-3 multi-pain) sont gérés par rebuildHelpNav :
+    // skip ici, sinon ils seraient tous marqués active simultanément.
+    if(el.classList.contains('help-sub'))return;
     if(idx===cur||idx===activeSlide)el.classList.add('active');
     else if(done.has(idx))el.classList.add('done');
   });
+  // Re-render slide-3 contenu + nav help-sub si on arrive dessus ou si on en part
+  // (pour que le done state se mette à jour sur les help-sub items).
+  if(activeSlide===3||cur===3)renderHowWeHelp();
+  else rebuildHelpNav();
   // Update eyebrow to show client-facing step number (or hide section if hidden)
   updateEyebrow(cur);
   // Prev/next disabled basés sur la position dans l'ordre visuel de la sidebar,
@@ -1933,6 +2148,16 @@ function goTo(n){
   if(labels[cur].stepZero){
     document.getElementById('step-info').textContent=`Step 0 · ${labels[cur].name}`;
     document.getElementById('progress').style.width='0%';
+  }else if(labels[cur].hidden){
+    // Sous-étape de transition (cachée du sidebar) — affiche juste le nom
+    // sans numéro. La barre de progression reflète la position de l'étape
+    // parente (insertAfter) pour ne pas revenir à 0%.
+    document.getElementById('step-info').textContent=labels[cur].name;
+    const parent=labels[cur].insertAfter;
+    if(parent!=null){
+      const pp=clientPos(parent);
+      document.getElementById('progress').style.width=(pp/visibleTotal*100)+'%';
+    }
   }else{
     const p=clientPos(cur);
     document.getElementById('step-info').textContent=`Step ${p} of ${visibleTotal}`;
@@ -1947,7 +2172,7 @@ function goTo(n){
   // vues restent en lockstep — la slide view peut être sur cur=8 sans nav item,
   // elle affichera juste slide-4 via slideIdFor.
   renderAssistant();
-  broadcast({type:'nav',index:cur});
+  broadcast({type:'nav',index:cur,helpIdx});
 }
 
 // Rewrite all eyebrows to use client-facing step numbers
@@ -1991,6 +2216,26 @@ const LOGICAL_NAV_ORDER=(()=>{
 })();
 function navOrder(){return LOGICAL_NAV_ORDER;}
 function changeSlide(d){
+  // Sub-pagination interne pour slide-3 (How we help) : N pains cochés = N
+  // « slides » virtuelles partageant le même DOM. Next/Prev avancent helpIdx
+  // avant de quitter slide-3.
+  if(cur===3){
+    const pains=getHelpPainsOrdered();
+    if(d>0&&helpIdx<pains.length-1){
+      helpIdx++;
+      renderHowWeHelp();
+      renderAssistant();
+      broadcast({type:'nav',index:cur,helpIdx});
+      return;
+    }
+    if(d<0&&helpIdx>0){
+      helpIdx--;
+      renderHowWeHelp();
+      renderAssistant();
+      broadcast({type:'nav',index:cur,helpIdx});
+      return;
+    }
+  }
   // Collect step indices that are unchecked in the Introduction roadmap
   const skipped=new Set();
   document.querySelectorAll('#intro-roadmap .intro-step:not(.checked)').forEach(el=>{
@@ -2003,6 +2248,13 @@ function changeSlide(d){
   // Skip over unchecked steps in the direction of movement
   while(p>=0&&p<order.length&&skipped.has(order[p]))p+=d;
   if(p<0||p>=order.length)return;
+  // Quand on quitte slide-3 vers l'avant : reset helpIdx ; vers l'arrière :
+  // se placer sur la dernière sub-slide pour que Prev affiche bien la dernière
+  // pain avant Discovery.
+  if(cur===3&&d>0)helpIdx=0;
+  if(order[p]===3&&d<0){
+    helpIdx=Math.max(0,getHelpPainsOrdered().length-1);
+  }
   goTo(order[p]);
 }
 
@@ -2010,7 +2262,23 @@ function changeSlide(d){
 // Déclaré avant goTo(0) car renderAssistant() — invoqué par goTo — appelle
 // applyQuoteStateToUI() qui lit quoteState. Sans ça, TDZ sur le const.
 const QUOTE_PRICES={USD:{helper:130,chief:220},CAD:{helper:180,chief:290}};
-const quoteState={currency:'USD',helper:0,chief:0,paidAt:null,paidEmail:null,subscriptionId:null};
+// Prix lifetime (buyout) — affichés pour référence dans la vue assistant uniquement.
+// Pas payables ici (pas de bouton), juste une indication pour le client qui voudrait
+// éventuellement acheter le système comptant plus tard.
+const QUOTE_LIFETIME_PRICES={USD:{helper:5200,chief:8800},CAD:{helper:7200,chief:11600}};
+const quoteState={
+  currency:'USD',helper:0,chief:0,
+  paidAt:null,paidEmail:null,subscriptionId:null,
+  // Rabais — affiché dans la vue assistant et la vue slide. Pas persisté en DB.
+  // Défaut "forever" : les rabais partenaires (Masterclass JM, EFAO, Clay Bottom,
+  // etc.) s'appliquent à la durée complète de l'abonnement, pas juste au premier mois.
+  discountOn:false,discountType:'percent',discountValue:0,discountDuration:'forever',discountMonths:3,
+  // Slug du partenaire dont la checkbox "Apply" est cochée dans l'onglet Rabais.
+  // Vide quand le rabais a été configuré manuellement via le Quote tab. Sert
+  // uniquement à dessiner la bonne case dans le tableau Rabais (les valeurs
+  // discount* restent la source de vérité pour le calcul du total).
+  rabaisPartner:'',
+};
 // Idem : memoize l'onglet actif (Script / Battle Cards / Quote) par tab-set.
 const lastActiveTab={};
 
@@ -2037,11 +2305,11 @@ const PLAN_AUTOMATION={
   ],
   chief:[
     {token:'5d32722e9860d514758116d60ba0ce6e',label:'Roll-ups',count:2},
-    {token:'c6d50f8216c971a5d9e7f7ce66b8a2c5',label:'Valve',count:4},
-    {token:'7ffe11f98a5cb8032f11875685e1a331',label:'Heater',count:2},
-    {token:'51e3f966cceaec8a7b4d167c37c79d2e',label:'Exhaust fan'},
-    {token:'3e5ab6f898241baaaf5a4b9a0267f292',label:'Roof',count:1},
-    {token:'2af5b918c6179aeba6af5c99284445ba',label:'Wind sensor',count:1},
+    {token:'c6d50f8216c971a5d9e7f7ce66b8a2c5',label:'Irrigation',count:4},
+    {token:'7ffe11f98a5cb8032f11875685e1a331',label:'Heating',count:2},
+    {token:'51e3f966cceaec8a7b4d167c37c79d2e',label:'End-wall Ventilation'},
+    {token:'3e5ab6f898241baaaf5a4b9a0267f292',label:'Ridge Ventilation',count:1},
+    {token:'2af5b918c6179aeba6af5c99284445ba',label:'Wind Protection',count:1},
   ],
 };
 function renderPlanCard(){
@@ -2079,7 +2347,7 @@ function renderPlanCard(){
       const hasCount=typeof it.count==='number';
       const countAttr=hasCount?` data-count="${it.count}"`:'';
       const countOverlay=hasCount?`<span class="plan-automation-count">${it.count}</span>`:'';
-      return `<div class="plan-automation-item"${countAttr}><span class="plan-automation-icon-wrap"><img src="/erp/p/${it.token}" alt="${it.label}" class="plan-automation-icon">${countOverlay}</span></div>`;
+      return `<div class="plan-automation-item"${countAttr}><span class="plan-automation-icon-wrap"><img src="/erp/p/${it.token}" alt="${it.label}" class="plan-automation-icon">${countOverlay}</span><span class="plan-automation-label">${it.label}</span></div>`;
     }).join('');
   }
 }
@@ -2089,10 +2357,78 @@ document.addEventListener('click',e=>{
   planCardActive=tab.dataset.plan;
   renderPlanCard();
 });
+function quoteFormatMoney(n){
+  const rounded=Math.round(Number(n||0)*100)/100;
+  const str=Number.isInteger(rounded)
+    ?rounded.toLocaleString('en-US')
+    :rounded.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  return '$'+str+' '+quoteState.currency+'/mo';
+}
 function quoteFormatTotal(){
   const p=QUOTE_PRICES[quoteState.currency]||QUOTE_PRICES.USD;
   const total=(quoteState.helper||0)*p.helper+(quoteState.chief||0)*p.chief;
-  return '$'+total.toLocaleString('en-US')+' '+quoteState.currency+'/mo';
+  return quoteFormatMoney(total);
+}
+// Compute monthly total + apply rabais state. Retourne :
+//   { original, discounted, active, summary }
+// - active=false si checkbox off ou valeur ≤ 0 ou >100% pour percent.
+// - summary = ex. "10% off · forever", "$50 off · first 3 months".
+function computeQuoteDiscount(){
+  const p=QUOTE_PRICES[quoteState.currency]||QUOTE_PRICES.USD;
+  const original=(quoteState.helper||0)*p.helper+(quoteState.chief||0)*p.chief;
+  const value=Number(quoteState.discountValue);
+  const type=quoteState.discountType==='amount'?'amount':'percent';
+  const duration=quoteState.discountDuration||'once';
+  const valid=quoteState.discountOn&&Number.isFinite(value)&&value>0&&(type!=='percent'||value<=100);
+  if(!valid)return {original,discounted:original,active:false,summary:''};
+  let discounted=original;
+  if(type==='percent')discounted=Math.max(0,original*(1-value/100));
+  else discounted=Math.max(0,original-value);
+  const valueLabel=type==='percent'
+    ?(Number.isInteger(value)?value+'%':value+'%')
+    :'$'+(Number.isInteger(value)?value:value.toFixed(2));
+  // Pour 'forever', pas de summary : le strikethrough + le nouveau total suffisent.
+  // On garde le summary pour 'once' et 'repeating' où la durée n'est pas implicite.
+  let summary='';
+  if(duration==='once')summary=valueLabel+' off · first month';
+  else if(duration==='repeating'){
+    const m=Number(quoteState.discountMonths)||3;
+    summary=valueLabel+' off · '+(m===1?'first month':'first '+m+' months');
+  }
+  // active=false si la réduction est nulle (typiquement original=0 quand qty=0
+  // pour Helper et Chief). Évite d'afficher "$0" en strikethrough au-dessus de
+  // "$0" courant.
+  return {original,discounted,active:discounted!==original,summary};
+}
+// Compute lifetime buyout (référence uniquement, pas payable ici). Applique :
+// - les quantités du quote (helper × N, chief × N)
+// - le rabais (même % ou montant que sur le mensuel, mais sans notion de durée
+//   puisque c'est un paiement unique)
+function computeLifetime(){
+  const p=QUOTE_LIFETIME_PRICES[quoteState.currency]||QUOTE_LIFETIME_PRICES.USD;
+  const helperQty=quoteState.helper||0;
+  const chiefQty=quoteState.chief||0;
+  const helperSub=helperQty*p.helper;
+  const chiefSub=chiefQty*p.chief;
+  const original=helperSub+chiefSub;
+  const value=Number(quoteState.discountValue);
+  const type=quoteState.discountType==='amount'?'amount':'percent';
+  const valid=quoteState.discountOn&&Number.isFinite(value)&&value>0&&(type!=='percent'||value<=100);
+  let discounted=original;
+  if(valid){
+    if(type==='percent')discounted=Math.max(0,original*(1-value/100));
+    else discounted=Math.max(0,original-value);
+  }
+  return {
+    helperQty,chiefQty,
+    helperUnit:p.helper,chiefUnit:p.chief,
+    helperSub,chiefSub,
+    original,discounted,
+    active:valid&&discounted!==original,
+  };
+}
+function lifetimeFormatMoney(n){
+  return '$'+Math.round(Number(n||0)).toLocaleString('en-US');
 }
 // Sync state → DOM (assistant builder + slide-6 total block, dans la fenêtre courante)
 function applyQuoteStateToUI(){
@@ -2108,10 +2444,53 @@ function applyQuoteStateToUI(){
     const p=(QUOTE_PRICES[quoteState.currency]||QUOTE_PRICES.USD)[tgt];
     if(p!=null)el.textContent='$'+p+'/mo';
   });
+  const lt=computeLifetime();
+  document.querySelectorAll('.quote-lifetime-mult').forEach(el=>{
+    const tgt=el.dataset.target;
+    el.textContent='× '+(tgt==='helper'?lt.helperQty:lt.chiefQty);
+  });
+  document.querySelectorAll('.quote-lifetime-unit').forEach(el=>{
+    const tgt=el.dataset.target;
+    const u=tgt==='helper'?lt.helperUnit:lt.chiefUnit;
+    el.textContent='$'+u.toLocaleString('en-US')+' ea';
+  });
+  document.querySelectorAll('.quote-lifetime-price').forEach(el=>{
+    const tgt=el.dataset.target;
+    const sub=tgt==='helper'?lt.helperSub:lt.chiefSub;
+    el.textContent=lifetimeFormatMoney(sub);
+  });
+  const ltTotal=document.getElementById('quote-lifetime-total-amount');
+  if(ltTotal)ltTotal.textContent=lifetimeFormatMoney(lt.discounted);
+  const ltOrig=document.getElementById('quote-lifetime-total-original');
+  if(ltOrig){
+    if(lt.active){ltOrig.textContent=lifetimeFormatMoney(lt.original);ltOrig.hidden=false;}
+    else ltOrig.hidden=true;
+  }
+  const totals=computeQuoteDiscount();
   const totalAs=document.getElementById('quote-total-display');
-  if(totalAs)totalAs.textContent=quoteFormatTotal();
+  if(totalAs)totalAs.textContent=quoteFormatMoney(totals.discounted);
+  const origAs=document.getElementById('quote-total-original');
+  if(origAs){
+    if(totals.active){origAs.textContent=quoteFormatMoney(totals.original);origAs.hidden=false;}
+    else origAs.hidden=true;
+  }
+  const sumAs=document.getElementById('quote-discount-summary');
+  if(sumAs){
+    if(totals.active&&totals.summary){sumAs.textContent=totals.summary;sumAs.hidden=false;}
+    else sumAs.hidden=true;
+  }
   const totalSlide=document.getElementById('proposal-total-amount');
-  if(totalSlide)totalSlide.textContent=quoteFormatTotal();
+  if(totalSlide)totalSlide.textContent=quoteFormatMoney(totals.discounted);
+  const origSlide=document.getElementById('proposal-total-original');
+  if(origSlide){
+    if(totals.active){origSlide.textContent=quoteFormatMoney(totals.original);origSlide.hidden=false;}
+    else origSlide.hidden=true;
+  }
+  const sumSlide=document.getElementById('proposal-discount-summary');
+  if(sumSlide){
+    if(totals.active&&totals.summary){sumSlide.textContent=totals.summary;sumSlide.hidden=false;}
+    else sumSlide.hidden=true;
+  }
   // Vue slide : logo + × N à côté du total, seulement si count > 0
   const qtsEl=document.getElementById('proposal-total-quantities');
   if(qtsEl){
@@ -2130,13 +2509,43 @@ function applyQuoteStateToUI(){
   });
   // Plan card de slide-6 (prix selon devise)
   if(typeof renderPlanCard==='function')renderPlanCard();
+  // Sync les form rabais (Quote tab) et tableau Rabais (Rabais tab) avec l'état
+  // courant. Les deux peuvent évoluer indépendamment : clic sur "Apply" dans
+  // l'onglet Rabais → met à jour le form Quote ; modif manuelle du form Quote
+  // → décoche les Apply.
+  syncDiscountFormFromState();
+  syncRabaisCheckboxes();
 }
 // Mutate state, render, broadcast cross-window, trigger autosave to server.
 function setQuoteState(partial){
   Object.assign(quoteState,partial);
   applyQuoteStateToUI();
-  try{ broadcast({type:'quote',currency:quoteState.currency,helper:quoteState.helper,chief:quoteState.chief}); }catch(e){}
-  if(typeof window.__pushSave==='function')window.__pushSave();
+  try{ broadcast({
+    type:'quote',
+    currency:quoteState.currency,helper:quoteState.helper,chief:quoteState.chief,
+    discountOn:quoteState.discountOn,discountType:quoteState.discountType,
+    discountValue:quoteState.discountValue,discountDuration:quoteState.discountDuration,
+    discountMonths:quoteState.discountMonths,
+    rabaisPartner:quoteState.rabaisPartner,
+  }); }catch(e){}
+  // Skip __pushSave si seuls des champs non-persistés (discount* / rabaisPartner)
+  // ont changé — sinon chaque keystroke du value-input déclencherait un PATCH
+  // inutile et chaque clic sur Apply ferait un save.
+  const keys=Object.keys(partial||{});
+  const onlyEphemeral=keys.length>0&&keys.every(k=>k.startsWith('discount')||k==='rabaisPartner');
+  if(!onlyEphemeral&&typeof window.__pushSave==='function')window.__pushSave();
+}
+// Devise auto-déterminée par le pays de l'adresse :
+//   CA → CAD, US → USD. Appelé à chaque update du country (Places autocomplete
+//   slide-0, broadcast cross-window, manual entry quote tab, fetch DB initial).
+//   Le toggle USD/CAD manuel reste fonctionnel mais sera écrasé au prochain
+//   changement d'adresse.
+function syncCurrencyFromCountry(country){
+  const c=String(country||'').trim().toUpperCase();
+  let next=null;
+  if(c==='CA')next='CAD';
+  else if(c==='US')next='USD';
+  if(next&&quoteState.currency!==next)setQuoteState({currency:next});
 }
 // Delegated click handler — boutons currency + +/- steppers
 document.addEventListener('click',e=>{
@@ -2242,31 +2651,190 @@ async function mountQuotePay(){
   // Discount controls : toggle + segments (type/duration) sont re-bindés à chaque
   // remount puisque le DOM est régénéré par renderAssistant.
   bindQuotePayDiscount();
+  // Address fields : pré-remplir + brancher l'autosave + validation.
+  bindQuotePayAddress();
+}
+// Pré-remplit les 5 champs adresse et installe l'autosave on-blur vers
+// /api/qualification-calls/:id/farm-address. Les inputs sont la SEULE source
+// de vérité pour la validation côté client (cf. onQuotePaySubmit) — plus de
+// dépendance fragile à window.__verifiedAddressComponents qui ne traversait pas
+// les fenêtres slide-view ⇄ assistant.
+function bindQuotePayAddress(){
+  const ids=['quote-pay-addr-line1','quote-pay-addr-city','quote-pay-addr-province','quote-pay-addr-postal','quote-pay-addr-country'];
+  const inputs=ids.map(id=>document.getElementById(id));
+  if(inputs.some(i=>!i))return;
+  const [line1El,cityEl,provEl,postalEl,countryEl]=inputs;
+  // 1) Pré-remplir depuis l'état mémorisé en RAM (sélection Places récente),
+  //    sinon fetcher la row Ferme persistée. Les valeurs déjà saisies par
+  //    l'user dans les inputs ont priorité (ne pas écraser ce qu'il vient
+  //    de taper si le fetch arrive en retard).
+  function fillFromComponents(c){
+    if(!c)return;
+    if(line1El&&!line1El.value&&c.line1)line1El.value=c.line1;
+    if(cityEl&&!cityEl.value&&c.city)cityEl.value=c.city;
+    if(provEl&&!provEl.value&&c.province)provEl.value=c.province;
+    if(postalEl&&!postalEl.value&&c.postal_code)postalEl.value=c.postal_code;
+    if(countryEl&&!countryEl.value&&c.country)countryEl.value=c.country;
+    if(c.country)syncCurrencyFromCountry(c.country);
+  }
+  fillFromComponents(window.__verifiedAddressComponents);
+  if(window.__quotePayCallId&&window.__quotePayErpToken){
+    fetch('/erp/api/qualification-calls/'+encodeURIComponent(window.__quotePayCallId)+'/farm-address?token='+encodeURIComponent(window.__quotePayErpToken))
+      .then(r=>r.ok?r.json():null)
+      .then(j=>fillFromComponents(j))
+      .catch(()=>{});
+  }
+  // 2) Autosave on-blur : POST farm-address via le parent React (postMessage).
+  //    On collecte les 5 champs courants et on envoie le payload. Côté serveur,
+  //    l'endpoint upserte la row Ferme (cf. server/src/routes/qualification-calls.js).
+  function readComponents(){
+    return {
+      line1:(line1El.value||'').trim(),
+      city:(cityEl.value||'').trim(),
+      province:(provEl.value||'').trim().toUpperCase(),
+      postal_code:(postalEl.value||'').trim(),
+      country:(countryEl.value||'').trim().toUpperCase(),
+    };
+  }
+  function pushSave(){
+    const c=readComponents();
+    // N'envoie que si on a au moins un champ — sinon on enverrait des null
+    // partout dès le premier focus.
+    if(!c.line1&&!c.city&&!c.province&&!c.postal_code&&!c.country)return;
+    // address_type='Facturation' : le form de paiement représente l'adresse
+    // de facturation, pas l'adresse de la ferme. Slide-0 continue d'écrire
+    // dans 'Ferme' (sans address_type → défaut serveur).
+    try{
+      window.parent.postMessage({
+        source:'qualification-call',
+        type:'save-farm-address-structured',
+        components:{...c, address_type:'Facturation'},
+      },'*');
+    }catch(e){}
+    // Mémorise en RAM aussi pour cohérence avec les vérifications côté front.
+    window.__verifiedAddressComponents={
+      line1:c.line1,city:c.city,province:c.province,
+      postal_code:c.postal_code,country:c.country,
+    };
+    if(c.country)syncCurrencyFromCountry(c.country);
+  }
+  inputs.forEach(i=>{ i.addEventListener('blur',pushSave); });
+  // Live-update de la devise dès que l'utilisateur tape le pays (avant blur),
+  // pour que les prix affichés reflètent immédiatement le marché.
+  if(countryEl){
+    countryEl.addEventListener('input',()=>syncCurrencyFromCountry(countryEl.value));
+  }
+}
+// Sync state → DOM pour le form rabais du Quote tab. Appelé à chaque
+// renderAssistant (via bindQuotePayDiscount) ET à chaque setQuoteState (via
+// applyQuoteStateToUI), pour que l'application d'un rabais depuis l'onglet
+// Rabais reflète immédiatement dans le form Quote. Skip la value en cours de
+// frappe pour éviter le cursor jump.
+function syncDiscountFormFromState(){
+  const root=document.getElementById('quote-pay-discount');
+  if(!root)return;
+  const checkbox=document.getElementById('quote-pay-discount-on');
+  const suffix=document.getElementById('quote-pay-discount-suffix');
+  const valueEl=document.getElementById('quote-pay-discount-value');
+  const monthsEl=document.getElementById('quote-pay-discount-months');
+  const type=quoteState.discountType==='amount'?'amount':'percent';
+  const duration=quoteState.discountDuration||'forever';
+  if(checkbox&&checkbox.checked!==!!quoteState.discountOn)checkbox.checked=!!quoteState.discountOn;
+  root.classList.toggle('open',!!quoteState.discountOn);
+  root.dataset.type=type;
+  root.dataset.duration=duration;
+  root.classList.toggle('duration-repeating',duration==='repeating');
+  if(suffix)suffix.textContent=type==='amount'?'$':'%';
+  root.querySelectorAll('.quote-pay-seg[data-group="type"] button').forEach(b=>{
+    b.classList.toggle('active',b.dataset.type===type);
+  });
+  root.querySelectorAll('.quote-pay-seg[data-group="duration"] button').forEach(b=>{
+    b.classList.toggle('active',b.dataset.duration===duration);
+  });
+  if(valueEl&&document.activeElement!==valueEl){
+    const v=Number(quoteState.discountValue);
+    valueEl.value=Number.isFinite(v)&&v>0?String(v):'';
+  }
+  if(monthsEl&&document.activeElement!==monthsEl){
+    const m=Number(quoteState.discountMonths);
+    monthsEl.value=String(Number.isInteger(m)&&m>0?m:3);
+  }
+}
+// Sync state → DOM pour le tableau Rabais. Coche la ligne du partenaire actif
+// (et décoche les autres).
+function syncRabaisCheckboxes(){
+  document.querySelectorAll('.rabais-row[data-rabais-partner]').forEach(row=>{
+    const slug=row.dataset.rabaisPartner;
+    const active=quoteState.rabaisPartner===slug;
+    row.classList.toggle('rabais-row-active',active);
+    const cb=row.querySelector('.rabais-apply');
+    if(cb&&cb.checked!==active)cb.checked=active;
+  });
 }
 function bindQuotePayDiscount(){
   const root=document.getElementById('quote-pay-discount');
   if(!root)return;
   const checkbox=document.getElementById('quote-pay-discount-on');
-  const suffix=document.getElementById('quote-pay-discount-suffix');
+  const valueEl=document.getElementById('quote-pay-discount-value');
+  const monthsEl=document.getElementById('quote-pay-discount-months');
+  // Sync initial — le DOM est régénéré à chaque renderAssistant.
+  syncDiscountFormFromState();
+  // Handlers → setQuoteState. Chaque modif manuelle efface aussi le
+  // partenaire rabais sélectionné dans l'onglet Rabais, pour que l'état reste
+  // cohérent (sinon une checkbox "Apply" resterait cochée alors que les valeurs
+  // discount ne correspondent plus).
   if(checkbox){
-    checkbox.onchange=()=>{ root.classList.toggle('open',checkbox.checked); };
+    checkbox.onchange=()=>{
+      setQuoteState({discountOn:checkbox.checked,rabaisPartner:''});
+    };
   }
   root.querySelectorAll('.quote-pay-seg').forEach(seg=>{
-    const group=seg.dataset.group; // 'type' ou 'duration'
+    const group=seg.dataset.group;
     seg.onclick=e=>{
       const btn=e.target.closest('button');
       if(!btn)return;
-      seg.querySelectorAll('button').forEach(b=>b.classList.toggle('active',b===btn));
       if(group==='type'){
-        root.dataset.type=btn.dataset.type;
-        if(suffix)suffix.textContent=btn.dataset.type==='percent'?'%':'$';
+        setQuoteState({discountType:btn.dataset.type==='amount'?'amount':'percent',rabaisPartner:''});
       }else if(group==='duration'){
-        root.dataset.duration=btn.dataset.duration;
-        root.classList.toggle('duration-repeating',btn.dataset.duration==='repeating');
+        setQuoteState({discountDuration:btn.dataset.duration||'forever',rabaisPartner:''});
       }
     };
   });
+  if(valueEl){
+    valueEl.oninput=()=>{
+      const v=Number(valueEl.value);
+      setQuoteState({discountValue:Number.isFinite(v)?v:0,rabaisPartner:''});
+    };
+  }
+  if(monthsEl){
+    monthsEl.oninput=()=>{
+      const m=Number(monthsEl.value);
+      setQuoteState({discountMonths:Number.isInteger(m)&&m>0?m:3,rabaisPartner:''});
+    };
+  }
 }
+// Handler global pour les checkboxes "Apply" du tableau Rabais (onglet Rabais
+// du step Proposal). Mutuellement exclusives : cocher une ligne décoche les
+// autres et configure le rabais en percent/forever. Re-cliquer décoche.
+document.addEventListener('change',e=>{
+  const apply=e.target.closest('.rabais-apply');
+  if(!apply)return;
+  const row=apply.closest('.rabais-row[data-rabais-partner]');
+  if(!row)return;
+  const partner=row.dataset.rabaisPartner;
+  const value=Number(row.dataset.rabaisValue);
+  if(apply.checked){
+    setQuoteState({
+      rabaisPartner:partner,
+      discountOn:true,
+      discountType:'percent',
+      discountValue:Number.isFinite(value)?value:0,
+      discountDuration:'forever',
+    });
+  }else{
+    setQuoteState({rabaisPartner:'',discountOn:false});
+  }
+});
 // Lit l'état du bloc rabais et renvoie le payload pour le backend, ou null si
 // désactivé. Renvoie {error} si l'utilisateur a coché Apply discount sans saisir
 // une valeur valide.
@@ -2306,6 +2874,26 @@ async function onQuotePaySubmit(){
   if((quoteState.helper||0)<=0&&(quoteState.chief||0)<=0){
     quotePayMsg('error','Add at least one Helper or Chief Grower to the quote.');return;
   }
+  // Adresse de facturation : lit directement les 5 inputs visibles au-dessus
+  // du form carte (line1, city, province, postal_code, country). Indispensables
+  // pour que Stripe puisse calculer les taxes côté serveur (computeCanadaTaxes
+  // + customer.address). On valide les 3 champs strictement requis ; line1 et
+  // city sont recommandés mais pas bloquants.
+  const addrLine1=(document.getElementById('quote-pay-addr-line1')||{}).value||'';
+  const addrCity=(document.getElementById('quote-pay-addr-city')||{}).value||'';
+  const addrProvince=((document.getElementById('quote-pay-addr-province')||{}).value||'').toUpperCase().trim();
+  const addrPostal=((document.getElementById('quote-pay-addr-postal')||{}).value||'').trim();
+  const addrCountry=((document.getElementById('quote-pay-addr-country')||{}).value||'').toUpperCase().trim();
+  if(!addrPostal||!addrProvince||!addrCountry){
+    quotePayMsg('error','Billing address is incomplete — postal code, province/state and country are required for tax calculation.');return;
+  }
+  const billingComponents={
+    line1:addrLine1.trim(),
+    city:addrCity.trim(),
+    province:addrProvince,
+    postal_code:addrPostal,
+    country:addrCountry,
+  };
   const discount=readQuotePayDiscount();
   if(discount&&discount.error){quotePayMsg('error',discount.error);return;}
   if(!QUOTE_PAY.stripe||!QUOTE_PAY.cardElement){
@@ -2329,6 +2917,10 @@ async function onQuotePaySubmit(){
       currency:quoteState.currency||'USD',
       email:email.trim(),
       name:name.trim(),
+      // Composants d'adresse lus directement depuis les inputs visibles — le
+      // backend persiste cette row Ferme avant de créer la subscription, donc
+      // les valeurs envoyées ici sont autoritaires (pas de course avec l'autosave).
+      farm_address:billingComponents,
       ...(discount?{discount}:{}),
     });
     if(result.error){quotePayMsg('error',result.error);return;}
@@ -2378,8 +2970,84 @@ function renderQuotePaidSuccess(){
       <div class="quote-paid-summary">${summary}</div>
       ${safeEmail?`<div class="quote-paid-receipt">A receipt has been sent to ${safeEmail}.</div>`:''}
       <div class="quote-paid-receipt">The subscription is now active in Stripe.</div>
+      <div class="discovery-form-section" id="discovery-form-section">
+        <div class="label">Next step — Technical discovery</div>
+        <button type="button" class="discovery-form-create-btn" id="discovery-form-create-btn">
+          Create the technical discovery form
+        </button>
+        <div class="quote-paid-receipt">1 greenhouse card will be generated for each Helper / Chief Grower.</div>
+      </div>
     </div>
   `;
+  const btn=document.getElementById('discovery-form-create-btn');
+  if(btn){
+    btn.addEventListener('click',async()=>{
+      btn.disabled=true;
+      btn.textContent='Creating…';
+      const result=await sendCreateDiscoveryForm({helper_count:h,chief_count:c});
+      renderDiscoveryFormResult(result);
+    });
+  }
+}
+function renderDiscoveryFormResult(result){
+  const section=document.getElementById('discovery-form-section');
+  if(!section)return;
+  if(!result||result.error){
+    section.innerHTML=`
+      <div class="label">Next step — Technical discovery</div>
+      <div class="discovery-form-error">Error: ${String(result&&result.error||'unknown').replace(/[<>&"]/g,s=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[s]))}</div>
+      <button type="button" class="discovery-form-create-btn" id="discovery-form-create-btn">Try again</button>
+    `;
+    const btn=document.getElementById('discovery-form-create-btn');
+    if(btn){
+      btn.addEventListener('click',()=>renderQuotePaidSuccess());
+    }
+    return;
+  }
+  const url=String(result.public_url||'');
+  const safeUrl=url.replace(/[<>&"]/g,s=>({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[s]));
+  section.innerHTML=`
+    <div class="label">Technical discovery form ready</div>
+    <div class="discovery-form-url">${safeUrl}</div>
+    <div class="discovery-form-actions">
+      <a href="${safeUrl}" target="_blank" rel="noopener noreferrer">Open in new tab</a>
+      <button type="button" id="discovery-form-copy-btn">Copy link</button>
+    </div>
+    <div class="quote-paid-receipt">Share this link with the customer so they can complete it on their own — or fill it together right now in the new tab.</div>
+  `;
+  const cpy=document.getElementById('discovery-form-copy-btn');
+  if(cpy){
+    cpy.addEventListener('click',async()=>{
+      try{
+        await navigator.clipboard.writeText(url);
+        cpy.textContent='Copied ✓';
+        setTimeout(()=>{cpy.textContent='Copy link';},1500);
+      }catch(e){
+        cpy.textContent='Copy failed';
+      }
+    });
+  }
+}
+// Envoie une demande de création de formulaire de découverte au parent React,
+// qui appelle POST /api/discovery-forms (auth JWT) avec le company_id du call.
+const DISCOVERY_FORM={pendingId:0,pending:null};
+function sendCreateDiscoveryForm(body){
+  return new Promise(resolve=>{
+    const id=++DISCOVERY_FORM.pendingId;
+    DISCOVERY_FORM.pending={id,resolve};
+    try{
+      window.parent.postMessage({source:'qualification-call',type:'create-discovery-form',id,body},'*');
+    }catch(e){
+      DISCOVERY_FORM.pending=null;
+      resolve({error:'Cannot reach parent frame'});
+    }
+    setTimeout(()=>{
+      if(DISCOVERY_FORM.pending&&DISCOVERY_FORM.pending.id===id){
+        DISCOVERY_FORM.pending=null;
+        resolve({error:'Request timed out'});
+      }
+    },20000);
+  });
 }
 // Si l'appel est déjà marqué « payé » (au chargement initial ou après navigation
 // entre slides), remplace le formulaire de la section Quote par l'écran de succès.
@@ -2414,9 +3082,15 @@ goTo(0);
 // Interactive checklist
 document.querySelectorAll('.q-list li').forEach(li=>{
   li.addEventListener('click',()=>{
+    // Limit Discovery (pains) selection to 2 max
+    if(li.dataset.pain && !li.classList.contains('checked')){
+      const already=document.querySelectorAll('#discovery-list li.checked').length;
+      if(already>=2)return;
+    }
     li.classList.toggle('checked');
     // If this is a Discovery item, re-render How-we-help features
     if(li.dataset.pain){
+      helpIdx=0;
       renderFeatures();
       renderHowWeHelp();
       renderAssistant();
@@ -2547,24 +3221,24 @@ const painContent={
   tied_to_farm:{
     rank:1,
     primary:"Monitor and control everything from your phone, wherever you are.",
-    secondary:"Vents automatically close when the winds get too strong.",
-    quote:"Before, we were unable to accept a diner's invitation in the late spring because we had to open or close the greenhouse roll-ups. During the day, it is hot and yet often below zero after sundown.",
-    author:"Scott Sigurdson",
-    farm:"",
-    image:"Scott.howwehelp.jpg"
+    secondary:"Irrigation runs automatically. No timer to adjust, no one to train, no need to stay.",
+    quote:"Dana and I can leave the farm. No need to decide beforehand if we leave roll-up sides open or not, no need to train staff how to decide when it's good to open the sides. The mental load of wondering whether we can leave without having to worry about it is gone.",
+    author:"Luke",
+    farm:"Terramor Farm",
+    image:"Luke.howwehelp.jpg"
   },
   living_far:{
     rank:2,
-    primary:"Vents automatically close when the winds get too strong.",
+    primary:"Manages your greenhouse from sunrise, before you even get to the farm.",
     secondary:"If the temperature hits a dangerous level for your crops, it calls you.",
-    quote:"You only got to miss it once. You only got one day not being able to come back home in time and your tomatoes are toasted. The motors cost money. Then you need something to control those motors to go up and down. And with all of that it just saves money. And it creates money.",
+    quote:"You only got to miss it once. You only got one day not being able to come back home in time and your tomatoes are toasted.",
     author:"Conor Crickmore",
     farm:"Neversink Farm",
     image:"conor.howwehelp.png"
   },
   crop_yields:{
     rank:3,
-    primary:"Balances heaters and ventilation for maximum plant growth at the lowest propane cost possible. Better results, lower bills.",
+    primary:"Constant micro-adjustments, every two minutes, so your plants are always in their productive zone.",
     secondary:"Irrigation adapts to how much your plants are actually transpiring that day. The right amount of water, every time. No timers to adjust. No guessing.",
     quote:"In 2024, we have DOUBLED tomato production compared to last year. That's more than 2000 pounds of tomatoes harvested this summer!",
     author:"Drew",
@@ -2582,7 +3256,7 @@ const painContent={
   },
   plant_disease:{
     rank:5,
-    primary:"When disease conditions are building: it uses venting and heating to expel air out, only when the humidity level is in a dangerous zone.",
+    primary:"When disease conditions are building: it uses venting + heating to expel air out, only when the humidity level is in a dangerous zone.",
     secondary:"Say bye to sprayers!",
     quote:"Before, leaf mold was horrible. It was destroying the whole greenhouse. Since we got Orisha, we don't even think about it anymore and we can keep growing the beautiful varieties our clients love so much.",
     author:"Catherine Sylvestre",
@@ -2600,7 +3274,7 @@ const painContent={
   },
   disconnected_tools:{
     rank:7,
-    primary:"The right amount of water, every time. No timers to adjust. No guessing. No root issues, no growth sacrificed.",
+    primary:"The right amount of water, every time. No timers to adjust. No guessing.",
     secondary:"Balances heaters and ventilation for maximum plant growth at the lowest propane cost possible. Better results, lower bills.",
     quote:"Orisha has designed a beautiful software programmed to take a lot of work out of my head. It will make sure that the environment stays optimum for plant growth.",
     author:"Ben Hartman",
@@ -2609,85 +3283,119 @@ const painContent={
   },
   hiring:{
     rank:8,
-    primary:"Clear, personalized advice every week to boost yields, prevent issues, and simplify decisions.",
+    primary:"The virtual Consultant guides your team through crop decisions every week, without you in the loop.",
     secondary:"It learns from your feedback on plant state and steers toward the strongest, healthiest, most productive crop possible. Your read on the plant, translated into action.",
-    quote:"Dana and I can leave the farm. No need to decide beforehand if we leave roll-up sides open or not, no need to train staff how to decide when it's good to open the sides. The mental load of wondering whether we can leave without having to worry about it is gone.",
-    author:"Luke",
-    farm:"Terramor Farm",
-    image:"Luke.howwehelp.jpg"
+    quote:"Before, we were unable to accept a diner's invitation in the late spring because we had to open or close the greenhouse roll-ups. During the day, it is hot and yet often below zero after sundown.",
+    author:"Scott Sigurdson",
+    farm:"",
+    image:"Scott.howwehelp.jpg"
   }
 };
 
+// ===== Multi-slide How we help =====
+// One slide par challenge coché (ordonné par rank). 0 coché → fallback rank-1
+// (tied_to_farm). Le DOM de slide-3 est réutilisé comme host ; helpIdx (déclaré
+// plus haut, près de `cur`) tracke quel pain est affiché.
+function getHelpPainsOrdered(){
+  const checked=[...document.querySelectorAll('#discovery-list li.checked')]
+    .map(li=>li.dataset.pain)
+    .filter(p=>painContent[p]);
+  if(!checked.length)return ['tied_to_farm'];
+  return checked
+    .map(k=>({k,rank:painContent[k].rank}))
+    .sort((a,b)=>a.rank-b.rank)
+    .map(o=>o.k);
+}
+function painLabelText(key){
+  const el=document.querySelector(`#discovery-list li[data-pain="${key}"] .q-text`);
+  return el?el.textContent.trim():key;
+}
 function renderHowWeHelp(){
   const bulletsEl=document.getElementById('how-bullets');
   const quoteEl=document.getElementById('how-quote-text');
   const authorEl=document.getElementById('how-quote-author');
   const imgEl=document.getElementById('how-quote-img');
   if(!bulletsEl||!quoteEl||!authorEl)return;
-
-  const all=Object.values(painContent).sort((a,b)=>a.rank-b.rank); // pains sorted by rank
-  const checked=[...document.querySelectorAll('#discovery-list li.checked')]
-    .map(li=>li.dataset.pain)
-    .filter(p=>painContent[p]);
-  const ranked=checked.map(p=>painContent[p]).sort((a,b)=>a.rank-b.rank);
-
-  let bullets,source,bullet3Source;
-  const usedPains=new Set();
-  if(ranked.length===0){
-    // 0 checked → primary #1, secondary #1, primary #3 / quote #1
-    bullets=[all[0].primary, all[0].secondary, all[2].primary];
-    source=all[0];
-    bullet3Source=all[2];
-    usedPains.add(all[0]);
-  }else if(ranked.length===1){
-    // 1 checked → primary, secondary, primary #1 (fallback #3 if checked is #1) / quote checked
-    const c=ranked[0];
-    const fb=c.rank===1?all[2]:all[0];
-    bullets=[c.primary, c.secondary, fb.primary];
-    source=c;
-    bullet3Source=fb;
-    usedPains.add(c);
-  }else if(ranked.length===2){
-    // 2 checked → primary top, secondary top, primary 2nd / quote top
-    bullets=[ranked[0].primary, ranked[0].secondary, ranked[1].primary];
-    source=ranked[0];
-    bullet3Source=ranked[1];
-    usedPains.add(ranked[0]);
-  }else{
-    // 3+ checked → primary of top-3 ranked checked / quote top
-    bullets=[ranked[0].primary, ranked[1].primary, ranked[2].primary];
-    source=ranked[0];
-    bullet3Source=ranked[2];
-    usedPains.add(ranked[0]);
-    usedPains.add(ranked[1]);
-  }
-  // Cascading fallback for bullet 3: primary → secondary → walk other pains by rank
-  const isDup=()=>bullets[2]===bullets[0]||bullets[2]===bullets[1];
-  if(isDup())bullets[2]=bullet3Source.secondary;
-  if(isDup()){
-    usedPains.add(bullet3Source);
-    for(const p of all){
-      if(usedPains.has(p))continue;
-      if(p.primary!==bullets[0]&&p.primary!==bullets[1]){bullets[2]=p.primary;break;}
-      if(p.secondary!==bullets[0]&&p.secondary!==bullets[1]){bullets[2]=p.secondary;break;}
-    }
-  }
-
+  const pains=getHelpPainsOrdered();
+  if(helpIdx>=pains.length)helpIdx=pains.length-1;
+  if(helpIdx<0)helpIdx=0;
+  const p=painContent[pains[helpIdx]];
+  if(!p)return;
   bulletsEl.innerHTML='';
-  bullets.forEach(b=>{
+  [p.primary,p.secondary].forEach(b=>{
     const div=document.createElement('div');
     div.className='how-bullet';
     div.textContent=b;
     bulletsEl.appendChild(div);
   });
-  quoteEl.textContent=`"${source.quote}"`;
-  authorEl.textContent=source.author+(source.farm?` · ${source.farm}`:'');
-  if(imgEl&&source.image){
-    imgEl.src=source.image;
-    imgEl.alt=source.author;
+  quoteEl.textContent=`"${p.quote}"`;
+  authorEl.textContent=p.author+(p.farm?` · ${p.farm}`:'');
+  if(imgEl&&p.image){
+    imgEl.src=p.image;
+    imgEl.alt=p.author;
   }
+  rebuildHelpNav();
+}
+function rebuildHelpNav(){
+  // Assistant view : N nav-items (un par pain coché), labels = noms des challenges.
+  // Client view : un seul nav-item « How we help » (comportement d'origine).
+  const nav=document.getElementById('nav');
+  if(!nav)return;
+  const existing=[...nav.querySelectorAll('.nav-item[data-idx="3"]')];
+  if(!existing.length)return;
+  if(!IS_ASSISTANT){
+    // Vue client : garder un seul item, virer les help-sub clones éventuels
+    existing.forEach((el,i)=>{ if(i>0)el.remove(); });
+    const sole=existing[0];
+    sole.classList.remove('help-sub');
+    delete sole.dataset.helpPain;
+    return;
+  }
+  // Vue assistant : reconstruire N items
+  const anchor=existing[0];
+  const parent=anchor.parentNode;
+  // Trouve le nav-item qui doit suivre (premier item dont la position logique > celle de 3)
+  const labelPos=LOGICAL_NAV_ORDER.indexOf(3);
+  let nextSibling=null;
+  for(const item of parent.children){
+    const i=parseInt(item.dataset.idx);
+    if(parseInt(item.dataset.idx)===3)continue;
+    const pos=LOGICAL_NAV_ORDER.indexOf(i);
+    if(pos>labelPos){nextSibling=item;break;}
+  }
+  existing.forEach(el=>el.remove());
+  const checkedCount=document.querySelectorAll('#discovery-list li.checked').length;
+  const pains=getHelpPainsOrdered();
+  const numLabel=clientPos(3);
+  pains.forEach((pkey,i)=>{
+    const el=document.createElement('div');
+    el.className='nav-item help-sub';
+    el.dataset.idx='3';
+    el.dataset.helpPain=pkey;
+    el.dataset.helpPos=String(i);
+    const isActive=(cur===3&&helpIdx===i);
+    if(isActive)el.classList.add('active');
+    else if(cur>3||(cur===3&&i<helpIdx)||done.has(3))el.classList.add('done');
+    // Si aucun pain coché : on garde le label générique « How we help ». Sinon
+    // on affiche le nom du challenge.
+    const navText=checkedCount===0?'How we help':painLabelText(pkey);
+    el.innerHTML=`<div class="nav-num"><span class="num-text">${numLabel}</span></div>
+      <div class="nav-text">${navText}</div>
+      <div class="nav-duration">5 min</div>`;
+    el.onclick=()=>{helpIdx=i;goTo(3);};
+    parent.insertBefore(el,nextSibling);
+  });
 }
 renderHowWeHelp();
+
+// Précharge toutes les images "How we help" pour éviter le flash au swap quand
+// on pagine entre sub-slides (helpIdx → src=...). Les <img> cachés laissent le
+// navigateur mettre en cache ; le set src visible est ensuite instantané.
+Object.values(painContent).forEach(p=>{
+  if(!p.image)return;
+  const img=new Image();
+  img.src=p.image;
+});
 
 // Video duration display
 const demoVid=document.getElementById('demo-video');
@@ -3132,10 +3840,69 @@ function renderAssistant(){
             </div>
             <div class="quote-total-row">
               <span class="quote-total-row-label">Monthly total</span>
-              <span class="quote-total-row-amount" id="quote-total-display">$0 USD/mo</span>
+              <span class="quote-total-row-amounts">
+                <span class="quote-total-original" id="quote-total-original" hidden></span>
+                <span class="quote-total-row-amount" id="quote-total-display">$0 USD/mo</span>
+              </span>
+            </div>
+            <div class="quote-discount-summary" id="quote-discount-summary" hidden></div>
+            <div class="quote-lifetime" id="quote-lifetime">
+              <div class="quote-lifetime-title">Lifetime buyout — for reference only</div>
+              <div class="quote-lifetime-row">
+                <span class="quote-lifetime-label">
+                  Helper <span class="quote-lifetime-mult" data-target="helper">× 0</span>
+                </span>
+                <span class="quote-lifetime-unit" data-target="helper">$5,200 ea</span>
+                <span class="quote-lifetime-price" data-target="helper">$0</span>
+              </div>
+              <div class="quote-lifetime-row">
+                <span class="quote-lifetime-label">
+                  Chief Grower <span class="quote-lifetime-mult" data-target="chief">× 0</span>
+                </span>
+                <span class="quote-lifetime-unit" data-target="chief">$8,800 ea</span>
+                <span class="quote-lifetime-price" data-target="chief">$0</span>
+              </div>
+              <div class="quote-lifetime-total-row">
+                <span class="quote-lifetime-total-label">Lifetime total</span>
+                <span class="quote-lifetime-total-amounts">
+                  <span class="quote-lifetime-total-original" id="quote-lifetime-total-original" hidden></span>
+                  <span class="quote-lifetime-total-amount" id="quote-lifetime-total-amount">$0</span>
+                </span>
+              </div>
             </div>
             <div class="quote-pay" id="quote-pay">
               <div class="quote-pay-title">Pay by credit card (over the phone)</div>
+              <!-- Billing address (= farm address) — Stripe needs structured
+                   components (postal_code, province/state, country) to compute
+                   taxes. Pre-filled from the Google Places selection on slide-0
+                   if available, otherwise from the persisted Ferme row, otherwise
+                   left blank for manual entry. -->
+              <div class="quote-pay-row">
+                <div class="quote-pay-field" style="flex:1 1 100%;">
+                  <label class="quote-pay-label" for="quote-pay-addr-line1">Billing address</label>
+                  <input type="text" id="quote-pay-addr-line1" class="quote-pay-input" placeholder="Street address" autocomplete="address-line1">
+                </div>
+              </div>
+              <div class="quote-pay-row">
+                <div class="quote-pay-field">
+                  <label class="quote-pay-label" for="quote-pay-addr-city">City</label>
+                  <input type="text" id="quote-pay-addr-city" class="quote-pay-input" placeholder="Montréal" autocomplete="address-level2">
+                </div>
+                <div class="quote-pay-field">
+                  <label class="quote-pay-label" for="quote-pay-addr-province">Province / State</label>
+                  <input type="text" id="quote-pay-addr-province" class="quote-pay-input" placeholder="QC" maxlength="3" autocomplete="address-level1" style="text-transform:uppercase;">
+                </div>
+              </div>
+              <div class="quote-pay-row">
+                <div class="quote-pay-field">
+                  <label class="quote-pay-label" for="quote-pay-addr-postal">Postal code</label>
+                  <input type="text" id="quote-pay-addr-postal" class="quote-pay-input" placeholder="H2X 1Y4" autocomplete="postal-code">
+                </div>
+                <div class="quote-pay-field">
+                  <label class="quote-pay-label" for="quote-pay-addr-country">Country</label>
+                  <input type="text" id="quote-pay-addr-country" class="quote-pay-input" placeholder="CA" maxlength="2" autocomplete="country" style="text-transform:uppercase;">
+                </div>
+              </div>
               <div class="quote-pay-row">
                 <div class="quote-pay-field">
                   <label class="quote-pay-label" for="quote-pay-name">Cardholder name</label>
@@ -3152,7 +3919,7 @@ function renderAssistant(){
                   <div id="quote-pay-card" class="quote-pay-card"></div>
                 </div>
               </div>
-              <div class="quote-pay-discount" id="quote-pay-discount" data-type="percent" data-duration="once">
+              <div class="quote-pay-discount" id="quote-pay-discount" data-type="percent" data-duration="forever">
                 <label class="quote-pay-discount-toggle">
                   <input type="checkbox" id="quote-pay-discount-on">
                   <span>Apply discount</span>
@@ -3175,9 +3942,9 @@ function renderAssistant(){
                   <div class="quote-pay-discount-row">
                     <label>Duration</label>
                     <div class="quote-pay-seg" data-group="duration">
-                      <button type="button" class="active" data-duration="once">Once</button>
+                      <button type="button" data-duration="once">Once</button>
                       <button type="button" data-duration="repeating">For N months</button>
-                      <button type="button" data-duration="forever">Forever</button>
+                      <button type="button" class="active" data-duration="forever">Forever</button>
                     </div>
                   </div>
                   <div class="quote-pay-months-row">
@@ -3194,27 +3961,80 @@ function renderAssistant(){
             </div>
           </div>
         </div>
+
+        <div class="phase-block" data-phase="rabais">
+          <div class="rabais-table">
+            <div class="rabais-row rabais-head">
+              <div>Partenaire</div>
+              <div>Apply</div>
+              <div>Rabais</div>
+              <div>Notes</div>
+            </div>
+            <div class="rabais-row" data-rabais-partner="masterclass-jm" data-rabais-value="10">
+              <div class="rabais-partner">Masterclass du Jardinier Maraîcher</div>
+              <div class="rabais-apply-cell"><input type="checkbox" class="rabais-apply" aria-label="Apply"></div>
+              <div class="rabais-amount">10 %</div>
+              <div class="rabais-notes">Vérifier si le client est éligible avec la liste fournie par le jardinier maraîcher.</div>
+            </div>
+            <div class="rabais-row" data-rabais-partner="efao" data-rabais-value="10">
+              <div class="rabais-partner">EFAO</div>
+              <div class="rabais-apply-cell"><input type="checkbox" class="rabais-apply" aria-label="Apply"></div>
+              <div class="rabais-amount">10 %</div>
+              <div class="rabais-notes">Vérifier avec un employé de l'association si le client est un membre actif.</div>
+            </div>
+            <div class="rabais-row" data-rabais-partner="clay-bottom-farm" data-rabais-value="15">
+              <div class="rabais-partner">Clay Bottom Farm</div>
+              <div class="rabais-apply-cell"><input type="checkbox" class="rabais-apply" aria-label="Apply"></div>
+              <div class="rabais-amount">15 %</div>
+              <div class="rabais-notes">Code promo&nbsp;: <code>CLAYBOTTOMFARM22</code></div>
+            </div>
+            <div class="rabais-row" data-rabais-partner="neversink-farm" data-rabais-value="20">
+              <div class="rabais-partner">Neversink Farm</div>
+              <div class="rabais-apply-cell"><input type="checkbox" class="rabais-apply" aria-label="Apply"></div>
+              <div class="rabais-amount">20 %</div>
+              <div class="rabais-notes">Code promo&nbsp;: <code>NEVERSINKFARM22</code></div>
+            </div>
+            <div class="rabais-row" data-rabais-partner="cgn" data-rabais-value="10">
+              <div class="rabais-partner">CGN</div>
+              <div class="rabais-apply-cell"><input type="checkbox" class="rabais-apply" aria-label="Apply"></div>
+              <div class="rabais-amount">10 %</div>
+              <div class="rabais-notes">Code promo&nbsp;: <code>CNG2023</code></div>
+            </div>
+            <div class="rabais-row" data-rabais-partner="notill-growers" data-rabais-value="15">
+              <div class="rabais-partner">NoTill Growers</div>
+              <div class="rabais-apply-cell"><input type="checkbox" class="rabais-apply" aria-label="Apply"></div>
+              <div class="rabais-amount">15 %</div>
+              <div class="rabais-notes">Code promo&nbsp;: <code>NOTILLGROWERS2023</code> ou <code>ORISHA24NTG</code></div>
+            </div>
+            <div class="rabais-row" data-rabais-partner="nyfcc" data-rabais-value="10">
+              <div class="rabais-partner">NYFCC</div>
+              <div class="rabais-apply-cell"><input type="checkbox" class="rabais-apply" aria-label="Apply"></div>
+              <div class="rabais-amount">10 %</div>
+              <div class="rabais-notes">Code promo&nbsp;: <code>NYFCC-ORISHA2023</code></div>
+            </div>
+            <div class="rabais-row" data-rabais-partner="oco" data-rabais-value="10">
+              <div class="rabais-partner">OCO</div>
+              <div class="rabais-apply-cell"><input type="checkbox" class="rabais-apply" aria-label="Apply"></div>
+              <div class="rabais-amount">10 %</div>
+              <div class="rabais-notes">Mentionner qu'il est membre lors de la demande de soumission.</div>
+            </div>
+          </div>
+        </div>
       </div>
     `;
     return;
   }
   // Show conclusion script on Conclusion slide (index 7)
-  // Transition demo (alias de How we work, slide-4)
+  // Transition proposal (alias de Demo, slide-5). Sous-étape ; index = 8 après
+  // suppression de l'entrée Transition demo.
   if(cur===8){
-    body.innerHTML=flagWarningHTML+`
-      <div class="assistant-section-label">Step 2 · Transition demo</div>
-      <div class="step-zero" data-tab-set="none">
-        <div style="font-size:48px;font-weight:800;line-height:1.1;margin:8px 0 16px;">Transition demo</div>
-      </div>
-    `;
-    return;
-  }
-  // Transition proposal (alias de Demo, slide-5)
-  if(cur===9){
     body.innerHTML=flagWarningHTML+`
       <div class="assistant-section-label">Step 3 · Transition proposal</div>
       <div class="step-zero" data-tab-set="none">
         <div style="font-size:48px;font-weight:800;line-height:1.1;margin:8px 0 16px;">Transition proposal</div>
+        <div class="step-subhead">Ask for proposal consent</div>
+        <div class="step-quote">"That covers the system. I think there's a real fit here for your farm. Do you want to look at what this would actually cost for your setup?"</div>
+        <div class="step-note">Wait for a clear yes.</div>
       </div>
     `;
     return;
@@ -3276,7 +4096,10 @@ function injectStepTabs(container){
     let tabsConfig,defaultTab;
     if(tabSet==='phases'||tabSet==='how-we-help'||tabSet==='support'||tabSet==='demo'||tabSet==='proposal'){
       tabsConfig=[{id:'script',label:'Script'},{id:'battlecards',label:'Battle Cards'}];
-      if(tabSet==='proposal')tabsConfig.push({id:'quote',label:'Quote'});
+      if(tabSet==='proposal'){
+        tabsConfig.push({id:'quote',label:'Quote'});
+        tabsConfig.push({id:'rabais',label:'Rabais'});
+      }
       // Défaut : Battle Cards partout, sauf "support" (How we work) = Script
       // et "proposal" = Quote.
       defaultTab=tabSet==='support'?'script':tabSet==='proposal'?'quote':'battlecards';
@@ -3313,7 +4136,9 @@ function handleSyncMessage(msg){
   let savedDataChanged=false;
   try{
     if(msg.type==='nav'&&typeof msg.index==='number'){
+      if(typeof msg.helpIdx==='number')helpIdx=msg.helpIdx;
       if(msg.index!==cur)goTo(msg.index);
+      else if(typeof msg.helpIdx==='number'){renderHowWeHelp();renderAssistant();}
     }else if(msg.type==='pains'&&Array.isArray(msg.pains)){
       document.querySelectorAll('#discovery-list li').forEach(li=>{
         const shouldBe=msg.pains.includes(li.dataset.pain);
@@ -3322,6 +4147,7 @@ function handleSyncMessage(msg){
           savedDataChanged=true;
         }
       });
+      helpIdx=0;
       renderFeatures();
       renderHowWeHelp();
       renderAssistant();
@@ -3352,6 +4178,25 @@ function handleSyncMessage(msg){
           savedDataChanged=true;
         }
       }
+    }else if(msg.type==='farm-address-structured'&&msg.components){
+      // L'autre fenêtre (probablement la popup slide-view) a sélectionné une
+      // adresse via Google Places. On capture les composants structurés ici
+      // pour que le bouton de paiement (qui vit dans la vue assistant) accepte
+      // de soumettre. Puis on persiste via le parent React — qui ne peut être
+      // joint depuis la popup à cause du noopener.
+      const c=msg.components;
+      if(c.postal_code&&c.province&&c.country){
+        window.__verifiedAddressComponents={
+          line1:c.line1||'',
+          city:c.city||'',
+          province:c.province,
+          postal_code:c.postal_code,
+          country:c.country,
+        };
+        if(typeof window.__setAddressVerified==='function')window.__setAddressVerified(true);
+        try{ send({type:'save-farm-address-structured', components:window.__verifiedAddressComponents}); }catch(e){}
+        syncCurrencyFromCountry(c.country);
+      }
     }else if(msg.type==='intro-skipped'&&Array.isArray(msg.skipped)){
       document.querySelectorAll('#intro-roadmap .intro-step').forEach(el=>{
         const idx=parseInt(el.dataset.stepIndex);
@@ -3362,6 +4207,7 @@ function handleSyncMessage(msg){
       });
     }else if(msg.type==='quote'){
       let changed=false;
+      let discountChanged=false;
       if((msg.currency==='USD'||msg.currency==='CAD')&&msg.currency!==quoteState.currency){
         quoteState.currency=msg.currency;changed=true;
       }
@@ -3371,9 +4217,36 @@ function handleSyncMessage(msg){
       if(typeof msg.chief==='number'&&msg.chief!==quoteState.chief){
         quoteState.chief=msg.chief;changed=true;
       }
-      if(changed){
+      if(typeof msg.discountOn==='boolean'&&msg.discountOn!==quoteState.discountOn){
+        quoteState.discountOn=msg.discountOn;discountChanged=true;
+      }
+      if((msg.discountType==='percent'||msg.discountType==='amount')&&msg.discountType!==quoteState.discountType){
+        quoteState.discountType=msg.discountType;discountChanged=true;
+      }
+      if(typeof msg.discountValue==='number'&&msg.discountValue!==quoteState.discountValue){
+        quoteState.discountValue=msg.discountValue;discountChanged=true;
+      }
+      if((msg.discountDuration==='once'||msg.discountDuration==='repeating'||msg.discountDuration==='forever')&&msg.discountDuration!==quoteState.discountDuration){
+        quoteState.discountDuration=msg.discountDuration;discountChanged=true;
+      }
+      if(typeof msg.discountMonths==='number'&&msg.discountMonths!==quoteState.discountMonths){
+        quoteState.discountMonths=msg.discountMonths;discountChanged=true;
+      }
+      if(typeof msg.rabaisPartner==='string'&&msg.rabaisPartner!==quoteState.rabaisPartner){
+        quoteState.rabaisPartner=msg.rabaisPartner;discountChanged=true;
+      }
+      if(changed||discountChanged){
         applyQuoteStateToUI();
-        savedDataChanged=true;
+        // Si le rabais form est rendu dans cette fenêtre (assistant), sync DOM
+        // → reflète le state reçu d'une autre fenêtre.
+        if(discountChanged&&typeof bindQuotePayDiscount==='function'){
+          // Ne ré-attache pas les handlers s'ils ne sont pas en place ; juste sync.
+          const root=document.getElementById('quote-pay-discount');
+          if(root)bindQuotePayDiscount();
+        }
+        // Seules les modifs de currency/helper/chief sont persistées — un broadcast
+        // discount-only ne doit pas déclencher de save.
+        if(changed)savedDataChanged=true;
       }
     }else if(msg.type==='hello'){
       // A new tab asks for current state — reply with full state.
@@ -3392,7 +4265,14 @@ function handleSyncMessage(msg){
           const el=document.getElementById(id);
           if(el)broadcast({type:'text',id,value:el.value||''});
         });
-        broadcast({type:'quote',currency:quoteState.currency,helper:quoteState.helper,chief:quoteState.chief});
+        broadcast({
+          type:'quote',
+          currency:quoteState.currency,helper:quoteState.helper,chief:quoteState.chief,
+          discountOn:quoteState.discountOn,discountType:quoteState.discountType,
+          discountValue:quoteState.discountValue,discountDuration:quoteState.discountDuration,
+          discountMonths:quoteState.discountMonths,
+          rabaisPartner:quoteState.rabaisPartner,
+        });
       },0);
     }
   }finally{
@@ -3444,6 +4324,10 @@ renderAssistant();
   const erpToken=params.get('token')||'';
   const callId=params.get('call_id')||'';
   const editableFarm=params.get('editable_farm')==='1';
+  // Exposés au scope global pour que mountQuotePay/bindQuotePayAddress (qui
+  // vivent hors de cette IIFE) puissent fetcher l'adresse Ferme persistée.
+  window.__quotePayCallId=callId;
+  window.__quotePayErpToken=erpToken;
   // Pre-fill the farm name with the selected company. Editable only when the
   // call was started via "Nouvelle entreprise" (editable_farm=1).
   const farmInput=document.getElementById('qa-farm');
@@ -3548,7 +4432,14 @@ renderAssistant();
         broadcast({type:'pains',pains:checkedPains});
         const checkedFlags=[...document.querySelectorAll('#red-flags-list li.checked')].map(li=>li.dataset.flag);
         broadcast({type:'flags',flags:checkedFlags});
-        broadcast({type:'quote',currency:quoteState.currency,helper:quoteState.helper,chief:quoteState.chief});
+        broadcast({
+          type:'quote',
+          currency:quoteState.currency,helper:quoteState.helper,chief:quoteState.chief,
+          discountOn:quoteState.discountOn,discountType:quoteState.discountType,
+          discountValue:quoteState.discountValue,discountDuration:quoteState.discountDuration,
+          discountMonths:quoteState.discountMonths,
+          rabaisPartner:quoteState.rabaisPartner,
+        });
       }catch(e){}
       // Re-render derived state and clear status
       try{ renderFeatures(); renderHowWeHelp(); renderAssistant(); }catch(e){}
@@ -3564,6 +4455,12 @@ renderAssistant();
       if(QUOTE_PAY.pending&&QUOTE_PAY.pending.id===msg.id){
         const fn=QUOTE_PAY.pending.resolve;
         QUOTE_PAY.pending=null;
+        fn(msg.result||{error:'Empty response'});
+      }
+    }else if(msg.type==='create-discovery-form-result'&&typeof msg.id==='number'){
+      if(DISCOVERY_FORM.pending&&DISCOVERY_FORM.pending.id===msg.id){
+        const fn=DISCOVERY_FORM.pending.resolve;
+        DISCOVERY_FORM.pending=null;
         fn(msg.result||{error:'Empty response'});
       }
     }
@@ -3639,9 +4536,30 @@ renderAssistant();
   window.__setAddressVerified=setAddressVerified;
   if(addressInput){
     if(companyAddress)addressInput.value=companyAddress;
-    // Si l'adresse était déjà persistée, on l'assume validée (a forcément été
-    // saisie via autocomplete ou tapée manuellement par le vendeur).
-    if(companyAddress)setAddressVerified(true);
+    // Le ✓ n'est PAS affiché optimistement à partir de la string seule : il
+    // dépend de la présence de composants structurés (postal_code, province,
+    // country) qui sont indispensables au calcul de taxes Stripe. On charge
+    // l'adresse Ferme structurée depuis la DB ci-dessous ; si elle est
+    // complète, on allume le ✓. Sinon, il reste éteint tant qu'une suggestion
+    // Places n'a pas été sélectionnée.
+    if(callId&&erpToken){
+      fetch('/erp/api/qualification-calls/'+encodeURIComponent(callId)+'/farm-address?token='+encodeURIComponent(erpToken))
+        .then(r=>r.ok?r.json():null)
+        .then(j=>{
+          if(j&&j.postal_code&&j.province&&j.country){
+            window.__verifiedAddressComponents={
+              line1:j.line1||'',
+              city:j.city||'',
+              province:j.province,
+              postal_code:j.postal_code,
+              country:j.country,
+            };
+            setAddressVerified(true);
+            syncCurrencyFromCountry(j.country);
+          }
+        })
+        .catch(()=>{});
+    }
     let addressTimer=null;
     function pushAddressSave(){
       setStatus('Sauvegarde…');
@@ -3696,23 +4614,48 @@ renderAssistant();
       if(!p)return;
       closeDropdown();
       let addr=p.description||'';
+      let components=null;
       try{
         const r=await fetch('/erp/api/places/details?place_id='+encodeURIComponent(p.place_id)+'&session_token='+encodeURIComponent(sessionToken||'')+'&token='+encodeURIComponent(erpToken));
         if(r.ok){
           const j=await r.json();
           if(j&&j.formatted_address)addr=j.formatted_address;
+          if(j&&j.components)components=j.components;
         }
       }catch(e){console.error('places details fetch',e);}
       addressInput.value=addr;
       setAddressVerified(true);
+      // Mémorise les composants structurés pour le check au moment du paiement
+      // (postal_code + province + country sont requis par computeCanadaTaxes
+      // et par Stripe customer.address). Si l'user retape l'adresse à la main,
+      // l'event 'input' réinitialise verifiedAddressComponents → le paiement
+      // refusera tant qu'une nouvelle suggestion n'aura pas été sélectionnée.
+      window.__verifiedAddressComponents=components;
+      if(components&&components.country)syncCurrencyFromCountry(components.country);
       if(addressTimer){clearTimeout(addressTimer);addressTimer=null;}
       pushAddressSave();
+      // Persistance des composants structurés dans la table `adresses` (Ferme).
+      // Note : si on est dans la popup slide-view (ouverte avec noopener), le
+      // postMessage ne remonte pas jusqu'à React. C'est le broadcast ci-dessous
+      // qui propage à l'iframe assistant qui, lui, peut envoyer à React.
+      if(components){
+        send({type:'save-farm-address-structured', components});
+      }
+      // Ordre important : broadcaster d'abord la string (le handler text qa-address
+      // côté receveur reset verified=false), PUIS les composants structurés (qui
+      // remettent verified=true et populent __verifiedAddressComponents).
       try{ broadcast({type:'text', id:'qa-address', value: addressInput.value}); }catch(e){}
+      if(components){
+        try{ broadcast({type:'farm-address-structured', components}); }catch(e){}
+      }
       // Reset session token après chaque sélection — nouveau cycle de billing.
       sessionToken=null;
     }
     addressInput.addEventListener('input', ()=>{
       setAddressVerified(false);
+      // Toute frappe manuelle invalide les composants Place — l'adresse n'est
+      // plus considérée comme structurellement valide pour le paiement Stripe.
+      window.__verifiedAddressComponents=null;
       if(addressTimer)clearTimeout(addressTimer);
       addressTimer=setTimeout(pushAddressSave, 600);
       setStatus('…');

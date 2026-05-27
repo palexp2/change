@@ -2,6 +2,7 @@ import express from 'express'
 import cors from 'cors'
 import helmet from 'helmet'
 import path from 'path'
+import crypto from 'crypto'
 import { fileURLToPath } from 'url'
 import dotenv from 'dotenv'
 
@@ -9,6 +10,8 @@ import dotenv from 'dotenv'
 import './config/secrets.js'
 
 import { initSchema, seedSellableProducts } from './db/schema.js'
+import { initChangeLog } from './db/changeLog.js'
+import bootstrapRouter from './routes/bootstrap.js'
 import { seedSystemAutomations, logSystemRun, isSystemAutomationActive } from './services/systemAutomations.js'
 import { runPurge } from './services/purge.js'
 import authRouter from './routes/auth.js'
@@ -23,6 +26,7 @@ import ordersRouter from './routes/orders.js'
 import ticketsRouter from './routes/tickets.js'
 import dashboardRouter from './routes/dashboard.js'
 import adminRouter from './routes/admin.js'
+import telemetryRouter from './routes/telemetry.js'
 import undoRouter from './routes/undo.js'
 import interactionsRouter from './routes/interactions.js'
 import callsRouter, { rematchCalls } from './routes/calls.js'
@@ -57,6 +61,7 @@ import stripeWebhooksRouter from './routes/stripe-webhooks.js'
 import stripeInvoicesRouter from './routes/stripe-invoices.js'
 import customerPayRouter from './routes/customer-pay.js'
 import customerPostPaymentRouter from './routes/customer-post-payment.js'
+import discoveryFormsRouter from './routes/discovery-forms.js'
 import emailTrackingRouter from './routes/email-tracking.js'
 import stripeQueueRouter from './routes/stripe-queue.js'
 import stripePayoutsRouter from './routes/stripe-payouts.js'
@@ -86,6 +91,12 @@ dotenv.config()
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 const PORT = process.env.PORT || 3004
+
+// Identifiant unique du process — permet au client de distinguer un blip réseau
+// d'un vrai redémarrage du serveur (pm2 restart, déploiement). Exposé via le
+// header X-Boot-Id sur chaque réponse API + l'endpoint /api/health.
+const BOOT_ID = crypto.randomUUID()
+const STARTED_AT = new Date().toISOString()
 
 app.disable('x-powered-by')
 app.set('trust proxy', 1) // behind nginx — needed for correct req.ip
@@ -139,6 +150,22 @@ app.use('/api/stripe-webhooks', express.raw({ type: 'application/json' }), (req,
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
 
+// Expose BOOT_ID sur toutes les réponses /api/* pour que le client puisse
+// détecter un redémarrage du serveur (changement d'UUID entre deux requêtes).
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/')) {
+    res.setHeader('X-Boot-Id', BOOT_ID)
+    res.setHeader('Access-Control-Expose-Headers', 'X-Boot-Id')
+  }
+  next()
+})
+
+// Healthcheck léger — pas d'auth, pas de DB. Sert au ServerOfflineOverlay côté
+// client pour pinger pendant un offline et comparer le boot_id.
+app.get('/api/health', (req, res) => {
+  res.json({ boot_id: BOOT_ID, started_at: STARTED_AT, uptime_s: Math.round(process.uptime()) })
+})
+
 // Serve call recordings
 app.use('/api/recordings', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls')))
 // Serve bons de livraison
@@ -154,6 +181,7 @@ import { ensureNativeFieldDefs } from './services/airtableAutoSync.js'
 import { regenerateAllViews } from './services/customFieldsView.js'
 
 initSchema()
+initChangeLog()
 seedSellableProducts()
 seedSystemAutomations()
 runPurge()
@@ -195,6 +223,7 @@ ensureNativeFieldDefs([
 
 // API Routes
 app.use('/api/auth', authRouter)
+app.use('/api/bootstrap', bootstrapRouter)
 app.use('/api/companies', companiesRouter)
 app.use('/api/contacts', contactsRouter)
 app.use('/api/projects', projectsRouter)
@@ -206,6 +235,7 @@ app.use('/api/orders', ordersRouter)
 app.use('/api/tickets', ticketsRouter)
 app.use('/api/dashboard', dashboardRouter)
 app.use('/api/admin', adminRouter)
+app.use('/api/telemetry', telemetryRouter)
 app.use('/api/undo', undoRouter)
 app.use('/api/interactions', interactionsRouter)
 app.use('/api/calls', callsRouter)
@@ -233,6 +263,7 @@ app.use('/api/stripe-payouts', stripePayoutsRouter)
 app.use('/api/stripe-invoice-items', stripeInvoiceItemsRouter)
 app.use('/api/email-tracking', emailTrackingRouter)
 app.use('/api/customer/post-payment', customerPostPaymentRouter)
+app.use('/api/discovery-forms', discoveryFormsRouter)
 // Permanent customer-facing payment link — must be registered before the SPA
 // fallback below so /erp/pay/:id is handled by the redirect, not the React app.
 app.use('/erp/pay', customerPayRouter)

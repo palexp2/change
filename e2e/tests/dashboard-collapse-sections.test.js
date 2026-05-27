@@ -22,6 +22,10 @@ describe('Dashboard — sections collapsibles', () => {
 
   after(async () => { await browser?.close() })
 
+  // Quand la section est dépliée, la carte a 2 enfants directs (header + body).
+  // Quand elle est repliée, seul le header reste — un seul enfant direct.
+  const directChildCount = async (card) => card.evaluate(el => el.children.length)
+
   test('un clic sur le chevron replie la section, un second la déplie', async () => {
     // Reset l'état persisté pour partir d'une page propre
     await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
@@ -30,7 +34,7 @@ describe('Dashboard — sections collapsibles', () => {
     })
     await page.reload({ waitUntil: 'networkidle' })
 
-    const sectionId = 'section_stripe_subscriptions'
+    const sectionId = 'section_subscription_events'
     const card = page.locator(`[data-section-id="${sectionId}"]`)
     await card.waitFor({ state: 'visible', timeout: 8000 })
 
@@ -38,30 +42,28 @@ describe('Dashboard — sections collapsibles', () => {
     const title = card.locator('h2')
     assert.ok(await title.isVisible(), 'Le titre devrait être visible avant repli')
 
-    // Le contenu (graphique) doit être visible avant le repli
-    const chartBefore = card.locator('[data-testid^="stripe-revenue-month-"]').first()
-    await chartBefore.waitFor({ state: 'visible', timeout: 5000 })
+    // Le body doit être présent avant repli (2 enfants directs : header + body)
+    assert.equal(await directChildCount(card), 2, 'Le body devrait être présent avant repli')
 
     // Clique sur le chevron pour replier
     const toggle = page.locator(`[data-testid="section-toggle-${sectionId}"]`)
     await toggle.click()
 
-    // Le titre reste, le contenu disparaît
+    // Le titre reste, le body disparaît (1 enfant direct : seulement le header)
     assert.ok(await title.isVisible(), 'Le titre devrait rester visible une fois replié')
-    const chartCount = await card.locator('[data-testid^="stripe-revenue-month-"]').count()
-    assert.equal(chartCount, 0, `Le contenu devrait être caché après repli, ${chartCount} mois trouvés`)
+    assert.equal(await directChildCount(card), 1, 'Le body devrait être caché après repli')
 
     // aria-expanded doit refléter l'état
     assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'aria-expanded devrait être false une fois replié')
 
     // Clique à nouveau pour déplier
     await toggle.click()
-    await card.locator('[data-testid^="stripe-revenue-month-"]').first().waitFor({ state: 'visible', timeout: 5000 })
+    assert.equal(await directChildCount(card), 2, 'Le body devrait revenir au déplie')
     assert.equal(await toggle.getAttribute('aria-expanded'), 'true', 'aria-expanded devrait être true une fois déplié')
   })
 
   test('l\'état replié persiste après rechargement', async () => {
-    const sectionId = 'section_stripe_sales'
+    const sectionId = 'section_profitability'
     await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
     const card = page.locator(`[data-section-id="${sectionId}"]`)
     await card.waitFor({ state: 'visible', timeout: 8000 })
@@ -80,10 +82,9 @@ describe('Dashboard — sections collapsibles', () => {
       'L\'état replié devrait persister après rechargement'
     )
 
-    // Le contenu (graphique) doit rester caché
+    // Le body doit rester caché après reload
     const cardAfter = page.locator(`[data-section-id="${sectionId}"]`)
-    const chartCount = await cardAfter.locator('[data-testid^="stripe-revenue-month-"]').count()
-    assert.equal(chartCount, 0, 'Le contenu devrait rester caché après reload')
+    assert.equal(await directChildCount(cardAfter), 1, 'Le body devrait rester caché après reload')
 
     // Cleanup : remet l'état déplié pour ne pas perturber les autres tests
     await toggleAfter.click()

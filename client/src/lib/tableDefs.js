@@ -33,7 +33,9 @@ export const TABLE_LABELS = {
   users:          'Utilisateurs',
   bom_items:      'BOM',
   qualification_calls: 'Appels de qualification',
+  discovery_forms: 'Formulaires de découverte',
   public_files: 'Fichiers publics',
+  sale_receipts: 'Extraction de données',
 }
 
 // Chaque entrée : { id, label, field, type?, options?, sortable?, filterable?, groupable?, defaultVisible? }
@@ -199,6 +201,7 @@ export const TABLE_COLUMN_META = {
     { id: 'refund_amount',         label: 'Remboursé',         field: 'refund_amount',         type: 'number', defaultVisible: false },
     { id: 'is_sent',               label: 'Envoyée',           field: 'is_sent',               type: 'boolean', defaultVisible: false },
     { id: 'deferred_revenue_state',label: 'Revenu reçu d\'avance', field: 'deferred_revenue_state', type: 'single_select', options: ['Constaté', 'En attente', '—'], defaultVisible: false },
+    { id: 'notes',                 label: 'Notes',             field: 'notes' },
   ],
 
   abonnements: [
@@ -444,6 +447,17 @@ export const TABLE_COLUMN_META = {
     { id: 'created_at',        label: 'Créé le',       field: 'created_at',        type: 'date', defaultVisible: false },
   ],
 
+  discovery_forms: [
+    { id: 'company_name',         label: 'Entreprise',       field: 'company_name' },
+    { id: 'status',               label: 'Statut',           field: 'status', type: 'single_select', options: ['in_progress', 'submitted'] },
+    { id: 'num_greenhouses',      label: 'Nb serres',        field: 'num_greenhouses', type: 'number' },
+    { id: 'chief_grower_count',   label: 'Chief',            field: 'chief_grower_count', type: 'number' },
+    { id: 'helper_count',         label: 'Helper',           field: 'helper_count', type: 'number' },
+    { id: 'submitted_at',         label: 'Soumis le',        field: 'submitted_at', type: 'date' },
+    { id: 'created_at',           label: 'Créé le',          field: 'created_at', type: 'date' },
+    { id: 'public_link',          label: 'Lien public',      field: 'public_token', sortable: false, filterable: false, groupable: false },
+  ],
+
   public_files: [
     { id: 'original_name',    label: 'Nom du fichier',  field: 'original_name' },
     { id: 'folder',           label: 'Dossier',         field: 'folder' },
@@ -454,5 +468,18 @@ export const TABLE_COLUMN_META = {
     { id: 'uploaded_by_name', label: 'Téléversé par',   field: 'uploaded_by_name', defaultVisible: false },
     { id: 'created_at',       label: 'Téléversé le',    field: 'created_at', type: 'date' },
     { id: 'link',             label: 'Lien public',     field: 'token', sortable: false, filterable: false, groupable: false },
+  ],
+
+  sale_receipts: [
+    { id: 'company',         label: 'Fournisseur',    field: 'company' },
+    { id: 'receipt_date',    label: 'Date',           field: 'receipt_date', type: 'date' },
+    { id: 'receipt_number',  label: 'N° de reçu',     field: 'receipt_number' },
+    { id: 'total',           label: 'Total',          field: 'total', type: 'number' },
+    { id: 'currency',        label: 'Devise',         field: 'currency', type: 'single_select', options: ['CAD', 'USD', 'EUR'], defaultVisible: false },
+    { id: 'payment_method',  label: 'Mode paiement',  field: 'payment_method', defaultVisible: false },
+    { id: 'status',          label: 'Statut',         field: 'status', type: 'single_select', options: ['pending', 'processing', 'done', 'error'] },
+    { id: 'quickbooks_id',   label: 'QuickBooks',     field: 'quickbooks_id' },
+    { id: 'original_name',   label: 'Fichier',        field: 'original_name', defaultVisible: false },
+    { id: 'created_at',      label: 'Téléversé le',   field: 'created_at', type: 'date', defaultVisible: false },
   ],
 }

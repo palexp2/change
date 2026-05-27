@@ -25,20 +25,17 @@ import { GlobalSearch as CRMSearch } from './GlobalSearch.jsx'
 // re-hitting the server. Each entry mirrors the exact args the target page
 // passes to its first api.*.list(...) call — ordering matters for the
 // cache key (URLSearchParams preserves insertion order).
+// Note : les pages qui lisent depuis le cache global (`useTable` hydraté par
+// /api/bootstrap) ne sont pas listées ici — leur prefetch serait gaspillé.
+// Pages cachées actuellement : /contacts, /products, /orders, /tickets,
+// /tasks, /retours, /purchases, /items-vendus.
 const NAV_PREFETCH = {
   '/interactions':  () => api.interactions.list({ limit: 'all', offset: 0 }),
-  '/contacts':      () => api.contacts.list({ limit: 'all', page: 1 }),
   '/companies':     () => api.companies.list({ limit: 'all', page: 1 }),
-  '/orders':        () => api.orders.list({ limit: 'all', page: 1 }),
   '/factures':      () => api.factures.list({ limit: 'all', page: 1 }),
-  '/items-vendus':  () => api.stripeInvoiceItems.list({ limit: 'all', page: 1 }),
-  '/retours':       () => api.retours.list({ limit: 'all', page: 1 }),
-  '/products':      () => api.products.list({ limit: 'all', page: 1, active: true }),
-  '/purchases':     () => api.purchases.list({ limit: 'all', page: 1 }),
-  '/tickets':       () => api.tickets.list({ limit: 'all', page: 1 }),
-  '/tasks':         () => api.tasks.list({ limit: 'all' }),
   '/abonnements':   () => api.abonnements.list({ limit: 'all', page: 1 }),
   '/abonnements/mouvements': () => api.abonnements.events({ limit: 'all', page: 1 }),
+  '/discovery-forms': () => api.discoveryForms.list({ limit: 'all' }),
 }
 
 // Short delay so sweeping the mouse across the sidebar doesn't trigger a
@@ -74,6 +71,7 @@ const defaultNavItems = [
     { to: '/interactions', icon: MessageSquare, label: 'Interactions' },
     { to: '/qualification-call', icon: PhoneCall, label: 'Appels de qualification' },
     { to: '/relance-qualification', icon: Mail, label: 'Relances qualification' },
+    { to: '/discovery-forms', icon: FileText, label: 'Formulaires de découverte' },
   ]},
   { group: 'Envois', icon: Truck, items: [
     { to: '/orders',   icon: ShoppingCart, label: 'Commandes' },

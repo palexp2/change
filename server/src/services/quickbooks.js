@@ -452,32 +452,85 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
   }
   if (type === 'bill' && !vendorId) throw new Error('Fournisseur requis pour une facture à payer')
 
-  const items = JSON.parse(rec.items || '[]')
+  // Résoudre la devise de la transaction. QB exige qu'un Bill corresponde à la
+  // devise du compte AP du vendor — sinon erreur 6000. On lit la CurrencyRef du
+  // vendor si dispo, sinon on retombe sur la devise extraite du reçu.
+  let txnCurrency = (rec.currency || 'CAD').toUpperCase()
+  if (vendorId) {
+    try {
+      const vRes = await qbGet(`/vendor/${vendorId}`)
+      const vendorCurrency = vRes?.Vendor?.CurrencyRef?.value
+      if (vendorCurrency) txnCurrency = vendorCurrency.toUpperCase()
+    } catch {}
+  }
 
-  // Construire les lignes à partir des articles extraits
+  const items = JSON.parse(rec.items || '[]')
+  const totalAmt = rec.total || 0
+  const subtotalAmt = rec.subtotal || 0
+  const tpsAmt = rec.tps || 0
+  const tvqAmt = rec.tvq || 0
+  const totalTax = tpsAmt + tvqAmt
+
+  // Résoudre le code de taxe à appliquer aux lignes (HT) selon la combinaison TPS/TVQ.
+  // Sans ça, QB enregistre la dépense sans ventiler la taxe — les rapports TPS/TVQ ne la
+  // récupèrent pas et la balance subtotal+taxes vs total se perd.
+  let lineTaxCodeId = null
+  if (tpsAmt > 0 && tvqAmt > 0) lineTaxCodeId = await resolveTaxCodeByName('TPS/TVQ QC - 9,975')
+  else if (tpsAmt > 0) lineTaxCodeId = await resolveTaxCodeByName('TPS')
+  else if (tvqAmt > 0) lineTaxCodeId = await resolveTaxCodeByName('TVQ QC - 9,975')
+
+  const lineDetail = { AccountRef: { value: expenseAccountId } }
+  if (lineTaxCodeId) lineDetail.TaxCodeRef = { value: lineTaxCodeId }
+
+  // Construire les lignes HT à partir des articles extraits
   let lines = []
   if (items.length > 0) {
     lines = items.map(item => ({
       Amount: item.total || (item.unit_price * item.quantity) || 0,
       DetailType: 'AccountBasedExpenseLineDetail',
-      AccountBasedExpenseLineDetail: { AccountRef: { value: expenseAccountId } },
+      AccountBasedExpenseLineDetail: lineDetail,
       Description: item.description || '',
     })).filter(l => l.Amount > 0)
   }
 
-  // Si pas d'articles ou somme ≠ total → une seule ligne avec le total
+  // Si pas d'articles ou somme ≠ HT → une seule ligne au HT (subtotal si dispo, sinon total).
+  // On préfère subtotal pour que QB applique correctement la taxe via TaxCodeRef ;
+  // si subtotal absent, on retombe sur total (sans taxe).
   const linesSum = lines.reduce((s, l) => s + l.Amount, 0)
-  const totalAmt = rec.total || 0
-  if (lines.length === 0 || Math.abs(linesSum - totalAmt) > 0.01) {
+  const targetHt = subtotalAmt > 0 ? subtotalAmt : totalAmt
+  if (lines.length === 0 || Math.abs(linesSum - targetHt) > 0.01) {
     lines = [{
-      Amount: totalAmt,
+      Amount: targetHt,
       DetailType: 'AccountBasedExpenseLineDetail',
-      AccountBasedExpenseLineDetail: { AccountRef: { value: expenseAccountId } },
+      AccountBasedExpenseLineDetail: lineDetail,
       Description: rec.company || rec.original_name || 'Reçu',
     }]
   }
 
   const txnDate = rec.receipt_date || new Date().toISOString().slice(0, 10)
+
+  // TxnTaxDetail : QB calcule normalement la taxe depuis TaxCodeRef + GlobalTaxCalculation,
+  // mais on fournit TotalTax pour figer le montant exact extrait du reçu (évite les
+  // arrondis qui décaleraient bill_total de quelques cents par rapport au reçu papier).
+  const taxDetail = (lineTaxCodeId && totalTax > 0)
+    ? { TxnTaxDetail: { TxnTaxCodeRef: { value: lineTaxCodeId }, TotalTax: totalTax }, GlobalTaxCalculation: 'TaxExcluded' }
+    : {}
+
+  // CurrencyRef obligatoire dès que la devise diffère de la home currency. QB
+  // rejette sinon un Bill avec un vendor non-CAD (« devise de l'opération doit
+  // correspondre à celle des comptes fournisseurs »).
+  // QB exige CurrencyRef + ExchangeRate pour toute opération en devise étrangère
+  // (code d'erreur 2410 sinon). On utilise le taux Banque du Canada à la date du
+  // reçu — même mécanisme que les payouts Stripe USD.
+  let currencyFields = {}
+  if (txnCurrency && txnCurrency !== 'CAD') {
+    let rate = 1
+    if (txnCurrency === 'USD') {
+      rate = await getUsdCadRate(txnDate)
+      if (!rate) throw new Error(`Taux USD→CAD indisponible pour ${txnDate} (Banque du Canada). Réessayer plus tard.`)
+    }
+    currencyFields = { CurrencyRef: { value: txnCurrency }, ExchangeRate: rate }
+  }
 
   let qbId
   if (type === 'bill') {
@@ -485,6 +538,8 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
       VendorRef: { value: vendorId },
       TxnDate: txnDate,
       Line: lines,
+      ...currencyFields,
+      ...taxDetail,
     }
     if (params.dueDate) bill.DueDate = params.dueDate
     if (rec.receipt_number) bill.DocNumber = rec.receipt_number
@@ -497,6 +552,8 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
       TxnDate: txnDate,
       TotalAmt: totalAmt,
       Line: lines,
+      ...currencyFields,
+      ...taxDetail,
     }
     if (vendorId) purchase.EntityRef = { value: vendorId, type: 'Vendor' }
     if (rec.receipt_number) purchase.DocNumber = rec.receipt_number
@@ -577,7 +634,7 @@ const QB_STRIPE_FEE_TAX_CODES = {
 // Sans ça, tout finit en taxGst, pickFeeTaxCode choisit "TPS seul", QB calcule 5 % au
 // lieu de 15 %, et la ligne "Ajustement d'arrondi taxes" finit par éponger plusieurs
 // dollars de taxes manquantes au lieu des centimes d'arrondi normaux.
-function splitFeeFromRaw(bt) {
+export function splitFeeFromRaw(bt) {
   let raw
   try { raw = JSON.parse(bt.raw || '{}') } catch { raw = {} }
   const details = Array.isArray(raw.fee_details) ? raw.fee_details : []
@@ -1097,6 +1154,13 @@ export async function buildDepositFromPayout(payoutStripeId) {
   // Factures à marquer en revenu reçu d'avance après push réussi (= constat à l'expédition).
   // Forme : { factureId, document_number, amount_native, currency }
   const deferredFactures = []
+  // Factures dont la vente est constatée DIRECTEMENT par la ligne 40000 du Deposit
+  // (commande déjà expédiée + soldée au moment du push → ni AR, ni deferred, ni
+  // subscription). Sans ce marquage, reconcileFactureRevenueRecognition lancée
+  // après le push posterait une JE Dr AR / Cr 40000 en doublon (cas REUJS7NQ-0001
+  // / 577EF696-0004 / JE 17371 + 17372, payout po_1TX9vF, mai 2026).
+  // Forme : { factureId, document_number }
+  const directlyRecognizedFactures = []
 
   for (const bt of bts) {
     // Skip the payout itself — it nets against itself in our math
@@ -1241,6 +1305,17 @@ export async function buildDepositFromPayout(payoutStripeId) {
         })
       }
 
+      // Mémoriser les factures dont la vente est constatée DIRECTEMENT par cette
+      // ligne (Cr 40000 — pas isAR, pas isDeferred, pas subscription, pas refund).
+      // Évite que reconcileFactureRevenueRecognition vienne poster une JE Dr AR /
+      // Cr 40000 en doublon après le push.
+      if (!isRefund && !isAR && !isDeferred && factureKind === 'order' && factureForBt) {
+        directlyRecognizedFactures.push({
+          factureId: factureForBt.id,
+          document_number: factureForBt.document_number,
+        })
+      }
+
       // Frais Stripe associés à la charge (traitement carte) : accumulés dans un bucket
       // unique pour la catégorie — une seule ligne émise à la fin (toujours dans le Deposit).
       const feeTotal = processing + taxGst + taxQst
@@ -1269,6 +1344,29 @@ export async function buildDepositFromPayout(payoutStripeId) {
       })
       feesTotal += bt.amount
       disputeTotal += bt.amount
+
+      // Dispute fee Stripe : raw.fee_details = [{type:'stripe_fee', description:'Dispute fee', amount:1500}].
+      // splitFeeFromRaw l'extrait dans `processing`. Sans bucket, le frais finit dans l'ajustement
+      // d'arrondi de fin de push (cas po_1Tb8r3EO122sMsbJb2oDwaJt → Deposit 17387, mai 2026 : 15 USD
+      // de dispute fee mislabellisé "Ajustement d'arrondi taxes").
+      if (processing !== 0 || taxGst !== 0 || taxQst !== 0) {
+        bucketFee('other', -processing, taxGst, taxQst)
+        feesTotal -= processing
+        feesByCategory.other -= processing
+      }
+    } else if (bt.type === 'refund_failure') {
+      // Stripe re-crédite le montant d'un refund qui a échoué côté banque destinataire.
+      // L'effet sur le solde Stripe est l'inverse exact du refund original (qui reste, lui,
+      // en `refund` BT négatif). On émet une ligne miroir au montant positif, groupée avec
+      // les refunds pour rester lisible dans le Deposit QB.
+      lines.push({
+        Amount: bt.amount,
+        DetailType: 'DepositLineDetail',
+        DepositLineDetail: { AccountRef: { value: accounts.fees } },
+        Description: `Échec remboursement ${bt.source_id} — recrédité`,
+        _group: 'refund',
+      })
+      refundTotal += bt.amount
     } else if (bt.type === 'stripe_fee' || bt.type === 'application_fee') {
       // stripe_fee: bt.amount est le montant HT (sans taxe), bt.fee est la taxe prélevée.
       // En mode TaxExcluded, QB ajoutera la taxe via TaxCodeRef au niveau du bucket agrégé.
@@ -1411,7 +1509,7 @@ export async function buildDepositFromPayout(payoutStripeId) {
     return id ? (accountsCache.byId.get(String(id)) || null) : null
   })
 
-  return { deposit, summary, warnings, exchangeRate, deferredFactures, lineAccounts, lineRefs }
+  return { deposit, summary, warnings, exchangeRate, deferredFactures, directlyRecognizedFactures, lineAccounts, lineRefs }
 }
 
 export async function pushDepositFromPayout(payoutStripeId) {
@@ -1419,7 +1517,7 @@ export async function pushDepositFromPayout(payoutStripeId) {
   if (!payout) throw new Error(`Payout introuvable: ${payoutStripeId}`)
   if (payout.qb_deposit_id) throw new Error(`Déjà envoyé à QB (Deposit ID: ${payout.qb_deposit_id})`)
 
-  const { deposit, summary, warnings, exchangeRate, deferredFactures } = await buildDepositFromPayout(payoutStripeId)
+  const { deposit, summary, warnings, exchangeRate, deferredFactures, directlyRecognizedFactures } = await buildDepositFromPayout(payoutStripeId)
   const result = await qbPost('/deposit', deposit)
   let created = result.Deposit
   const qbId = created.Id
@@ -1506,6 +1604,23 @@ export async function pushDepositFromPayout(payoutStripeId) {
     const cad = Math.round(f.amount_native * (exchangeRate || 1) * 100) / 100
     stmt.run(f.amount_native, cad, f.currency, qbRef, f.factureId)
   }
+
+  // Marque les factures dont la vente vient d'être constatée par la ligne 40000 du
+  // Deposit (cas charge Stripe sur commande déjà expédiée + soldée au moment du push).
+  // revenue_recognized_je_id reste NULL puisqu'il n'y a pas de JournalEntry séparée —
+  // le lien comptable côté UI passera par stripe_balance_transactions → stripe_payouts.qb_deposit_id.
+  // Idempotent : ne réécrit pas si revenue_recognized_at est déjà posé (cas où une JE
+  // a été postée manuellement avant le push, scénario rare).
+  const stmtDirect = db.prepare(`
+    UPDATE factures
+    SET revenue_recognized_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = ? AND revenue_recognized_at IS NULL
+  `)
+  for (const f of directlyRecognizedFactures) {
+    stmtDirect.run(f.factureId)
+  }
+
   return { qb_deposit_id: qbId, summary, warnings }
 }
 
@@ -2097,6 +2212,37 @@ export function factureHasPendingStripeDeposit(factureId) {
   return false
 }
 
+// Renvoie true si une écriture QB existe déjà côté ERP témoignant de l'encaissement
+// de cette facture. Couvre :
+//   - une row payments direction='in' avec qb_deposit_id / qb_payment_id / qb_journal_entry_id
+//     (le payment a déclenché un Deposit, SalesReceipt ou JE dans QB)
+//   - une balance_transaction Stripe liée à l'invoice (poussée ou en attente — le
+//     second cas est aussi capturé par factureHasPendingStripeDeposit, on garde
+//     les deux pour que cette fonction reste autonome)
+// Sert de garde dans reconcileFactureRevenueRecognition : si la facture est marquée
+// payée mais qu'aucune trace QB d'encaissement n'existe (typiquement : facture
+// marquée payée out-of-band dans Stripe sans charge ni payment ERP), poser une JE
+// Dr AR / Cr 40000 ouvrirait un AR qui ne serait jamais soldé.
+export function factureHasQbPaymentEntry(factureId) {
+  const f = db.prepare('SELECT invoice_id FROM factures WHERE id = ?').get(factureId)
+  if (!f) return false
+  const pay = db.prepare(`
+    SELECT 1 AS ok FROM payments
+    WHERE facture_id = ? AND direction = 'in'
+      AND (qb_deposit_id IS NOT NULL OR qb_payment_id IS NOT NULL OR qb_journal_entry_id IS NOT NULL)
+    LIMIT 1
+  `).get(factureId)
+  if (pay) return true
+  if (f.invoice_id) {
+    const bt = db.prepare(`
+      SELECT 1 AS ok FROM stripe_balance_transactions
+      WHERE stripe_invoice_id = ? LIMIT 1
+    `).get(f.invoice_id)
+    if (bt) return true
+  }
+  return false
+}
+
 // Réconcilie l'état "constat de vente" d'une facture. Idempotent et safe :
 // ne throw jamais, retourne un résultat structuré pour logging. Appelée depuis
 // chaque mutation qui peut faire basculer la condition « produits envoyé »
@@ -2111,12 +2257,17 @@ export function factureHasPendingStripeDeposit(factureId) {
 //   - skip 'not_yet_shipped'     : aucun shipment lié à la commande/projet
 //   - skip 'awaiting_deposit'    : payment Stripe en attente de push QB deposit
 //                                  → la ligne du futur deposit sera 40000 direct
+//   - skip 'awaiting_payment_qb_entry' : facture marquée payée (balance_due=0)
+//                                  mais aucune écriture QB n'enregistre l'encaissement
+//                                  (typiquement paid out-of-band Stripe sans
+//                                  payment ERP) — poser Dr AR / Cr 40000 ouvrirait
+//                                  un AR fantôme que rien ne soldera
 //   - recognized                 : JE Dr 23900|AR / Cr 40000 posée
 //   - error                      : JE non posée (QB down, montant manquant, etc.)
 export async function reconcileFactureRevenueRecognition(factureId) {
   const f = db.prepare(`
     SELECT id, document_number, document_date, status, kind, revenue_recognized_at, deferred_revenue_at,
-           order_id, project_id
+           order_id, project_id, balance_due
     FROM factures WHERE id = ?
   `).get(factureId)
   if (!f) return { status: 'skip', reason: 'not_found' }
@@ -2144,6 +2295,16 @@ export async function reconcileFactureRevenueRecognition(factureId) {
   // le deposit a déjà été poussé en 23900 et on doit le libérer via JE).
   if (!f.deferred_revenue_at && factureHasPendingStripeDeposit(f.id)) {
     return { status: 'skip', facture_id: f.id, document_number: f.document_number, reason: 'awaiting_deposit' }
+  }
+  // Si la facture est marquée payée (balance_due = 0) mais qu'aucune écriture QB
+  // n'enregistre l'encaissement (ni Deposit/SalesReceipt/JE via payments, ni
+  // balance_transaction Stripe), on n'ouvre PAS d'AR — il ne serait jamais soldé.
+  // Cas typique : facture marquée payée out-of-band dans Stripe (sans charge donc
+  // sans payout à venir) avant qu'un payment ERP n'ait été saisi. Quand l'utilisateur
+  // créera le payment via POST /api/payments, postPaymentDeposit posera Cr 23900
+  // (deferred), puis le prochain trigger de reconcile fera Dr 23900 / Cr 40000.
+  if ((f.balance_due || 0) <= 0 && !f.deferred_revenue_at && !factureHasQbPaymentEntry(f.id)) {
+    return { status: 'skip', facture_id: f.id, document_number: f.document_number, reason: 'awaiting_payment_qb_entry' }
   }
 
   try {

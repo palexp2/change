@@ -8,9 +8,13 @@ const router = Router()
 const ALLOWED_TABLES = new Set([
   'companies', 'contacts', 'projects', 'products',
   'orders', 'tickets', 'purchases', 'serial_numbers', 'interactions', 'shipments',
-  'abonnements', 'retours', 'factures', 'assemblages', 'achats_fournisseurs', 'tasks',
+  'abonnements', 'abonnement_events', 'retours', 'factures', 'assemblages',
+  'achats_fournisseurs', 'tasks',
   'employees', 'paies', 'paie_items', 'bom_items',
-  'company_serials',
+  'company_serials', 'sale_receipts',
+  'automations', 'catalog', 'discovery_forms', 'journal_entries',
+  'public_files', 'qualification_calls', 'soumissions', 'stock_movements',
+  'stripe_invoice_items', 'stripe_payouts', 'users',
 ])
 
 function validateTable(req, res) {

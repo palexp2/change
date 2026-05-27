@@ -209,14 +209,28 @@ export default function Pipeline() {
     }
   }
 
+  // Chargement en deux temps : (1) lite=1 → peinture rapide avec les colonnes
+  // visibles par défaut, sans sous-requêtes orders/vendeur_label ; (2) refetch
+  // silencieux de la version complète pour remplir orders, vendeur_label, notes
+  // et autres colonnes masquées. Le second appel ne bascule pas `loading` à true
+  // pour éviter un flash.
   const load = useCallback(async () => {
     await loadProgressive(
-      (page, limit) => api.projects.list({ limit, page }),
+      (page, limit) => api.projects.list({ limit, page, lite: 1 }),
       setProjects, setLoading
     )
   }, [])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    let cancelled = false
+    load().then(() => {
+      if (cancelled) return
+      api.projects.list({ limit: 'all', page: 1 })
+        .then(res => { if (!cancelled) setProjects(res?.data || []) })
+        .catch(() => {})
+    })
+    return () => { cancelled = true }
+  }, [load])
   useEffect(() => {
     api.companies.lookup().then(setCompanies).catch(() => {})
   }, [])
@@ -237,13 +251,6 @@ export default function Pipeline() {
       return d.startsWith(monthFilter)
     })
   }, [projects, monthFilter, createdMonthFilter])
-
-  // Stats toujours calculées sur tous les projets
-  const open   = useMemo(() => projects.filter(p => p.status === 'Ouvert'), [projects])
-  const won    = useMemo(() => projects.filter(p => p.status === 'Gagné'), [projects])
-  const openValue    = useMemo(() => open.reduce((s, p) => s + (p.value_cad || 0), 0), [open])
-  const weightedValue = useMemo(() => open.reduce((s, p) => s + (p.value_cad || 0) * (p.probability || 0) / 100, 0), [open])
-  const wonValue = useMemo(() => won.reduce((s, p) => s + (p.value_cad || 0), 0), [won])
 
   const COLUMNS = useMemo(() => TABLE_COLUMN_META.projects.map(meta => ({
     ...meta,
@@ -339,25 +346,6 @@ export default function Pipeline() {
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouveau projet
             </button>
-          </div>
-        </div>
-
-        {/* Barre de stats */}
-        <div className="grid grid-cols-3 gap-4 mb-6">
-          <div className="card p-4">
-            <div className="text-xs text-slate-500 font-medium">Pipeline ouvert</div>
-            <div className="text-xl font-bold text-slate-900 mt-1">{fmtCad(openValue)}</div>
-            <div className="text-xs text-slate-400">{open.length} projets</div>
-          </div>
-          <div className="card p-4">
-            <div className="text-xs text-slate-500 font-medium">Valeur pondérée</div>
-            <div className="text-xl font-bold text-brand-600 mt-1">{fmtCad(weightedValue)}</div>
-            <div className="text-xs text-slate-400">Probabilité ajustée</div>
-          </div>
-          <div className="card p-4">
-            <div className="text-xs text-slate-500 font-medium">Total gagné</div>
-            <div className="text-xl font-bold text-green-600 mt-1">{fmtCad(wonValue)}</div>
-            <div className="text-xs text-slate-400">{won.length} projets</div>
           </div>
         </div>
 

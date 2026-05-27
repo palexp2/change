@@ -4,7 +4,7 @@ import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { fmtDate } from '../lib/formatDate.js'
+import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useAuth } from '../lib/auth.jsx'
 
@@ -214,7 +214,7 @@ function EntryList({ employeeId, details, isAdding, onStartAdd, onCancelAdd, onA
 
 function AddForm({ employeeId, onCancel, onAdd }) {
   const { addToast } = useToast()
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10))
+  const [date, setDate] = useState(localISODate())
   const [hours, setHours] = useState('')
   const [notes, setNotes] = useState('')
   const [saving, setSaving] = useState(false)

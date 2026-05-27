@@ -17,6 +17,12 @@ describe('Guide d\'appel — autocomplete d\'adresse via /api/places (legacy)', 
   let companyId, companyName
   let createdCallId = null
   let originalAddress = null
+  // Capturé pour restauration : sélectionner une suggestion Places dans le guide
+  // d'appel persiste désormais les composants structurés dans `adresses`
+  // (address_type='Ferme'). Si la company avait déjà une row Ferme, on la sauve
+  // pour la remettre dans son état initial après le test.
+  let originalFermeAddress = null
+  let originalFermeExisted = false
 
   before(async () => {
     db = new Database(DB_PATH, { readonly: false })
@@ -31,6 +37,13 @@ describe('Guide d\'appel — autocomplete d\'adresse via /api/places (legacy)', 
     // Capture l'adresse originale pour restauration (cf. CLAUDE.md règle
     // « sauvegarder/restaurer les configurations utilisateur écrasées »).
     originalAddress = row.address || null
+    const existingFerme = db.prepare(
+      "SELECT id, line1, city, province, postal_code, country FROM adresses WHERE company_id=? AND address_type='Ferme' ORDER BY created_at DESC LIMIT 1"
+    ).get(companyId)
+    if (existingFerme) {
+      originalFermeExisted = true
+      originalFermeAddress = existingFerme
+    }
 
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
@@ -58,6 +71,25 @@ describe('Guide d\'appel — autocomplete d\'adresse via /api/places (legacy)', 
     } else {
       try {
         db.prepare('UPDATE companies SET address = NULL WHERE id = ?').run(companyId)
+      } catch {}
+    }
+    // Restaure la row Ferme dans `adresses` à son état initial. Si elle existait
+    // → reset des champs structurés. Sinon → DELETE de la row créée par le test.
+    if (originalFermeExisted && originalFermeAddress) {
+      try {
+        db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=? WHERE id=?`)
+          .run(
+            originalFermeAddress.line1,
+            originalFermeAddress.city,
+            originalFermeAddress.province,
+            originalFermeAddress.postal_code,
+            originalFermeAddress.country,
+            originalFermeAddress.id,
+          )
+      } catch {}
+    } else {
+      try {
+        db.prepare("DELETE FROM adresses WHERE company_id=? AND address_type='Ferme'").run(companyId)
       } catch {}
     }
     db?.close()

@@ -1,6 +1,7 @@
 import { cacheGet, cacheSet, invalidate } from './prefetch.js'
 import { invalidateStale } from './swr.js'
-import { markOffline, markOnline } from './serverStatus.js'
+import { markOffline, markOnline, noteBootId } from './serverStatus.js'
+import { onFetchStart, onFetchEnd } from './pageLoadTracker.js'
 
 const BASE = '/erp/api'
 
@@ -8,26 +9,37 @@ function getToken() {
   return localStorage.getItem('erp_token')
 }
 
-function rawRequest(method, path, body) {
+function rawRequest(method, path, body, signal) {
   const token = getToken()
   const headers = { 'Content-Type': 'application/json' }
   if (token) headers['Authorization'] = `Bearer ${token}`
 
+  onFetchStart()
   return fetch(`${BASE}${path}`, {
     method,
     headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal,
   }).then(async (res) => {
-    // 502/503/504 = server restarting or upstream down. nginx returns these
-    // when erp-server isn't accepting connections yet. Flip the offline flag
-    // and bubble the error.
+    // 502/503/504 peuvent venir de nginx (erp-server down, timeout upstream) →
+    // serveur offline, ou de notre propre app (ex. route Novoxpress qui mappe
+    // une erreur Novoxpress upstream en 502) → réponse JSON applicative. On
+    // distingue les deux via le Content-Type : nginx renvoie du HTML, l'app du
+    // JSON. Sans ça, une erreur Novoxpress affichait "Connexion perdue" alors
+    // que le serveur ERP répondait normalement.
     if (res.status === 502 || res.status === 503 || res.status === 504) {
-      markOffline()
-      const err = new Error(`HTTP ${res.status}`)
-      err.status = res.status
-      throw err
+      const ct = res.headers.get('content-type') || ''
+      if (!ct.includes('application/json')) {
+        markOffline(`gateway-${res.status}`)
+        const err = new Error(`HTTP ${res.status}`)
+        err.status = res.status
+        throw err
+      }
+      // JSON applicatif → fallthrough vers le traitement d'erreur normal.
     }
     // Any other response (even 4xx) means the server is up.
+    const bootId = res.headers.get('X-Boot-Id')
+    if (bootId) noteBootId(bootId)
     markOnline()
     if (res.status === 401) {
       localStorage.removeItem('erp_token')
@@ -45,9 +57,12 @@ function rawRequest(method, path, body) {
   }, (err) => {
     // fetch() rejects with TypeError for network errors (server unreachable,
     // DNS failure, CORS issues). Treat as offline.
-    markOffline()
+    // AbortError = annulation côté client (navigation rapide) → pas une panne réseau.
+    if (err?.name === 'AbortError') throw err
+    const reason = (typeof navigator !== 'undefined' && navigator.onLine === false) ? 'no-internet' : 'network'
+    markOffline(reason)
     throw err
-  })
+  }).finally(() => onFetchEnd())
 }
 
 // GETs consult the prefetch cache (populated by nav hover). Mutations
@@ -77,6 +92,8 @@ function request(method, path, body) {
 }
 
 const get = (path) => request('GET', path)
+// Variante annulable — bypasse le cache (un fetch annulé ne doit pas y rester piégé).
+const getAbortable = (path, signal) => rawRequest('GET', path, undefined, signal)
 const post = (path, body) => request('POST', path, body)
 const put = (path, body) => request('PUT', path, body)
 const patch = (path, body) => request('PATCH', path, body)
@@ -189,7 +206,9 @@ export const api = {
 
   // Tasks
   tasks: {
-    list: (params = {}) => get('/tasks?' + new URLSearchParams(params)),
+    list: (params = {}, signal) => signal
+      ? getAbortable('/tasks?' + new URLSearchParams(params), signal)
+      : get('/tasks?' + new URLSearchParams(params)),
     get: (id) => get(`/tasks/${id}`),
     create: (data) => post('/tasks', data),
     update: (id, data) => put(`/tasks/${id}`, data),
@@ -206,7 +225,8 @@ export const api = {
   tickets: {
     meta: () => get('/tickets/meta'),
     list: (params = {}) => get('/tickets?' + new URLSearchParams(params)),
-    get: (id) => get(`/tickets/${id}`),
+    ids: () => get('/tickets/ids'),
+    get: (id, signal) => signal ? getAbortable(`/tickets/${id}`, signal) : get(`/tickets/${id}`),
     create: (data) => post('/tickets', data),
     update: (id, data) => put(`/tickets/${id}`, data),
     updateStatus: (id, status) => patch(`/tickets/${id}/status`, { status }),
@@ -218,10 +238,9 @@ export const api = {
     get: () => get('/dashboard'),
     getGoal: () => get('/dashboard/goal'),
     updateGoal: (data) => put('/dashboard/goal', data),
-    stripeRevenue: () => get('/dashboard/stripe-revenue'),
-    stripeRevenueFactures: (params = {}) => get('/dashboard/stripe-revenue/factures?' + new URLSearchParams(params)),
     subscriptionEvents: (params = {}) => get('/dashboard/subscription-events?' + new URLSearchParams(params)),
     topProducts: (params = {}) => get('/dashboard/top-products?' + new URLSearchParams(params)),
+    balanceSheet: (params = {}) => get('/dashboard/balance-sheet?' + new URLSearchParams(params)),
   },
 
   // Admin
@@ -237,11 +256,17 @@ export const api = {
     purgeTrash: () => del('/admin/trash'),
     clearFactureDeferredRevenue: (id) => post(`/admin/factures/${id}/clear-deferred-revenue`, {}),
     clearFactureRevenueRecognition: (id) => post(`/admin/factures/${id}/clear-revenue-recognition`, {}),
+    linkFactureRevenueRecognition: (id, je_id) => post(`/admin/factures/${id}/link-revenue-recognition`, { je_id }),
+    linkFactureDeferredRevenue: (id, qb_ref) => post(`/admin/factures/${id}/link-deferred-revenue`, { qb_ref }),
     clearFacturePaidStatus: (id) => post(`/admin/factures/${id}/clear-paid-status`, {}),
     factureRawSchema: (id) => get(`/admin/factures/${id}/raw-schema`),
     factureRawUpdate: (id, data) => patch(`/admin/factures/${id}/raw`, data),
     paymentRawSchema: (id) => get(`/admin/payments/${id}/raw-schema`),
     paymentRawUpdate: (id, data) => patch(`/admin/payments/${id}/raw`, data),
+  },
+
+  telemetry: {
+    pageLoad: (url, load_ms) => post('/telemetry/page-load', { url, load_ms }),
   },
 
   // Field visibility rules — règles conditionnelles de masquage des champs
@@ -256,7 +281,9 @@ export const api = {
 
   // Interactions
   interactions: {
-    list: (params = {}) => get('/interactions?' + new URLSearchParams(params)),
+    list: (params = {}, signal) => signal
+      ? getAbortable('/interactions?' + new URLSearchParams(params), signal)
+      : get('/interactions?' + new URLSearchParams(params)),
     get: (id) => get(`/interactions/${id}`),
     create: (data) => post('/interactions', data),
     emailBody: (id) => get(`/interactions/${id}/email-body`),
@@ -458,6 +485,8 @@ export const api = {
     delete: (id) => del(`/projets/factures/${id}`),
     recognizeRevenue: (id, opts = {}) => post(`/projets/factures/${id}/recognize-revenue`, opts),
     qbState: (id) => get(`/projets/factures/${id}/qb-state`),
+    discounts: (id) => get(`/projets/factures/${id}/discounts`),
+    neighbors: (id) => get(`/projets/factures/${id}/neighbors`),
   },
 
   // Paiements / remboursements (Stripe et hors-Stripe) attachés aux factures
@@ -517,6 +546,21 @@ export const api = {
     delete: (id) => del(`/vacations/${id}`),
   },
 
+  discoveryForms: {
+    list: (params = {}) => get('/discovery-forms?' + new URLSearchParams(params)),
+    get: (id) => get(`/discovery-forms/${id}`),
+    create: (data) => post('/discovery-forms', data),
+    delete: (id) => del(`/discovery-forms/${id}`),
+    // Accès public au formulaire via short token (sans auth) — utilisé par la page client.
+    getByToken: (token) => fetch(`/erp/api/customer/post-payment/by-token/${encodeURIComponent(token)}`).then(r => r.json()),
+    saveByToken: (token, body) => fetch(`/erp/api/customer/post-payment/by-token/${encodeURIComponent(token)}/save`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }).then(r => r.json()),
+    submitByToken: (token) => fetch(`/erp/api/customer/post-payment/by-token/${encodeURIComponent(token)}/submit`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+    }).then(r => r.json()),
+  },
+
   qualificationCalls: {
     list: () => get('/qualification-calls'),
     byCompany: (companyId) => get(`/qualification-calls/by-company/${companyId}`),
@@ -524,6 +568,7 @@ export const api = {
     create: (data) => post('/qualification-calls', data),
     update: (id, data) => patch(`/qualification-calls/${id}`, data),
     subscribeCard: (id, body) => post(`/qualification-calls/${id}/subscribe-card`, body),
+    saveFarmAddress: (id, body) => post(`/qualification-calls/${id}/farm-address`, body),
     delete: (id) => del(`/qualification-calls/${id}`),
   },
 
@@ -708,12 +753,15 @@ export const api = {
     get: (id) => get(`/journal-entries/${id}`),
     create: (data) => post('/journal-entries', data),
     pendingOperations: (params = {}) => get('/journal-entries/pending-operations?' + new URLSearchParams(params)),
+    getDefaults: () => get('/journal-entries/defaults'),
+    saveDefaults: (defaults) => put('/journal-entries/defaults', { defaults }),
   },
 
   // Sale receipts (OCR/AI extraction)
   saleReceipts: {
     list: (params = {}) => get('/sale-receipts?' + new URLSearchParams(params)),
     get: (id) => get(`/sale-receipts/${id}`),
+    update: (id, body) => patch(`/sale-receipts/${id}`, body),
     delete: (id) => del(`/sale-receipts/${id}`),
     pushToQb: (id, params) => post(`/sale-receipts/${id}/push-to-qb`, params),
     upload: (formData) => {

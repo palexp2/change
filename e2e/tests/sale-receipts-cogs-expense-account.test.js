@@ -15,6 +15,7 @@ if (!PASS) throw new Error('ERP_PASS env var required')
 
 describe('Extraction de données : formulaire QB', () => {
   let browser, ctx, page
+  let setupToken, setupCandidateId, setupOriginalQbId, setupOriginalQbType
 
   before(async () => {
     browser = await chromium.launch()
@@ -26,34 +27,48 @@ describe('Extraction de données : formulaire QB', () => {
     await page.click('button:has-text("Se connecter")')
     await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 10000 })
 
-    await page.goto(URL + '/sale-receipts', { waitUntil: 'networkidle' })
-    await page.waitForSelector('h1:has-text("Extraction de données")', { timeout: 10000 })
+    setupToken = await page.evaluate(() => localStorage.getItem('erp_token'))
+    const resp = await page.request.get(URL + '/api/sale-receipts?limit=all', {
+      headers: { Authorization: 'Bearer ' + setupToken },
+    })
+    const body = await resp.json()
+    let candidate = body.data.find(r => r.status === 'done' && !r.quickbooks_id)
+    if (!candidate) {
+      candidate = body.data.find(r => r.status === 'done' && r.quickbooks_id)
+      if (!candidate) throw new Error('Préalable : un reçu status=done requis')
+      setupOriginalQbId = candidate.quickbooks_id
+      setupOriginalQbType = candidate.quickbooks_type
+      await page.request.patch(URL + '/api/sale-receipts/' + candidate.id, {
+        headers: { Authorization: 'Bearer ' + setupToken, 'Content-Type': 'application/json' },
+        data: { quickbooks_id: null, quickbooks_type: null },
+      })
+    }
+    setupCandidateId = candidate.id
 
-    // Ouvrir le premier reçu déjà extrait (badge « Complété » dans la sidebar)
-    const completedBadge = page.locator('span:has-text("Complété")').first()
-    await completedBadge.waitFor({ state: 'visible', timeout: 10000 })
-    await completedBadge.click()
-
-    // Attendre que les options du select de dépense soient chargées (>5 options = comptes QB chargés)
-    await page.waitForFunction(() => {
-      const labels = Array.from(document.querySelectorAll('label'))
-      const lbl = labels.find(l => l.textContent.includes('Compte de dépense'))
-      if (!lbl) return false
-      const sel = lbl.parentElement.querySelector('select')
-      return sel && sel.options.length > 5
-    }, { timeout: 15000 })
+    await page.goto(URL + '/sale-receipts/' + setupCandidateId, { waitUntil: 'networkidle' })
+    await page.getByTestId('qb-expense-select').waitFor({ state: 'visible', timeout: 15000 })
   })
 
-  after(async () => { await browser?.close() })
+  after(async () => {
+    if (setupCandidateId && setupOriginalQbId) {
+      await page.request.patch(URL + '/api/sale-receipts/' + setupCandidateId, {
+        headers: { Authorization: 'Bearer ' + setupToken, 'Content-Type': 'application/json' },
+        data: { quickbooks_id: setupOriginalQbId, quickbooks_type: setupOriginalQbType },
+      }).catch(() => {})
+    }
+    await browser?.close()
+  })
 
   test('le compte 65000 (Cost of Goods Sold) est listé dans le dropdown Compte de dépense', async () => {
-    const expenseLabel = page.locator('label:has-text("Compte de dépense")').first()
-    const expenseSelect = expenseLabel.locator('xpath=following-sibling::select').first()
-    const options = await expenseSelect.locator('option').allTextContents()
+    await page.getByTestId('qb-expense-select').click()
+    const portal = page.locator('#qb-select-portal')
+    await portal.waitFor({ state: 'visible', timeout: 5000 })
+    const options = await portal.locator('button').allTextContents()
+    await page.keyboard.press('Escape').catch(() => {})
     const hasShipping = options.some(o => /Expédition.*livraison.*poste/i.test(o))
     assert.ok(
       hasShipping,
-      `Le compte « Expédition, livraison et poste » devrait être dans le dropdown. Options: ${JSON.stringify(options)}`
+      `Le compte « Expédition, livraison et poste » devrait être dans le dropdown. Options: ${JSON.stringify(options.slice(0, 5))}`
     )
   })
 
@@ -91,9 +106,7 @@ describe('Extraction de données : formulaire QB', () => {
   })
 
   test('le badge QB d\'un reçu déjà publié est un lien cliquable vers QuickBooks', async () => {
-    // Trouver et cliquer un reçu qui a déjà un quickbooks_id (via l'API → 1er hit)
-    // Le sidebar ne montre pas l'ID QB, donc on passe par l'API pour récupérer la company,
-    // puis on clique sur le texte de la sidebar correspondant.
+    // Trouver un reçu déjà publié et ouvrir sa fiche détail directement par URL.
     const token = await page.evaluate(() => localStorage.getItem('erp_token'))
     const resp = await page.request.get(URL + '/api/sale-receipts?limit=all', {
       headers: { Authorization: 'Bearer ' + token },
@@ -103,11 +116,8 @@ describe('Extraction de données : formulaire QB', () => {
     assert.ok(pushed, 'Préalable : il faut au moins un reçu déjà publié sur QB en DB')
     assert.ok(pushed.quickbooks_url, 'L\'API doit retourner quickbooks_url quand le reçu est publié')
 
-    const sidebarItem = page.locator(`text=${pushed.company}`).first()
-    await sidebarItem.waitFor({ state: 'visible', timeout: 5000 })
-    await sidebarItem.click()
+    await page.goto(URL + '/sale-receipts/' + pushed.id, { waitUntil: 'networkidle' })
 
-    // Le badge doit maintenant être un <a> cliquable
     const qbLink = page.getByTestId('qb-link')
     await qbLink.waitFor({ state: 'visible', timeout: 5000 })
 

@@ -225,6 +225,15 @@ function CallFrame({ company, callRecord, editableFarm, onBack }) {
         queueCompanyName(msg.name)
       } else if (msg.type === 'save-company-address' && typeof msg.address === 'string') {
         queueCompanyAddress(msg.address)
+      } else if (msg.type === 'save-farm-address-structured' && msg.components) {
+        // Composants structurés (line1, city, province, postal_code, country)
+        // extraits d'une sélection Google Places — persistés dans la table
+        // `adresses` (address_type='Ferme') pour permettre le calcul de taxes
+        // Stripe au moment du paiement.
+        api.qualificationCalls.saveFarmAddress(callRecord.id, msg.components)
+          .catch(err => {
+            addToast({ type: 'error', message: 'Erreur de sauvegarde de l’adresse structurée : ' + (err.message || 'inconnue') })
+          })
       } else if (msg.type === 'subscribe-card' && typeof msg.id === 'number' && msg.body) {
         // Le formulaire Stripe Elements de l'iframe a déjà tokenisé la carte ;
         // on relaie l'appel API authentifié et renvoie le résultat à l'iframe
@@ -247,6 +256,38 @@ function CallFrame({ company, callRecord, editableFarm, onBack }) {
               iframe.contentWindow.postMessage({
                 target: 'qualification-call',
                 type: 'subscribe-card-result',
+                id: msg.id,
+                result: { error: err.message || 'Erreur inconnue' },
+              }, '*')
+            }
+          })
+      } else if (msg.type === 'create-discovery-form' && typeof msg.id === 'number' && msg.body) {
+        // Raccourci depuis l'écran « Payment confirmed » : crée un formulaire
+        // de découverte technique pré-rempli (1 carte serre par Helper/Chief vendu)
+        // et renvoie l'URL publique à afficher (avec copier/ouvrir).
+        api.discoveryForms.create({
+          company_id: company.id,
+          qualification_call_id: callRecord.id,
+          helper_count: Number(msg.body.helper_count) || 0,
+          chief_count: Number(msg.body.chief_count) || 0,
+        })
+          .then(result => {
+            const iframe = iframeRef.current
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                target: 'qualification-call',
+                type: 'create-discovery-form-result',
+                id: msg.id,
+                result,
+              }, '*')
+            }
+          })
+          .catch(err => {
+            const iframe = iframeRef.current
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                target: 'qualification-call',
+                type: 'create-discovery-form-result',
                 id: msg.id,
                 result: { error: err.message || 'Erreur inconnue' },
               }, '*')

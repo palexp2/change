@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Trash2, ChevronDown, ChevronUp, ExternalLink, Plus, CheckCircle2, Circle, Clock, X } from 'lucide-react'
 import api from '../lib/api.js'
@@ -13,6 +13,14 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 
+
+// requestIdleCallback avec fallback setTimeout pour browsers qui ne le supportent pas.
+const scheduleIdle = (fn) => (typeof requestIdleCallback === 'function'
+  ? requestIdleCallback(fn, { timeout: 500 })
+  : setTimeout(fn, 0))
+const cancelIdle = (h) => (typeof cancelIdleCallback === 'function'
+  ? cancelIdleCallback(h)
+  : clearTimeout(h))
 
 function fmtDuration(mins) {
   if (!mins) return '—'
@@ -33,7 +41,11 @@ export default function TicketDetail() {
   const [fieldSaving, setFieldSaving] = useState({})
   const [ticketIds, setTicketIds] = useState([])
   const [linkedInteractions, setLinkedInteractions] = useState([])
+  const [interactionsTotal, setInteractionsTotal] = useState(0)
+  const [interactionsOffset, setInteractionsOffset] = useState(0)
   const [loadingInteractions, setLoadingInteractions] = useState(false)
+  const [loadingMoreInteractions, setLoadingMoreInteractions] = useState(false)
+  const INTER_LIMIT = 30
   const [linkedTasks, setLinkedTasks] = useState([])
   const [loadingTasks, setLoadingTasks] = useState(false)
   const [showTaskModal, setShowTaskModal] = useState(false)
@@ -41,58 +53,94 @@ export default function TicketDetail() {
   const confirm = useConfirm()
   const { addToast } = useToast()
 
-  const loadTasks = useCallback(() => {
+  const loadTasks = useCallback((signal) => {
     setLoadingTasks(true)
-    api.tasks.list({ ticket_id: id, limit: 'all' })
+    api.tasks.list({ ticket_id: id, limit: 'all' }, signal)
       .then(r => setLinkedTasks(r.data || []))
-      .catch(() => setLinkedTasks([]))
-      .finally(() => setLoadingTasks(false))
+      .catch(err => { if (err.name !== 'AbortError') setLinkedTasks([]) })
+      .finally(() => { if (!signal?.aborted) setLoadingTasks(false) })
   }, [id])
 
-  useEffect(() => { loadTasks() }, [loadTasks])
+  // Tasks: déclenché après que le ticket soit chargé ET peint, pour ne pas
+  // entrer en compétition avec ticket.get sur les 6 connexions concurrentes.
+  useEffect(() => {
+    if (!ticket?.id) return
+    const ac = new AbortController()
+    const handle = scheduleIdle(() => { if (!ac.signal.aborted) loadTasks(ac.signal) })
+    return () => { cancelIdle(handle); ac.abort() }
+  }, [ticket?.id, loadTasks])
 
   useEffect(() => {
-    api.tickets.list({ limit: 'all' })
-      .then(res => setTicketIds((res.data || []).map(t => t.id)))
+    api.tickets.ids()
+      .then(ids => setTicketIds(ids || []))
       .catch(() => {})
   }, [])
 
   useEffect(() => {
     if (!ticket?.company_id) {
       setLinkedInteractions([])
+      setInteractionsTotal(0)
+      setInteractionsOffset(0)
       return
     }
+    const ac = new AbortController()
     setLoadingInteractions(true)
-    api.interactions.list({ company_id: ticket.company_id, limit: 'all', include: 'heavy' })
-      .then(d => setLinkedInteractions(d.interactions || []))
-      .catch(() => setLinkedInteractions([]))
-      .finally(() => setLoadingInteractions(false))
+    // Idle scheduling : laisse le navigateur peindre le ticket avant de lancer
+    // la requête interactions (qui est la plus volumineuse de la page).
+    const handle = scheduleIdle(() => {
+      if (ac.signal.aborted) return
+      api.interactions.list({ company_id: ticket.company_id, limit: INTER_LIMIT, offset: 0, include: 'heavy' }, ac.signal)
+        .then(d => {
+          setLinkedInteractions(d.interactions || [])
+          setInteractionsTotal(d.total || 0)
+          setInteractionsOffset(INTER_LIMIT)
+        })
+        .catch(err => { if (err.name !== 'AbortError') setLinkedInteractions([]) })
+        .finally(() => { if (!ac.signal.aborted) setLoadingInteractions(false) })
+    })
+    return () => { cancelIdle(handle); ac.abort() }
   }, [ticket?.company_id])
+
+  async function loadMoreInteractions() {
+    if (!ticket?.company_id) return
+    setLoadingMoreInteractions(true)
+    try {
+      const d = await api.interactions.list({ company_id: ticket.company_id, limit: INTER_LIMIT, offset: interactionsOffset, include: 'heavy' })
+      setLinkedInteractions(prev => [...prev, ...(d.interactions || [])])
+      setInteractionsOffset(o => o + INTER_LIMIT)
+    } finally {
+      setLoadingMoreInteractions(false)
+    }
+  }
 
   const currentIdx = ticketIds.indexOf(id)
   const prevId = currentIdx > 0 ? ticketIds[currentIdx - 1] : null
   const nextId = currentIdx >= 0 && currentIdx < ticketIds.length - 1 ? ticketIds[currentIdx + 1] : null
 
   useEffect(() => {
+    const ac = new AbortController()
     async function load() {
       setLoading(true)
       try {
-        const [t, comps, conts, m] = await Promise.all([
-          api.tickets.get(id),
-          api.companies.lookup(),
-          api.contacts.lookup(),
+        const [t, m] = await Promise.all([
+          api.tickets.get(id, ac.signal),
           api.tickets.meta(),
         ])
+        if (ac.signal.aborted) return
         setTicket(t)
-        setCompanies(comps)
-        setContacts(conts)
         setMeta(m)
-        api.admin.listUsers().then(setUsers).catch(() => {})
+      } catch (err) {
+        if (err.name === 'AbortError') return
       } finally {
-        setLoading(false)
+        if (!ac.signal.aborted) setLoading(false)
       }
+      // Lookups en arrière-plan — cachés 30s, non annulés (partagés entre pages).
+      api.companies.lookup().then(setCompanies).catch(() => {})
+      api.contacts.lookup().then(setContacts).catch(() => {})
+      api.admin.listUsers().then(setUsers).catch(() => {})
     }
     load()
+    return () => ac.abort()
   }, [id])
 
   async function saveField(key, value) {
@@ -109,8 +157,12 @@ export default function TicketDetail() {
 
   async function handleDelete() {
     if (!(await confirm('Supprimer ce billet ?'))) return
-    await api.tickets.delete(id)
-    navigate('/tickets')
+    try {
+      await api.tickets.delete(id)
+      navigate('/tickets')
+    } catch (err) {
+      addToast({ message: err.message || 'Erreur lors de la suppression', type: 'error' })
+    }
   }
 
   async function handleCreateTask(form) {
@@ -134,6 +186,27 @@ export default function TicketDetail() {
   const filteredContacts = ticket?.company_id
     ? contacts.filter(c => c.company_id === ticket.company_id)
     : contacts
+
+  // Seed pickers avec un placeholder dérivé du ticket joint pour que le label
+  // s'affiche immédiatement, avant l'arrivée des lookups en arrière-plan.
+  const companiesForPicker = useMemo(() => {
+    if (!ticket?.company_id) return companies
+    if (companies.some(c => c.id === ticket.company_id)) return companies
+    return [...companies, { id: ticket.company_id, name: ticket.company_name || '…' }]
+  }, [companies, ticket?.company_id, ticket?.company_name])
+
+  const contactsForPicker = useMemo(() => {
+    if (!ticket?.contact_id) return filteredContacts
+    if (filteredContacts.some(c => c.id === ticket.contact_id)) return filteredContacts
+    const [first, ...rest] = (ticket.contact_name || '').split(' ')
+    return [...filteredContacts, { id: ticket.contact_id, first_name: first || '…', last_name: rest.join(' '), company_id: ticket.company_id }]
+  }, [filteredContacts, ticket?.contact_id, ticket?.contact_name, ticket?.company_id])
+
+  const usersForPicker = useMemo(() => {
+    if (!ticket?.assigned_to) return users
+    if (users.some(u => u.id === ticket.assigned_to)) return users
+    return [...users, { id: ticket.assigned_to, name: ticket.assigned_name || '…' }]
+  }, [users, ticket?.assigned_to, ticket?.assigned_name])
 
   if (loading) {
     return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
@@ -207,7 +280,7 @@ export default function TicketDetail() {
               <LinkedRecordField
                 name="company_id"
                 value={ticket.company_id}
-                options={companies}
+                options={companiesForPicker}
                 labelFn={c => c.name}
                 getHref={c => `/companies/${c.id}`}
                 placeholder="Entreprise"
@@ -220,7 +293,7 @@ export default function TicketDetail() {
               <LinkedRecordField
                 name="contact_id"
                 value={ticket.contact_id}
-                options={filteredContacts}
+                options={contactsForPicker}
                 labelFn={c => `${c.first_name} ${c.last_name}`}
                 getHref={c => `/contacts/${c.id}`}
                 placeholder="Contact"
@@ -233,7 +306,7 @@ export default function TicketDetail() {
               <LinkedRecordField
                 name="assigned_to"
                 value={ticket.assigned_to}
-                options={users}
+                options={usersForPicker}
                 labelFn={u => u.name}
                 placeholder="Assigner"
                 saving={!!fieldSaving.assigned_to}
@@ -349,7 +422,9 @@ export default function TicketDetail() {
             <InteractionTimeline
               interactions={linkedInteractions}
               loading={loadingInteractions}
-              total={linkedInteractions.length}
+              total={interactionsTotal}
+              onLoadMore={interactionsOffset < interactionsTotal ? loadMoreInteractions : undefined}
+              loadingMore={loadingMoreInteractions}
             />
           </div>
         )}

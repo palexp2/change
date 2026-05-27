@@ -1,7 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
+import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
@@ -34,17 +33,32 @@ const COLUMNS = TABLE_COLUMN_META.serial_numbers.map(meta => ({ ...meta, render:
 
 export default function SerialNumbers() {
   const navigate = useNavigate()
-  const [serials, setSerials] = useState([])
-  const [loading, setLoading] = useState(true)
 
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.serials.list({ limit, page }),
-      setSerials, setLoading
-    )
-  }, [])
+  const serialsRaw = useTable('serial_numbers')
+  const products = useTable('products')
+  const companies = useTable('companies')
+  const loading = !isTableHydrated('serial_numbers')
 
-  useEffect(() => { load() }, [load])
+  const serials = useMemo(() => {
+    const pById = new Map(products.map(p => [p.id, p]))
+    const cById = new Map(companies.map(c => [c.id, c.name]))
+    return serialsRaw
+      .filter(r => !r.deleted_at)
+      .map(r => {
+        const p = r.product_id ? pById.get(r.product_id) : null
+        let permissions = r.permissions
+        if (typeof permissions === 'string' && permissions) {
+          try { permissions = JSON.parse(permissions) } catch { permissions = null }
+        }
+        return {
+          ...r,
+          product_name: p?.name_fr || p?.name_en || r.product_name,
+          sku: p?.sku || r.sku,
+          company_name: cById.get(r.company_id) || r.company_name,
+          permissions,
+        }
+      })
+  }, [serialsRaw, products, companies])
 
   return (
     <Layout>

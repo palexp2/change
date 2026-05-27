@@ -66,8 +66,6 @@ describe('Dashboard — Personnalisation : réordonner les cartes', () => {
     const customOrder = [
       'section_geo_map',
       'section_subscription_events',
-      'section_stripe_subscriptions',
-      'section_stripe_sales',
       'section_profitability',
       'section_replacement_rate',
       'section_projects_created',

@@ -8,6 +8,11 @@ export { applyFilter, applyFilterGroup }
 function norm(s) {
   return String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
 }
+// Collator précompilé — ~10× plus rapide que String.prototype.localeCompare
+// dans une boucle de tri (qui recompile le collator à chaque appel). Critique
+// sur les grandes tables (ex. 14k+ contacts).
+const stringCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'variant' })
+
 export function applySort(data, sorts, colTypes = {}) {
   if (!sorts.length) return data
   return [...data].sort((a, b) => {
@@ -24,7 +29,7 @@ export function applySort(data, sorts, colTypes = {}) {
         const bx = Number.isNaN(bn) ? -Infinity : bn
         cmp = ax < bx ? -1 : ax > bx ? 1 : 0
       } else {
-        cmp = String(av ?? '').localeCompare(String(bv ?? ''), undefined, { numeric: true })
+        cmp = stringCollator.compare(av == null ? '' : String(av), bv == null ? '' : String(bv))
       }
       if (cmp !== 0) return dir === 'asc' ? cmp : -cmp
     }
@@ -154,6 +159,11 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
   const viewGroupBy = activeView?.group_by || null
   const viewGroupOrder = activeView?.group_order || null
 
+  // Sig stable du tableau searchFields — sinon le tableau littéral passé en prop
+  // (ex. `searchFields={['first_name', ...]}` dans Contacts.jsx) invalide ce
+  // useMemo à chaque render parent et, combiné à `onFilteredDataChange`, crée
+  // une boucle de re-render coûteuse sur les grandes tables (14k+ contacts).
+  const searchFieldsKey = searchFields.join('|')
   const filteredData = useMemo(() => {
     let result = data
     if (search && searchFields.length > 0) {
@@ -170,13 +180,23 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
     const colTypes = Object.fromEntries(allColumns.map(c => [c.field, c.type]))
     result = applySort(result, sorts, colTypes)
     return result
-  }, [data, search, searchFields, filters, sorts, userName, allColumns])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, search, searchFieldsKey, filters, sorts, userName, allColumns])
 
   function reorderViews(newViews) {
     const realViews = newViews.map((v, i) => ({ ...v, sort_order: i }))
     setViews(realViews)
     const order = realViews.map((v, i) => ({ id: v.id, sort_order: i }))
     api.views.reorderPills(table, order).catch(() => {})
+  }
+
+  // Met à jour le pill local après un autosave server-side. Sans ça, l'état
+  // local `views` reste figé sur la version chargée à l'init : si l'utilisateur
+  // change de vue puis revient, le `visible_columns` (etc.) lu en mémoire est
+  // celui d'avant son drag, et l'autosave qui suit écrase silencieusement sa
+  // dernière sauvegarde.
+  function patchLocalView(viewId, patch) {
+    setViews(prev => prev.map(v => v.id === viewId ? { ...v, ...patch } : v))
   }
 
   return {
@@ -187,6 +207,7 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
     filters, setFilters,
     search, setSearch,
     views,
+    patchLocalView,
     reorderViews,
     activeViewId,
     setActiveViewId,

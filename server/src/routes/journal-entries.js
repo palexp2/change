@@ -43,6 +43,74 @@ function serializeEntry(entry) {
   }
 }
 
+// GET /api/journal-entries/defaults
+// Renvoie tous les défauts de comptes débit/crédit pour la prépopulation,
+// indexés par operation_key (ex: 'shipped.replacement', 'movement.Prélèvement pour R&D').
+router.get('/defaults', requireAuth, (_req, res) => {
+  try {
+    const rows = db.prepare(`SELECT * FROM journal_entry_defaults`).all()
+    const map = {}
+    for (const r of rows) {
+      map[r.operation_key] = {
+        debit_account_id: r.debit_account_id || null,
+        debit_account_name: r.debit_account_name || null,
+        credit_account_id: r.credit_account_id || null,
+        credit_account_name: r.credit_account_name || null,
+        updated_at: r.updated_at,
+      }
+    }
+    res.json({ data: map })
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// PUT /api/journal-entries/defaults
+// body: { defaults: [{ operation_key, debit_account_id, debit_account_name, credit_account_id, credit_account_name }, ...] }
+router.put('/defaults', requireAuth, (req, res) => {
+  try {
+    const list = Array.isArray(req.body?.defaults) ? req.body.defaults : null
+    if (!list) return res.status(400).json({ error: 'Body `defaults` doit être un tableau' })
+    const upsert = db.prepare(`
+      INSERT INTO journal_entry_defaults (operation_key, debit_account_id, debit_account_name, credit_account_id, credit_account_name, updated_at)
+      VALUES (@operation_key, @debit_account_id, @debit_account_name, @credit_account_id, @credit_account_name, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ON CONFLICT(operation_key) DO UPDATE SET
+        debit_account_id = excluded.debit_account_id,
+        debit_account_name = excluded.debit_account_name,
+        credit_account_id = excluded.credit_account_id,
+        credit_account_name = excluded.credit_account_name,
+        updated_at = excluded.updated_at
+    `)
+    const tx = db.transaction((items) => {
+      for (const it of items) {
+        if (!it.operation_key) throw new Error('operation_key requis')
+        upsert.run({
+          operation_key: String(it.operation_key),
+          debit_account_id: it.debit_account_id || null,
+          debit_account_name: it.debit_account_name || null,
+          credit_account_id: it.credit_account_id || null,
+          credit_account_name: it.credit_account_name || null,
+        })
+      }
+    })
+    tx(list)
+    const rows = db.prepare(`SELECT * FROM journal_entry_defaults`).all()
+    const map = {}
+    for (const r of rows) {
+      map[r.operation_key] = {
+        debit_account_id: r.debit_account_id || null,
+        debit_account_name: r.debit_account_name || null,
+        credit_account_id: r.credit_account_id || null,
+        credit_account_name: r.credit_account_name || null,
+        updated_at: r.updated_at,
+      }
+    }
+    res.json({ data: map })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 // GET /api/journal-entries/pending-operations?from=ISO&to=ISO
 // Renvoie les opérations candidates à inclure dans une écriture de journal,
 // sur une période donnée:

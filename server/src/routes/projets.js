@@ -536,42 +536,9 @@ router.get('/factures/:id', async (req, res) => {
       product_name: r.product_name,
       product_sku: r.product_sku,
     }))
-    // Rabais (coupons Stripe). Récupérés en live depuis Stripe — non stockés en DB.
-    // total_discount_amounts donne les montants par discount appliqué à la facture.
-    let discounts = []
-    if (row.invoice_id) {
-      const key = getStripeKey()
-      if (key) {
-        try {
-          const stripe = new Stripe(key)
-          // Stripe API ≥ 2024 : le coupon est sous discount.source.coupon.
-          // Stripe limite l'expand à 4 niveaux donc on expand discounts (la
-          // collection au niveau invoice) et on rejoint avec total_discount_amounts.
-          const inv = await stripe.invoices.retrieve(row.invoice_id, {
-            expand: ['discounts.source.coupon'],
-          })
-          const couponByDiscountId = {}
-          for (const dd of inv.discounts || []) {
-            if (typeof dd === 'object' && dd?.id) {
-              couponByDiscountId[dd.id] = dd.source?.coupon || dd.coupon || null
-            }
-          }
-          discounts = (inv.total_discount_amounts || [])
-            .filter(d => d.amount > 0)
-            .map(d => {
-              const discountId = typeof d.discount === 'string' ? d.discount : d.discount?.id
-              const coupon = (discountId && couponByDiscountId[discountId])
-                || (typeof d.discount === 'object' ? (d.discount?.source?.coupon || d.discount?.coupon || null) : null)
-              return {
-                amount: d.amount / 100,
-                label: coupon?.name || coupon?.id || 'Rabais',
-              }
-            })
-        } catch (e) {
-          console.error(`Stripe discount fetch failed for ${row.invoice_id}:`, e.message)
-        }
-      }
-    }
+    // Rabais (coupons Stripe) : chargés à la demande via
+    // GET /factures/:id/discounts pour ne pas bloquer la réponse sur un
+    // round-trip Stripe live. Le front les fetch en parallèle.
     return res.json({
       ...row,
       source: 'stripe',
@@ -585,7 +552,6 @@ router.get('/factures/:id', async (req, res) => {
         || row.is_sent_manual === 1
         || (row.kind !== 'subscription' && !row.order_id && !row.project_id),
       items,
-      discounts,
     })
   }
   // Fall back to pending_invoices for unpaid drafts/sent
@@ -618,6 +584,68 @@ router.get('/factures/:id', async (req, res) => {
     pending_status: pending.status, // raw status for the UI
     is_sent: false, // pending invoices : pas encore de commande liée
   })
+})
+
+// Rabais (coupons) d'une facture — fetch live Stripe, séparé de GET /:id pour
+// que la page détail s'affiche sans attendre le round-trip Stripe.
+router.get('/factures/:id/discounts', async (req, res) => {
+  const row = db.prepare('SELECT invoice_id FROM factures WHERE id = ?').get(req.params.id)
+  if (!row?.invoice_id) return res.json({ discounts: [] })
+  const key = getStripeKey()
+  if (!key) return res.json({ discounts: [] })
+  try {
+    const stripe = new Stripe(key)
+    const inv = await stripe.invoices.retrieve(row.invoice_id, {
+      expand: ['discounts.source.coupon'],
+    })
+    const couponByDiscountId = {}
+    for (const dd of inv.discounts || []) {
+      if (typeof dd === 'object' && dd?.id) {
+        couponByDiscountId[dd.id] = dd.source?.coupon || dd.coupon || null
+      }
+    }
+    const discounts = (inv.total_discount_amounts || [])
+      .filter(d => d.amount > 0)
+      .map(d => {
+        const discountId = typeof d.discount === 'string' ? d.discount : d.discount?.id
+        const coupon = (discountId && couponByDiscountId[discountId])
+          || (typeof d.discount === 'object' ? (d.discount?.source?.coupon || d.discount?.coupon || null) : null)
+        return {
+          amount: d.amount / 100,
+          label: coupon?.name || coupon?.id || 'Rabais',
+        }
+      })
+    res.json({ discounts })
+  } catch (e) {
+    console.error(`Stripe discount fetch failed for ${row.invoice_id}:`, e.message)
+    res.json({ discounts: [] })
+  }
+})
+
+// Prev/next pour la pagination clavier dans la fiche facture. Évite de
+// charger toutes les factures côté front uniquement pour calculer 2 IDs.
+router.get('/factures/:id/neighbors', (req, res) => {
+  const cur = db.prepare(`
+    SELECT id, COALESCE(document_date, created_at) AS sort_date
+    FROM factures WHERE id = ?
+  `).get(req.params.id)
+  if (!cur) return res.json({ prev: null, next: null })
+  // Ordre par document_date desc, id desc (comme la liste). prev = plus récent, next = plus ancien.
+  const prev = db.prepare(`
+    SELECT id FROM factures
+    WHERE (COALESCE(document_date, created_at) > ?)
+       OR (COALESCE(document_date, created_at) = ? AND id > ?)
+    ORDER BY COALESCE(document_date, created_at) ASC, id ASC
+    LIMIT 1
+  `).get(cur.sort_date, cur.sort_date, cur.id)
+  const next = db.prepare(`
+    SELECT id FROM factures
+    WHERE (COALESCE(document_date, created_at) < ?)
+       OR (COALESCE(document_date, created_at) = ? AND id < ?)
+    ORDER BY COALESCE(document_date, created_at) DESC, id DESC
+    LIMIT 1
+  `).get(cur.sort_date, cur.sort_date, cur.id)
+  res.json({ prev: prev?.id || null, next: next?.id || null })
 })
 
 router.get('/factures/:id/pdf', (req, res) => {
@@ -681,6 +709,14 @@ router.patch('/factures/:id', (req, res) => {
   if (Object.prototype.hasOwnProperty.call(req.body, 'is_sent_manual')) {
     updates.push('is_sent_manual=?')
     params.push(req.body.is_sent_manual ? 1 : 0)
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'notes')) {
+    const notes = req.body.notes
+    if (notes != null && typeof notes !== 'string') {
+      return res.status(400).json({ error: 'notes doit être une chaîne' })
+    }
+    updates.push('notes=?')
+    params.push(notes && notes.trim() !== '' ? notes : null)
   }
   if (updates.length) {
     params.push(req.params.id)
@@ -1096,18 +1132,6 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
       expand: ['items.data.price.product', 'discounts.source.coupon'],
     })
 
-    const items = sub.items.data.map(si => ({
-      id: si.id,
-      product_name: si.price.product?.name || si.price.nickname || si.price.id,
-      description: si.price.product?.description || null,
-      unit_amount: si.price.unit_amount ? si.price.unit_amount / 100 : null,
-      currency: si.price.currency?.toUpperCase(),
-      quantity: si.quantity,
-      interval: si.price.recurring?.interval,
-      interval_count: si.price.recurring?.interval_count,
-      total: si.price.unit_amount ? (si.price.unit_amount / 100) * si.quantity : null,
-    }))
-
     // Local change history (persistent, survives Stripe 30-day event window)
     const localEvents = db.prepare(`
       SELECT e.*, o.order_number AS rachat_order_number
@@ -1179,7 +1203,8 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
         facture_id: local?.id || null,
         lines: (inv.lines?.data || []).map(li => ({
           description: li.description,
-          amount: li.amount / 100,
+          // HT — voir stripeInvoiceItems.normalizeLine pour le pourquoi.
+          amount: (Number.isFinite(li.subtotal) ? li.subtotal : li.amount) / 100,
           quantity: li.quantity,
           proration: li.proration || false,
         })),
@@ -1194,6 +1219,37 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
       percent_off: subCoupon.percent_off,
       amount_off: subCoupon.amount_off ? subCoupon.amount_off / 100 : null,
     } : null
+
+    // Prix unitaire HT par subscription_item : pour les prix Stripe configurés
+    // `tax_behavior: "inclusive"`, `si.price.unit_amount` est TTC. On déduit le HT
+    // depuis `line.subtotal / quantity` d'une ligne récente non-proration de la
+    // même subscription_item. Fallback sur price.unit_amount (correct pour
+    // tax_behavior=exclusive ou pour les subs sans facture encore générée).
+    const htUnitBySubItem = new Map()
+    for (const inv of invoices.data) {
+      for (const li of inv.lines?.data || []) {
+        if (li.proration) continue
+        const siId = li.parent?.subscription_item_details?.subscription_item
+        if (!siId || htUnitBySubItem.has(siId)) continue
+        if (Number.isFinite(li.subtotal) && Number.isFinite(li.quantity) && li.quantity > 0) {
+          htUnitBySubItem.set(siId, Math.round(li.subtotal / li.quantity))
+        }
+      }
+    }
+    const items = sub.items.data.map(si => {
+      const htCents = htUnitBySubItem.get(si.id) ?? si.price.unit_amount ?? null
+      return {
+        id: si.id,
+        product_name: si.price.product?.name || si.price.nickname || si.price.id,
+        description: si.price.product?.description || null,
+        unit_amount: htCents != null ? htCents / 100 : null,
+        currency: si.price.currency?.toUpperCase(),
+        quantity: si.quantity,
+        interval: si.price.recurring?.interval,
+        interval_count: si.price.recurring?.interval_count,
+        total: htCents != null ? (htCents / 100) * si.quantity : null,
+      }
+    })
 
     res.json({ items, history, invoices: invoiceHistory, discount })
   } catch (e) {

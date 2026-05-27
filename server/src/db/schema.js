@@ -483,6 +483,17 @@ export function initSchema() {
       UNIQUE(previous_status, new_status)
     );
 
+    -- Défauts débit/crédit pour la prépopulation des écritures de journal.
+    -- operation_key : 'shipped.replacement', 'shipped.sale', ou 'movement.<raison>'.
+    CREATE TABLE IF NOT EXISTS journal_entry_defaults (
+      operation_key TEXT PRIMARY KEY,
+      debit_account_id TEXT,
+      debit_account_name TEXT,
+      credit_account_id TEXT,
+      credit_account_name TEXT,
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
     -- Assemblages (production runs)
     CREATE TABLE IF NOT EXISTS assemblages (
       id TEXT PRIMARY KEY,
@@ -713,6 +724,9 @@ export function initSchema() {
     'CREATE INDEX IF NOT EXISTS idx_stock_movements_product ON stock_movements(product_id)',
     'CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)',
     'CREATE INDEX IF NOT EXISTS idx_orders_company ON orders(company_id)',
+    'CREATE INDEX IF NOT EXISTS idx_orders_project ON orders(project_id)',
+    'CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_projects_deleted_updated ON projects(deleted_at, updated_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)',
     'CREATE INDEX IF NOT EXISTS idx_shipments_order ON shipments(order_id)',
     'CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)',
@@ -1027,7 +1041,7 @@ export function initSchema() {
     // Une seule ligne par stripe_session_id (autosave + soumission finale).
     `CREATE TABLE IF NOT EXISTS customer_onboarding_responses (
       id TEXT PRIMARY KEY,
-      stripe_session_id TEXT UNIQUE NOT NULL,
+      stripe_session_id TEXT UNIQUE,
       stripe_invoice_id TEXT,
       pending_invoice_id TEXT,
       company_id TEXT REFERENCES companies(id) ON DELETE SET NULL,
@@ -1045,6 +1059,9 @@ export function initSchema() {
       extras_pending_invoice_id TEXT,
       status TEXT NOT NULL DEFAULT 'in_progress' CHECK(status IN ('in_progress','submitted')),
       submitted_at TEXT,
+      qualification_call_id TEXT,
+      stripe_subscription_id TEXT,
+      public_token TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     )`,
@@ -2395,6 +2412,85 @@ export function initSchema() {
   } catch (e) {
     console.warn('⚠️  Backfill factures balance_due (candidats):', e.message)
   }
+
+  // Formulaire de découverte technique — lien qualification + token public court.
+  try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN qualification_call_id TEXT') } catch {}
+  try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN stripe_subscription_id TEXT') } catch {}
+  try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN public_token TEXT') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_onboarding_qual_call ON customer_onboarding_responses(qualification_call_id)') } catch {}
+  try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_onboarding_public_token ON customer_onboarding_responses(public_token) WHERE public_token IS NOT NULL') } catch {}
+  // stripe_session_id existant est NOT NULL UNIQUE — incompatible avec entrées issues de qualification (pas de session).
+  // On rend la colonne nullable en recréant la table si elle est encore en NOT NULL.
+  try {
+    const col = db.prepare("SELECT \"notnull\" AS nn FROM pragma_table_info('customer_onboarding_responses') WHERE name='stripe_session_id'").get()
+    if (col && col.nn === 1) {
+      db.exec(`
+        BEGIN;
+        CREATE TABLE customer_onboarding_responses__new (
+          id TEXT PRIMARY KEY,
+          stripe_session_id TEXT UNIQUE,
+          stripe_invoice_id TEXT,
+          pending_invoice_id TEXT,
+          company_id TEXT REFERENCES companies(id) ON DELETE SET NULL,
+          is_new_site TEXT,
+          farm_address_json TEXT,
+          shipping_same_as_farm INTEGER,
+          shipping_address_json TEXT,
+          network_access TEXT,
+          wifi_ssid TEXT,
+          wifi_password TEXT,
+          permission_level TEXT,
+          num_greenhouses INTEGER,
+          greenhouses_json TEXT,
+          extras_json TEXT,
+          extras_pending_invoice_id TEXT,
+          status TEXT NOT NULL DEFAULT 'in_progress' CHECK(status IN ('in_progress','submitted')),
+          submitted_at TEXT,
+          qualification_call_id TEXT,
+          stripe_subscription_id TEXT,
+          public_token TEXT,
+          created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        );
+        INSERT INTO customer_onboarding_responses__new
+          SELECT id, stripe_session_id, stripe_invoice_id, pending_invoice_id, company_id,
+                 is_new_site, farm_address_json, shipping_same_as_farm, shipping_address_json,
+                 network_access, wifi_ssid, wifi_password, permission_level, num_greenhouses,
+                 greenhouses_json, extras_json, extras_pending_invoice_id, status, submitted_at,
+                 qualification_call_id, stripe_subscription_id, public_token, created_at, updated_at
+            FROM customer_onboarding_responses;
+        DROP TABLE customer_onboarding_responses;
+        ALTER TABLE customer_onboarding_responses__new RENAME TO customer_onboarding_responses;
+        CREATE INDEX IF NOT EXISTS idx_onboarding_invoice ON customer_onboarding_responses(stripe_invoice_id);
+        CREATE INDEX IF NOT EXISTS idx_onboarding_company ON customer_onboarding_responses(company_id);
+        CREATE INDEX IF NOT EXISTS idx_onboarding_qual_call ON customer_onboarding_responses(qualification_call_id);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_onboarding_public_token ON customer_onboarding_responses(public_token) WHERE public_token IS NOT NULL;
+        COMMIT;
+      `)
+      console.log('✅ customer_onboarding_responses : stripe_session_id rendu nullable')
+    }
+  } catch (e) {
+    console.warn('⚠️  Migration customer_onboarding_responses nullable stripe_session_id:', e.message)
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS slow_page_loads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      user_id INTEGER,
+      user_name TEXT,
+      url TEXT NOT NULL,
+      load_ms INTEGER NOT NULL
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_slow_page_loads_created_at ON slow_page_loads(created_at DESC)`) } catch {}
+
+  // Index ajoutés pour éliminer SCAN TABLE + TEMP B-TREE FOR ORDER BY sur les list pages.
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at DESC)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_shipments_created ON shipments(created_at DESC)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_adresses_company_date ON adresses(company_id, created_at)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_tickets_created ON tickets(created_at)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_serial_state_changes_date ON serial_state_changes(changed_at)`) } catch {}
 
   console.log('Database schema initialized');
 }

@@ -544,6 +544,7 @@ export function DataTable({
         onReorderViews={view.reorderViews}
         activeViewId={view.activeViewId}
         setActiveViewId={view.setActiveViewId}
+        patchLocalView={view.patchLocalView}
         processedCount={filteredData.length}
         visibleCols={visibleCols} setVisibleCols={setVisibleCols}
         groupBy={groupBy} setGroupBy={setGroupBy}
@@ -825,6 +826,7 @@ export function DataTable({
               return (
                 <div
                   key={vItem.key}
+                  data-row-id={item.id}
                   style={{
                     position: 'absolute',
                     top: vItem.start,

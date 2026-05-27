@@ -334,7 +334,7 @@ function PickItemRow({ item, onToggle, onHold, flashId, onUnship, onAddToShipmen
 
 function ExpeditionCreateShipmentModal({ orderId, pickedItems, onSave, onClose }) {
   const [selected, setSelected] = useState(new Set(pickedItems.map(i => i.id)))
-  const [form, setForm] = useState({ carrier: '', tracking_number: '', notes: '' })
+  const [form, setForm] = useState({ notes: '' })
   const [saving, setSaving] = useState(false)
 
   function toggleItem(id) {
@@ -384,16 +384,6 @@ function ExpeditionCreateShipmentModal({ orderId, pickedItems, onSave, onClose }
         {selected.size === 0 && <p className="text-xs text-red-500 mt-1">Sélectionnez au moins un article.</p>}
       </div>
 
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="label">Transporteur</label>
-          <input value={form.carrier} onChange={e => setForm(f => ({ ...f, carrier: e.target.value }))} className="input" placeholder="Purolator, FedEx..." />
-        </div>
-        <div>
-          <label className="label">N° de suivi <span className="text-slate-400 font-normal">(optionnel)</span></label>
-          <input value={form.tracking_number} onChange={e => setForm(f => ({ ...f, tracking_number: e.target.value }))} className="input" />
-        </div>
-      </div>
       <div>
         <label className="label">Notes</label>
         <input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input" />
@@ -578,9 +568,14 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
     const isPicked = (item.fulfillment_status || 'À prélever') === 'Prélevé'
     const nextStatus = isPicked ? 'À prélever' : 'Prélevé'
     const nextQty   = isPicked ? 0 : item.qty
-    onPatchItem(item.id, { fulfillment_status: nextStatus, fulfilled_qty: nextQty })
+    // Décochage : on détache aussi les serials côté UI (le serveur fait pareil
+    // en DB). Coche : on conserve les serials existants.
+    const optimistic = { fulfillment_status: nextStatus, fulfilled_qty: nextQty }
+    if (isPicked) optimistic.serials = []
+    const prevSerials = item.serials || []
+    onPatchItem(item.id, optimistic)
     api.orders.updateItem(orderId, item.id, { fulfillment_status: nextStatus, fulfilled_qty: nextQty }).catch(() => {
-      onPatchItem(item.id, { fulfillment_status: item.fulfillment_status, fulfilled_qty: item.fulfilled_qty || 0 })
+      onPatchItem(item.id, { fulfillment_status: item.fulfillment_status, fulfilled_qty: item.fulfilled_qty || 0, serials: prevSerials })
     })
   }
 
@@ -661,6 +656,14 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
       </div>
 
       <div className="max-w-3xl mx-auto px-4 py-4 space-y-4">
+
+        {/* Avertissement abonnement — privilégier le reconditionné */}
+        {order.is_subscription ? (
+          <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl px-4 py-3 shadow-sm">
+            <AlertCircle size={20} className="text-amber-600 flex-shrink-0" />
+            <span className="font-semibold text-sm">Prendre les produits reconditionnés si possible !</span>
+          </div>
+        ) : null}
 
         {/* À prélever */}
         <div className="bg-white rounded-xl shadow-sm overflow-hidden">

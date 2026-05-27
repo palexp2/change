@@ -1,13 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useMemo } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
+import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 const STATUS_COLORS = { 'Commandé': 'blue', 'Reçu partiellement': 'yellow', 'Reçu': 'green', 'Annulé': 'red' }
@@ -52,19 +50,26 @@ const COLUMNS = TABLE_COLUMN_META.purchases.map(meta => ({ ...meta, render: REND
 
 export default function Purchases() {
   const navigate = useNavigate()
-  const [purchases, setPurchases] = useState([])
-  const [loading, setLoading] = useState(true)
 
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.purchases.list({ limit, page }),
-      setPurchases, setLoading
-    )
-  }, [])
+  const purchasesRaw = useTable('purchases')
+  const products = useTable('products')
+  const companies = useTable('companies')
+  const loading = !isTableHydrated('purchases')
 
-  useEffect(() => { load() }, [load])
-
-  useEntityListRealtime('purchase', setPurchases)
+  const purchases = useMemo(() => {
+    const pById = new Map(products.map(p => [p.id, p]))
+    const cById = new Map(companies.map(c => [c.id, c.name]))
+    return purchasesRaw.map(r => {
+      const p = r.product_id ? pById.get(r.product_id) : null
+      return {
+        ...r,
+        product_name: p?.name_fr || p?.name_en || r.product_name,
+        sku: p?.sku || r.sku,
+        product_image: p?.image_url || r.product_image,
+        supplier_company_name: cById.get(r.supplier_company_id) || r.supplier_company_name,
+      }
+    })
+  }, [purchasesRaw, products, companies])
 
   return (
     <Layout>

@@ -22,6 +22,7 @@ const state = {
   authed: false,
   reconnectAttempts: 0,
   reconnectTimer: null,
+  offlineFlipTimer: null,
   /** @type {Map<string, Set<(msg: any) => void>>} */
   channelHandlers: new Map(),
   pendingSubscribes: new Set(),
@@ -77,6 +78,7 @@ function open() {
 
     if (msg.type === 'auth:success') {
       state.authed = true
+      if (state.offlineFlipTimer) { clearTimeout(state.offlineFlipTimer); state.offlineFlipTimer = null }
       markOnline()
       flushSubscriptions()
       return
@@ -111,8 +113,22 @@ function open() {
     state.ws = null
     // 4001 (auth timeout) and 4002 (invalid token) are auth failures, not server-down.
     // Anything else (1006 abnormal closure, etc.) after we had a token means the
-    // server is likely restarting or unreachable — flip the global offline flag.
-    if (ev && ev.code !== 4001 && ev.code !== 4002 && token()) markOffline()
+    // server is likely restarting or unreachable.
+    //
+    // On NE flip PAS l'overlay offline immédiatement — un redémarrage normal
+    // du serveur (pm2 restart, déploiement) coupe les WS pendant ~1-2s avant
+    // que le reconnect aboutisse. Le débounce de 400ms de markOffline est trop
+    // court, ce qui flashait la modale "Connexion perdue" à chaque déploiement.
+    // On laisse passer la première tentative de reconnect (1s + auth ~200ms) ;
+    // si elle réussit, markOnline() depuis ws.onmessage('auth:success') annule
+    // tout, sinon on flip après ~2.5s.
+    if (ev && ev.code !== 4001 && ev.code !== 4002 && token()) {
+      if (state.offlineFlipTimer) clearTimeout(state.offlineFlipTimer)
+      state.offlineFlipTimer = setTimeout(() => {
+        state.offlineFlipTimer = null
+        if (!state.authed) markOffline(`ws-close-${ev.code || 'unknown'}`)
+      }, 2500)
+    }
     if (token()) scheduleReconnect()
   }
 

@@ -1,5 +1,9 @@
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { useEffect } from 'react'
 import { AuthProvider, useAuth } from './lib/auth.jsx'
+import { notifyNavigation } from './lib/pageLoadTracker.js'
+import { startDataSync, stopDataSync, isDataSyncStarted } from './lib/dataSync.js'
+import { inspectStore } from './lib/dataStore.js'
 import { ToastProvider } from './contexts/ToastContext.jsx'
 import { ConfirmProvider } from './components/ConfirmProvider.jsx'
 import ServerOfflineOverlay from './components/ServerOfflineOverlay.jsx'
@@ -44,6 +48,7 @@ import QualificationCall from './pages/QualificationCall.jsx'
 import Agent from './pages/Agent.jsx'
 import AchatsFournisseurs from './pages/AchatsFournisseurs.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
+import SaleReceiptDetail from './pages/SaleReceiptDetail.jsx'
 import JournalEntries from './pages/JournalEntries.jsx'
 import StockMovements from './pages/StockMovements.jsx'
 import Employees from './pages/Employees.jsx'
@@ -59,6 +64,7 @@ import CompanyDetail from './pages/CompanyDetail.jsx'
 import StripePayouts from './pages/StripePayouts.jsx'
 import StripePayoutDetail from './pages/StripePayoutDetail.jsx'
 import CustomerPostPayment from './pages/CustomerPostPayment.jsx'
+import DiscoveryForms from './pages/DiscoveryForms.jsx'
 import PublicFiles from './pages/PublicFiles.jsx'
 
 function ProtectedRoute({ children, adminOnly = false, hrOnly = false }) {
@@ -71,7 +77,23 @@ function ProtectedRoute({ children, adminOnly = false, hrOnly = false }) {
 
 function AppRoutes() {
   const { user } = useAuth()
+  const location = useLocation()
   useFavicon()
+
+  useEffect(() => {
+    notifyNavigation(location.pathname + location.search)
+  }, [location.pathname, location.search])
+
+  // Cache global : bootstrap au login, arrêt au logout. Voir lib/dataSync.js.
+  useEffect(() => {
+    if (user && !isDataSyncStarted()) {
+      startDataSync().catch((err) => console.error('[App] dataSync failed to start:', err))
+      // Expose un helper de debug en console.
+      if (typeof window !== 'undefined') window.__erpStore = inspectStore
+    } else if (!user && isDataSyncStarted()) {
+      stopDataSync()
+    }
+  }, [user])
 
   return (
     <Routes>
@@ -79,6 +101,8 @@ function AppRoutes() {
       <Route path="/login" element={user ? <Navigate to="/dashboard" replace /> : <Login />} />
       <Route path="/setup" element={<Setup />} />
       <Route path="/customer/post-payment" element={<CustomerPostPayment />} />
+      {/* Lien public court vers le formulaire de découverte technique — accessible sans login. */}
+      <Route path="/d/:token" element={<CustomerPostPayment />} />
 
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/pipeline" element={<ProtectedRoute><Pipeline /></ProtectedRoute>} />
@@ -90,6 +114,7 @@ function AppRoutes() {
       <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
       <Route path="/relance-qualification" element={<ProtectedRoute><RelanceQualification /></ProtectedRoute>} />
       <Route path="/qualification-call" element={<ProtectedRoute><QualificationCall /></ProtectedRoute>} />
+      <Route path="/discovery-forms" element={<ProtectedRoute><DiscoveryForms /></ProtectedRoute>} />
       <Route path="/tickets" element={<ProtectedRoute><Tickets /></ProtectedRoute>} />
       <Route path="/tickets/:id" element={<ProtectedRoute><TicketDetail /></ProtectedRoute>} />
       <Route path="/interactions" element={<ProtectedRoute><Interactions /></ProtectedRoute>} />
@@ -115,6 +140,7 @@ function AppRoutes() {
       <Route path="/depenses" element={<Navigate to="/achats-fournisseurs" replace />} />
       <Route path="/factures-fournisseurs" element={<Navigate to="/achats-fournisseurs" replace />} />
       <Route path="/sale-receipts" element={<ProtectedRoute><SaleReceipts /></ProtectedRoute>} />
+      <Route path="/sale-receipts/:id" element={<ProtectedRoute><SaleReceiptDetail /></ProtectedRoute>} />
       <Route path="/stripe-payouts" element={<ProtectedRoute><StripePayouts /></ProtectedRoute>} />
       <Route path="/stripe-payouts/:stripeId" element={<ProtectedRoute><StripePayoutDetail /></ProtectedRoute>} />
       <Route path="/journal-entries" element={<ProtectedRoute><JournalEntries /></ProtectedRoute>} />

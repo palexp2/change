@@ -2,7 +2,8 @@ import { Router } from 'express'
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { getStripeClient, ensureStripeCustomer } from '../services/stripeInvoices.js'
+import { getStripeClient, ensureStripeCustomer, getOrCreateTaxRate } from '../services/stripeInvoices.js'
+import { computeCanadaTaxes } from '../services/taxes.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -163,6 +164,108 @@ router.patch('/:id', (req, res) => {
   res.json(row)
 })
 
+// POST /:id/farm-address — sauvegarde l'adresse de la ferme saisie pendant l'appel.
+// Persiste :
+//   (a) `companies.address` (string freeform) — pour rester compatible avec le
+//       reste de l'app (orders, factures, etc. qui lisent ce champ).
+//   (b) Une row dans `adresses` avec address_type='Ferme' pour le company_id de
+//       l'appel, contenant les composants structurés (postal_code, province, country)
+//       indispensables au calcul de taxes Stripe.
+//
+// Pattern d'upsert calqué sur server/src/routes/customer-post-payment.js (une seule
+// row Ferme par company, on update si elle existe sinon on insert).
+//
+// Body : { formatted_address?, line1?, city?, province?, postal_code?, country? }
+// — tous les champs sont optionnels pour permettre la sauvegarde pendant la frappe
+// (validation stricte uniquement au moment du subscribe-card).
+// Résout l'adresse de facturation à utiliser pour ce company. On préfère la
+// row Facturation (sémantique correcte pour Stripe), à défaut Ferme (saisie
+// en slide-0), à défaut Livraison. Renvoie la row trouvée ou null. Utilisé
+// par le GET ci-dessous ET par subscribe-card pour la validation.
+function resolveBillingAddress(companyId) {
+  if (!companyId) return null
+  return db.prepare(`
+    SELECT line1, city, province, postal_code, country, address_type
+      FROM adresses
+     WHERE company_id = ?
+       AND address_type IN ('Facturation','Ferme','Livraison')
+     ORDER BY CASE address_type
+                WHEN 'Facturation' THEN 0
+                WHEN 'Ferme' THEN 1
+                WHEN 'Livraison' THEN 2
+                ELSE 3
+              END,
+              created_at DESC
+     LIMIT 1
+  `).get(companyId) || null
+}
+
+// GET /:id/farm-address — résout l'adresse de facturation (Facturation > Ferme
+// > Livraison) du company rattaché à l'appel. Utilisé par l'iframe du guide
+// pour pré-remplir les inputs du form de paiement. Le nom de l'endpoint est
+// historique (initialement Ferme-only) ; la sémantique est désormais "billing
+// address resolver" puisque le form de paiement lit cette valeur.
+router.get('/:id/farm-address', (req, res) => {
+  const call = db.prepare('SELECT id, company_id FROM qualification_calls WHERE id = ?').get(req.params.id)
+  if (!call) return res.status(404).json({ error: 'Appel introuvable' })
+  if (!call.company_id) return res.json(null)
+  res.json(resolveBillingAddress(call.company_id))
+})
+
+// Cible d'upsert selon le contexte : slide-0 capture l'adresse de la ferme,
+// le form de paiement gère l'adresse de facturation. On valide strictement.
+const UPSERTABLE_ADDRESS_TYPES = new Set(['Ferme', 'Facturation', 'Livraison'])
+
+router.post('/:id/farm-address', (req, res) => {
+  const call = db.prepare('SELECT id, company_id FROM qualification_calls WHERE id = ?').get(req.params.id)
+  if (!call) return res.status(404).json({ error: 'Appel introuvable' })
+  if (!call.company_id) return res.status(400).json({ error: 'Aucune entreprise liée à l\'appel' })
+
+  const {
+    formatted_address = null,
+    line1 = null,
+    city = null,
+    province = null,
+    postal_code = null,
+    country = null,
+    address_type = 'Ferme',
+  } = req.body || {}
+
+  if (!UPSERTABLE_ADDRESS_TYPES.has(address_type)) {
+    return res.status(400).json({ error: `address_type invalide (attendu : ${[...UPSERTABLE_ADDRESS_TYPES].join(', ')})` })
+  }
+
+  // (a) Maj du champ freeform companies.address (utilisé partout dans l'ERP)
+  if (formatted_address !== null) {
+    db.prepare(`UPDATE companies SET address = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+      .run(formatted_address || null, call.company_id)
+  }
+
+  // (b) Upsert de la row structurée pour le type demandé (seulement si on a
+  //     au moins un champ structuré)
+  const hasStructured = line1 || city || province || postal_code || country
+  if (hasStructured) {
+    const existing = db.prepare(
+      "SELECT id FROM adresses WHERE company_id=? AND address_type=? ORDER BY created_at DESC LIMIT 1"
+    ).get(call.company_id, address_type)
+    if (existing) {
+      db.prepare(`
+        UPDATE adresses
+           SET line1 = ?, city = ?, province = ?, postal_code = ?, country = ?,
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?
+      `).run(line1 || null, city || null, province || null, postal_code || null, country || null, existing.id)
+    } else {
+      db.prepare(`
+        INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(randomUUID(), call.company_id, address_type, line1 || null, city || null, province || null, postal_code || null, country || null)
+    }
+  }
+
+  res.json({ ok: true })
+})
+
 // POST /:id/subscribe-card — crée un abonnement Stripe à partir d'un PaymentMethod
 // déjà tokenisé côté client (Stripe Elements). Helper×N + Chief×M selon le quote,
 // price_data ad-hoc avec PLAN_PRICES, premier paiement immédiat.
@@ -181,9 +284,36 @@ router.post('/:id/subscribe-card', async (req, res) => {
     email,
     name,
     discount,
+    farm_address,
   } = req.body || {}
   if (!payment_method_id || typeof payment_method_id !== 'string') {
     return res.status(400).json({ error: 'payment_method_id requis' })
+  }
+
+  // Si le client envoie l'adresse de facturation en payload (depuis les inputs
+  // visibles du form de paiement), elle écrase la row Facturation persistée.
+  // Évite une course entre l'autosave on-blur et la création de la subscription
+  // — ce qui est dans le payload EST autoritaire. On écrit dans 'Facturation'
+  // car c'est sémantiquement ce que le form représente.
+  if (farm_address && typeof farm_address === 'object') {
+    const fa = farm_address
+    const line1 = typeof fa.line1 === 'string' ? fa.line1.trim() : ''
+    const city = typeof fa.city === 'string' ? fa.city.trim() : ''
+    const province = typeof fa.province === 'string' ? fa.province.trim().toUpperCase() : ''
+    const postal_code = typeof fa.postal_code === 'string' ? fa.postal_code.trim() : ''
+    const country = typeof fa.country === 'string' ? fa.country.trim().toUpperCase() : ''
+    if (postal_code && province && country) {
+      const existing = db.prepare(
+        "SELECT id FROM adresses WHERE company_id=? AND address_type='Facturation' ORDER BY created_at DESC LIMIT 1"
+      ).get(call.company_id)
+      if (existing) {
+        db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
+          .run(line1 || null, city || null, province, postal_code, country, existing.id)
+      } else {
+        db.prepare(`INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country) VALUES (?, ?, 'Facturation', ?, ?, ?, ?, ?)`)
+          .run(randomUUID(), call.company_id, line1 || null, city || null, province, postal_code, country)
+      }
+    }
   }
   const curr = String(currency).toUpperCase()
   if (curr !== 'USD' && curr !== 'CAD') {
@@ -229,6 +359,16 @@ router.post('/:id/subscribe-card', async (req, res) => {
     }
   }
 
+  // Adresse de facturation : priorité Facturation > Ferme > Livraison. Bloquant
+  // si manquante — Stripe a besoin du country + postal_code pour les receipts
+  // et pour matcher les tax_rates qu'on attache.
+  const farmAddress = resolveBillingAddress(call.company_id)
+  if (!farmAddress || !farmAddress.country || !farmAddress.postal_code || !farmAddress.province) {
+    return res.status(400).json({
+      error: 'Adresse de la ferme incomplète. Sélectionnez l\'adresse via la recherche pour récupérer code postal, province et pays.',
+    })
+  }
+
   let stripe
   try { stripe = getStripeClient() }
   catch (e) { return res.status(503).json({ error: e.message }) }
@@ -237,14 +377,21 @@ router.post('/:id/subscribe-card', async (req, res) => {
     // 1. Customer Stripe (créé si absent)
     const customerId = await ensureStripeCustomer(stripe, call.company_id)
 
-    // 2. Mettre à jour email/name du customer si fournis (utile quand le call est
-    //    en cours de qualification et que ces infos viennent d'être saisies).
-    const customerUpdate = {}
+    // 2. Mettre à jour email/name/address du customer. Address obligatoire pour
+    //    que Stripe affiche une adresse de facturation sur les receipts et pour
+    //    matcher les tax_rates qu'on attache aux items.
+    const customerUpdate = {
+      address: {
+        line1: farmAddress.line1 || undefined,
+        city: farmAddress.city || undefined,
+        state: farmAddress.province,
+        postal_code: farmAddress.postal_code,
+        country: farmAddress.country,
+      },
+    }
     if (email && typeof email === 'string') customerUpdate.email = email
     if (name && typeof name === 'string') customerUpdate.name = name
-    if (Object.keys(customerUpdate).length) {
-      await stripe.customers.update(customerId, customerUpdate)
-    }
+    await stripe.customers.update(customerId, customerUpdate)
 
     // 3. Attacher le PaymentMethod (idempotent : ignore si déjà attaché)
     try {
@@ -257,9 +404,28 @@ router.post('/:id/subscribe-card', async (req, res) => {
       invoice_settings: { default_payment_method: payment_method_id },
     })
 
-    // 4. Items : price_data ad-hoc par plan, quantité = N
+    // 4. Tax rates canadiens : à partir de la province + pays de l'adresse Ferme.
+    //    computeCanadaTaxes renvoie [] si pays != CA ou province non reconnue —
+    //    dans ce cas on laisse la subscription se créer sans tax_rate (comme le
+    //    flow Checkout existant). On crée/récupère chaque taxRate via le cache
+    //    Stripe partagé avec stripeInvoices.js.
+    const taxes = computeCanadaTaxes({
+      province: farmAddress.province,
+      country: farmAddress.country,
+      subtotal: 0, // pour récupérer la liste des taxes applicables, le montant n'importe pas
+    })
+    const taxRateIds = []
+    for (const t of taxes) {
+      const id = await getOrCreateTaxRate(stripe, { name: t.name, percentage: t.percentage, jurisdiction: t.jurisdiction })
+      taxRateIds.push(id)
+    }
+
+    // 5. Items : price_data ad-hoc par plan, quantité = N. tax_rates attachés
+    //    par item (même liste pour tous) — Stripe les applique au calcul de
+    //    chaque facture récurrente.
     const items = []
     const stripeCurrency = curr.toLowerCase()
+    const itemTax = taxRateIds.length > 0 ? { tax_rates: taxRateIds } : {}
     if (h > 0) {
       const productId = await getOrCreatePlanProduct(stripe, 'helper')
       items.push({
@@ -270,6 +436,7 @@ router.post('/:id/subscribe-card', async (req, res) => {
           unit_amount: PLAN_PRICES[curr].helper * 100,
           recurring: { interval: 'month' },
         },
+        ...itemTax,
       })
     }
     if (c > 0) {
@@ -282,10 +449,11 @@ router.post('/:id/subscribe-card', async (req, res) => {
           unit_amount: PLAN_PRICES[curr].chief * 100,
           recurring: { interval: 'month' },
         },
+        ...itemTax,
       })
     }
 
-    // 5. Coupon ad-hoc si rabais demandé. Stripe permet de créer un coupon
+    // 6. Coupon ad-hoc si rabais demandé. Stripe permet de créer un coupon
     //    « éphémère » et de l'attacher à la subscription. On ne le cache pas —
     //    chaque vente a son propre coupon, identifiable par sa metadata.
     let couponId = null
@@ -315,7 +483,7 @@ router.post('/:id/subscribe-card', async (req, res) => {
       couponId = coupon.id
     }
 
-    // 6. Création de l'abonnement (facturation immédiate, 3DS géré côté client
+    // 7. Création de l'abonnement (facturation immédiate, 3DS géré côté client
     //    via client_secret du PaymentIntent de la première facture).
     const subscription = await stripe.subscriptions.create({
       customer: customerId,

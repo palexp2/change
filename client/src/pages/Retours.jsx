@@ -1,13 +1,11 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useMemo } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
+import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 
@@ -34,19 +32,18 @@ const COLUMNS = TABLE_COLUMN_META.retours.map(meta => ({ ...meta, render: RENDER
 
 export default function Retours() {
   const navigate = useNavigate()
-  const [retours, setRetours] = useState([])
-  const [loading, setLoading] = useState(true)
 
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.retours.list({ limit, page }),
-      setRetours, setLoading
-    )
-  }, [])
+  const retoursRaw = useTable('returns')
+  const companies = useTable('companies')
+  const loading = !isTableHydrated('returns')
 
-  useEffect(() => { load() }, [load])
-
-  useEntityListRealtime('retour', setRetours)
+  const retours = useMemo(() => {
+    const cById = new Map(companies.map(c => [c.id, c.name]))
+    return retoursRaw.map(r => ({
+      ...r,
+      company_name: cById.get(r.company_id) || r.company_name,
+    }))
+  }, [retoursRaw, companies])
 
   return (
     <Layout>

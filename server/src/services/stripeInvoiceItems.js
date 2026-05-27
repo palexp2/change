@@ -11,22 +11,37 @@ function syntheticLineId(invoiceId, idx, line) {
 }
 
 // Extrait les champs nécessaires d'une ligne Stripe (objet inv.lines.data[i]).
-// Tolérant aux variantes d'expansion : price peut être objet ou string null.
-function normalizeLine(invoiceId, idx, line) {
+// Tolérant aux variantes d'expansion : price/pricing peut être objet ou string null.
+//
+// Montants : on stocke le HT (montant avant taxes) dans `amount` et `unit_amount`.
+// Pour les prix Stripe configurés `tax_behavior: "inclusive"`, `line.amount` et
+// `price.unit_amount` sont TTC — `line.subtotal` (présent depuis API 2024) est
+// le HT et c'est universellement la base imposable, quel que soit le tax_behavior.
+export function normalizeLine(invoiceId, idx, line) {
   const stripe_line_id = line.id || syntheticLineId(invoiceId, idx, line)
+  // API ≥ 2025-06 : line.pricing.price_details remplace line.price.
+  const pricing = line.pricing?.price_details || null
   const price = (line.price && typeof line.price === 'object') ? line.price : null
-  const stripe_price_id = price?.id || (typeof line.price === 'string' ? line.price : null)
-  const stripe_product_id = price?.product && typeof price.product === 'string'
-    ? price.product
-    : (price?.product?.id || null)
+  const stripe_price_id = pricing?.price
+    || price?.id
+    || (typeof line.price === 'string' ? line.price : null)
+  const stripe_product_id = pricing?.product
+    || (typeof price?.product === 'string' ? price.product : (price?.product?.id || null))
+  const quantity = Number.isFinite(line.quantity) ? line.quantity : 1
+  // HT — préfère line.subtotal (toujours HT), fallback line.amount (HT pour
+  // tax_behavior=exclusive, TTC pour inclusive — accepté en dernier recours).
+  const lineAmount = Number.isFinite(line.subtotal) ? line.subtotal : (line.amount ?? null)
+  const unitAmount = lineAmount != null && quantity > 0
+    ? Math.round(lineAmount / quantity)
+    : null
   return {
     stripe_line_id,
     stripe_price_id,
     stripe_product_id,
     description: line.description || null,
-    quantity: Number.isFinite(line.quantity) ? line.quantity : 1,
-    unit_amount: price?.unit_amount ?? (line.amount && line.quantity ? Math.round(line.amount / line.quantity) : null),
-    amount: line.amount ?? null,
+    quantity,
+    unit_amount: unitAmount,
+    amount: lineAmount,
     currency: (line.currency || price?.currency || '').toUpperCase() || null,
     period_start: line.period?.start ? new Date(line.period.start * 1000).toISOString() : null,
     period_end: line.period?.end ? new Date(line.period.end * 1000).toISOString() : null,

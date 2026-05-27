@@ -94,7 +94,7 @@ router.get('/:id', (req, res) => {
      ORDER BY oi.sort_order, oi.created_at`
   ).all(req.params.id);
 
-  const shipments = db.prepare('SELECT * FROM shipments WHERE order_id = ? ORDER BY created_at').all(req.params.id);
+  const shipments = db.prepare('SELECT * FROM shipments WHERE order_id = ? AND deleted_at IS NULL ORDER BY created_at').all(req.params.id);
 
   const itemIds = items.map(i => i.id)
   let itemsWithSerials = items
@@ -317,10 +317,25 @@ router.patch('/:id/items/:itemId', (req, res) => {
   }
   if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
   db.prepare(`UPDATE order_items SET ${updates.join(', ')} WHERE id=? AND order_id=?`).run(...values, req.params.itemId, req.params.id);
+
+  // Décochage en mode expédition : si on remet l'article à « À prélever » ou
+  // à fulfilled_qty=0, on détache les numéros de série liés (sinon ils
+  // restent collés à un item qui n'est plus prélevé). Cas pratique : le
+  // picker scanne le mauvais SN, décoche, rescanne le bon.
+  const isUnpicking = req.body.fulfillment_status === 'À prélever' || req.body.fulfilled_qty === 0
+  if (isUnpicking) {
+    db.prepare('UPDATE serial_numbers SET order_item_id = NULL WHERE order_item_id = ?').run(req.params.itemId)
+  }
+
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
   const item = db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?').get(req.params.itemId);
-  emitOrderItem('updated', req.params.id, item, req.user?.id);
-  res.json(item);
+  // Inclure serials dans la réponse (et l'événement realtime) pour que le
+  // client mette à jour ses badges sans refetch — le merge côté UI applique
+  // `serials: []` quand on vient de détacher.
+  const serials = db.prepare('SELECT * FROM serial_numbers WHERE order_item_id = ? ORDER BY serial').all(req.params.itemId)
+  const itemWithSerials = { ...item, serials }
+  emitOrderItem('updated', req.params.id, itemWithSerials, req.user?.id);
+  res.json(itemWithSerials);
 });
 
 // POST /api/orders/:id/items/:itemId/duplicate

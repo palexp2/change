@@ -1,17 +1,27 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Bot, Plus, CheckCircle, XCircle, Clock, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2, Terminal, FileText, Edit3, Search, Zap, ListTodo, Activity, Maximize2, Minimize2 } from 'lucide-react'
+import { Bot, Send, CheckCircle, XCircle, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2, Terminal, FileText, Edit3, Search, ListTodo, Activity, Maximize2, Minimize2, Lightbulb, MessageSquare, Power, ShieldAlert, Plus, RotateCw } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { fmtDateTime } from '../lib/formatDate.js'
 
 const STATUS_CONFIG = {
-  pending:     { label: 'En attente',    color: 'text-slate-500',   bg: 'bg-slate-50',      border: 'border-l-slate-400',    dot: 'bg-slate-400',    icon: Clock },
-  approved:    { label: 'Approuvée',     color: 'text-sky-600',     bg: 'bg-sky-50',        border: 'border-l-sky-500',      dot: 'bg-sky-500',      icon: CheckCircle },
-  in_progress: { label: 'En cours',      color: 'text-amber-600',   bg: 'bg-amber-50',      border: 'border-l-amber-500',    dot: 'bg-amber-500',    icon: Loader2 },
-  done:        { label: 'Terminée',      color: 'text-emerald-600', bg: 'bg-emerald-50',    border: 'border-l-emerald-500',  dot: 'bg-emerald-500',  icon: CheckCircle },
-  blocked:     { label: 'Bloquée',       color: 'text-red-600',     bg: 'bg-red-50',        border: 'border-l-red-500',      dot: 'bg-red-500',      icon: AlertTriangle },
-  rejected:    { label: 'Rejetée',       color: 'text-slate-400',   bg: 'bg-slate-50',      border: 'border-l-slate-300',    dot: 'bg-slate-300',    icon: XCircle },
+  pending:       { label: 'À lire',      color: 'text-slate-600',   bg: 'bg-white',       border: 'border-l-slate-400',   icon: Lightbulb },
+  in_discussion: { label: 'Discussion',  color: 'text-violet-600',  bg: 'bg-violet-50/40',border: 'border-l-violet-500',  icon: MessageSquare },
+  approved:      { label: 'Approuvée',   color: 'text-sky-600',     bg: 'bg-sky-50',      border: 'border-l-sky-500',     icon: CheckCircle },
+  in_progress:   { label: 'En cours',    color: 'text-amber-600',   bg: 'bg-amber-50',    border: 'border-l-amber-500',   icon: Loader2 },
+  done:          { label: 'Terminée',    color: 'text-emerald-600', bg: 'bg-emerald-50',  border: 'border-l-emerald-500', icon: CheckCircle },
+  blocked:       { label: 'Bloquée',     color: 'text-red-600',     bg: 'bg-red-50',      border: 'border-l-red-500',     icon: AlertTriangle },
+  rejected:      { label: 'Rejetée',     color: 'text-slate-400',   bg: 'bg-slate-50',    border: 'border-l-slate-300',   icon: XCircle },
 }
+
+const SOURCE_LABELS = {
+  A: 'Scan code',
+  B: 'Signal système',
+  C: 'Règle design',
+  D: 'Ton backlog',
+}
+const EFFORT_LABELS = { small: 'Petit', medium: 'Moyen', large: 'Gros' }
 
 // ─── Tool icon helper ────────────────────────────────────────────────────────
 function _toolIcon(name) {
@@ -31,11 +41,15 @@ function TaskStream({ chunks, done = false }) {
   const [expanded, setExpanded] = useState(false)
   const [autoScroll, setAutoScroll] = useState(true)
 
+  const chunkCount = chunks?.length || 0
   useEffect(() => {
-    if (autoScroll) {
-      bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+    // Défiler UNIQUEMENT le conteneur interne du stream — jamais `scrollIntoView`,
+    // qui ferait sauter toute la page vers cette fenêtre et empêcherait de lire
+    // les autres propositions pendant qu'une exécution streame.
+    if (autoScroll && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
-  }, [chunks?.length, autoScroll])
+  }, [chunkCount, autoScroll])
 
   function handleScroll() {
     const el = scrollRef.current
@@ -49,67 +63,34 @@ function TaskStream({ chunks, done = false }) {
   return (
     <div className="bg-slate-950 rounded-lg border border-slate-800 overflow-hidden">
       <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-slate-800 bg-slate-900">
-        {done
-          ? <Terminal size={10} className="text-slate-500" />
-          : <Activity size={10} className="text-amber-400 animate-pulse" />
-        }
-        <span className="text-xs text-slate-400 font-medium flex-1">
-          {done ? 'Journal d\'exécution' : 'Stream Claude Code'}
-        </span>
-        {chunks?.length > 0 && (
-          <span className="text-xs text-slate-600 tabular-nums mr-1">{chunks.length} evt</span>
-        )}
+        {done ? <Terminal size={10} className="text-slate-500" /> : <Activity size={10} className="text-amber-400 animate-pulse" />}
+        <span className="text-xs text-slate-400 font-medium flex-1">{done ? 'Journal d\'exécution' : 'Stream Claude Code'}</span>
+        {chunks?.length > 0 && <span className="text-xs text-slate-600 tabular-nums mr-1">{chunks.length} evt</span>}
         {!autoScroll && !done && (
-          <button
-            onClick={() => { setAutoScroll(true); bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }}
-            className="text-xs text-amber-400 hover:text-amber-300 mr-1.5"
-          >↓ bas</button>
+          <button onClick={() => { setAutoScroll(true); const el = scrollRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }) }} className="text-xs text-amber-400 hover:text-amber-300 mr-1.5">↓ bas</button>
         )}
-        <button
-          onClick={() => setExpanded(e => !e)}
-          className="text-slate-600 hover:text-slate-400 transition-colors"
-          title={expanded ? 'Réduire' : 'Agrandir'}
-        >
+        <button onClick={() => setExpanded(e => !e)} className="text-slate-600 hover:text-slate-400 transition-colors" title={expanded ? 'Réduire' : 'Agrandir'}>
           {expanded ? <Minimize2 size={10} /> : <Maximize2 size={10} />}
         </button>
       </div>
-      <div
-        ref={scrollRef}
-        onScroll={handleScroll}
-        className={`${heightClass} overflow-y-auto p-2.5 space-y-0.5 font-mono text-xs transition-all duration-200`}
-      >
+      <div ref={scrollRef} onScroll={handleScroll} className={`${heightClass} overflow-y-auto p-2.5 space-y-0.5 font-mono text-xs transition-all duration-200`}>
         {!chunks?.length ? (
-          <div className="flex items-center gap-2 text-slate-500 py-1">
-            <Loader2 size={9} className="animate-spin" />
-            <span>En attente des premières actions…</span>
-          </div>
+          <div className="flex items-center gap-2 text-slate-500 py-1"><Loader2 size={9} className="animate-spin" /><span>En attente des premières actions…</span></div>
         ) : (
           chunks.map((chunk, i) => {
-            if (chunk.kind === 'tool') {
-              return (
-                <div key={i} className="flex items-center gap-1.5 leading-relaxed">
-                  <span className="text-slate-600 flex-shrink-0">›</span>
-                  <span className="text-brand-400 flex-shrink-0 font-semibold">{chunk.name}</span>
-                  {chunk.input && (
-                    <span className="text-slate-400 truncate">{chunk.input}</span>
-                  )}
-                </div>
-              )
-            }
-            if (chunk.kind === 'result') {
-              return (
-                <div key={i} className="ml-3 pl-2 border-l border-slate-700 text-slate-500 whitespace-pre-wrap leading-relaxed my-0.5 break-all">
-                  {chunk.content}
-                </div>
-              )
-            }
-            if (chunk.kind === 'text') {
-              return (
-                <div key={i} className="text-emerald-400 whitespace-pre-wrap leading-relaxed py-0.5">
-                  {chunk.text}
-                </div>
-              )
-            }
+            if (chunk.kind === 'tool') return (
+              <div key={i} className="flex items-center gap-1.5 leading-relaxed">
+                <span className="text-slate-600 flex-shrink-0">›</span>
+                <span className="text-brand-400 flex-shrink-0 font-semibold">{chunk.name}</span>
+                {chunk.input && <span className="text-slate-400 truncate">{chunk.input}</span>}
+              </div>
+            )
+            if (chunk.kind === 'result') return (
+              <div key={i} className="ml-3 pl-2 border-l border-slate-700 text-slate-500 whitespace-pre-wrap leading-relaxed my-0.5 break-all">{chunk.content}</div>
+            )
+            if (chunk.kind === 'text') return (
+              <div key={i} className="text-emerald-400 whitespace-pre-wrap leading-relaxed py-0.5">{chunk.text}</div>
+            )
             return null
           })
         )}
@@ -119,102 +100,393 @@ function TaskStream({ chunks, done = false }) {
   )
 }
 
-// ─── Task components ─────────────────────────────────────────────────────────
-function TaskCard({ task, onUpdate, onDelete, streamChunks }) {
-  const [expanded, setExpanded] = useState(false)
+// ─── Proposal / task card ─────────────────────────────────────────────────────
+function ProposalCard({ task, onUpdate, onDelete, onSend, streamChunks, defaultExpanded = false }) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+  const [reply, setReply] = useState('')
+  const [sending, setSending] = useState(false)
   const [comment, setComment] = useState(task.user_comment || '')
-  const [saving, setSaving] = useState(false)
+  const [commentSaving, setCommentSaving] = useState(false)
+  const [commentSaved, setCommentSaved] = useState(false)
   const cfg = STATUS_CONFIG[task.status] || STATUS_CONFIG.pending
   const Icon = cfg.icon
+  const isProposal = task.kind === 'proposal'
+  const heading = task.title || task.description
+  const canTriage = ['pending', 'in_discussion'].includes(task.status)
+  const highRisk = task.risk === 'high'
 
-  async function saveComment() {
-    if (comment === task.user_comment) return
-    setSaving(true)
-    await onUpdate(task.id, { user_comment: comment })
-    setSaving(false)
+  async function sendReply() {
+    if (!reply.trim() || sending) return
+    setSending(true)
+    await onSend(task.id, reply.trim())
+    setReply('')
+    setSending(false)
   }
 
-  const isActive = !['done', 'rejected'].includes(task.status)
+  async function reject() {
+    await onUpdate(task.id, { status: 'rejected', user_comment: comment || task.user_comment || null })
+  }
+
+  // Autosave on blur (règle « autosave partout » — état de sauvegarde visible obligatoire).
+  async function saveComment() {
+    if (comment === (task.user_comment || '') || commentSaving) return
+    setCommentSaving(true)
+    try {
+      await onUpdate(task.id, { user_comment: comment })
+      setCommentSaved(true)
+      setTimeout(() => setCommentSaved(false), 2000)
+    } finally {
+      setCommentSaving(false)
+    }
+  }
 
   return (
-    <div className={`rounded-xl border border-slate-200 border-l-2 ${cfg.border} ${cfg.bg} transition-all shadow-sm`}>
-      <div className="flex items-start gap-3 p-4 cursor-pointer" onClick={() => setExpanded(s => !s)}>
+    <div className={`rounded-xl border border-slate-200 border-l-[3px] ${cfg.border} ${cfg.bg} transition-all shadow-sm`}>
+      {/* Header row */}
+      <div className="flex items-start gap-2.5 p-3.5 sm:p-4 cursor-pointer" onClick={() => setExpanded(s => !s)}>
         <Icon size={15} className={`mt-0.5 flex-shrink-0 ${cfg.color} ${task.status === 'in_progress' ? 'animate-spin' : ''}`} />
         <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-slate-900 text-sm font-medium truncate">{task.description}</span>
-            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${cfg.color} bg-current/10`}>
-              {cfg.label}
-            </span>
+          <div className="flex items-start gap-2 flex-wrap">
+            <span className="text-slate-900 text-sm font-medium break-words flex-1 min-w-0">{heading}</span>
+            <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${cfg.color} bg-current/10`}>{cfg.label}</span>
           </div>
-        </div>
-        <div className="flex items-center gap-1 flex-shrink-0">
-          {isActive && task.status === 'pending' && (
-            <button
-              onClick={e => { e.stopPropagation(); onUpdate(task.id, { status: 'approved' }) }}
-              className="text-xs px-2.5 py-1 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-medium transition-colors"
-            >
-              Approuver
-            </button>
+          {/* Meta badges */}
+          {isProposal && (
+            <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+              {highRisk
+                ? <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold"><ShieldAlert size={10} /> Risque élevé</span>
+                : <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Risque faible</span>}
+              {task.source && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{SOURCE_LABELS[task.source] || task.source}</span>}
+              {task.effort && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Effort : {EFFORT_LABELS[task.effort] || task.effort}</span>}
+              {task.messages?.length > 0 && <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-600"><MessageSquare size={10} />{task.messages.length}</span>}
+            </div>
           )}
-          {isActive && (task.status === 'approved' || task.status === 'pending') && (
-            <button
-              onClick={e => { e.stopPropagation(); onUpdate(task.id, { status: 'rejected' }) }}
-              className="text-xs px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-200 text-slate-600 rounded-lg font-medium transition-colors"
-            >
-              Rejeter
-            </button>
-          )}
-          <button
-            onClick={e => { e.stopPropagation(); onDelete(task.id) }}
-            className="text-slate-400 hover:text-red-500 p-1.5 rounded-lg transition-colors hover:bg-red-50"
-          >
-            <Trash2 size={13} />
-          </button>
-          {expanded ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
         </div>
+        <button onClick={e => { e.stopPropagation(); onDelete(task.id) }} className="text-slate-300 hover:text-red-500 p-1 rounded-lg transition-colors hover:bg-red-50 flex-shrink-0">
+          <Trash2 size={13} />
+        </button>
+        {expanded ? <ChevronUp size={14} className="text-slate-400 flex-shrink-0 mt-1" /> : <ChevronDown size={14} className="text-slate-400 flex-shrink-0 mt-1" />}
       </div>
 
-      {/* Live stream — always visible when in_progress */}
+      {/* Live stream when running */}
       {task.status === 'in_progress' && (
-        <div className="px-4 pb-3">
-          <TaskStream chunks={streamChunks} />
-        </div>
+        <div className="px-3.5 sm:px-4 pb-3"><TaskStream chunks={streamChunks} /></div>
       )}
 
       {expanded && (
-        <div className="px-4 pb-4 space-y-3 border-t border-slate-200/80 pt-3">
-          {task.description && task.description.length > 80 && (
+        <div className="px-3.5 sm:px-4 pb-4 space-y-3 border-t border-slate-200/70 pt-3">
+          {isProposal && task.why && (
+            <div>
+              <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wider mb-0.5">Pourquoi</p>
+              <p className="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed">{task.why}</p>
+            </div>
+          )}
+          {isProposal && task.zone && (
+            <div>
+              <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wider mb-0.5">Zone touchée</p>
+              <p className="text-slate-600 text-xs font-mono break-words">{task.zone}</p>
+            </div>
+          )}
+          {isProposal && task.side_effects && task.side_effects !== 'aucun' && (
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+              <p className="text-[11px] text-amber-700 font-semibold uppercase tracking-wider mb-0.5">Side effects</p>
+              <p className="text-amber-800 text-xs whitespace-pre-wrap">{task.side_effects}</p>
+            </div>
+          )}
+          {!isProposal && task.description?.length > 80 && (
             <p className="text-slate-600 text-sm whitespace-pre-wrap">{task.description}</p>
           )}
-          {/* Stream replay for completed/blocked tasks (while buffer is still in memory) */}
-          {(task.status === 'done' || task.status === 'blocked') && streamChunks?.length > 0 && (
-            <TaskStream chunks={streamChunks} done />
+
+          {/* Conversation thread */}
+          {task.messages?.length > 0 && (
+            <div className="space-y-2">
+              {task.messages.map((m, i) => (
+                <div key={i} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-[85%] rounded-2xl px-3 py-2 text-sm whitespace-pre-wrap ${m.role === 'user' ? 'bg-brand-600 text-white rounded-br-sm' : 'bg-slate-100 text-slate-700 rounded-bl-sm'}`}>
+                    {m.text}
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
+
+          {/* Conversation input (read-only discussion, no code yet) */}
+          {canTriage && (
+            <div className="flex items-end gap-2">
+              <textarea
+                value={reply}
+                onChange={e => setReply(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) sendReply() }}
+                rows={1}
+                placeholder="Discuter, questionner, demander une variante…"
+                className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20"
+              />
+              <button onClick={sendReply} disabled={sending || !reply.trim()} className="flex-shrink-0 h-9 w-9 flex items-center justify-center bg-violet-600 hover:bg-violet-500 disabled:opacity-40 text-white rounded-lg transition-colors" title="Envoyer (⌘+Entrée)">
+                {sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
+              </button>
+            </div>
+          )}
+
+          {/* Triage actions */}
+          {canTriage && (
+            <div className="flex flex-col sm:flex-row gap-2 pt-1">
+              <button onClick={() => onUpdate(task.id, { status: 'approved' })} className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition-colors">
+                <CheckCircle size={15} /> Approuver &amp; coder
+              </button>
+              <button onClick={reject} className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-600 rounded-lg text-sm font-medium transition-colors">
+                <XCircle size={15} /> Rejeter
+              </button>
+            </div>
+          )}
+          {/* Relancer une tâche bloquée (interrompue par un redémarrage serveur ou un échec) */}
+          {task.status === 'blocked' && (
+            <div className="flex flex-col sm:flex-row gap-2 pt-1">
+              <button onClick={() => onUpdate(task.id, { status: 'approved' })} className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition-colors">
+                <RotateCw size={15} /> Relancer
+              </button>
+              <button onClick={reject} className="flex-1 sm:flex-none flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-600 rounded-lg text-sm font-medium transition-colors">
+                <XCircle size={15} /> Abandonner
+              </button>
+            </div>
+          )}
+
+          {canTriage && (
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <label className="text-[11px] text-slate-400 font-medium uppercase tracking-wider">Commentaire (calibre l'agent en cas de rejet)</label>
+                {commentSaving
+                  ? <Loader2 size={11} className="text-slate-400 animate-spin" />
+                  : commentSaved
+                    ? <span className="text-[11px] text-emerald-600 font-medium">Enregistré</span>
+                    : comment !== (task.user_comment || '') && <span className="text-[11px] text-slate-400">Modifié</span>}
+              </div>
+              <textarea value={comment} onChange={e => setComment(e.target.value)} onBlur={saveComment} rows={2} placeholder="Ex. ne propose plus de migrations cosmétiques…" className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20" />
+            </div>
+          )}
+
+          {/* Execution replay + result for done/blocked */}
+          {(task.status === 'done' || task.status === 'blocked') && streamChunks?.length > 0 && <TaskStream chunks={streamChunks} done />}
           {task.agent_result && (
             <div className="bg-white rounded-lg p-3 border border-slate-200">
-              <p className="text-xs text-slate-400 font-medium uppercase tracking-wider mb-1.5">Résultat agent</p>
+              <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wider mb-1.5">Rapport agent</p>
               <p className="text-slate-700 text-xs whitespace-pre-wrap font-mono leading-relaxed">{task.agent_result}</p>
             </div>
           )}
-          <div>
-            <label className="text-xs text-slate-400 font-medium uppercase tracking-wider block mb-1.5">
-              Votre commentaire
-            </label>
+          {task.completed_at && <p className="text-xs text-slate-400">Terminée le {fmtDateTime(task.completed_at)}</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Zone wrapper ─────────────────────────────────────────────────────────────
+function Zone({ title, count, children, collapsible = false }) {
+  const [open, setOpen] = useState(!collapsible)
+  return (
+    <section className="mb-6">
+      <button
+        onClick={() => collapsible && setOpen(o => !o)}
+        className={`w-full flex items-center gap-2 mb-2.5 ${collapsible ? 'cursor-pointer' : 'cursor-default'}`}
+      >
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">{title}</h2>
+        <span className="text-xs text-slate-400 tabular-nums">{count}</span>
+        {collapsible && (open ? <ChevronUp size={13} className="text-slate-400" /> : <ChevronDown size={13} className="text-slate-400" />)}
+        <div className="flex-1 border-t border-slate-200/70 ml-1" />
+      </button>
+      {open && children}
+    </section>
+  )
+}
+
+// ─── Backlog panel ────────────────────────────────────────────────────────────
+function BacklogPanel({ items, onAdd, onDelete }) {
+  const [text, setText] = useState('')
+  const [open, setOpen] = useState(false)
+
+  async function submit() {
+    if (!text.trim()) return
+    await onAdd(text.trim())
+    setText('')
+  }
+
+  return (
+    <div className="mb-6 bg-white border border-slate-200 rounded-xl p-3.5 shadow-sm">
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-2 text-left">
+        <Lightbulb size={15} className="text-amber-500" />
+        <span className="text-sm font-medium text-slate-700 flex-1">Jeter une idée</span>
+        {items.length > 0 && <span className="text-xs text-slate-400 tabular-nums">{items.length} en attente</span>}
+        {open ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2.5">
+          <div className="flex items-end gap-2">
             <textarea
-              value={comment}
-              onChange={e => setComment(e.target.value)}
-              onBlur={saveComment}
+              value={text}
+              onChange={e => setText(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit() }}
               rows={2}
-              placeholder="Instructions, corrections, précisions…"
-              className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20 transition-all"
+              placeholder="Une note vague que l'agent transformera en proposition concrète…"
+              className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20"
             />
-            {saving && <span className="text-xs text-slate-400">Enregistrement…</span>}
+            <button onClick={submit} disabled={!text.trim()} className="flex-shrink-0 h-9 w-9 flex items-center justify-center bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-white rounded-lg transition-colors" title="Ajouter au backlog">
+              <Plus size={16} />
+            </button>
           </div>
-          {task.completed_at && (
-            <p className="text-xs text-slate-400">
-              Terminée le {new Date(task.completed_at).toLocaleString('fr-CA')}
-            </p>
+          {items.map(item => (
+            <div key={item.id} className="flex items-start gap-2 text-sm text-slate-600 bg-slate-50 rounded-lg px-3 py-2">
+              <span className="flex-1 whitespace-pre-wrap break-words">{item.text}</span>
+              <button onClick={() => onDelete(item.id)} className="text-slate-300 hover:text-red-500 flex-shrink-0"><Trash2 size={13} /></button>
+            </div>
+          ))}
+          {items.length === 0 && <p className="text-xs text-slate-400">Tes notes seront élaborées en priorité à la prochaine génération.</p>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Prompt général (préambule système éditable) ──────────────────────────────
+function PromptPanel({ value, onSave }) {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState(value || '')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  // Resynchronise si la valeur change ailleurs (WS settings:updated / chargement).
+  useEffect(() => { setText(value || '') }, [value])
+
+  const dirty = text !== (value || '')
+
+  // Autosave on blur (règle « autosave partout » du CLAUDE.md — pas de bouton Enregistrer).
+  async function save() {
+    if (!dirty || saving) return
+    setSaving(true)
+    try {
+      await onSave(text)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="mb-6 bg-white border border-slate-200 rounded-xl p-3.5 shadow-sm">
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-2 text-left">
+        <FileText size={15} className="text-brand-500" />
+        <span className="text-sm font-medium text-slate-700 flex-1">Prompt général</span>
+        {saving
+          ? <Loader2 size={13} className="text-slate-400 animate-spin" />
+          : saved
+            ? <span className="text-[11px] text-emerald-600 font-medium">Enregistré</span>
+            : dirty && open && <span className="text-[11px] text-slate-400">Modifié</span>}
+        {open ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <p className="text-xs text-slate-400">
+            Préambule injecté en tête de chaque activité de l'agent (génération d'idées, discussion, exécution de code). Enregistré automatiquement à la sortie du champ.
+          </p>
+          <textarea
+            value={text}
+            onChange={e => setText(e.target.value)}
+            onBlur={save}
+            rows={8}
+            placeholder="Instructions générales données à l'agent…"
+            className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 font-mono leading-relaxed resize-y focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20"
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Instructions projet (CLAUDE.md) — éditable, admin only ───────────────────
+function ClaudeMdPanel() {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState('')
+  const [original, setOriginal] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const fetchedRef = useRef(false)
+
+  // Chargement paresseux : on ne lit le fichier qu'au premier dépliage.
+  // Deps = [open] uniquement : mettre `loading` dans les deps relancerait l'effet
+  // (et tuerait le fetch via le cleanup) avant sa résolution.
+  useEffect(() => {
+    if (!open || fetchedRef.current) return
+    fetchedRef.current = true
+    setLoading(true)
+    ;(async () => {
+      try {
+        const r = await api.agent.readClaudeMd()
+        setText(r.content || '')
+        setOriginal(r.content || '')
+      } catch (e) {
+        setError(e.message || 'Erreur de chargement')
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [open])
+
+  const dirty = text !== original
+
+  // Autosave on blur (règle « autosave partout » — pas de bouton Enregistrer).
+  async function save() {
+    if (!dirty || saving) return
+    setSaving(true)
+    setError(null)
+    try {
+      await api.agent.saveClaudeMd(text)
+      setOriginal(text)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (e) {
+      setError(e.message || 'Erreur d\'enregistrement')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="mb-6 bg-white border border-slate-200 rounded-xl p-3.5 shadow-sm">
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-2 text-left">
+        <FileText size={15} className="text-brand-500" />
+        <span className="text-sm font-medium text-slate-700 flex-1">Instructions projet (CLAUDE.md)</span>
+        {saving
+          ? <Loader2 size={13} className="text-slate-400 animate-spin" />
+          : saved
+            ? <span className="text-[11px] text-emerald-600 font-medium">Enregistré</span>
+            : dirty && open && <span className="text-[11px] text-slate-400">Modifié</span>}
+        {open ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <p className="text-xs text-slate-400">
+            Le contexte et les règles du projet, lus à chaque activité de l'agent. Enregistré automatiquement à la sortie du champ.
+          </p>
+          <div className="flex items-start gap-2 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[11px]">
+            <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+            <span>
+              Ce fichier est versionné : un déploiement (<code>git pull</code>) peut écraser des modifications non committées. Pense à committer après une édition importante.
+            </span>
+          </div>
+          {error && (
+            <div className="px-3 py-2 rounded-md bg-red-50 border border-red-200 text-red-700 text-[11px]" data-testid="claude-md-error">{error}</div>
+          )}
+          {loading ? (
+            <div className="flex items-center gap-2 text-slate-400 text-sm py-6"><Loader2 size={16} className="animate-spin" /> Chargement…</div>
+          ) : (
+            <textarea
+              value={text}
+              onChange={e => setText(e.target.value)}
+              onBlur={save}
+              data-testid="claude-md-textarea"
+              rows={24}
+              placeholder="Instructions projet…"
+              className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 font-mono leading-relaxed resize-y focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20"
+            />
           )}
         </div>
       )}
@@ -222,302 +494,211 @@ function TaskCard({ task, onUpdate, onDelete, streamChunks }) {
   )
 }
 
-function NewTaskForm({ onAdd, onCancel }) {
-  const [form, setForm] = useState({ description: '' })
-  const [saving, setSaving] = useState(false)
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    if (!form.description.trim()) return
-    setSaving(true)
-    await onAdd(form)
-    setSaving(false)
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="bg-white border border-slate-200 rounded-xl p-4 space-y-3 shadow-sm">
-      <textarea
-        autoFocus
-        value={form.description}
-        onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-        placeholder="Description de la tâche…"
-        rows={3}
-        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20 transition-all"
-        required
-      />
-      <div className="flex gap-2 justify-end">
-        <button type="button" onClick={onCancel} className="btn-secondary text-sm">Annuler</button>
-        <button type="submit" disabled={saving || !form.description.trim()} className="btn-primary text-sm">
-          {saving ? 'Ajout…' : 'Ajouter la tâche'}
-        </button>
-      </div>
-    </form>
-  )
-}
-
-// ─── Tasks tab ────────────────────────────────────────────────────────────────
-function TasksTab() {
+// ─── Main content ─────────────────────────────────────────────────────────────
+export function AgentContent() {
   const [tasks, setTasks] = useState([])
   const [loading, setLoading] = useState(true)
-  const [showForm, setShowForm] = useState(false)
-  const [filter, setFilter] = useState(null)
-  const [streamData, setStreamData] = useState({}) // taskId -> chunk[]
+  const [settings, setSettings] = useState({ enabled: false })
+  const [backlog, setBacklog] = useState([])
+  const [activity, setActivity] = useState(null)
+  const [streamData, setStreamData] = useState({})
   const fetchedStreamRef = useRef(new Set())
   const { showToast } = useToast()
 
   const load = useCallback(async () => {
     try {
-      const data = await api.agent.listTasks()
-      setTasks(data)
+      const [t, s, b] = await Promise.all([api.agent.listTasks(), api.agent.getSettings(), api.agent.listBacklog()])
+      setTasks(t); setSettings(s); setBacklog(b)
     } catch {
-      showToast('Erreur chargement des tâches', 'error')
-    } finally {
-      setLoading(false)
-    }
+      showToast('Erreur chargement de l\'agent', 'error')
+    } finally { setLoading(false) }
   }, [showToast])
 
   useEffect(() => { load() }, [load])
 
-  // Real-time task updates via WebSocket events dispatched by Layout
+  // Runner status poll
   useEffect(() => {
-    function onTaskUpdate(e) {
-      const updated = e.detail
+    async function fetchStatus() {
+      try {
+        const token = localStorage.getItem('erp_token')
+        const res = await fetch('/erp/api/agent/runner/status', { headers: { Authorization: `Bearer ${token}` } })
+        if (res.ok) { const d = await res.json(); setActivity(d.busy ? d.activity : null) }
+      } catch {}
+    }
+    fetchStatus()
+    const i = setInterval(fetchStatus, 5000)
+    return () => clearInterval(i)
+  }, [])
+
+  // WS: task updates
+  useEffect(() => {
+    function onTask(e) {
+      const u = e.detail
       setTasks(prev => {
-        const idx = prev.findIndex(t => t.id === updated.id)
-        if (idx === -1) return [updated, ...prev]
-        const next = [...prev]
-        next[idx] = updated
-        return next
+        const idx = prev.findIndex(t => t.id === u.id)
+        if (idx === -1) return [u, ...prev]
+        const next = [...prev]; next[idx] = u; return next
       })
     }
-    window.addEventListener('agent:task:updated', onTaskUpdate)
-    return () => window.removeEventListener('agent:task:updated', onTaskUpdate)
-  }, [])
-
-  // Real-time stream chunks for in_progress tasks
-  useEffect(() => {
     function onStream(e) {
       const { taskId, chunk } = e.detail
-      setStreamData(prev => ({
-        ...prev,
-        [taskId]: [...(prev[taskId] || []), chunk],
-      }))
+      setStreamData(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), chunk] }))
     }
+    function onSettings(e) { setSettings(e.detail) }
+    function onBacklog() { api.agent.listBacklog().then(setBacklog).catch(() => {}) }
+    window.addEventListener('agent:task:updated', onTask)
     window.addEventListener('agent:task:stream', onStream)
-    return () => window.removeEventListener('agent:task:stream', onStream)
+    window.addEventListener('agent:settings:updated', onSettings)
+    window.addEventListener('agent:backlog:updated', onBacklog)
+    return () => {
+      window.removeEventListener('agent:task:updated', onTask)
+      window.removeEventListener('agent:task:stream', onStream)
+      window.removeEventListener('agent:settings:updated', onSettings)
+      window.removeEventListener('agent:backlog:updated', onBacklog)
+    }
   }, [])
 
-  // Fetch existing stream buffer for in_progress tasks (late arrivals / page refresh)
-  // and for recently done/blocked tasks (buffer kept 2min after completion)
+  // Fetch stream buffers for in_progress / recently finished
   useEffect(() => {
     const relevant = tasks.filter(t => ['in_progress', 'done', 'blocked'].includes(t.status))
     for (const task of relevant) {
       if (fetchedStreamRef.current.has(task.id)) continue
       fetchedStreamRef.current.add(task.id)
       const token = localStorage.getItem('erp_token')
-      fetch(`/erp/api/agent/tasks/${task.id}/stream-log`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
+      fetch(`/erp/api/agent/tasks/${task.id}/stream-log`, { headers: { Authorization: `Bearer ${token}` } })
         .then(r => r.json())
-        .then(data => {
-          if (data.chunks?.length > 0) {
-            setStreamData(prev => ({ ...prev, [task.id]: data.chunks }))
-          }
-        })
+        .then(data => { if (data.chunks?.length) setStreamData(prev => ({ ...prev, [task.id]: data.chunks })) })
         .catch(() => {})
     }
   }, [tasks])
 
   async function handleUpdate(id, patch) {
     try {
-      const updated = await api.agent.updateTask(id, patch)
-      setTasks(prev => prev.map(t => t.id === id ? updated : t))
-    } catch {
-      showToast('Erreur mise à jour', 'error')
-    }
+      const u = await api.agent.updateTask(id, patch)
+      setTasks(prev => prev.map(t => t.id === id ? u : t))
+    } catch { showToast('Erreur mise à jour', 'error') }
   }
-
   async function handleDelete(id) {
+    try { await api.agent.deleteTask(id); setTasks(prev => prev.filter(t => t.id !== id)) }
+    catch { showToast('Erreur suppression', 'error') }
+  }
+  async function handleSend(id, text) {
     try {
-      await api.agent.deleteTask(id)
-      setTasks(prev => prev.filter(t => t.id !== id))
-    } catch {
-      showToast('Erreur suppression', 'error')
-    }
+      const u = await api.agent.sendMessage(id, text)
+      setTasks(prev => prev.map(t => t.id === id ? u : t))
+    } catch { showToast('Erreur envoi message', 'error') }
   }
-
-  async function handleAdd(form) {
+  async function toggleAgent() {
     try {
-      const task = await api.agent.createTask(form)
-      setTasks(prev => [task, ...prev])
-      setShowForm(false)
-    } catch {
-      showToast('Erreur création', 'error')
-    }
+      const s = await api.agent.saveSettings({ enabled: !settings.enabled })
+      setSettings(s)
+      showToast(s.enabled ? 'Agent activé' : 'Agent en pause', s.enabled ? 'success' : 'info')
+    } catch { showToast('Erreur', 'error') }
+  }
+  async function addBacklog(text) {
+    try { const it = await api.agent.addBacklog(text); setBacklog(prev => [...prev, it]) }
+    catch { showToast('Erreur backlog', 'error') }
+  }
+  async function delBacklog(id) {
+    try { await api.agent.deleteBacklog(id); setBacklog(prev => prev.filter(i => i.id !== id)) }
+    catch { showToast('Erreur', 'error') }
+  }
+  async function savePrompt(generalPrompt) {
+    try {
+      const s = await api.agent.saveSettings({ generalPrompt })
+      setSettings(s)
+    } catch { showToast('Erreur enregistrement du prompt', 'error') }
   }
 
-  const filtered = (filter
-    ? tasks.filter(t => t.status === filter)
-    : tasks.filter(t => ['pending', 'approved', 'in_progress', 'blocked'].includes(t.status))
-  ).sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
+  // Zones
+  const triage = tasks
+    .filter(t => ['pending', 'in_discussion', 'blocked'].includes(t.status))
+    .sort((a, b) => {
+      const rank = s => (s === 'blocked' ? 0 : 1)
+      return (rank(a.status) - rank(b.status)) || (b.updated_at || '').localeCompare(a.updated_at || '')
+    })
+  const running = tasks.filter(t => ['approved', 'in_progress'].includes(t.status))
+    .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
+  const history = tasks.filter(t => ['done', 'rejected'].includes(t.status))
+    .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
 
-
-  const counts = {
-    pending:     tasks.filter(t => t.status === 'pending').length,
-    approved:    tasks.filter(t => t.status === 'approved').length,
-    in_progress: tasks.filter(t => t.status === 'in_progress').length,
-    blocked:     tasks.filter(t => t.status === 'blocked').length,
-    done:        tasks.filter(t => t.status === 'done').length,
-  }
-
-  const statCards = [
-    { key: 'in_progress', label: 'En cours',   color: 'text-amber-600',   border: 'border-t-amber-500' },
-    { key: 'pending',     label: 'En attente', color: 'text-slate-600',   border: 'border-t-slate-400' },
-    { key: 'approved',    label: 'Approuvées', color: 'text-sky-600',     border: 'border-t-sky-500' },
-    { key: 'blocked',     label: 'Bloquées',   color: 'text-red-600',     border: 'border-t-red-500' },
-    { key: 'done',        label: 'Terminées',  color: 'text-emerald-600', border: 'border-t-emerald-500' },
-  ]
+  const activityLabel = activity === 'execution' ? 'Code en cours…' : activity === 'conversation' ? 'Répond…' : activity === 'generation' ? 'Réflexion…' : null
 
   return (
-    <div>
-      {/* Stats */}
-      <div className="grid grid-cols-5 gap-2.5 mb-6">
-        {statCards.map(({ key, label, color, border }) => {
-          const isActive = filter === key || (!filter && key !== 'done')
-          return (
-            <button
-              key={key}
-              onClick={() => setFilter(prev => prev === key ? null : key)}
-              className={`bg-white border border-t-2 ${border} rounded-xl p-3 text-center shadow-sm transition-all cursor-pointer ${
-                isActive
-                  ? 'border-slate-300 ring-1 ring-brand-200'
-                  : 'border-slate-200 opacity-50 hover:opacity-75'
-              }`}
-            >
-              <div className={`text-2xl font-bold tabular-nums ${color}`}>{counts[key]}</div>
-              <div className="text-xs text-slate-400 mt-0.5">{label}</div>
-            </button>
-          )
-        })}
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 mb-6">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="w-10 h-10 bg-gradient-to-br from-brand-500/20 to-emerald-500/10 border border-brand-200 rounded-xl flex items-center justify-center flex-shrink-0">
+            <Bot size={20} className="text-brand-500" />
+          </div>
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold text-slate-900 leading-tight">Agent autonome</h1>
+            <div className="flex items-center gap-1.5 mt-0.5">
+              {activityLabel
+                ? <><Loader2 size={10} className="text-amber-500 animate-spin" /><p className="text-amber-600 text-xs font-medium">{activityLabel}</p></>
+                : settings.enabled
+                  ? <><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /><p className="text-slate-400 text-xs">Actif · génération horaire</p></>
+                  : <><span className="w-1.5 h-1.5 rounded-full bg-slate-300" /><p className="text-slate-400 text-xs">En pause</p></>}
+            </div>
+          </div>
+        </div>
+        {/* Global ON/OFF toggle */}
+        <button
+          onClick={toggleAgent}
+          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors flex-shrink-0 ${settings.enabled ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-600'}`}
+          title="Frein d'urgence : OFF = l'agent ne génère ni ne code"
+        >
+          <Power size={15} />
+          <span className="hidden sm:inline">{settings.enabled ? 'ON' : 'OFF'}</span>
+        </button>
       </div>
 
-      {/* New task form */}
-      {showForm && (
-        <div className="mb-5">
-          <NewTaskForm onAdd={handleAdd} onCancel={() => setShowForm(false)} />
-        </div>
-      )}
-
-      {!showForm && (
-        <div className="flex justify-end mb-4">
-          <button
-            onClick={() => setShowForm(true)}
-            className="flex items-center gap-1.5 text-sm px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors shadow-sm"
-          >
-            <Plus size={14} />
-            Nouvelle tâche
-          </button>
-        </div>
-      )}
-
-      {/* Task list */}
       {loading ? (
-        <div className="flex items-center justify-center py-16">
-          <Loader2 size={20} className="animate-spin text-slate-400" />
-        </div>
-      ) : filtered.length === 0 ? (
-        <div className="text-center py-16">
-          <div className="w-12 h-12 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center mx-auto mb-3">
-            <ListTodo size={22} className="text-slate-400" />
-          </div>
-          <p className="text-slate-500 text-sm">Aucune tâche{filter ? ` ${statCards.find(c => c.key === filter)?.label?.toLowerCase() || ''}` : ''}</p>
-          {!filter && (
-            <button
-              onClick={() => setShowForm(true)}
-              className="mt-3 text-brand-600 hover:text-brand-500 text-sm underline underline-offset-2 transition-colors"
-            >
-              Proposer la première tâche
-            </button>
-          )}
-        </div>
+        <div className="flex items-center justify-center py-16"><Loader2 size={20} className="animate-spin text-slate-400" /></div>
       ) : (
-        <div className="space-y-2">
-          {filtered.map(task => (
-            <TaskCard
-              key={task.id}
-              task={task}
-              onUpdate={handleUpdate}
-              onDelete={handleDelete}
-              streamChunks={streamData[task.id]}
-            />
-          ))}
-        </div>
+        <>
+          <PromptPanel value={settings.generalPrompt} onSave={savePrompt} />
+          <ClaudeMdPanel />
+          <BacklogPanel items={backlog} onAdd={addBacklog} onDelete={delBacklog} />
+
+          <Zone title="À traiter" count={triage.length}>
+            {triage.length === 0 ? (
+              <div className="text-center py-10 bg-white border border-dashed border-slate-200 rounded-xl">
+                <ListTodo size={22} className="text-slate-300 mx-auto mb-2" />
+                <p className="text-slate-400 text-sm">Rien à traiter pour l'instant.</p>
+              </div>
+            ) : (
+              <div className="space-y-2.5">
+                {triage.map(t => (
+                  <ProposalCard key={t.id} task={t} onUpdate={handleUpdate} onDelete={handleDelete} onSend={handleSend} streamChunks={streamData[t.id]} />
+                ))}
+              </div>
+            )}
+          </Zone>
+
+          {running.length > 0 && (
+            <Zone title="En cours" count={running.length}>
+              <div className="space-y-2.5">
+                {running.map(t => (
+                  <ProposalCard key={t.id} task={t} onUpdate={handleUpdate} onDelete={handleDelete} onSend={handleSend} streamChunks={streamData[t.id]} defaultExpanded={t.status === 'in_progress'} />
+                ))}
+              </div>
+            </Zone>
+          )}
+
+          {history.length > 0 && (
+            <Zone title="Historique" count={history.length} collapsible>
+              <div className="space-y-2.5">
+                {history.map(t => (
+                  <ProposalCard key={t.id} task={t} onUpdate={handleUpdate} onDelete={handleDelete} onSend={handleSend} streamChunks={streamData[t.id]} />
+                ))}
+              </div>
+            </Zone>
+          )}
+        </>
       )}
     </div>
-  )
-}
-
-// ─── Main page ────────────────────────────────────────────────────────────────
-export function AgentContent() {
-  const [runnerBusy, setRunnerBusy] = useState(false)
-
-  // Poll runner status every 5s
-  useEffect(() => {
-    async function fetchStatus() {
-      try {
-        const token = localStorage.getItem('erp_token')
-        const res = await fetch('/erp/api/agent/runner/status', {
-          headers: { Authorization: `Bearer ${token}` },
-        })
-        if (res.ok) {
-          const data = await res.json()
-          setRunnerBusy(data.busy)
-        }
-      } catch {}
-    }
-    fetchStatus()
-    const interval = setInterval(fetchStatus, 5000)
-    return () => clearInterval(interval)
-  }, [])
-
-  // Update runner status from WebSocket task events
-  useEffect(() => {
-    function onTaskUpdate(e) {
-      const task = e.detail
-      if (task.status === 'in_progress') setRunnerBusy(true)
-      else setRunnerBusy(false)
-    }
-    window.addEventListener('agent:task:updated', onTaskUpdate)
-    return () => window.removeEventListener('agent:task:updated', onTaskUpdate)
-  }, [])
-
-  return (
-      <div className="max-w-3xl mx-auto px-6 py-8">
-
-        {/* Header */}
-        <div className="flex items-center justify-between mb-7">
-          <div className="flex items-center gap-3.5">
-            <div className="w-10 h-10 bg-gradient-to-br from-brand-500/20 to-emerald-500/10 border border-brand-200 rounded-xl flex items-center justify-center">
-              <Bot size={20} className="text-brand-500" />
-            </div>
-            <div>
-              <h1 className="text-lg font-semibold text-slate-900 leading-tight">Agent autonome</h1>
-              <div className="flex items-center gap-1.5 mt-0.5">
-                {runnerBusy
-                  ? <><Loader2 size={10} className="text-amber-500 animate-spin" /><p className="text-amber-600 text-xs font-medium">Exécution en cours…</p></>
-                  : <><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /><p className="text-slate-400 text-xs">Prêt</p></>
-                }
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5 text-xs text-slate-500 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 shadow-sm">
-            <Zap size={11} className="text-amber-500" />
-            <span>Claude Code</span>
-          </div>
-        </div>
-
-        <TasksTab />
-      </div>
   )
 }
 

@@ -10,6 +10,7 @@
 
 import db from '../db/database.js'
 import { emit } from './realtime.js'
+import { logActivity, deriveActivityLabel } from './activityLog.js'
 
 function buildOrderListRow(id) {
   return db.prepare(
@@ -42,6 +43,7 @@ export function emitOrder(verb, id, actorUserId = null) {
     actorUserId,
     ts: Date.now(),
   })
+  if (actorUserId) logActivity({ userId: actorUserId, entityType: 'order', entityId: id, action: verb, detail: deriveActivityLabel(payload) })
 }
 
 export function emitOrderItem(verb, orderId, payload, actorUserId = null) {
@@ -62,6 +64,7 @@ export function emitCompany(verb, id, actorUserId = null) {
     actorUserId,
     ts: Date.now(),
   })
+  if (actorUserId) logActivity({ userId: actorUserId, entityType: 'company', entityId: id, action: verb, detail: deriveActivityLabel(payload) })
 }
 
 /**
@@ -109,4 +112,5 @@ export function emitEntity(entity, verb, id, payload, actorUserId = null) {
     actorUserId,
     ts: Date.now(),
   })
+  if (actorUserId) logActivity({ userId: actorUserId, entityType: entity, entityId: id, action: verb, detail: deriveActivityLabel(payload) })
 }

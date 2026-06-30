@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { postPaymentDeposit, processRefund } from '../services/quickbooks.js'
 import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { recomputeFactureBalance } from '../services/factureBalance.js'
+import { logSync } from '../services/syncLog.js'
 import { naiveLocalToUtcIso } from '../utils/datetime.js'
 
 const router = Router()
@@ -12,6 +13,11 @@ router.use(requireAuth)
 
 const VALID_METHODS = new Set(['cheque', 'virement_bancaire', 'interac', 'comptant', 'autre'])
 const VALID_CURRENCIES = new Set(['CAD', 'USD'])
+// Motifs de skip QB. Obligatoire dès qu'un paiement est créé avec skip_qb=true :
+// rend chaque skip auditable (skip légitime vs paiement orphelin jamais
+// comptabilisé). Tenu synchrone avec QB_SKIP_REASONS côté client
+// (FacturePaymentsSection.jsx).
+const VALID_QB_SKIP_REASONS = new Set(['deja_poste_payout', 'saisi_manuellement_qb', 'hors_bande', 'autre'])
 
 // GET /api/payments/facture/:factureId — liste les paiements/refunds d'une facture
 router.get('/facture/:factureId', (req, res) => {
@@ -19,7 +25,7 @@ router.get('/facture/:factureId', (req, res) => {
     SELECT id, facture_id, direction, method, received_at, amount, currency,
            amount_cad, exchange_rate, stripe_balance_tx_id, stripe_charge_id,
            stripe_refund_id, qb_payment_id, qb_journal_entry_id, qb_deposit_id,
-           qb_skipped, qb_credit_account_id, qb_credit_account_name, notes,
+           qb_skipped, qb_skip_reason, qb_credit_account_id, qb_credit_account_name, notes,
            created_by, created_at, updated_at
     FROM payments
     WHERE facture_id = ?
@@ -157,7 +163,7 @@ router.get('/facture/:factureId', (req, res) => {
 // POST /api/payments — saisie manuelle d'un paiement (in) ou remboursement (out) hors-Stripe
 // Les paiements Stripe sont créés automatiquement par le webhook invoice.paid (method='stripe').
 router.post('/', async (req, res) => {
-  const { facture_id, direction, method, received_at, amount, currency, notes, skip_qb } = req.body || {}
+  const { facture_id, direction, method, received_at, amount, currency, notes, skip_qb, qb_skip_reason } = req.body || {}
 
   if (!facture_id) return res.status(400).json({ error: 'facture_id requis' })
   if (direction !== 'in' && direction !== 'out') return res.status(400).json({ error: 'direction doit être "in" ou "out"' })
@@ -166,6 +172,13 @@ router.post('/', async (req, res) => {
   if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: 'amount doit être un nombre > 0' })
   const cur = String(currency || 'CAD').toUpperCase()
   if (!VALID_CURRENCIES.has(cur)) return res.status(400).json({ error: 'currency doit être CAD ou USD' })
+  // Skip QB → motif obligatoire et énuméré. Un skip sans motif rendrait
+  // impossible de distinguer un skip légitime d'un paiement jamais comptabilisé.
+  if (skip_qb && !VALID_QB_SKIP_REASONS.has(qb_skip_reason)) {
+    return res.status(400).json({ error: `qb_skip_reason requis et doit être l'un de : ${[...VALID_QB_SKIP_REASONS].join(', ')}` })
+  }
+  // Pas de skip → on n'enregistre aucun motif (le motif n'a de sens que pour un skip).
+  const skipReason = skip_qb ? qb_skip_reason : null
   // Une date-only "YYYY-MM-DD" venue d'un <input type="date"> représente une
   // journée calendaire locale (Montréal), pas un instant UTC. La parser via
   // new Date() la traite comme minuit UTC, ce qui s'affiche en J-1 20:00 en EDT.
@@ -187,17 +200,26 @@ router.post('/', async (req, res) => {
   if (!facture) return res.status(404).json({ error: 'Facture introuvable' })
 
   const id = randomUUID()
-  db.prepare(`
-    INSERT INTO payments (
-      id, facture_id, direction, method, received_at, amount, currency,
-      notes, created_by, qb_skipped
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(id, facture_id, direction, method, receivedIso, amt, cur, notes || null, req.user?.id || null, skip_qb ? 1 : 0)
+  // Atomique : l'INSERT du paiement et le recompute du solde de la facture
+  // doivent réussir ou échouer ensemble. Sinon, si le recompute échoue après
+  // l'INSERT, la ligne payment existe mais factures.balance_due reste périmé
+  // (solde faux affiché jusqu'au prochain paiement). recomputeFactureBalance
+  // est purement synchrone (lectures + UPDATE SQLite), donc compatible avec
+  // db.transaction() de better-sqlite3.
+  const insertAndRecompute = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO payments (
+        id, facture_id, direction, method, received_at, amount, currency,
+        notes, created_by, qb_skipped, qb_skip_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, facture_id, direction, method, receivedIso, amt, cur, notes || null, req.user?.id || null, skip_qb ? 1 : 0, skipReason)
 
-  // Synchronise factures.balance_due / status avec les paiements locaux. Sans
-  // ça, une facture Stripe payée hors Stripe (Interac, virement…) garderait le
-  // solde renvoyé par Stripe (qui ne sait rien du paiement local).
-  recomputeFactureBalance(facture_id)
+    // Synchronise factures.balance_due / status avec les paiements locaux. Sans
+    // ça, une facture Stripe payée hors Stripe (Interac, virement…) garderait le
+    // solde renvoyé par Stripe (qui ne sait rien du paiement local).
+    recomputeFactureBalance(facture_id)
+  })
+  insertAndRecompute()
 
   // Pose l'écriture comptable QB (Deposit pour 'in', JE/RR pour 'out'). Si échec,
   // on retourne quand même 201 + le payload, avec un warning. La ligne payments
@@ -208,6 +230,7 @@ router.post('/', async (req, res) => {
   let qbResult = null
   let qbError = null
   if (!skip_qb) {
+    const t0 = Date.now()
     try {
       qbResult = direction === 'in'
         ? await postPaymentDeposit(id)
@@ -215,11 +238,19 @@ router.post('/', async (req, res) => {
     } catch (err) {
       console.error(`payment QB ${direction} échouée pour ${id}:`, err.message)
       qbError = err.message
+      // Trace l'échec dans sync_log : sans ça, une row payments sans qb_deposit_id
+      // (ni qb_payment_id pour les refunds) devient invisible à l'audit si l'utilisateur
+      // ferme le toast d'erreur. Même contrat de traçabilité que les autres opérations QB.
+      logSync('quickbooks', 'manual', {
+        status: 'error',
+        error: `payment ${direction} ${id} (facture ${facture_id}): ${err.message}`,
+        durationMs: Date.now() - t0,
+      })
     }
   }
 
   const created = db.prepare('SELECT * FROM payments WHERE id = ?').get(id)
-  res.status(201).json({ payment: created, qb: qbResult, qb_error: qbError, qb_skipped: !!skip_qb })
+  res.status(201).json({ payment: created, qb: qbResult, qb_error: qbError, qb_skipped: !!skip_qb, qb_skip_reason: skipReason })
 })
 
 // POST /api/payments/:id/retry-qb — re-tente la pose comptable QB pour un payment

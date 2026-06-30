@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Upload, RefreshCw, AlertCircle, CheckCircle, Clock, Camera, BookOpen, Trash2 } from 'lucide-react'
+import { Upload, RefreshCw, AlertCircle, CheckCircle, Clock, Camera, BookOpen, Trash2, Archive, ArchiveRestore, Receipt } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -11,11 +11,7 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
-
-function fmtCad(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
+import { fmtCad } from '../utils/formatters.js'
 
 function StatusBadge({ status }) {
   if (status === 'done')       return <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full"><CheckCircle size={10} /> Complété</span>
@@ -233,6 +229,9 @@ const RENDERS = {
     : <span className="text-slate-300">—</span>,
   original_name: row => <span className="text-slate-500 text-xs">{row.original_name || '—'}</span>,
   created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
+  archived_at: row => row.archived_at
+    ? <span className="text-slate-500">{fmtDate(row.archived_at)}</span>
+    : <span className="text-slate-300">—</span>,
 }
 
 const COLUMNS = TABLE_COLUMN_META.sale_receipts.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
@@ -261,9 +260,9 @@ export default function SaleReceipts() {
   async function handleUpload(formData) {
     setUploading(true)
     try {
-      const { id } = await api.saleReceipts.upload(formData)
+      await api.saleReceipts.upload(formData)
       await load()
-      navigate(`/sale-receipts/${id}`)
+      // Pas de navigation auto : on reste sur la liste, le document s'ajoute simplement
     } catch (err) {
       addToast({ message: 'Erreur: ' + err.message, type: 'error' })
     } finally {
@@ -280,6 +279,61 @@ export default function SaleReceipts() {
     }
     setToDelete(null)
   }
+
+  // Suppression groupée : DataTable affiche déjà sa propre confirmation avant
+  // d'appeler ce callback, on ne re-confirme donc pas ici.
+  async function handleBulkDelete(ids) {
+    try {
+      await Promise.all(ids.map(id => api.saleReceipts.delete(id)))
+      await load()
+      addToast({ message: `${ids.length} reçu${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`, type: 'success' })
+    } catch (err) {
+      addToast({ message: 'Erreur: ' + err.message, type: 'error' })
+    }
+  }
+
+  async function handleBulkArchive(ids) {
+    try {
+      await Promise.all(ids.map(id => api.saleReceipts.archive(id)))
+      await load()
+      addToast({ message: `${ids.length} reçu${ids.length > 1 ? 's' : ''} archivé${ids.length > 1 ? 's' : ''}`, type: 'success' })
+    } catch (err) {
+      addToast({ message: 'Erreur: ' + err.message, type: 'error' })
+    }
+  }
+
+  async function handleBulkUnarchive(ids) {
+    try {
+      await Promise.all(ids.map(id => api.saleReceipts.unarchive(id)))
+      await load()
+      addToast({ message: `${ids.length} reçu${ids.length > 1 ? 's' : ''} désarchivé${ids.length > 1 ? 's' : ''}`, type: 'success' })
+    } catch (err) {
+      addToast({ message: 'Erreur: ' + err.message, type: 'error' })
+    }
+  }
+
+  // Actions groupées : « Archiver » quand aucune des lignes sélectionnées n'est
+  // archivée, « Désarchiver » quand elles le sont toutes (onglet Archivés).
+  const BULK_ACTIONS = [
+    {
+      key: 'archive',
+      label: 'Archiver',
+      busyLabel: 'Archivage...',
+      icon: Archive,
+      className: 'inline-flex items-center gap-1.5 text-xs font-medium text-white bg-amber-600 hover:bg-amber-700 disabled:opacity-50 px-3 py-1.5 rounded transition-colors',
+      show: rows => rows.length > 0 && rows.every(r => !r.archived_at),
+      onClick: handleBulkArchive,
+    },
+    {
+      key: 'unarchive',
+      label: 'Désarchiver',
+      busyLabel: 'Désarchivage...',
+      icon: ArchiveRestore,
+      className: 'inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-50 px-3 py-1.5 rounded transition-colors',
+      show: rows => rows.length > 0 && rows.every(r => r.archived_at),
+      onClick: handleBulkUnarchive,
+    },
+  ]
 
   const COLUMNS_WITH_ACTIONS = [
     ...COLUMNS,
@@ -333,6 +387,9 @@ export default function SaleReceipts() {
           data={receipts}
           searchFields={['company', 'original_name', 'receipt_number', 'total']}
           loading={loading}
+          onBulkDelete={handleBulkDelete}
+          bulkActions={BULK_ACTIONS}
+          bulkDeleteAlways
           onFilteredDataChange={rows => { displayedIdsRef.current = rows.map(r => String(r.id)) }}
           onRowClick={row => {
             // Mémoriser l'ordre courant de la vue (filtrée/triée) pour la nav
@@ -343,6 +400,7 @@ export default function SaleReceipts() {
             } catch {}
             navigate(`/sale-receipts/${row.id}`)
           }}
+          emptyState={{ icon: Receipt, title: 'Aucun reçu de vente', description: "Aucun reçu n'a encore été importé. Téléverse un fichier ci-dessus ou prends une photo d'un reçu.", cta: { label: 'Prendre en photo', icon: Camera, onClick: () => setWebcamOpen(true) } }}
         />
       </div>
 

@@ -1,18 +1,25 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Plus, Save, Star, X } from 'lucide-react'
+import { ArrowLeft, Plus, Save, Star, X, CheckSquare } from 'lucide-react'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import Attachments from '../components/Attachments.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDateTime } from '../lib/formatDate.js'
+import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 
 function _fmtDuration(s) {
@@ -169,6 +176,22 @@ function InlineField({ field, value, saving, onSave }) {
   function commit(val) { if (val === String(value ?? '')) return; onSave(val) }
 
   if (field.type === 'select') {
+    // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
+    if ((field.options || []).length > 10) {
+      return (
+        <SearchableSelect
+          value={local}
+          options={(field.options || []).map(o => ({ value: o, label: o }))}
+          emptyOption="—"
+          placeholder="—"
+          onChange={v => { setLocal(v); commit(v) }}
+          className="input text-sm"
+          size="sm"
+          disabled={saving}
+          testId={`contact-field-${field.key}`}
+        />
+      )
+    }
     return (
       <select value={local} onChange={e => { setLocal(e.target.value); commit(e.target.value) }} className="input text-sm" disabled={saving}>
         <option value="">—</option>
@@ -216,10 +239,16 @@ function TaskModalContent({ contactId, contactCompanies = [], editingTask, users
 
   async function handleSubmitCreate(e) {
     e.preventDefault()
+    // Trim des champs texte au submit pour éviter des records pollués par des espaces seuls.
+    const title = (taskForm.title || '').trim()
+    if (!title) {
+      addToast({ message: 'Le titre est requis.', type: 'error' })
+      return
+    }
     setSavingTask(true)
     try {
       const company_id = taskForm.company_id || (contactCompanies.find(c => c.is_primary)?.company_id ?? null)
-      await api.tasks.create({ ...taskForm, contact_id: contactId, company_id })
+      await api.tasks.create({ ...taskForm, title, notes: (taskForm.notes || '').trim(), contact_id: contactId, company_id })
       await onRefresh()
       onClose()
     } catch (err) {
@@ -302,18 +331,17 @@ function TaskModalContent({ contactId, contactCompanies = [], editingTask, users
       {!isEdit && contactCompanies.length > 1 && (
         <div>
           <label className="label">Entreprise</label>
-          <select
+          <SearchableSelect
             value={taskForm.company_id || (contactCompanies.find(c => c.is_primary)?.company_id || '')}
-            onChange={e => setTaskForm(f => ({ ...f, company_id: e.target.value }))}
-            className="select"
-            data-testid="task-company-picker"
-          >
-            {contactCompanies.map(c => (
-              <option key={c.company_id} value={c.company_id}>
-                {c.company_name}{c.is_primary ? ' (principale)' : ''}
-              </option>
-            ))}
-          </select>
+            options={contactCompanies}
+            getOptionValue={c => c.company_id}
+            getOptionLabel={c => `${c.company_name}${c.is_primary ? ' (principale)' : ''}`}
+            getOptionKey={c => c.company_id}
+            onChange={v => setTaskForm(f => ({ ...f, company_id: v }))}
+            size="sm"
+            className="input"
+            testId="task-company-picker"
+          />
         </div>
       )}
       <div>
@@ -355,15 +383,20 @@ function TaskModalContent({ contactId, contactCompanies = [], editingTask, users
   )
 }
 
-export default function ContactDetail() {
-  const { id } = useParams()
+// `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
+// (RecordPeekDrawer) sans le chrome de page (Layout, bouton retour). En mode
+// route normale, l'`id` vient de l'URL.
+export default function ContactDetail({ recordId, embedded = false }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
   const { user: _user } = useAuth()
-  const { addToast } = useToast()
+  const { status: saveState, save } = useSaveStatus()
   const [contact, setContact] = useState(null)
   const [interactions, setInteractions] = useState([])
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
@@ -378,6 +411,7 @@ export default function ContactDetail() {
 
   async function load() {
     setLoading(true)
+    setLoadError(null)
     try {
       const [c, inter, comps] = await Promise.all([
         api.contacts.get(id),
@@ -389,12 +423,31 @@ export default function ContactDetail() {
       setTotal(inter.total || 0)
       setOffset(LIMIT)
       setCompanies(comps)
+    } catch (e) {
+      setLoadError(e?.message || 'Erreur de chargement')
     } finally {
       setLoading(false)
     }
   }
 
   const visibleFields = useMemo(() => CONTACT_FIELDS.filter(f => f.defaultVisible !== false), [])
+
+  // Colonnes DataTable des tâches du contact. Dérivées de la meta contact_tasks,
+  // enrichies des render() (setters useState stables → deps vides).
+  const taskColumns = useMemo(() => {
+    const RENDERS = {
+      title: row => <span className="font-medium text-slate-900">{row.title}</span>,
+      status: row => (
+        <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full ${row.status === 'Terminé' ? 'bg-green-100 text-green-700' : row.status === 'En cours' ? 'bg-blue-100 text-blue-700' : row.status === 'Annulé' ? 'bg-slate-100 text-slate-500' : 'bg-amber-100 text-amber-700'}`}>{row.status}</span>
+      ),
+      due_date: row => {
+        if (!row.due_date) return <span className="text-slate-400">—</span>
+        const overdue = row.status !== 'Terminé' && new Date(row.due_date) < new Date()
+        return <span className={overdue ? 'text-red-600 font-medium' : 'text-slate-500'}>{fmtDateTime(row.due_date)}</span>
+      },
+    }
+    return TABLE_COLUMN_META.contact_tasks.map(m => ({ ...m, render: RENDERS[m.id] }))
+  }, [])
 
   async function loadMore() {
     setLoadingMore(true)
@@ -422,49 +475,73 @@ export default function ContactDetail() {
   async function saveField(key, value) {
     setFieldSaving(s => ({ ...s, [key]: true }))
     try {
-      await api.contacts.update(id, { [key]: value || null })
-      setContact(c => ({ ...c, [key]: value || null }))
-      if (key === 'company_id') load()
-    } catch (err) {
-      addToast({ message: err.message, type: 'error' })
+      await save(async () => {
+        await api.contacts.update(id, { [key]: value || null })
+        setContact(c => ({ ...c, [key]: value || null }))
+        if (key === 'company_id') load()
+      })
     } finally {
       setFieldSaving(s => ({ ...s, [key]: false }))
     }
   }
 
+  // En mode embarqué (side-peek), pas de Layout — le drawer fournit son propre
+  // chrome. Sinon, page pleine classique.
+  const shell = (content) => (embedded ? content : <Layout>{content}</Layout>)
+
   if (loading) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
+    return shell(<Spinner center />)
+  }
+  if (loadError && !contact) {
+    return shell(<DetailLoadError message={loadError} onRetry={load} />)
   }
   if (!contact) {
-    return <Layout><div className="p-6 text-slate-500">Contact introuvable.</div></Layout>
+    return shell(<div className="p-6 text-slate-500">Contact introuvable.</div>)
   }
 
-  return (
-    <Layout>
-      <div className="p-6 max-w-3xl mx-auto">
+  return shell(
+    <>
+      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-3xl mx-auto'}>
         {/* Header */}
-        <div className="flex items-start gap-4 mb-6">
-          <button onClick={() => navigate('/contacts')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-            <ArrowLeft size={18} />
-          </button>
-          <div className="flex-1">
-            <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-bold text-slate-900">{contact.first_name} {contact.last_name}</h1>
-              {contact.language && (
-                <Badge color={contact.language === 'French' ? 'blue' : 'green'}>
-                  {contact.language === 'French' ? 'FR' : 'EN'}
-                </Badge>
-              )}
-            </div>
+        {embedded ? (
+          <div className="flex items-center gap-3 flex-wrap mb-4">
+            {contact.language && (
+              <Badge color={contact.language === 'French' ? 'blue' : 'green'}>
+                {contact.language === 'French' ? 'FR' : 'EN'}
+              </Badge>
+            )}
+            <SaveStatus status={saveState} />
             {contact.company_id && (
-              <Link to={`/companies/${contact.company_id}`} className="text-sm text-brand-600 hover:underline mt-0.5 block">
+              <Link to={`/companies/${contact.company_id}`} className="text-sm text-brand-600 hover:underline">
                 {contact.company_name}
               </Link>
             )}
           </div>
-          <div className="flex items-center gap-2">
+        ) : (
+          <div className="flex items-start gap-4 mb-6">
+            <button onClick={() => navigate('/contacts')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+              <ArrowLeft size={18} />
+            </button>
+            <div className="flex-1">
+              <div className="flex items-center gap-3 flex-wrap">
+                <h1 className="text-2xl font-bold text-slate-900">{contact.first_name} {contact.last_name}</h1>
+                {contact.language && (
+                  <Badge color={contact.language === 'French' ? 'blue' : 'green'}>
+                    {contact.language === 'French' ? 'FR' : 'EN'}
+                  </Badge>
+                )}
+                <SaveStatus status={saveState} />
+              </div>
+              {contact.company_id && (
+                <Link to={`/companies/${contact.company_id}`} className="text-sm text-brand-600 hover:underline mt-0.5 block">
+                  {contact.company_name}
+                </Link>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Info card */}
         <div className="card p-5 mb-6">
@@ -496,6 +573,11 @@ export default function ContactDetail() {
           </div>
         </div>
 
+        {/* Pièces jointes */}
+        <div className="mb-6">
+          <Attachments entityType="contacts" entityId={id} />
+        </div>
+
         {/* Tasks section */}
         <div className="mb-6">
           <div className="flex items-center justify-between mb-3">
@@ -504,35 +586,15 @@ export default function ContactDetail() {
               <Plus size={14} /> Ajouter
             </button>
           </div>
-          {tasks.length === 0 ? (
-            <div className="card p-6 text-center text-slate-400 text-sm">Aucune tâche</div>
-          ) : (
-            <div className="card overflow-hidden">
-              <table className="w-full text-sm">
-                <thead><tr className="border-b border-slate-200 bg-slate-50">
-                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-slate-500">Tâche</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-slate-500">Statut</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-semibold text-slate-500 hidden sm:table-cell">Échéance</th>
-                </tr></thead>
-                <tbody>
-                  {tasks.map(t => {
-                    const overdue = t.due_date && t.status !== 'Terminé' && new Date(t.due_date) < new Date()
-                    return (
-                      <tr key={t.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer" onClick={() => { setEditingTask(t); setTaskForm({ title: t.title, status: t.status, priority: t.priority, due_date: t.due_date || '', assigned_to: t.assigned_to || '', notes: t.notes || '' }); setShowTaskModal(true) }}>
-                        <td className="px-4 py-2.5 font-medium text-slate-900">{t.title}</td>
-                        <td className="px-4 py-2.5">
-                          <span className={`inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full ${t.status === 'Terminé' ? 'bg-green-100 text-green-700' : t.status === 'En cours' ? 'bg-blue-100 text-blue-700' : t.status === 'Annulé' ? 'bg-slate-100 text-slate-500' : 'bg-amber-100 text-amber-700'}`}>{t.status}</span>
-                        </td>
-                        <td className="px-4 py-2.5 hidden sm:table-cell">
-                          {t.due_date ? <span className={overdue ? 'text-red-600 font-medium' : 'text-slate-500'}>{fmtDateTime(t.due_date)}</span> : <span className="text-slate-400">—</span>}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <DataTable
+            table="contact_tasks"
+            columns={taskColumns}
+            data={tasks}
+            searchFields={['title', 'status']}
+            onRowClick={row => { setEditingTask(row); setTaskForm({ title: row.title, status: row.status, priority: row.priority, due_date: row.due_date || '', assigned_to: row.assigned_to || '', notes: row.notes || '' }); setShowTaskModal(true) }}
+            height={embedded ? '260px' : 'calc(100vh - 440px)'}
+            emptyState={{ icon: CheckSquare, title: 'Aucune tâche', description: "Aucune tâche n'est associée à ce contact pour l'instant.", cta: { label: 'Ajouter', icon: Plus, onClick: () => { setEditingTask(null); setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', assigned_to: '', notes: '' }); setShowTaskModal(true) } } }}
+          />
         </div>
 
         {/* Conversation history */}
@@ -567,6 +629,6 @@ export default function ContactDetail() {
           }}
         />
       )}
-    </Layout>
+    </>
   )
 }

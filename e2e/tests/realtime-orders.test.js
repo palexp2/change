@@ -40,9 +40,11 @@ describe('Realtime — collab live sur /orders', () => {
   after(async () => {
     if (createdId) {
       try {
+        // Hard delete (?hard=true) — un simple DELETE ne fait qu'un soft-delete
+        // et laisse un résidu « Commande vide » en base à chaque run.
         await pageB.evaluate(async (id) => {
           const tok = localStorage.getItem('erp_token')
-          await fetch(`/erp/api/orders/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${tok}` } })
+          await fetch(`/erp/api/orders/${id}?hard=true`, { method: 'DELETE', headers: { Authorization: `Bearer ${tok}` } })
         }, createdId)
       } catch {}
     }
@@ -111,6 +113,7 @@ describe('Realtime — collab live sur /orders', () => {
 
     // Row should disappear within a few seconds.
     await pageA.waitForFunction((needle) => !document.body.innerText.includes(needle), numText, { timeout: 3000 })
-    createdId = null // avoid double-delete in after()
+    // On garde `createdId` : ce DELETE n'est qu'un soft-delete (comportement réel
+    // testé ici) ; le hook after() fera le hard delete pour ne laisser aucun résidu.
   })
 })

@@ -7,9 +7,10 @@ import { readFileSync, statSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import os from 'os';
 import Stripe from 'stripe';
-import { postPaymentDeposit, stripeInvoiceNetHtCents } from '../services/quickbooks.js';
+import { postPaymentDeposit, stripeInvoiceNetHtCents, auditFactureReconciliation } from '../services/quickbooks.js';
 import { qbGet } from '../connectors/quickbooks.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
+import { logSync } from '../services/syncLog.js';
 
 const router = Router();
 router.use(requireAdmin);
@@ -277,6 +278,31 @@ function buildRawUpdate(tableName, body) {
   }
   return { updates, params, applied, rejected, hasUpdatedAt: schemaByName.has('updated_at') }
 }
+
+// GET /api/admin/facture-reconciliation-audit
+// Audit read-only de la constatation des revenus : agrège, à partir des seules
+// colonnes locales (aucun appel QuickBooks), toutes les factures dont l'état de
+// constatation est orphelin/incohérent. Chaque run est tracé dans sync_log pour
+// rester dans la philosophie « visibilité sur les side effects ».
+router.get('/facture-reconciliation-audit', (req, res) => {
+  const t0 = Date.now()
+  try {
+    const result = auditFactureReconciliation()
+    logSync('facture_reconciliation_audit', 'manual', {
+      status: 'success',
+      modified: result.summary.flagged,
+      durationMs: Date.now() - t0,
+    })
+    res.json(result)
+  } catch (e) {
+    logSync('facture_reconciliation_audit', 'manual', {
+      status: 'error',
+      error: e.message,
+      durationMs: Date.now() - t0,
+    })
+    res.status(500).json({ error: e.message })
+  }
+})
 
 router.get('/factures/:id/raw-schema', (req, res) => {
   const exists = db.prepare('SELECT id FROM factures WHERE id=?').get(req.params.id)
@@ -774,19 +800,29 @@ router.post('/stripe-backfill/process', async (req, res) => {
         continue
       }
 
-      // Pose (ou re-tente) la JE QB. Si on n'a pas encore l'invoice (cas reuse),
-      // on la fetch maintenant pour pouvoir résoudre le TaxCode.
+      // Pose (ou re-tente) la JE QB. On re-fetch l'invoice pour résoudre le
+      // TaxCode (les taxes exactes), que la ligne payments soit nouvelle ou réutilisée.
+      // Si ce fetch échoue, la JE se pose SANS les taxes exactes et QB recalcule au %
+      // (divergence à l'audit, cf. gotcha QB TaxLine). On trace donc le fallback avec
+      // sa raison — « introuvable » (4xx, invoice absente côté Stripe) vs « réseau »
+      // (timeout/5xx/connexion) — pour le rendre diagnosticable.
       let invForJe = null
-      if (existing) {
-        try { invForJe = await stripe.invoices.retrieve(f.invoice_id) } catch {}
-      } else {
-        // Inv déjà fetchée plus haut pour créer la ligne ; on la passe directement.
-        // Mais on l'a déjà perdue (variable locale au if). Re-fetch.
-        try { invForJe = await stripe.invoices.retrieve(f.invoice_id) } catch {}
+      let taxFallback = null
+      try {
+        invForJe = await stripe.invoices.retrieve(f.invoice_id)
+      } catch (fetchErr) {
+        const status = fetchErr?.statusCode
+        const reason = (status && status >= 400 && status < 500) ? 'introuvable' : 'réseau'
+        taxFallback = { reason, status: status ?? null }
+        console.warn(
+          `[admin/backfill-deposits] fetch invoice Stripe échoué — JE QB posée SANS taxes exactes (QB recalcule au %). ` +
+          `facture_id=${f.id} document_number=${f.document_number || ''} invoice_id=${f.invoice_id} ` +
+          `reason=${reason} status=${status ?? 'n/a'} type=${fetchErr?.type || ''} msg=${fetchErr?.message || fetchErr}`
+        )
       }
       try {
         const r = await postPaymentDeposit(paymentId, invForJe ? { invoice: invForJe } : {})
-        results.push({ facture_id: f.id, document_number: f.document_number, payment_id: paymentId, qb_deposit: r.qb_deposit_id, qb_je: r.qb_journal_entry_id, qb_sales_receipt: r.qb_payment_id, credit: r.credit_account, reused: !!existing })
+        results.push({ facture_id: f.id, document_number: f.document_number, payment_id: paymentId, qb_deposit: r.qb_deposit_id, qb_je: r.qb_journal_entry_id, qb_sales_receipt: r.qb_payment_id, credit: r.credit_account, reused: !!existing, ...(taxFallback ? { tax_fallback: taxFallback } : {}) })
       } catch (qbErr) {
         results.push({ facture_id: f.id, document_number: f.document_number, payment_id: paymentId, qb_error: qbErr.message })
       }

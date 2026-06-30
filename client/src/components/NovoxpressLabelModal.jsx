@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { ChevronRight, CheckCircle, Download, Package, AlertTriangle } from 'lucide-react'
+import { ChevronRight, CheckCircle, Download, AlertTriangle, RefreshCw, Stethoscope } from 'lucide-react'
 import api from '../lib/api.js'
-import { localISODate } from '../lib/formatDate.js'
+import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
 
 const BOX_PRESETS = {
   enveloppe: { label: 'Enveloppe (documents légers)', length: '13', width: '10', depth: '1', packagingType: 'envelope' },
@@ -34,42 +34,6 @@ function getRateDelivery(rate) {
   }
   if (rate.total_transit_day != null) return `${rate.total_transit_day} jour(s)`
   return null
-}
-
-const PICKUP_LOCATIONS = [
-  { value: 'OutsideDoor', label: 'Porte extérieure' },
-  { value: 'FrontDoor',   label: 'Porte avant' },
-  { value: 'BackDoor',    label: 'Porte arrière' },
-  { value: 'SideDoor',    label: 'Porte côté' },
-  { value: 'Mailroom',    label: 'Salle de courrier' },
-  { value: 'Office',      label: 'Bureau' },
-  { value: 'Reception',   label: 'Réception' },
-]
-
-function getDefaultPickupDate() {
-  const d = new Date()
-  if (d.getHours() >= 14) d.setDate(d.getDate() + 1)
-  if (d.getDay() === 6) d.setDate(d.getDate() + 2)
-  if (d.getDay() === 0) d.setDate(d.getDate() + 1)
-  return d.toISOString().slice(0, 10)
-}
-
-// Fenêtre de ramassage ASAP, dans les heures d'ouverture 9h–16h, jours
-// ouvrables. Si on est encore dans la journée avant 15h, on tente aujourd'hui
-// (ready_at = heure courante + 1h, min 9h). Sinon, prochain jour ouvrable 9h–16h.
-function computeAsapPickupWindow() {
-  const now = new Date()
-  const d = new Date(now)
-  if (d.getHours() >= 15) d.setDate(d.getDate() + 1)
-  if (d.getDay() === 6) d.setDate(d.getDate() + 2)
-  if (d.getDay() === 0) d.setDate(d.getDate() + 1)
-  const isToday = d.toDateString() === now.toDateString()
-  const readyHour = isToday ? Math.max(9, now.getHours() + 1) : 9
-  return {
-    date: { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate() },
-    ready_at: { hour: readyHour, minute: 0 },
-    ready_until: { hour: 16, minute: 0 },
-  }
 }
 
 function DebugDetails({ details }) {
@@ -112,7 +76,7 @@ function DebugDetails({ details }) {
 }
 
 export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onClose, onDone }) {
-  const [step, setStep] = useState('package') // 'package' | 'rates' | 'confirm' | 'done' | 'pickup' | 'pickup-done'
+  const [step, setStep] = useState('package') // 'package' | 'rates' | 'confirm' | 'done'
   const [preset, setPreset] = useState('moyenne')
   const [qty, setQty] = useState(1)
   const [totalWeight, setTotalWeight] = useState(
@@ -127,14 +91,12 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
   const [error, setError] = useState('')
   const [errorDetails, setErrorDetails] = useState(null) // { sent, responseBody, response } pour debug
   const [result, setResult] = useState(null)
-  const [pickupDate, setPickupDate] = useState(getDefaultPickupDate)
-  const [pickupReadyAt, setPickupReadyAt] = useState('09:00')
-  const [pickupReadyUntil, setPickupReadyUntil] = useState('17:00')
-  const [pickupLocation, setPickupLocation] = useState('OutsideDoor')
-  const [pickupInstructions, setPickupInstructions] = useState('')
-  const [pickupResult, setPickupResult] = useState(null)
-  const [autoPickup, setAutoPickup] = useState(true)
-  const [autoPickupError, setAutoPickupError] = useState(null)
+  const [retrying, setRetrying] = useState(false)
+  const [retryError, setRetryError] = useState('')
+  // Diagnostic en env dev Novoxpress (système temporaire) — rempli soit par le
+  // serveur (auto sur erreur opaque), soit par le bouton « Diagnostiquer en dev ».
+  const [diagnostic, setDiagnostic] = useState(null)
+  const [diagLoading, setDiagLoading] = useState(false)
 
   const isEnvelope = BOX_PRESETS[preset]?.packagingType === 'envelope'
   const effectiveQty = isEnvelope ? 1 : qty
@@ -170,6 +132,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
     }
     setError('')
     setErrorDetails(null)
+    setDiagnostic(null)
     setLoading(true)
     setStep('rates')
     const sentPayload = {
@@ -193,8 +156,30 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
         responseBody: e.details?.responseBody || null,
         novoxpressStatus: e.details?.novoxpressStatus || null,
       })
+      setDiagnostic(e.details?.diagnostic || null)
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Diagnostic manuel en env dev (le serveur ne le lance automatiquement que
+  // pour les erreurs opaques — ce bouton couvre les autres cas).
+  async function handleDiagnose(op) {
+    setDiagLoading(true)
+    try {
+      const res = await api.novoxpress.diagnostic(envoi.id, {
+        op,
+        packaging_type: packagingType(),
+        packages: buildPackages(),
+        declared_value: declaredValue || '1',
+        service_id: selectedRate?.service_id || undefined,
+        prod_error: error || undefined,
+      })
+      setDiagnostic(res)
+    } catch (e) {
+      setDiagnostic({ available: true, verdict: 'not_isolated', message: `Le diagnostic lui-même a échoué : ${e.message}`, attempts: [] })
+    } finally {
+      setDiagLoading(false)
     }
   }
 
@@ -202,6 +187,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
     setLoading(true)
     setError('')
     setErrorDetails(null)
+    setDiagnostic(null)
     const sentPayload = {
       request_id: requestId,
       service_id: selectedRate.service_id,
@@ -214,22 +200,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
     try {
       const res = await api.novoxpress.createLabel(envoi.id, sentPayload)
       setResult(res)
-
-      if (autoPickup) {
-        const window = computeAsapPickupWindow()
-        try {
-          const pickup = await api.novoxpress.schedulePickup(envoi.id, {
-            ...window,
-            quantity: effectiveQty,
-            weight: effectiveWeight,
-            pickup_location: 'OutsideDoor',
-          })
-          setPickupResult(pickup)
-        } catch (pickupErr) {
-          setAutoPickupError(pickupErr.message || 'Échec de la planification du ramassage')
-        }
-      }
-
       setStep('done')
       onDone?.()
     } catch (e) {
@@ -239,8 +209,24 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
         responseBody: e.details?.responseBody || null,
         novoxpressStatus: e.details?.novoxpressStatus || null,
       })
+      setDiagnostic(e.details?.diagnostic || null)
     } finally {
       setLoading(false)
+    }
+  }
+
+  // Re-télécharge le PDF d'une étiquette déjà achetée (ne re-facture pas).
+  async function handleRetryPdf() {
+    setRetrying(true)
+    setRetryError('')
+    try {
+      const res = await api.novoxpress.retryLabelPdf(envoi.id)
+      setResult(r => ({ ...r, label_url: res.label_url, label_error: null, tracking_id: r?.tracking_id || res.tracking_id }))
+      onDone?.()
+    } catch (e) {
+      setRetryError(e.message)
+    } finally {
+      setRetrying(false)
     }
   }
 
@@ -299,23 +285,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
         </>
       )}
 
-      <div className="pt-1 border-t border-slate-100">
-        <label className="flex items-start gap-2.5 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={autoPickup}
-            onChange={e => setAutoPickup(e.target.checked)}
-            className="mt-0.5 accent-brand-600"
-          />
-          <div className="flex-1">
-            <span className="text-sm font-medium text-slate-700">Commander un ramassage automatiquement</span>
-            <p className="text-xs text-slate-500 mt-0.5">
-              À l'achat de l'étiquette, un ramassage du transporteur sélectionné sera programmé au plus tôt (9h–16h, jours ouvrables).
-            </p>
-          </div>
-        </label>
-      </div>
-
       {error && <p className="text-sm text-red-600">{error}</p>}
       <div className="flex justify-end gap-3 pt-2">
         <button onClick={onClose} className="btn-secondary">Annuler</button>
@@ -337,9 +306,17 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
       ) : error ? (
         <div className="space-y-4">
           <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 whitespace-pre-wrap break-words">{error}</p>
+          <NovoxpressDiagnosticPanel diagnostic={diagnostic} />
+          {!diagnostic?.available && (
+            <button onClick={() => handleDiagnose('rate')} disabled={diagLoading} className="btn-secondary text-sm flex items-center gap-1.5">
+              {diagLoading
+                ? <><div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-slate-500" /> Diagnostic en cours… (~20 s)</>
+                : <><Stethoscope size={14} /> Diagnostiquer en dev</>}
+            </button>
+          )}
           <DebugDetails details={errorDetails} />
           <div className="flex justify-between">
-            <button onClick={() => { setStep('package'); setError(''); setErrorDetails(null) }} className="btn-secondary">← Retour</button>
+            <button onClick={() => { setStep('package'); setError(''); setErrorDetails(null); setDiagnostic(null) }} className="btn-secondary">← Retour</button>
           </div>
         </div>
       ) : rates.length === 0 ? (
@@ -415,22 +392,25 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
       })()}
       <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
         Cette action va facturer l'étiquette sur votre compte Novoxpress.
-        {autoPickup && (() => {
-          const w = computeAsapPickupWindow()
-          const dateStr = new Date(w.date.year, w.date.month - 1, w.date.day)
-            .toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })
-          const carrier = getRateCarrier(selectedRate) || 'le transporteur'
-          return <span><br />Un ramassage <strong>{carrier}</strong> sera également planifié le <strong>{dateStr}</strong> entre <strong>{String(w.ready_at.hour).padStart(2, '0')}h00</strong> et <strong>{String(w.ready_until.hour).padStart(2, '0')}h00</strong>.</span>
-        })()}
+        <br />Le ramassage du colis se commande séparément après l'achat de l'étiquette.
+        <br />En cas d'erreur inexpliquée, un diagnostic automatique (~20 s, environnement de test, aucun achat) tentera d'en isoler la cause.
       </p>
       {error && (
         <>
           <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 whitespace-pre-wrap break-words">{error}</p>
+          <NovoxpressDiagnosticPanel diagnostic={diagnostic} />
+          {!diagnostic?.available && (
+            <button onClick={() => handleDiagnose('label')} disabled={diagLoading} className="btn-secondary text-sm flex items-center gap-1.5">
+              {diagLoading
+                ? <><div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-slate-500" /> Diagnostic en cours… (~20 s)</>
+                : <><Stethoscope size={14} /> Diagnostiquer en dev</>}
+            </button>
+          )}
           <DebugDetails details={errorDetails} />
         </>
       )}
       <div className="flex justify-between gap-3 pt-2">
-        <button onClick={() => { setStep('rates'); setError(''); setErrorDetails(null) }} disabled={loading} className="btn-secondary">← Retour</button>
+        <button onClick={() => { setStep('rates'); setError(''); setErrorDetails(null); setDiagnostic(null) }} disabled={loading} className="btn-secondary">← Retour</button>
         <button onClick={handleConfirm} disabled={loading} className="btn-primary flex items-center gap-1.5">
           {loading
             ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Création…</>
@@ -441,167 +421,90 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
     </div>
   )
 
-  // ── Step: done — propose pickup ──
-  if (step === 'done') return (
-    <div className="space-y-4">
-      <div className="flex flex-col items-center gap-3 py-2 text-center">
-        <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center">
-          <CheckCircle size={28} className="text-green-600" />
-        </div>
-        <h3 className="font-semibold text-slate-900 text-lg">Étiquette créée !</h3>
-        {result?.tracking_id && (
-          <p className="text-sm text-slate-600">
-            N° de suivi : <span className="font-mono font-semibold text-slate-900">{result.tracking_id}</span>
-          </p>
-        )}
-      </div>
-      <a
-        href={result?.label_url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="btn-secondary w-full flex items-center justify-center gap-2"
-      >
-        <Download size={15} /> Télécharger l'étiquette PDF
-      </a>
-      {pickupResult ? (
-        <div className="border border-green-200 bg-green-50 rounded-xl p-4 space-y-1">
-          <p className="text-sm font-semibold text-green-900 flex items-center gap-1.5">
-            <Package size={14} /> Ramassage planifié
-          </p>
-          {pickupResult.pickup_id && (
-            <p className="text-xs text-green-800">
-              ID : <span className="font-mono">{pickupResult.pickup_id}</span>
-            </p>
-          )}
-          {(() => {
-            const w = computeAsapPickupWindow()
-            const dateStr = new Date(w.date.year, w.date.month - 1, w.date.day)
-              .toLocaleDateString('fr-CA', { weekday: 'long', day: 'numeric', month: 'long' })
-            return (
-              <p className="text-xs text-green-700">
-                {dateStr} · {String(w.ready_at.hour).padStart(2, '0')}h00–{String(w.ready_until.hour).padStart(2, '0')}h00 · Porte extérieure
-              </p>
-            )
-          })()}
-        </div>
-      ) : autoPickupError ? (
-        <div className="border-2 border-red-300 bg-red-50 rounded-xl p-4 space-y-2">
-          <p className="text-sm font-semibold text-red-900 flex items-center gap-1.5">
-            <AlertTriangle size={16} /> Le ramassage automatique a échoué
-          </p>
-          <p className="text-xs text-red-800 whitespace-pre-wrap break-words">{autoPickupError}</p>
-          <p className="text-xs text-red-700">
-            L'étiquette est bien achetée, mais aucun coursier ne viendra. Planifiez le ramassage manuellement ou réessayez plus tard.
-          </p>
-          <button onClick={() => setStep('pickup')} className="btn-primary text-xs flex items-center gap-1.5">
-            <Package size={12} /> Planifier le ramassage manuellement
-          </button>
-        </div>
-      ) : (
-        <>
-          <div className="border border-brand-200 bg-brand-50 rounded-xl p-4 space-y-1">
-            <p className="text-sm font-semibold text-brand-900">Planifier un ramassage ?</p>
-            <p className="text-xs text-brand-700">Souhaitez-vous qu'un coursier vienne récupérer le colis ?</p>
-          </div>
-          <div className="flex gap-3">
-            <button onClick={onClose} className="btn-secondary flex-1">Non merci</button>
-            <button onClick={() => setStep('pickup')} className="btn-primary flex-1 flex items-center justify-center gap-1.5">
-              <Package size={14} /> Oui, planifier
-            </button>
-          </div>
-        </>
-      )}
-      {pickupResult && (
-        <button onClick={onClose} className="btn-primary w-full">Fermer</button>
-      )}
-    </div>
-  )
-
-  // ── Step: pickup ──
-  if (step === 'pickup') {
-    async function handleSchedulePickup() {
-      setLoading(true)
-      setError('')
-      try {
-        const [year, month, day] = pickupDate.split('-').map(Number)
-        const [rH, rM] = pickupReadyAt.split(':').map(Number)
-        const [uH, uM] = pickupReadyUntil.split(':').map(Number)
-        const res = await api.novoxpress.schedulePickup(envoi.id, {
-          date: { year, month, day },
-          ready_at: { hour: rH, minute: rM },
-          ready_until: { hour: uH, minute: uM },
-          quantity: effectiveQty,
-          weight: effectiveWeight,
-          pickup_location: pickupLocation,
-          pickup_instructions: pickupInstructions || undefined,
-        })
-        setPickupResult(res)
-        setStep('pickup-done')
-      } catch (e) {
-        setError(e.message)
-      } finally {
-        setLoading(false)
-      }
-    }
-
+  // ── Step: done ──
+  if (step === 'done') {
+    // Achat réussi mais PDF non téléchargé (ex. 403 du CDN Novoxpress). L'étiquette
+    // EST payée et l'envoi marqué « Envoyé » — on confirme l'achat et on propose
+    // de réessayer le téléchargement, sans re-facturer.
+    const pdfMissing = !result?.label_url
     return (
       <div className="space-y-4">
-        <h3 className="font-semibold text-slate-900">Planifier un ramassage</h3>
-        <div className="grid grid-cols-2 gap-4">
-          <div className="col-span-2">
-            <label className="label">Date de ramassage</label>
-            <input type="date" className="input" value={pickupDate} onChange={e => setPickupDate(e.target.value)} min={localISODate()} />
+        <div className="flex flex-col items-center gap-3 py-2 text-center">
+          <div className={`w-14 h-14 rounded-full flex items-center justify-center ${pdfMissing ? 'bg-amber-100' : 'bg-green-100'}`}>
+            {pdfMissing
+              ? <AlertTriangle size={28} className="text-amber-600" />
+              : <CheckCircle size={28} className="text-green-600" />}
           </div>
-          <div>
-            <label className="label">Prêt à partir de</label>
-            <input type="time" className="input" value={pickupReadyAt} onChange={e => setPickupReadyAt(e.target.value)} />
-          </div>
-          <div>
-            <label className="label">Prêt jusqu'à</label>
-            <input type="time" className="input" value={pickupReadyUntil} onChange={e => setPickupReadyUntil(e.target.value)} />
-          </div>
-          <div className="col-span-2">
-            <label className="label">Emplacement du colis</label>
-            <select className="select" value={pickupLocation} onChange={e => setPickupLocation(e.target.value)}>
-              {PICKUP_LOCATIONS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
-            </select>
-          </div>
-          <div className="col-span-2">
-            <label className="label">Instructions (optionnel)</label>
-            <input type="text" className="input" value={pickupInstructions} onChange={e => setPickupInstructions(e.target.value)} placeholder="ex. Sonner à la porte arrière" />
-          </div>
+          <h3 className="font-semibold text-slate-900 text-lg">
+            {pdfMissing ? 'Étiquette achetée — PDF à récupérer' : 'Étiquette créée !'}
+          </h3>
+          {result?.tracking_id && (
+            <p className="text-sm text-slate-600">
+              N° de suivi : <span className="font-mono font-semibold text-slate-900">{result.tracking_id}</span>
+            </p>
+          )}
+          {result?.shipment_id && (
+            <p className="text-xs text-slate-400">
+              N° Novoxpress : <span className="font-mono">{result.shipment_id}</span>
+            </p>
+          )}
         </div>
-        {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">{error}</p>}
-        <div className="flex justify-between gap-3 pt-2">
-          <button onClick={onClose} className="btn-secondary">Passer</button>
-          <button onClick={handleSchedulePickup} disabled={loading || !pickupDate} className="btn-primary flex items-center gap-1.5">
-            {loading
-              ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Envoi…</>
-              : <><CheckCircle size={14} /> Confirmer le ramassage</>
-            }
-          </button>
-        </div>
+
+        {pdfMissing ? (
+          <>
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800 space-y-2">
+              <p className="font-semibold flex items-center gap-1.5">
+                <CheckCircle size={15} className="text-green-600" /> L'achat de l'étiquette a bien été effectué.
+              </p>
+              <p>
+                Votre compte Novoxpress a été facturé et l'envoi est marqué « Envoyé ».
+                Seul le <span className="font-medium">téléchargement du PDF</span> a échoué — l'étiquette,
+                elle, existe bien chez Novoxpress.
+              </p>
+              {result?.label_error && (
+                <p className="text-xs text-amber-700">
+                  Raison du blocage : <span className="font-mono break-all">{result.label_error}</span>
+                </p>
+              )}
+              <p className="text-xs">
+                Aucune nouvelle facturation : « Réessayer » récupère le même PDF déjà acheté.
+              </p>
+            </div>
+            {retryError && (
+              <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 whitespace-pre-wrap break-words">
+                {retryError}
+              </p>
+            )}
+            <button
+              onClick={handleRetryPdf}
+              disabled={retrying}
+              className="btn-primary w-full flex items-center justify-center gap-2"
+            >
+              {retrying
+                ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Téléchargement…</>
+                : <><RefreshCw size={15} /> Réessayer le téléchargement</>}
+            </button>
+            <button onClick={onClose} className="btn-secondary w-full">Fermer (récupérable plus tard depuis l'envoi)</button>
+          </>
+        ) : (
+          <>
+            <a
+              href={result?.label_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-secondary w-full flex items-center justify-center gap-2"
+            >
+              <Download size={15} /> Télécharger l'étiquette PDF
+            </a>
+            <p className="text-xs text-slate-500 text-center">
+              Le ramassage du colis se commande séparément depuis la fiche de l'envoi.
+            </p>
+            <button onClick={onClose} className="btn-primary w-full">Fermer</button>
+          </>
+        )}
       </div>
     )
   }
-
-  // ── Step: pickup-done ──
-  if (step === 'pickup-done') return (
-    <div className="space-y-4 text-center">
-      <div className="flex flex-col items-center gap-3 py-4">
-        <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center">
-          <CheckCircle size={28} className="text-green-600" />
-        </div>
-        <h3 className="font-semibold text-slate-900 text-lg">Ramassage planifié !</h3>
-        {pickupResult?.pickup_id && (
-          <p className="text-sm text-slate-500">
-            ID : <span className="font-mono text-slate-700">{pickupResult.pickup_id}</span>
-          </p>
-        )}
-      </div>
-      <button onClick={onClose} className="btn-secondary w-full">Fermer</button>
-    </div>
-  )
 
   return null
 }

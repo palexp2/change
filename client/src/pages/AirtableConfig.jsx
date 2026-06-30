@@ -1,6 +1,67 @@
 import { useState, useEffect } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { RefreshCw, SlidersHorizontal } from 'lucide-react'
 import api from '../lib/api.js'
+import { fmtDateTime } from '../lib/formatDate.js'
+import { Modal } from '../components/Modal.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
+
+// Pickers recherchables pour bases/tables Airtable. Un workspace expose couramment
+// 50+ bases et 30+ tables — au-delà du seuil de 10 options de la règle « dropdowns
+// recherchables » (CLAUDE.md). Bases et tables ont la même forme `{ id, name }`.
+function BaseSelect({ value, onChange, bases, loadingBases, testId }) {
+  return (
+    <SearchableSelect
+      testId={testId}
+      className="input"
+      size="sm"
+      value={value}
+      options={bases}
+      getOptionValue={o => o.id}
+      getOptionLabel={o => o.name}
+      onChange={onChange}
+      emptyOption="—"
+      placeholder={loadingBases ? 'Chargement…' : 'Choisir une base…'}
+      searchPlaceholder="Rechercher une base…"
+    />
+  )
+}
+
+function TableSelect({ value, onChange, tables, testId }) {
+  return (
+    <SearchableSelect
+      testId={testId}
+      className="input"
+      size="sm"
+      value={value}
+      options={tables}
+      getOptionValue={o => o.id}
+      getOptionLabel={o => o.name}
+      onChange={onChange}
+      emptyOption="—"
+      placeholder="Choisir une table…"
+      searchPlaceholder="Rechercher une table…"
+    />
+  )
+}
+
+// Modules resynchronisés par « Sync tout » (POST /connectors/sync/airtable-all).
+// Aligné sur ALL_AIRTABLE_MODULES côté serveur (server/src/routes/connectors.js).
+// Sert au récap de la modale de confirmation avant un import massif.
+const SYNC_ALL_MODULES = [
+  'Contacts & entreprises', 'Projets', 'Pièces', 'Commandes', 'Achats',
+  'Billets', 'N° de série', 'Envois', 'Soumissions', 'Retours',
+  'Items de retour', 'Adresses', 'BOM', 'États de série', 'Assemblages',
+  'Employés', 'Paies', 'Lignes de paie', 'Mouvements de stock',
+]
+
+// Modules dont les champs Airtable sont contrôlables via la page ModuleFields
+// (/airtable/fields/:module). Aligné sur AIRTABLE_FIELD_MODULES côté serveur.
+// Les clés d'onglet correspondent aux clés de module sauf exceptions ci-dessous.
+const FIELD_MODULE_TABS = new Set([
+  'contacts', 'companies', 'adresses', 'soumissions', 'pieces', 'serials',
+  'assemblages', 'orders', 'achats', 'envois', 'billets', 'retours', 'retour_items',
+])
 
 function SyncBtn({ label, syncKey, syncStatus, onSync }) {
   const [localRunning, setLocalRunning] = useState(false)
@@ -71,6 +132,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
 
   const [tab, setTab] = useState('contacts')
   const [syncingAll, setSyncingAll] = useState(false)
+  const [confirmSyncAll, setConfirmSyncAll] = useState(false)
 
   const AIRTABLE_KEYS = ['airtable','projets','pieces','orders','achats','billets','serials','envois','soumissions','retours','retour_items','adresses','bom','serial_changes','abonnements','assemblages']
 
@@ -299,8 +361,13 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
             {anyError && (
               <span className="text-xs text-red-500">⚠ Erreurs — vérifier les onglets</span>
             )}
+            {FIELD_MODULE_TABS.has(tab) && (
+              <Link to={`/airtable/fields/${tab}`} className="btn-secondary btn-sm py-1" title="Choisir quels champs Airtable sont importés, renommer, geler ou supprimer des colonnes">
+                <SlidersHorizontal size={12} /> Gérer les champs
+              </Link>
+            )}
             <button
-              onClick={() => { setSyncingAll(true); api.airtable.syncAll() }}
+              onClick={() => setConfirmSyncAll(true)}
               disabled={isRunning}
               className="btn-secondary btn-sm py-1"
             >
@@ -310,6 +377,28 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
           </div>
         )
       })()}
+
+      <Modal isOpen={confirmSyncAll} onClose={() => setConfirmSyncAll(false)} title="Resynchroniser tous les modules ?" size="md">
+        <p className="text-sm text-slate-600 mb-3">
+          Une resynchronisation complète depuis Airtable va être lancée. C'est une opération
+          lourde et longue qui réimporte les enregistrements de <strong>{SYNC_ALL_MODULES.length} modules</strong> :
+        </p>
+        <ul className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-slate-700 mb-4 list-disc list-inside">
+          {SYNC_ALL_MODULES.map(m => <li key={m}>{m}</li>)}
+        </ul>
+        <p className="text-xs text-slate-400 mb-6">
+          Les modules s'exécutent en arrière-plan ; vous pouvez suivre leur progression dans chaque onglet.
+        </p>
+        <div className="flex justify-end gap-3">
+          <button onClick={() => setConfirmSyncAll(false)} className="btn-secondary">Annuler</button>
+          <button
+            onClick={() => { setConfirmSyncAll(false); setSyncingAll(true); api.airtable.syncAll() }}
+            className="btn-primary"
+          >
+            <RefreshCw size={14} /> Resynchroniser tout
+          </button>
+        </div>
+      </Modal>
 
       <div className="flex gap-0.5 border-b border-slate-200 flex-wrap">
         {TABS.filter(([k]) => !(k === 'abonnements' && stripeConfigured)).map(([k, l]) => {
@@ -329,18 +418,12 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <select value={contactsForm.base_id} onChange={e => setContactsForm(f => ({ ...f, base_id: e.target.value, contacts_table_id: '', field_map_contacts: {} }))} className="select">
-              <option value="">—</option>
-              {loadingBases ? <option disabled>Chargement…</option> : bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            <BaseSelect testId="contacts-base-select" value={contactsForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setContactsForm(f => ({ ...f, base_id: v, contacts_table_id: '', field_map_contacts: {} }))} />
           </div>
           {tables.length > 0 && (
             <div>
               <label className="label">Table contacts</label>
-              <select value={contactsForm.contacts_table_id} onChange={e => setContactsForm(f => ({ ...f, contacts_table_id: e.target.value, field_map_contacts: {} }))} className="select">
-                <option value="">—</option>
-                {tables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <TableSelect testId="contacts-table-select" value={contactsForm.contacts_table_id} tables={tables} onChange={v => setContactsForm(f => ({ ...f, contacts_table_id: v, field_map_contacts: {} }))} />
             </div>
           )}
           <div className="flex gap-2">
@@ -349,7 +432,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               <SyncBtn label="Synchroniser" syncKey="airtable" syncStatus={syncStatus} onSync={() => api.airtable.sync('airtable')} />
             )}
           </div>
-          {contactsSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(contactsSync.last_synced_at).toLocaleString('fr-CA')}</p>}
+          {contactsSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {fmtDateTime(contactsSync.last_synced_at)}</p>}
         </div>
       )}
 
@@ -357,18 +440,12 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <select value={companiesForm.base_id} onChange={e => setCompaniesForm(f => ({ ...f, base_id: e.target.value, companies_table_id: '', field_map_companies: {} }))} className="select">
-              <option value="">—</option>
-              {loadingBases ? <option disabled>Chargement…</option> : bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            <BaseSelect testId="companies-base-select" value={companiesForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setCompaniesForm(f => ({ ...f, base_id: v, companies_table_id: '', field_map_companies: {} }))} />
           </div>
           {companiesTables.length > 0 && (
             <div>
               <label className="label">Table entreprises</label>
-              <select value={companiesForm.companies_table_id} onChange={e => setCompaniesForm(f => ({ ...f, companies_table_id: e.target.value, field_map_companies: {} }))} className="select">
-                <option value="">—</option>
-                {companiesTables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <TableSelect testId="companies-table-select" value={companiesForm.companies_table_id} tables={companiesTables} onChange={v => setCompaniesForm(f => ({ ...f, companies_table_id: v, field_map_companies: {} }))} />
             </div>
           )}
           <div className="flex gap-2">
@@ -377,7 +454,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               <SyncBtn label="Synchroniser" syncKey="airtable" syncStatus={syncStatus} onSync={() => api.airtable.sync('airtable')} />
             )}
           </div>
-          {companiesSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(companiesSync.last_synced_at).toLocaleString('fr-CA')}</p>}
+          {companiesSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {fmtDateTime(companiesSync.last_synced_at)}</p>}
         </div>
       )}
 
@@ -385,18 +462,12 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <select value={piecesForm.base_id} onChange={e => setPiecesForm(f => ({ ...f, base_id: e.target.value, table_id: '', field_map: {} }))} className="select">
-              <option value="">—</option>
-              {loadingBases ? <option disabled>Chargement…</option> : bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            <BaseSelect testId="pieces-base-select" value={piecesForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setPiecesForm(f => ({ ...f, base_id: v, table_id: '', field_map: {} }))} />
           </div>
           {piecesTables.length > 0 && (
             <div>
               <label className="label">Table pièces</label>
-              <select value={piecesForm.table_id} onChange={e => setPiecesForm(f => ({ ...f, table_id: e.target.value, field_map: {} }))} className="select">
-                <option value="">—</option>
-                {piecesTables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <TableSelect testId="pieces-table-select" value={piecesForm.table_id} tables={piecesTables} onChange={v => setPiecesForm(f => ({ ...f, table_id: v, field_map: {} }))} />
             </div>
           )}
           <div className="flex gap-2">
@@ -405,7 +476,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               <SyncBtn label="Synchroniser" syncKey="pieces" syncStatus={syncStatus} onSync={() => api.airtable.sync('pieces')} />
             )}
           </div>
-          {piecesSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(piecesSync.last_synced_at).toLocaleString('fr-CA')}</p>}
+          {piecesSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {fmtDateTime(piecesSync.last_synced_at)}</p>}
         </div>
       )}
 
@@ -413,25 +484,16 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <select value={ordersForm.base_id} onChange={e => setOrdersForm(f => ({ ...f, base_id: e.target.value, orders_table_id: '', items_table_id: '', field_map_orders: {}, field_map_items: {} }))} className="select">
-              <option value="">—</option>
-              {loadingBases ? <option disabled>Chargement…</option> : bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            <BaseSelect testId="orders-base-select" value={ordersForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setOrdersForm(f => ({ ...f, base_id: v, orders_table_id: '', items_table_id: '', field_map_orders: {}, field_map_items: {} }))} />
           </div>
           {ordersTables.length > 0 && (<>
             <div>
               <label className="label">Table commandes</label>
-              <select value={ordersForm.orders_table_id} onChange={e => setOrdersForm(f => ({ ...f, orders_table_id: e.target.value, field_map_orders: {} }))} className="select">
-                <option value="">—</option>
-                {ordersTables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <TableSelect testId="orders-table-select" value={ordersForm.orders_table_id} tables={ordersTables} onChange={v => setOrdersForm(f => ({ ...f, orders_table_id: v, field_map_orders: {} }))} />
             </div>
             <div>
               <label className="label">Table lignes d'items (optionnel)</label>
-              <select value={ordersForm.items_table_id} onChange={e => setOrdersForm(f => ({ ...f, items_table_id: e.target.value, field_map_items: {} }))} className="select">
-                <option value="">—</option>
-                {itemsTables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <TableSelect testId="orders-items-table-select" value={ordersForm.items_table_id} tables={itemsTables} onChange={v => setOrdersForm(f => ({ ...f, items_table_id: v, field_map_items: {} }))} />
             </div>
           </>)}
           <div className="flex gap-2">
@@ -440,7 +502,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               <SyncBtn label="Synchroniser" syncKey="orders" syncStatus={syncStatus} onSync={() => api.airtable.sync('orders')} />
             )}
           </div>
-          {ordersSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(ordersSync.last_synced_at).toLocaleString('fr-CA')}</p>}
+          {ordersSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {fmtDateTime(ordersSync.last_synced_at)}</p>}
         </div>
       )}
 
@@ -448,18 +510,12 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <select value={achatsForm.base_id} onChange={e => setAchatsForm(f => ({ ...f, base_id: e.target.value, table_id: '', field_map: {} }))} className="select">
-              <option value="">—</option>
-              {loadingBases ? <option disabled>Chargement…</option> : bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            <BaseSelect testId="achats-base-select" value={achatsForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setAchatsForm(f => ({ ...f, base_id: v, table_id: '', field_map: {} }))} />
           </div>
           {achatsTables.length > 0 && (
             <div>
               <label className="label">Table achats</label>
-              <select value={achatsForm.table_id} onChange={e => setAchatsForm(f => ({ ...f, table_id: e.target.value, field_map: {} }))} className="select">
-                <option value="">—</option>
-                {achatsTables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <TableSelect testId="achats-table-select" value={achatsForm.table_id} tables={achatsTables} onChange={v => setAchatsForm(f => ({ ...f, table_id: v, field_map: {} }))} />
             </div>
           )}
           <div className="flex gap-2">
@@ -468,7 +524,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               <SyncBtn label="Synchroniser" syncKey="achats" syncStatus={syncStatus} onSync={() => api.airtable.sync('achats')} />
             )}
           </div>
-          {achatsSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(achatsSync.last_synced_at).toLocaleString('fr-CA')}</p>}
+          {achatsSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {fmtDateTime(achatsSync.last_synced_at)}</p>}
         </div>
       )}
 
@@ -476,18 +532,12 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <select value={billetsForm.base_id} onChange={e => setBilletsForm(f => ({ ...f, base_id: e.target.value, table_id: '', field_map: {} }))} className="select">
-              <option value="">—</option>
-              {loadingBases ? <option disabled>Chargement…</option> : bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            <BaseSelect testId="billets-base-select" value={billetsForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setBilletsForm(f => ({ ...f, base_id: v, table_id: '', field_map: {} }))} />
           </div>
           {billetsTables.length > 0 && (
             <div>
               <label className="label">Table billets</label>
-              <select value={billetsForm.table_id} onChange={e => setBilletsForm(f => ({ ...f, table_id: e.target.value, field_map: {} }))} className="select">
-                <option value="">—</option>
-                {billetsTables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <TableSelect testId="billets-table-select" value={billetsForm.table_id} tables={billetsTables} onChange={v => setBilletsForm(f => ({ ...f, table_id: v, field_map: {} }))} />
             </div>
           )}
           <div className="flex gap-2">
@@ -496,7 +546,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               <SyncBtn label="Synchroniser" syncKey="billets" syncStatus={syncStatus} onSync={() => api.airtable.sync('billets')} />
             )}
           </div>
-          {billetsSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(billetsSync.last_synced_at).toLocaleString('fr-CA')}</p>}
+          {billetsSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {fmtDateTime(billetsSync.last_synced_at)}</p>}
         </div>
       )}
 
@@ -504,18 +554,12 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <select value={serialsForm.base_id} onChange={e => setSerialsForm(f => ({ ...f, base_id: e.target.value, table_id: '', field_map: {} }))} className="select">
-              <option value="">—</option>
-              {loadingBases ? <option disabled>Chargement…</option> : bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            <BaseSelect testId="serials-base-select" value={serialsForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setSerialsForm(f => ({ ...f, base_id: v, table_id: '', field_map: {} }))} />
           </div>
           {serialsTables.length > 0 && (
             <div>
               <label className="label">Table numéros de série</label>
-              <select value={serialsForm.table_id} onChange={e => setSerialsForm(f => ({ ...f, table_id: e.target.value, field_map: {} }))} className="select">
-                <option value="">—</option>
-                {serialsTables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <TableSelect testId="serials-table-select" value={serialsForm.table_id} tables={serialsTables} onChange={v => setSerialsForm(f => ({ ...f, table_id: v, field_map: {} }))} />
             </div>
           )}
           <div className="flex gap-2">
@@ -524,7 +568,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               <SyncBtn label="Synchroniser" syncKey="serials" syncStatus={syncStatus} onSync={() => api.airtable.sync('serials')} />
             )}
           </div>
-          {serialsSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(serialsSync.last_synced_at).toLocaleString('fr-CA')}</p>}
+          {serialsSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {fmtDateTime(serialsSync.last_synced_at)}</p>}
         </div>
       )}
 
@@ -532,18 +576,12 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <select value={envoisForm.base_id} onChange={e => setEnvoisForm(f => ({ ...f, base_id: e.target.value, table_id: '', field_map: {} }))} className="select">
-              <option value="">— Choisir une base —</option>
-              {bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
+            <BaseSelect testId="envois-base-select" value={envoisForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setEnvoisForm(f => ({ ...f, base_id: v, table_id: '', field_map: {} }))} />
           </div>
           {envoisForm.base_id && (
             <div>
               <label className="label">Table des envois</label>
-              <select value={envoisForm.table_id} onChange={e => setEnvoisForm(f => ({ ...f, table_id: e.target.value, field_map: {} }))} className="select">
-                <option value="">— Choisir une table —</option>
-                {envoisTables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-              </select>
+              <TableSelect testId="envois-table-select" value={envoisForm.table_id} tables={envoisTables} onChange={v => setEnvoisForm(f => ({ ...f, table_id: v, field_map: {} }))} />
             </div>
           )}
           <div className="flex gap-2">
@@ -552,7 +590,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               <SyncBtn label="Synchroniser" syncKey="envois" syncStatus={syncStatus} onSync={() => api.airtable.sync('envois')} />
             )}
           </div>
-          {envoisSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(envoisSync.last_synced_at).toLocaleString('fr-CA')}</p>}
+          {envoisSync?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {fmtDateTime(envoisSync.last_synced_at)}</p>}
         </div>
       )}
 
@@ -636,18 +674,12 @@ function SimpleModuleTab({ form, setForm, tables, bases, loadingBases, onSave, s
     <div className="space-y-3">
       <div>
         <label className="label">Base Airtable</label>
-        <select value={form.base_id} onChange={e => setForm(f => ({ ...f, base_id: e.target.value, table_id: '', field_map: {} }))} className="select">
-          <option value="">—</option>
-          {loadingBases ? <option disabled>Chargement…</option> : bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-        </select>
+        <BaseSelect testId={`${syncKey}-base-select`} value={form.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setForm(f => ({ ...f, base_id: v, table_id: '', field_map: {} }))} />
       </div>
       {tables.length > 0 && (
         <div>
           <label className="label">{tableLabel}</label>
-          <select value={form.table_id} onChange={e => setForm(f => ({ ...f, table_id: e.target.value, field_map: {} }))} className="select">
-            <option value="">—</option>
-            {tables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
+          <TableSelect testId={`${syncKey}-table-select`} value={form.table_id} tables={tables} onChange={v => setForm(f => ({ ...f, table_id: v, field_map: {} }))} />
         </div>
       )}
       <div className="flex gap-2">
@@ -656,7 +688,7 @@ function SimpleModuleTab({ form, setForm, tables, bases, loadingBases, onSave, s
           <SyncBtn label="Synchroniser" syncKey={syncKey} syncStatus={syncStatus} onSync={() => api.airtable.sync(syncKey)} />
         )}
       </div>
-      {syncConfig?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {new Date(syncConfig.last_synced_at).toLocaleString('fr-CA')}</p>}
+      {syncConfig?.last_synced_at && <p className="text-xs text-slate-400">Dernier sync: {fmtDateTime(syncConfig.last_synced_at)}</p>}
     </div>
   )
 }

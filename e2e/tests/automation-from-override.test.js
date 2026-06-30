@@ -100,17 +100,23 @@ describe('Per-automation from override (Postmark)', () => {
     assert.strictEqual(res.status, 403, 'sys automations non-email ne doivent pas accepter action_config')
   })
 
-  test('UI AutomationDetail affiche le picker sur sys_installation_followup', async () => {
+  test('UI AutomationDetail affiche le picker (SearchableSelect) sur sys_installation_followup', async () => {
     await page.goto(`${URL}/automations/sys_installation_followup`, { waitUntil: 'networkidle' })
     const label = page.locator('h2:has-text("Expéditeur")').first()
     await label.waitFor({ state: 'visible', timeout: 8000 })
-    const select = page.locator('h2:has-text("Expéditeur") ~ select, section:has(h2:has-text("Expéditeur")) select').first()
-    // Fallback: search any select under the same card (the Expéditeur card)
-    const anySelect = page.locator('div:has(> h2:has-text("Expéditeur")) select').first()
-    const target = (await select.count()) > 0 ? select : anySelect
-    await target.waitFor({ state: 'visible', timeout: 5000 })
-    const optionValues = await target.locator('option').evaluateAll(opts => opts.map(o => o.value))
-    assert.ok(optionValues.includes('info@orisha.io'), 'info@ manquant dans picker UI')
-    assert.ok(optionValues.includes('support@orisha.io'), 'support@ manquant dans picker UI')
+
+    // Le picker est désormais un SearchableSelect : un <button> (testId) ouvrant un
+    // menu en portail listant les adresses Postmark (règle « dropdowns recherchables »).
+    const trigger = page.locator('[data-testid="system-from-select"]')
+    await trigger.waitFor({ state: 'visible', timeout: 5000 })
+    assert.equal(await trigger.evaluate(el => el.tagName.toLowerCase()), 'button', 'le picker doit être un bouton (SearchableSelect)')
+
+    await trigger.click()
+    const menu = page.locator('[data-testid="system-from-select-menu"]')
+    await menu.waitFor({ state: 'visible', timeout: 5000 })
+    await menu.locator('input').waitFor({ state: 'visible' })
+    const optionTexts = await menu.locator('button').evaluateAll(btns => btns.map(b => b.textContent.trim()))
+    assert.ok(optionTexts.some(t => t.includes('info@orisha.io')), 'info@ manquant dans picker UI')
+    assert.ok(optionTexts.some(t => t.includes('support@orisha.io')), 'support@ manquant dans picker UI')
   })
 })

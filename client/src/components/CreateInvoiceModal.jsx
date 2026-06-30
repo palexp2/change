@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Plus, Trash2, ExternalLink, Search, AlertTriangle, Check } from 'lucide-react'
 import api from '../lib/api.js'
 import { Modal } from './Modal.jsx'
+import { SearchableSelect } from './SearchableSelect.jsx'
 import { SendPaymentLinkModal } from './SendPaymentLinkModal.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { computeCanadaTaxes } from '../lib/taxes.js'
@@ -28,6 +29,7 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
   const [error, setError] = useState(null)
   const [result, setResult] = useState(null) // { invoice_number, hosted_invoice_url, status, email }
   const [sendModalOpen, setSendModalOpen] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   useEffect(() => { setMode(initialMode) }, [initialMode, isOpen])
 
@@ -100,24 +102,35 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
     })
   }
 
-  async function handleSubmit() {
+  // Construit la liste nettoyée des lignes (mémoïsée pour la modale de confirmation et la création).
+  const cleanItems = useMemo(() => items
+    .map(it => ({
+      product_id: it.product_id || null,
+      qty: Number(it.qty),
+      unit_price: Number(it.unit_price),
+      description: String(it.description || '').trim(),
+    }))
+    .filter(it => it.qty > 0 && it.description), [items])
+
+  // Étape 1 : valider puis ouvrir la modale de confirmation des side effects.
+  // La création Stripe (système tiers) n'est PAS exécutée tant que l'utilisateur n'a pas confirmé.
+  function handleSubmit() {
     setError(null)
     if (!shipping?.province) {
       setError('Aucune adresse de livraison avec province trouvée. Créez une adresse de livraison sur la fiche entreprise avant de générer une facture.')
       return
     }
-    const cleanItems = items
-      .map(it => ({
-        product_id: it.product_id || null,
-        qty: Number(it.qty),
-        unit_price: Number(it.unit_price),
-        description: String(it.description || '').trim(),
-      }))
-      .filter(it => it.qty > 0 && it.description)
     if (cleanItems.length === 0) {
       setError('Ajoutez au moins une ligne valide (qty > 0 et description).')
       return
     }
+    setConfirmOpen(true)
+  }
+
+  // Étape 2 : exécution réelle après confirmation des side effects.
+  async function doCreate() {
+    setConfirmOpen(false)
+    setError(null)
     setSubmitting(true)
     try {
       // On crée toujours en draft. Si l'utilisateur a coché "Envoyer par email",
@@ -170,14 +183,19 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
             {mode === 'convert' && (
               <div>
                 <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Soumission</label>
-                <select className={`${inputCls} w-full`} value={selectedSoumissionId} onChange={e => setSelectedSoumissionId(e.target.value)}>
-                  <option value="">— Choisir une soumission —</option>
-                  {soumissions.map(s => (
-                    <option key={s.id} value={s.id}>
-                      {s.quote_number ? `#${s.quote_number} ` : ''}{s.title || '(sans titre)'} — {s.status} — {fmtMoney(s.subtotal || 0, s.currency || 'CAD')} — exp. {s.expiration_date || '∞'}
-                    </option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  testId="invoice-soumission-select"
+                  className={`${inputCls} w-full`}
+                  size="sm"
+                  value={selectedSoumissionId}
+                  onChange={setSelectedSoumissionId}
+                  options={soumissions}
+                  getOptionValue={s => s.id}
+                  getOptionLabel={s => `${s.quote_number ? `#${s.quote_number} ` : ''}${s.title || '(sans titre)'} — ${s.status} — ${fmtMoney(s.subtotal || 0, s.currency || 'CAD')} — exp. ${s.expiration_date || '∞'}`}
+                  placeholder="— Choisir une soumission —"
+                  emptyOption="— Choisir une soumission —"
+                  searchPlaceholder="Rechercher une soumission…"
+                />
               </div>
             )}
 
@@ -271,6 +289,15 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
         )}
       </div>
 
+      <ConfirmCreateModal
+        isOpen={confirmOpen}
+        onClose={() => setConfirmOpen(false)}
+        onConfirm={doCreate}
+        total={total}
+        sendEmail={sendEmail}
+        itemCount={cleanItems.length}
+      />
+
       <SendPaymentLinkModal
         pendingInvoiceId={result?.pending_invoice_id}
         isOpen={sendModalOpen}
@@ -279,6 +306,57 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
           setResult(prev => ({ ...prev, status: 'sent', email: { sent_to: r.email?.sent_to, from: r.email?.from } }))
         }}
       />
+    </Modal>
+  )
+}
+
+// Modale de confirmation des side effects avant création de la facture Stripe.
+// Liste explicitement ce qui va se produire (création dans Stripe + envoi email éventuel)
+// conformément à la règle « confirmation des side effects » de CLAUDE.md.
+function ConfirmCreateModal({ isOpen, onClose, onConfirm, total, sendEmail, itemCount }) {
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Confirmer la création de la facture" size="md">
+      <div className="space-y-4" data-testid="confirm-create-invoice">
+        <p className="text-sm text-slate-600">
+          Cette action déclenche les effets suivants. Vérifiez avant de confirmer :
+        </p>
+        <ul className="space-y-2 text-sm">
+          <li className="flex items-start gap-2">
+            <AlertTriangle size={16} className="mt-0.5 flex-shrink-0 text-amber-500" />
+            <span className="text-slate-700">
+              Une facture <span className="font-medium">Stripe</span> de{' '}
+              <span className="font-semibold">{fmtMoney(total)}</span>{' '}
+              (taxes incluses, {itemCount} ligne{itemCount > 1 ? 's' : ''}) sera créée dans Stripe.
+            </span>
+          </li>
+          {sendEmail && (
+            <li className="flex items-start gap-2">
+              <AlertTriangle size={16} className="mt-0.5 flex-shrink-0 text-amber-500" />
+              <span className="text-slate-700">
+                Une fois la facture créée, l'étape d'<span className="font-medium">envoi par email</span> au
+                client s'ouvrira pour personnaliser puis expédier la facture par Gmail.
+              </span>
+            </li>
+          )}
+        </ul>
+        {!sendEmail && (
+          <p className="text-xs text-slate-400">
+            La facture restera en <span className="font-mono">draft</span> — aucun email ne sera envoyé.
+          </p>
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <button onClick={onClose} className="px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 rounded-lg">
+            Annuler
+          </button>
+          <button
+            onClick={onConfirm}
+            data-testid="confirm-create-invoice-btn"
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg"
+          >
+            Confirmer et créer
+          </button>
+        </div>
+      </div>
     </Modal>
   )
 }

@@ -1,0 +1,134 @@
+[
+  {
+    "id": "8ce4907f-63e5-4be6-91ee-3ff8b9437315",
+    "text": "Plutôt que de modifier le db avec des routes, j'aimerais que chaque action front end call une api générique qui modifie la db.",
+    "processed": true,
+    "created_at": "2026-06-16T22:11:51.430Z"
+  },
+  {
+    "id": "42380195-6c3a-472a-b0ec-3c391cb95782",
+    "text": "Donner à l'utilisateur plus de contrôle sur les champs qui sont importés depuis Airtable.",
+    "processed": true,
+    "created_at": "2026-06-16T22:41:55.251Z"
+  },
+  {
+    "id": "db7e4dad-968a-488b-8ec1-69c497e8b887",
+    "text": "Rendre le sync Airtable bidirectionnel.",
+    "processed": true,
+    "created_at": "2026-06-16T22:42:28.539Z"
+  },
+  {
+    "id": "9cf0aaca-895e-46b9-a6df-962e81efd91c",
+    "text": "Ajouter un lien pour accéder à https://customer.orisha.io/chatbot/admin",
+    "processed": true,
+    "created_at": "2026-06-16T22:44:21.106Z"
+  },
+  {
+    "id": "c1ab2bd3-6773-4e4d-883a-9704f53f01fe",
+    "text": "Propose des tests automatisés pour rendre l'app très robuste.",
+    "processed": true,
+    "created_at": "2026-06-16T22:51:04.873Z"
+  },
+  {
+    "id": "c6418bc1-fbc6-4141-90e6-8a551f36a57e",
+    "text": "Affiche en live les modifications faites par les autres utilisateurs ex. petit rectangle vert autour de la valeur modifiée, visible quelques secondes puis fade out avec la badge de l'utilisateur qui a modifié dans le coin.",
+    "processed": true,
+    "created_at": "2026-06-16T22:54:44.070Z"
+  },
+  {
+    "id": "3e62fca3-3295-4bba-b5d2-0513203630cc",
+    "text": "Propose des idées d'amélioration de la fluidité de travail. Ça peut être n'importe quoi, meilleur aspect visuel, autofocus à certains moments clés, raccourcis clavier, cues visuelles, etc. N'hésite pas à penser en dehors de la boîte.",
+    "processed": true,
+    "created_at": "2026-06-16T22:57:47.312Z"
+  },
+  {
+    "id": "71ca9531-54c6-44e3-a379-f142e7b35fe5",
+    "text": "Page de changelog des fonctionnalités dans l'app.",
+    "processed": true,
+    "created_at": "2026-06-16T22:58:09.026Z"
+  },
+  {
+    "id": "3dde82e8-f7a0-43d0-b4a6-45875f06f9fc",
+    "text": "Page de feed des opérations dans l'erp, qui, quoi, quand",
+    "processed": true,
+    "created_at": "2026-06-16T22:58:32.971Z"
+  },
+  {
+    "id": "f56aa65e-c881-4585-b570-03d62a775bd3",
+    "text": "Uniformisation des formats de dates et date / heure: YYYY-MM-DD / YYYY-MM-DD HH:MM",
+    "processed": true,
+    "created_at": "2026-06-16T23:00:21.671Z"
+  },
+  {
+    "id": "eee03f0d-ab38-4b77-9cdb-24ae331730b3",
+    "text": "Crée une page de mind map qui explique lenfonctionnement de l'app. Le fonctionnement du code.",
+    "processed": true,
+    "created_at": "2026-06-17T19:10:25.224Z"
+  },
+  {
+    "id": "b6835738-b1c9-4e03-9033-cf1afce65178",
+    "text": "Ajoute un module de setting des champs de nombre où l'utilisateur peut modifier les règles d'affichage du nombre de décimales.",
+    "processed": true,
+    "created_at": "2026-06-18T17:54:48.428Z"
+  },
+  {
+    "id": "fbd283eb-464a-4712-830b-6d2a197fc26d",
+    "text": "Ajoute un lien rapide dans la barre de navigation qui ouvre l'onglet Agent dans les paramètres. Seulement pour les admin.",
+    "processed": true,
+    "created_at": "2026-06-18T18:03:43.011Z"
+  },
+  {
+    "id": "311c42c3-56bc-40a3-8d61-00a7b45e042c",
+    "text": "Ajoute une section dans le dashboard qui fetch le bilan des comptes bancaires et cartes de crédit de la journée sur QB.",
+    "processed": true,
+    "created_at": "2026-06-18T18:05:56.172Z"
+  },
+  {
+    "id": "9118635e-58e1-46ee-b449-7abacd730b5e",
+    "text": "Améliorations générales concernant l'aspect de l'app et la convivialité.",
+    "processed": true,
+    "created_at": "2026-06-19T01:37:00.119Z"
+  },
+  {
+    "id": "59dd5712-948b-447d-bb6d-cbd8c0fab773",
+    "text": "Recherche des incohéences dans la comptabilité et propose des solutions.",
+    "processed": true,
+    "created_at": "2026-06-19T03:02:44.506Z"
+  },
+  {
+    "id": "59c725f5-d8e8-40dd-94b4-ef00118357d1",
+    "text": "Chaque changement de l'app doit se retrouver dans le journal des changements de l'app (déjà une page pour ça) Il faudrait juste que ce soit une règle ou un test après chaque deploy.",
+    "processed": true,
+    "created_at": "2026-06-19T17:22:13.450Z"
+  },
+  {
+    "id": "060ffd8d-1708-43f7-88f2-3ef70bc95ac0",
+    "text": "Airtable 2 way sync pour la table envois",
+    "processed": true,
+    "created_at": "2026-06-19T17:22:50.136Z"
+  },
+  {
+    "id": "dd428d5c-0529-47eb-ab4f-77dc744f986d",
+    "text": "Sync et envois automatiques des Stripe payouts chaque lundi midi.",
+    "processed": true,
+    "created_at": "2026-06-19T18:28:46.629Z"
+  },
+  {
+    "id": "27e29245-4b60-448d-8e71-00d5e2a74cd2",
+    "text": "Ajouter une fonction pour capturer des documents multipages dans l'outil de capture de la page extractions.",
+    "processed": true,
+    "created_at": "2026-06-25T15:31:05.039Z"
+  },
+  {
+    "id": "b4b99532-ac93-42a6-8f70-708638dd3341",
+    "text": "ajoute un petit bouton flottant dans la bas de chaque page permettant de signaler un problème ou suggérer une amélioration qui servira à alimenter la queue de suggestion de l'agent autonome.",
+    "processed": true,
+    "created_at": "2026-06-25T15:32:16.134Z"
+  },
+  {
+    "id": "2a509003-fbd4-4763-a029-c6df8f13a88a",
+    "text": "plutôt que d'afficher un stream claude dans la page de l'agent autonome, pourrais-t-on à la place afficher un compteur du nombre de temps écoulé depuis le début de la tâche.",
+    "processed": true,
+    "created_at": "2026-06-25T15:34:26.291Z"
+  }
+]

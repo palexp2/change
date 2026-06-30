@@ -7,6 +7,7 @@ const PREFIXES = {
   view:      'viw',
   auto:      'aut',
   log:       'alg',
+  version:   'ver',
   iface:     'ifc',
   page:      'pag',
   block:     'blk',

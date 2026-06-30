@@ -5,6 +5,7 @@ import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import db from '../db/database.js'
 import { readFileSync, writeFileSync, existsSync, statSync, unlinkSync } from 'fs'
 import { resolve, join } from 'path'
+import { writeFileAtomic, withFileLock } from '../utils/atomicFile.js'
 
 const FTP_USERS_FILE = process.env.FTP_USERS_FILE || '/home/ec2-user/ftp-server/users.json'
 const FTP_HOST = process.env.FTP_PUBLIC_IP || '3.132.49.255'
@@ -14,12 +15,21 @@ function readFtpUsers() {
   try { return JSON.parse(readFileSync(FTP_USERS_FILE, 'utf8')) } catch { return [] }
 }
 function writeFtpUsers(users) {
-  writeFileSync(FTP_USERS_FILE, JSON.stringify(users, null, 2))
+  // Écriture atomique : un lecteur concurrent (ftp-arc) ne voit jamais un fichier tronqué.
+  writeFileAtomic(FTP_USERS_FILE, JSON.stringify(users, null, 2))
+}
+// Exécute un cycle read-modify-write sur le fichier des users FTP sous verrou
+// inter-process, pour qu'aucune édition concurrente (deux admins, autre process)
+// ne soit silencieusement écrasée.
+function mutateFtpUsers(mutator) {
+  return withFileLock(FTP_USERS_FILE, () => mutator(readFtpUsers()))
 }
 
 import { getAuthUrl as googleAuthUrl, exchangeCode as googleExchange } from '../connectors/google.js'
 import { getAuthUrl as airtableAuthUrl, exchangeCode as airtableExchange, airtableFetch, getAccessToken } from '../connectors/airtable.js'
 import { getAuthUrl as qbAuthUrl, exchangeCode as qbExchange, qbGet } from '../connectors/quickbooks.js'
+import { getAuthUrl as amazonAuthUrl, exchangeCode as amazonExchange, isAmazonConfigured } from '../connectors/amazon.js'
+import { syncAmazon } from '../services/amazon.js'
 import { syncAllAchatsToQB, importFromQB } from '../services/quickbooks.js'
 import { syncAllMailboxes } from '../services/gmail.js'
 import { syncDrive } from '../services/drive.js'
@@ -27,9 +37,9 @@ import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBill
 import { tracked, getStatus } from '../services/syncState.js'
 import { syncStripeSubscriptions, isStripeConfigured } from '../services/stripe.js'
 import { isHubSpotConfigured } from '../connectors/hubspot.js'
-import { pullDelta as hsPullDelta, getOwnerMappingStatus as hsOwnerStatus, setUserOwnerOverride as hsSetOwnerOverride } from '../services/hubspotSync.js'
+import { pullDelta as hsPullDelta, getOwnerMappingStatus as hsOwnerStatus, setUserOwnerOverride as hsSetOwnerOverride, retryFailedPushes as hsRetryFailedPushes } from '../services/hubspotSync.js'
 import { isNovoxpressConfigured } from '../services/novoxpress.js'
-import { processWebhookPing, registerWebhookForBase } from '../services/airtableWebhooks.js'
+import { processWebhookPing, registerWebhookForBaseTraced } from '../services/airtableWebhooks.js'
 import { listFromAddresses, getDefaultFrom, setDefaultFrom } from '../services/postmarkConfig.js'
 import { logSync } from '../services/syncLog.js'
 import { listFrozenColumns, setFrozen } from '../services/airtableFrozenColumns.js'
@@ -46,6 +56,58 @@ function trackedWithLog(module, fn, trigger) {
 }
 
 const router = Router()
+
+// ── Registre des modules Airtable à contrôle de champ ──────────────────────
+// Chaque module synchronisé depuis Airtable peut exposer un contrôle fin de
+// ses champs importés (mapping colonne↔champ, gel, désactivation d'import).
+// L'infra existait déjà mais était câblée uniquement pour 'projets' ; ce
+// registre la généralise. `source` indique où lire base_id/table_id/field_map :
+//   crm     → airtable_sync_config (colonnes dédiées contacts/companies)
+//   projets → airtable_projets_config
+//   orders  → airtable_orders_config (orders + order_items partagent la table)
+//   module  → airtable_module_config WHERE module=<clé>
+// `syncKey` = clé passée à POST /sync/<key> pour relancer la sync du module.
+const AIRTABLE_FIELD_MODULES = {
+  contacts:     { erpTable: 'contacts',       label: 'Contacts',           source: 'crm',     tableCol: 'contacts_table_id',  mapCol: 'field_map_contacts',  syncKey: 'airtable' },
+  companies:    { erpTable: 'companies',      label: 'Entreprises',        source: 'crm',     tableCol: 'companies_table_id', mapCol: 'field_map_companies', syncKey: 'airtable' },
+  projets:      { erpTable: 'projects',       label: 'Projets',            source: 'projets', tableCol: 'projects_table_id',  mapCol: 'field_map_projects',  syncKey: 'projets' },
+  orders:       { erpTable: 'orders',         label: 'Commandes',          source: 'orders',  tableCol: 'orders_table_id',    mapCol: 'field_map_orders',    syncKey: 'orders' },
+  order_items:  { erpTable: 'order_items',    label: 'Lignes de commande', source: 'orders',  tableCol: 'items_table_id',     mapCol: 'field_map_items',     syncKey: 'orders' },
+  pieces:       { erpTable: 'products',       label: 'Produits',           source: 'module',  syncKey: 'pieces' },
+  achats:       { erpTable: 'purchases',      label: 'Achats',             source: 'module',  syncKey: 'achats' },
+  billets:      { erpTable: 'tickets',        label: 'Billets',            source: 'module',  syncKey: 'billets' },
+  serials:      { erpTable: 'serial_numbers', label: 'N° de série',        source: 'module',  syncKey: 'serials' },
+  envois:       { erpTable: 'shipments',      label: 'Envois',             source: 'module',  syncKey: 'envois' },
+  soumissions:  { erpTable: 'soumissions',    label: 'Soumissions',        source: 'module',  syncKey: 'soumissions' },
+  retours:      { erpTable: 'returns',        label: 'Retours',            source: 'module',  syncKey: 'retours' },
+  retour_items: { erpTable: 'return_items',   label: 'Items de retour',    source: 'module',  syncKey: 'retour_items' },
+  adresses:     { erpTable: 'adresses',       label: 'Adresses',           source: 'module',  syncKey: 'adresses' },
+  assemblages:  { erpTable: 'assemblages',    label: 'Assemblages',        source: 'module',  syncKey: 'assemblages' },
+}
+
+// Résout la config Airtable d'un module : { module, erpTable, label, syncKey,
+// baseId, tableId, fieldMap }. Retourne null si le module n'est pas au registre.
+function resolveAirtableModule(moduleKey) {
+  const reg = AIRTABLE_FIELD_MODULES[moduleKey]
+  if (!reg) return null
+  let baseId = null, tableId = null, fieldMapRaw = null
+  if (reg.source === 'crm') {
+    const c = db.prepare('SELECT * FROM airtable_sync_config').get() || {}
+    baseId = c.base_id; tableId = c[reg.tableCol]; fieldMapRaw = c[reg.mapCol]
+  } else if (reg.source === 'projets') {
+    const c = db.prepare('SELECT * FROM airtable_projets_config').get() || {}
+    baseId = c.base_id; tableId = c[reg.tableCol]; fieldMapRaw = c[reg.mapCol]
+  } else if (reg.source === 'orders') {
+    const c = db.prepare('SELECT * FROM airtable_orders_config').get() || {}
+    baseId = c.base_id; tableId = c[reg.tableCol]; fieldMapRaw = c[reg.mapCol]
+  } else if (reg.source === 'module') {
+    const c = db.prepare('SELECT * FROM airtable_module_config WHERE module=?').get(moduleKey) || {}
+    baseId = c.base_id; tableId = c.table_id; fieldMapRaw = c.field_map
+  }
+  let fieldMap = {}
+  try { fieldMap = fieldMapRaw ? (typeof fieldMapRaw === 'string' ? JSON.parse(fieldMapRaw) : fieldMapRaw) : {} } catch { fieldMap = {} }
+  return { module: moduleKey, erpTable: reg.erpTable, label: reg.label, syncKey: reg.syncKey, baseId, tableId, fieldMap }
+}
 
 // ── Airtable webhook ping (pas d'auth — appelé directement par Airtable)
 router.post('/airtable/webhook-ping', (req, res) => {
@@ -116,6 +178,7 @@ router.get('/', requireAuth, (req, res) => {
     stripe_configured: isStripeConfigured(),
     novoxpress_configured: isNovoxpressConfigured(),
     hubspot_configured: isHubSpotConfigured(),
+    amazon_configured: isAmazonConfigured(),
     ...moduleConfigs,
   })
 })
@@ -240,11 +303,51 @@ router.get('/airtable/callback', async (req, res) => {
     // Enregistrer les webhooks pour les bases déjà configurées (fire & forget)
     const { getConfiguredBases } = await import('../services/airtableWebhooks.js')
     for (const baseId of getConfiguredBases()) {
-      registerWebhookForBase(baseId).catch(e => console.error('Webhook reg error:', e.message))
+      registerWebhookForBaseTraced(baseId, 'oauth-callback')
     }
   } catch (e) {
     console.error('Airtable callback error:', e.message)
     res.redirect('/erp/connectors?error=airtable_failed')
+  }
+})
+
+// ── Amazon Business OAuth start
+router.get('/amazon/connect', requireAuth, (req, res) => {
+  const state = Buffer.from(JSON.stringify({ user_id: req.user.id })).toString('base64url')
+  try {
+    const url = amazonAuthUrl(state)
+    res.redirect(url)
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// ── Amazon Business OAuth callback
+router.get('/amazon/callback', async (req, res) => {
+  const { code, state, error } = req.query
+  if (error) return res.redirect('/erp/connectors?error=amazon_denied')
+  try {
+    JSON.parse(Buffer.from(state, 'base64url').toString())
+    const tokens = await amazonExchange(code)
+
+    const existing = db.prepare(`SELECT id FROM connector_oauth WHERE connector='amazon'`).get()
+    const expiry = tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null
+    if (existing) {
+      db.prepare(`
+        UPDATE connector_oauth SET access_token=?, refresh_token=COALESCE(?,refresh_token),
+        expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?
+      `).run(tokens.access_token, tokens.refresh_token || null, expiry, existing.id)
+    } else {
+      db.prepare(`
+        INSERT INTO connector_oauth (id, connector, account_key, access_token, refresh_token, expiry_date)
+        VALUES (?,?,?,?,?,?)
+      `).run(uuid(), 'amazon', 'default', tokens.access_token, tokens.refresh_token || null, expiry)
+    }
+
+    res.redirect('/erp/connectors?success=amazon')
+  } catch (e) {
+    console.error('Amazon callback error:', e.message)
+    res.redirect('/erp/connectors?error=amazon_failed')
   }
 })
 
@@ -357,7 +460,7 @@ function saveCrmConfig(req, res) {
     field_map_contacts ? JSON.stringify(field_map_contacts) : null,
     field_map_companies ? JSON.stringify(field_map_companies) : null)
   res.json({ ok: true })
-  if (base_id) registerWebhookForBase(base_id).catch(e => console.error('Webhook reg error:', e.message))
+  if (base_id) registerWebhookForBaseTraced(base_id, 'config-save')
 }
 router.put('/airtable/sync-config', requireAuth, saveCrmConfig)
 router.put('/airtable/crm-config', requireAuth, saveCrmConfig)
@@ -375,7 +478,7 @@ router.put('/airtable/contacts-config', requireAuth, (req, res) => {
   `).run(base_id || null, contacts_table_id || null, existing?.companies_table_id || null,
     field_map_contacts ? JSON.stringify(field_map_contacts) : null, existing?.field_map_companies || null)
   res.json({ ok: true })
-  if (base_id) registerWebhookForBase(base_id).catch(e => console.error('Webhook reg error:', e.message))
+  if (base_id) registerWebhookForBaseTraced(base_id, 'config-save')
 })
 
 // ── Save Airtable Companies config (partial — only companies fields)
@@ -391,35 +494,70 @@ router.put('/airtable/companies-config', requireAuth, (req, res) => {
   `).run(base_id || null, existing?.contacts_table_id || null, companies_table_id || null,
     existing?.field_map_contacts || null, field_map_companies ? JSON.stringify(field_map_companies) : null)
   res.json({ ok: true })
-  if (base_id) registerWebhookForBase(base_id).catch(e => console.error('Webhook reg error:', e.message))
+  if (base_id) registerWebhookForBaseTraced(base_id, 'config-save')
 })
 
 // ── Save Projets config
 function saveProjetsConfig(req, res) {
   const { base_id, projects_table_id, field_map_projects, extra_tables } = req.body
+
+  // Garde-fou : ne JAMAIS blanchir field_map_projects avec un objet vide.
+  // La clé `name` (mappée vers le champ Airtable "ID") est l'unique pièce qui
+  // n'a pas d'équivalent dynamique (airtable_field_defs) : c'est elle qui sert
+  // de garde `if (!name) continue` ET qui déclenche l'INSERT de la ligne dans
+  // syncProjets. Sans elle, AUCUN projet n'est importé (le sync rapporte
+  // "success / 0 importés" en silence). Or l'UI ProjectFields.jsx envoie
+  // `field_map_projects: {}` à chaque sauvegarde de config → sans ce garde,
+  // chaque save casse les imports. On préserve donc la map existante quand
+  // l'entrée est vide/absente. Idem pour extra_tables.
+  const existing = db.prepare('SELECT field_map_projects, extra_tables FROM airtable_projets_config WHERE id=?').get('default')
+  const incomingMapEmpty = !field_map_projects || (typeof field_map_projects === 'object' && Object.keys(field_map_projects).length === 0)
+  const fieldMapToStore = incomingMapEmpty
+    ? (existing?.field_map_projects ?? null)
+    : JSON.stringify(field_map_projects)
+  const extraToStore = extra_tables?.length
+    ? JSON.stringify(extra_tables)
+    : (extra_tables === undefined ? (existing?.extra_tables ?? null) : null)
+
   db.prepare(`
     INSERT INTO airtable_projets_config (base_id, projects_table_id, field_map_projects, extra_tables)
     VALUES (?,?,?,?)
     ON CONFLICT DO UPDATE SET
       base_id=excluded.base_id, projects_table_id=excluded.projects_table_id,
       field_map_projects=excluded.field_map_projects, extra_tables=excluded.extra_tables
-  `).run(base_id || null, projects_table_id || null,
-    field_map_projects ? JSON.stringify(field_map_projects) : null,
-    extra_tables?.length ? JSON.stringify(extra_tables) : null)
+  `).run(base_id || null, projects_table_id || null, fieldMapToStore, extraToStore)
   res.json({ ok: true })
-  if (base_id) registerWebhookForBase(base_id).catch(e => console.error('Webhook reg error:', e.message))
+  if (base_id) registerWebhookForBaseTraced(base_id, 'config-save')
 }
 router.put('/airtable/projets-config', requireAuth, saveProjetsConfig)
 router.put('/airtable/inv-config', requireAuth, saveProjetsConfig)
 
-// GET /api/connectors/airtable/projets/airtable-fields
-// Retourne la liste des champs Airtable de la table projets configurée,
-// EXCLUANT les champs « hardcodés » (mappés dans field_map_projects vers une
-// colonne ERP fixe). Pour chaque champ retourné, on indique l'état
-// import_disabled (0/1) déduit de airtable_field_defs.
-router.get('/airtable/projets/airtable-fields', requireAuth, async (req, res) => {
-  const config = db.prepare('SELECT * FROM airtable_projets_config').get()
-  if (!config?.base_id || !config?.projects_table_id) {
+// Liste des modules supportant le contrôle de champ Airtable + leur état.
+// GET /api/connectors/airtable/field-modules
+router.get('/airtable/field-modules', requireAuth, (req, res) => {
+  const out = Object.keys(AIRTABLE_FIELD_MODULES).map(key => {
+    const r = resolveAirtableModule(key)
+    return {
+      module: key,
+      label: r.label,
+      erp_table: r.erpTable,
+      sync_key: r.syncKey,
+      configured: !!(r.baseId && r.tableId),
+    }
+  })
+  res.json(out)
+})
+
+// GET /api/connectors/airtable/module-fields/:module/airtable-fields
+// (ancien /airtable/projets/airtable-fields, généralisé par module)
+// Retourne la liste des champs Airtable de la table du module configurée,
+// EXCLUANT les champs « hardcodés » (mappés vers une colonne ERP fixe). Pour
+// chaque champ retourné, on indique l'état import_disabled déduit de airtable_field_defs.
+async function airtableFieldsHandler(moduleKey, req, res) {
+  const resolved = resolveAirtableModule(moduleKey)
+  if (!resolved) return res.status(400).json({ error: `Module inconnu : ${moduleKey}` })
+  const { erpTable, baseId, tableId, fieldMap } = resolved
+  if (!baseId || !tableId) {
     return res.json({ fields: [], hardcoded: [] })
   }
   let token
@@ -428,19 +566,18 @@ router.get('/airtable/projets/airtable-fields', requireAuth, async (req, res) =>
 
   let tableMeta
   try {
-    const data = await airtableFetch(`/meta/bases/${config.base_id}/tables`, token)
-    tableMeta = (data.tables || []).find(t => t.id === config.projects_table_id)
+    const data = await airtableFetch(`/meta/bases/${baseId}/tables`, token)
+    tableMeta = (data.tables || []).find(t => t.id === tableId)
   } catch (e) { return res.status(500).json({ error: 'Erreur metadata Airtable: ' + e.message }) }
   if (!tableMeta) return res.json({ fields: [], hardcoded: [] })
 
-  const fieldMap = config.field_map_projects ? JSON.parse(config.field_map_projects) : {}
   // Les "hardcoded" Airtable field names = valeurs string du field_map (les
   // *_choices, etc. sont des objets et ne sont pas des field names).
   const hardcoded = new Set(Object.values(fieldMap).filter(v => typeof v === 'string'))
 
   const defs = db.prepare(
-    "SELECT airtable_field_name, column_name, import_disabled FROM airtable_field_defs WHERE erp_table='projects'"
-  ).all()
+    'SELECT airtable_field_name, column_name, import_disabled FROM airtable_field_defs WHERE erp_table=?'
+  ).all(erpTable)
   const defByName = new Map(defs.map(d => [d.airtable_field_name, d]))
 
   const fields = (tableMeta.fields || [])
@@ -458,39 +595,43 @@ router.get('/airtable/projets/airtable-fields', requireAuth, async (req, res) =>
     .sort((a, b) => a.airtable_field_name.localeCompare(b.airtable_field_name))
 
   res.json({ fields, hardcoded: [...hardcoded] })
-})
+}
+router.get('/airtable/projets/airtable-fields', requireAuth, (req, res) => airtableFieldsHandler('projets', req, res))
+router.get('/airtable/module-fields/:module/airtable-fields', requireAuth, (req, res) => airtableFieldsHandler(req.params.module, req, res))
 
-// POST /api/connectors/airtable/projets/airtable-field-disabled
+// POST /api/connectors/airtable/module-fields/:module/airtable-field-disabled
+// (ancien /airtable/projets/airtable-field-disabled, généralisé par module)
 // Body : { airtable_field_name: string, disabled: bool }
 // - Toggle import_disabled dans airtable_field_defs (upsert).
-// - Si on désactive et qu'une colonne existe : NULL-ifie les valeurs dans `projects`
-//   pour que le champ disparaisse immédiatement de la fiche détail conditionnelle
-//   et du tableau.
-router.post('/airtable/projets/airtable-field-disabled', requireAuth, (req, res) => {
+// - Si on désactive et qu'une colonne existe : NULL-ifie les valeurs dans la
+//   table ERP du module pour disparition immédiate (fiche détail + tableau).
+function airtableFieldDisabledHandler(moduleKey, req, res) {
+  const resolved = resolveAirtableModule(moduleKey)
+  if (!resolved) return res.status(400).json({ error: `Module inconnu : ${moduleKey}` })
+  const { erpTable, fieldMap } = resolved
+
   const { airtable_field_name, disabled } = req.body || {}
   if (!airtable_field_name) return res.status(400).json({ error: 'airtable_field_name requis' })
   const flag = disabled ? 1 : 0
 
-  // Bloc anti-mistake : empêche de désactiver un champ hardcodé (présent dans field_map_projects).
-  const config = db.prepare('SELECT field_map_projects FROM airtable_projets_config').get()
-  const fieldMap = config?.field_map_projects ? JSON.parse(config.field_map_projects) : {}
+  // Bloc anti-mistake : empêche de désactiver un champ hardcodé (présent dans le field_map).
   const hardcoded = new Set(Object.values(fieldMap).filter(v => typeof v === 'string'))
   if (hardcoded.has(airtable_field_name)) {
     return res.status(400).json({ error: 'Ce champ est requis (hardcodé) et ne peut pas être désactivé' })
   }
 
   const def = db.prepare(
-    "SELECT id, column_name FROM airtable_field_defs WHERE erp_table='projects' AND airtable_field_name=?"
-  ).get(airtable_field_name)
+    'SELECT id, column_name FROM airtable_field_defs WHERE erp_table=? AND airtable_field_name=?'
+  ).get(erpTable, airtable_field_name)
 
   if (def) {
     db.prepare(
       "UPDATE airtable_field_defs SET import_disabled=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?"
     ).run(flag, def.id)
-    if (flag === 1 && def.column_name) {
-      // NULL-ifie la colonne dans projects pour disparition immédiate.
+    if (flag === 1 && def.column_name && def.column_name !== '__pending__') {
+      // NULL-ifie la colonne dans la table ERP pour disparition immédiate.
       try {
-        db.prepare(`UPDATE projects SET ${def.column_name}=NULL`).run()
+        db.prepare(`UPDATE ${erpTable} SET ${def.column_name}=NULL`).run()
       } catch { /* ignore si la colonne n'existe pas pour une raison quelconque */ }
     }
   } else {
@@ -498,11 +639,13 @@ router.post('/airtable/projets/airtable-field-disabled', requireAuth, (req, res)
     // si le champ est ré-activé, la def sera mise à jour avec le column_name réel.
     db.prepare(`
       INSERT INTO airtable_field_defs (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, field_type, options, sort_order, import_disabled)
-      VALUES (?, 'projets', 'projects', ?, ?, ?, 'text', '{}', 0, ?)
-    `).run(uuid(), `pending_${Date.now()}`, airtable_field_name, '__pending__', flag)
+      VALUES (?, ?, ?, ?, ?, ?, 'text', '{}', 0, ?)
+    `).run(uuid(), moduleKey, erpTable, `pending_${Date.now()}`, airtable_field_name, '__pending__', flag)
   }
   res.json({ ok: true })
-})
+}
+router.post('/airtable/projets/airtable-field-disabled', requireAuth, (req, res) => airtableFieldDisabledHandler('projets', req, res))
+router.post('/airtable/module-fields/:module/airtable-field-disabled', requireAuth, (req, res) => airtableFieldDisabledHandler(req.params.module, req, res))
 
 // ── Type compat helpers (mapping Airtable → ERP) ───────────────────────────
 
@@ -605,10 +748,13 @@ function buildAirtableTableToErp() {
 // - erp_columns     : colonnes mappables de `projects` avec leur type
 // - hardcoded       : liste des airtable_field_name déjà gérés en code (read-only)
 // - airtable_table_to_erp : map Airtable table_id → erp_table (pour résoudre les liens)
-router.get('/airtable/projets/mapping-data', requireAuth, async (req, res) => {
-  const config = db.prepare('SELECT * FROM airtable_projets_config').get()
-  if (!config?.base_id || !config?.projects_table_id) {
-    return res.json({ airtable_fields: [], erp_columns: [], hardcoded: [], airtable_table_to_erp: {} })
+async function mappingDataHandler(moduleKey, req, res) {
+  const resolved = resolveAirtableModule(moduleKey)
+  if (!resolved) return res.status(400).json({ error: `Module inconnu : ${moduleKey}` })
+  const { erpTable, baseId, tableId, fieldMap, label, syncKey } = resolved
+  const meta = { module: moduleKey, label, erp_table: erpTable, sync_key: syncKey }
+  if (!baseId || !tableId) {
+    return res.json({ airtable_fields: [], erp_columns: [], hardcoded: [], airtable_table_to_erp: {}, configured: false, ...meta })
   }
 
   let token
@@ -617,23 +763,22 @@ router.get('/airtable/projets/mapping-data', requireAuth, async (req, res) => {
 
   let tableMeta
   try {
-    const data = await airtableFetch(`/meta/bases/${config.base_id}/tables`, token)
-    tableMeta = (data.tables || []).find(t => t.id === config.projects_table_id)
+    const data = await airtableFetch(`/meta/bases/${baseId}/tables`, token)
+    tableMeta = (data.tables || []).find(t => t.id === tableId)
   } catch (e) { return res.status(500).json({ error: 'Erreur metadata Airtable: ' + e.message }) }
-  if (!tableMeta) return res.json({ airtable_fields: [], erp_columns: [], hardcoded: [], airtable_table_to_erp: {} })
+  if (!tableMeta) return res.json({ airtable_fields: [], erp_columns: [], hardcoded: [], airtable_table_to_erp: {}, configured: false, ...meta })
 
-  const fieldMap = config.field_map_projects ? JSON.parse(config.field_map_projects) : {}
   const hardcoded = new Set(Object.values(fieldMap).filter(v => typeof v === 'string'))
 
-  // Defs Airtable existantes pour `projects` (mappings actuels)
+  // Defs Airtable existantes pour la table ERP du module (mappings actuels)
   const defs = db.prepare(
-    "SELECT id, airtable_field_id, airtable_field_name, display_label, column_name, field_type, options, import_disabled FROM airtable_field_defs WHERE erp_table='projects'"
-  ).all()
+    'SELECT id, airtable_field_id, airtable_field_name, display_label, column_name, field_type, options, import_disabled FROM airtable_field_defs WHERE erp_table=?'
+  ).all(erpTable)
   const defByAtName = new Map()
   for (const d of defs) defByAtName.set(d.airtable_field_name, d)
 
-  // Colonnes vivantes de `projects` (PRAGMA)
-  const liveCols = new Set(db.prepare('PRAGMA table_info(projects)').all().map(c => c.name))
+  // Colonnes vivantes de la table ERP (PRAGMA)
+  const liveCols = new Set(db.prepare(`PRAGMA table_info(${erpTable})`).all().map(c => c.name))
 
   // Une seule def par column_name (UNIQUE). On indexe par column_name pour
   // dériver toutes les métas de la colonne ERP en un coup.
@@ -702,8 +847,12 @@ router.get('/airtable/projets/mapping-data', requireAuth, async (req, res) => {
     erp_columns,
     hardcoded: [...hardcoded],
     airtable_table_to_erp: Object.fromEntries(buildAirtableTableToErp()),
+    configured: true,
+    ...meta,
   })
-})
+}
+router.get('/airtable/projets/mapping-data', requireAuth, (req, res) => mappingDataHandler('projets', req, res))
+router.get('/airtable/module-fields/:module/mapping-data', requireAuth, (req, res) => mappingDataHandler(req.params.module, req, res))
 
 // POST /api/connectors/airtable/projets/airtable-field-mapping
 // Body : { airtable_field_id, airtable_field_name, airtable_field_type, column_name?, link_target_table? }
@@ -711,7 +860,11 @@ router.get('/airtable/projets/mapping-data', requireAuth, async (req, res) => {
 //   La colonne existante n'est pas vidée (différence avec field-disabled). On veut
 //   préserver les données déjà importées si l'utilisateur change d'avis.
 // - Sinon : valide le mapping (compat de type, table cible si lien) et upsert la def.
-router.post('/airtable/projets/airtable-field-mapping', requireAdmin, (req, res) => {
+function airtableFieldMappingHandler(moduleKey, req, res) {
+  const resolved = resolveAirtableModule(moduleKey)
+  if (!resolved) return res.status(400).json({ error: `Module inconnu : ${moduleKey}` })
+  const { erpTable, fieldMap } = resolved
+
   const { airtable_field_id, airtable_field_name, airtable_field_type, column_name, link_target_table } = req.body || {}
 
   if (!airtable_field_name || !airtable_field_type) {
@@ -719,8 +872,6 @@ router.post('/airtable/projets/airtable-field-mapping', requireAdmin, (req, res)
   }
 
   // Refus de remapper un champ hardcodé
-  const config = db.prepare('SELECT field_map_projects FROM airtable_projets_config').get()
-  const fieldMap = config?.field_map_projects ? JSON.parse(config.field_map_projects) : {}
   const hardcoded = new Set(Object.values(fieldMap).filter(v => typeof v === 'string'))
   if (hardcoded.has(airtable_field_name)) {
     return res.status(400).json({ error: 'Ce champ est géré en code (hardcodé) et ne peut pas être remappé ici' })
@@ -730,8 +881,8 @@ router.post('/airtable/projets/airtable-field-mapping', requireAdmin, (req, res)
 
   // Def existante portant ce nom de champ Airtable (ailleurs ou ici).
   const defByName = db.prepare(
-    "SELECT id, column_name FROM airtable_field_defs WHERE erp_table='projects' AND airtable_field_name=?"
-  ).get(airtable_field_name)
+    'SELECT id, column_name FROM airtable_field_defs WHERE erp_table=? AND airtable_field_name=?'
+  ).get(erpTable, airtable_field_name)
 
   // ── Cas 1 : unmap → on supprime la def. Si la colonne avait une def native
   // (créée via ensureNativeFieldDefs), elle sera recréée au prochain redémarrage.
@@ -743,9 +894,9 @@ router.post('/airtable/projets/airtable-field-mapping', requireAdmin, (req, res)
   }
 
   // ── Cas 2 : mapping vers une colonne ERP
-  const liveCols = new Set(db.prepare('PRAGMA table_info(projects)').all().map(c => c.name))
+  const liveCols = new Set(db.prepare(`PRAGMA table_info(${erpTable})`).all().map(c => c.name))
   if (!liveCols.has(column_name)) {
-    return res.status(400).json({ error: `Colonne ERP "${column_name}" introuvable dans projects` })
+    return res.status(400).json({ error: `Colonne ERP "${column_name}" introuvable dans ${erpTable}` })
   }
 
   // Validation : pour les liens, target_table requis et doit exister.
@@ -770,8 +921,8 @@ router.post('/airtable/projets/airtable-field-mapping', requireAdmin, (req, res)
   // Def existante occupant le slot (erp_table, column_name) — peut être native
   // (métadonnées de type), un autre Airtable field, ou la même qu'on remappe.
   const defByColumn = db.prepare(
-    "SELECT id, airtable_field_id, airtable_field_name, field_type, import_disabled FROM airtable_field_defs WHERE erp_table='projects' AND column_name=?"
-  ).get(column_name)
+    'SELECT id, airtable_field_id, airtable_field_name, field_type, import_disabled FROM airtable_field_defs WHERE erp_table=? AND column_name=?'
+  ).get(erpTable, column_name)
 
   // Si un autre champ Airtable réel et actif occupe déjà ce slot → refus.
   if (defByColumn
@@ -821,15 +972,17 @@ router.post('/airtable/projets/airtable-field-mapping', requireAdmin, (req, res)
     } else {
       db.prepare(`
         INSERT INTO airtable_field_defs (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, field_type, options, sort_order)
-        VALUES (?, 'projets', 'projects', ?, ?, ?, ?, ?, 0)
-      `).run(uuid(), newAtFieldId, airtable_field_name, column_name, erpType, JSON.stringify(optionsToStore))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+      `).run(uuid(), moduleKey, erpTable, newAtFieldId, airtable_field_name, column_name, erpType, JSON.stringify(optionsToStore))
     }
   })
   try { tx() }
   catch (e) { return res.status(500).json({ error: e.message }) }
 
   res.json({ ok: true, mapped: true, column_name, link_target_table: optionsToStore.link_target_table || null })
-})
+}
+router.post('/airtable/projets/airtable-field-mapping', requireAdmin, (req, res) => airtableFieldMappingHandler('projets', req, res))
+router.post('/airtable/module-fields/:module/airtable-field-mapping', requireAdmin, (req, res) => airtableFieldMappingHandler(req.params.module, req, res))
 
 // ── Sync status
 router.get('/sync/status', requireAuth, (req, res) => {
@@ -838,7 +991,7 @@ router.get('/sync/status', requireAuth, (req, res) => {
 
 // ── Manual sync triggers
 router.post('/sync/gmail', requireAuth, async (req, res) => {
-  tracked('gmail', () => syncAllMailboxes()).catch(console.error)
+  tracked('gmail', () => syncAllMailboxes('manual')).catch(console.error)
   res.json({ ok: true })
 })
 
@@ -857,6 +1010,11 @@ router.post('/sync/projets', requireAuth, async (req, res) => {
   res.json({ ok: true })
 })
 
+router.post('/sync/amazon', requireAuth, async (req, res) => {
+  trackedWithLog('amazon', () => syncAmazon(), 'manual')
+  res.json({ ok: true })
+})
+
 // ── Save generic module config (pieces, achats, billets, serials, envois)
 const SIMPLE_MODULES = ['pieces', 'achats', 'billets', 'serials', 'envois', 'soumissions', 'retours', 'retour_items', 'adresses', 'bom', 'serial_changes', 'assemblages', 'employees', 'paies', 'paie_items']
 router.put('/airtable/module-config/:module', requireAuth, (req, res) => {
@@ -870,7 +1028,7 @@ router.put('/airtable/module-config/:module', requireAuth, (req, res) => {
       base_id=excluded.base_id, table_id=excluded.table_id, field_map=excluded.field_map
   `).run(module, base_id || null, table_id || null, field_map ? JSON.stringify(field_map) : null)
   res.json({ ok: true })
-  if (base_id) registerWebhookForBase(base_id).catch(e => console.error('Webhook reg error:', e.message))
+  if (base_id) registerWebhookForBaseTraced(base_id, 'config-save')
 })
 
 router.post('/sync/pieces', requireAuth, async (req, res) => {
@@ -892,7 +1050,7 @@ router.put('/airtable/orders-config', requireAuth, (req, res) => {
     field_map_orders ? JSON.stringify(field_map_orders) : null,
     field_map_items ? JSON.stringify(field_map_items) : null)
   res.json({ ok: true })
-  if (base_id) registerWebhookForBase(base_id).catch(e => console.error('Webhook reg error:', e.message))
+  if (base_id) registerWebhookForBaseTraced(base_id, 'config-save')
 })
 
 router.post('/sync/orders', requireAuth, async (req, res) => {
@@ -1095,7 +1253,13 @@ router.post('/whisper/download-drive', requireAuth, async (req, res) => {
           driveDownloadState.done++
           // Transcrire si pas déjà fait
           if (['pending', 'error'].includes(call.transcription_status)) {
-            enqueueTranscription(call.id, dest).catch(() => {})
+            enqueueTranscription(call.id, dest, 'drive-download').catch((err) => {
+              // Surfacer l'échec d'enqueue : sans ça, l'appel reste bloqué en pending et
+              // l'utilisateur croit la transcription en cours. On marque 'error' pour le rendre
+              // visible et relançable via /whisper/retry.
+              console.error(`❌ Enqueue transcription échoué (call ${call.id}):`, err?.message || err)
+              try { db.prepare(`UPDATE calls SET transcription_status='error' WHERE id=?`).run(call.id) } catch {}
+            })
           }
         } catch (e) {
           driveDownloadState.errors++
@@ -1125,7 +1289,12 @@ router.post('/whisper/retry', requireAuth, async (req, res) => {
   for (const call of calls) {
     const filePath = join(uploadsDir, call.recording_path)
     if (existsSync(filePath)) {
-      enqueueTranscription(call.id, filePath).catch(() => {})
+      enqueueTranscription(call.id, filePath, 'whisper-retry').catch((err) => {
+        // Surfacer l'échec d'enqueue : marquer 'error' pour garder l'appel visible/relançable
+        // au lieu de le laisser coincé en pending sans aucun feedback.
+        console.error(`❌ Enqueue transcription échoué (call ${call.id}):`, err?.message || err)
+        try { db.prepare(`UPDATE calls SET transcription_status='error' WHERE id=?`).run(call.id) } catch {}
+      })
       queued++
     }
   }
@@ -1156,11 +1325,13 @@ router.post('/ftp/phones', requireAuth, (req, res) => {
   const erpUser = db.prepare(`SELECT id, ftp_username FROM users WHERE id=?`).get(erpUserId)
   if (!erpUser) return res.status(404).json({ error: 'Utilisateur ERP introuvable' })
 
-  const users = readFtpUsers()
-  if (users.find(u => u.ftpUser === ftpUser)) return res.status(409).json({ error: 'Cet identifiant FTP existe déjà' })
-
-  users.push({ ftpUser, ftpPass, nom, erpFtpUsername: ftpUser })
-  writeFtpUsers(users)
+  const result = mutateFtpUsers(users => {
+    if (users.find(u => u.ftpUser === ftpUser)) return { conflict: true }
+    users.push({ ftpUser, ftpPass, nom, erpFtpUsername: ftpUser })
+    writeFtpUsers(users)
+    return { ok: true }
+  })
+  if (result.conflict) return res.status(409).json({ error: 'Cet identifiant FTP existe déjà' })
 
   db.prepare(`UPDATE users SET ftp_username=? WHERE id=?`).run(ftpUser, erpUserId)
 
@@ -1170,15 +1341,17 @@ router.post('/ftp/phones', requireAuth, (req, res) => {
 // DELETE /api/connectors/ftp/phones/:ftpUser — supprimer un téléphone
 router.delete('/ftp/phones/:ftpUser', requireAuth, (req, res) => {
   const { ftpUser } = req.params
-  const users = readFtpUsers()
-  const idx = users.findIndex(u => u.ftpUser === ftpUser)
-  if (idx === -1) return res.status(404).json({ error: 'Téléphone introuvable' })
+  const result = mutateFtpUsers(users => {
+    const idx = users.findIndex(u => u.ftpUser === ftpUser)
+    if (idx === -1) return { notFound: true }
+    const erpFtpUsername = users[idx].erpFtpUsername
+    users.splice(idx, 1)
+    writeFtpUsers(users)
+    return { erpFtpUsername }
+  })
+  if (result.notFound) return res.status(404).json({ error: 'Téléphone introuvable' })
 
-  const erpFtpUsername = users[idx].erpFtpUsername
-  users.splice(idx, 1)
-  writeFtpUsers(users)
-
-  db.prepare(`UPDATE users SET ftp_username=NULL WHERE ftp_username=?`).run(erpFtpUsername)
+  db.prepare(`UPDATE users SET ftp_username=NULL WHERE ftp_username=?`).run(result.erpFtpUsername)
 
   res.json({ ok: true })
 })
@@ -1188,12 +1361,14 @@ router.put('/ftp/phones/:ftpUser', requireAuth, (req, res) => {
   const { ftpPass } = req.body
   if (!ftpPass) return res.status(400).json({ error: 'ftpPass requis' })
 
-  const users = readFtpUsers()
-  const user = users.find(u => u.ftpUser === req.params.ftpUser)
-  if (!user) return res.status(404).json({ error: 'Téléphone introuvable' })
-
-  user.ftpPass = ftpPass
-  writeFtpUsers(users)
+  const result = mutateFtpUsers(users => {
+    const user = users.find(u => u.ftpUser === req.params.ftpUser)
+    if (!user) return { notFound: true }
+    user.ftpPass = ftpPass
+    writeFtpUsers(users)
+    return { ok: true }
+  })
+  if (result.notFound) return res.status(404).json({ error: 'Téléphone introuvable' })
   res.json({ ok: true })
 })
 
@@ -1436,7 +1611,16 @@ router.post('/fix-ftp-timestamps', requireAdmin, async (req, res) => {
 // ── QuickBooks OAuth ─────────────────────────────────────────────────────────
 
 router.get('/quickbooks/connect', requireAuth, (req, res) => {
-  const state = Buffer.from(JSON.stringify({})).toString('base64url')
+  // scope=me → connexion personnelle : les écritures publiées par cet utilisateur
+  // seront attribuées à SON compte QuickBooks dans l'« Historique de vérification ».
+  // Sinon → connexion principale ('default'), repli pour les écritures automatiques
+  // (webhooks Stripe, syncs). Réautoriser le compte principal exige un admin.
+  const personal = req.query.scope === 'me'
+  if (!personal && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin requis pour la connexion principale QuickBooks' })
+  }
+  const accountKey = personal ? req.user.id : 'default'
+  const state = Buffer.from(JSON.stringify({ accountKey })).toString('base64url')
   try {
     const url = qbAuthUrl(state)
     res.redirect(url)
@@ -1449,15 +1633,40 @@ router.get('/quickbooks/callback', async (req, res) => {
   const { code, state, realmId, error } = req.query
   if (error) return res.redirect('/erp/connectors?error=quickbooks_denied')
   try {
-    JSON.parse(Buffer.from(state, 'base64url').toString())
-    const tokens = await qbExchange(code)
+    const parsed = JSON.parse(Buffer.from(state, 'base64url').toString())
+    const accountKey = parsed.accountKey || 'default'
+    const isPersonal = accountKey !== 'default'
 
+    // Garde-fou : une connexion personnelle DOIT pointer vers la même entreprise QB
+    // (realm) que la connexion principale, sinon les écritures de cette personne
+    // partiraient dans d'autres livres comptables.
+    if (isPersonal) {
+      const def = db.prepare(
+        "SELECT metadata FROM connector_oauth WHERE connector='quickbooks' AND account_key='default'"
+      ).get()
+      const defRealm = def ? JSON.parse(def.metadata || '{}').realm_id : null
+      if (defRealm && String(defRealm) !== String(realmId)) {
+        return res.redirect('/erp/connectors?error=quickbooks_wrong_company')
+      }
+    }
+
+    const tokens = await qbExchange(code)
     const expiry = tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null
-    const metadata = JSON.stringify({ realm_id: realmId })
+
+    // Nom de l'utilisateur (connexion personnelle) pour l'affichage admin.
+    let userName = null
+    if (isPersonal) {
+      const u = db.prepare('SELECT name, email FROM users WHERE id=?').get(accountKey)
+      userName = u?.name || u?.email || null
+    }
+    const metadata = JSON.stringify({
+      realm_id: realmId,
+      ...(isPersonal ? { user_id: accountKey, user_name: userName } : {}),
+    })
 
     const existing = db.prepare(
-      "SELECT id FROM connector_oauth WHERE connector='quickbooks' AND account_key='default'"
-    ).get()
+      "SELECT id FROM connector_oauth WHERE connector='quickbooks' AND account_key=?"
+    ).get(accountKey)
 
     if (existing) {
       db.prepare(`
@@ -1469,7 +1678,7 @@ router.get('/quickbooks/callback', async (req, res) => {
       db.prepare(`
         INSERT INTO connector_oauth (id, connector, account_key, access_token, refresh_token, expiry_date, metadata)
         VALUES (?,?,?,?,?,?,?)
-      `).run(uuid(), 'quickbooks', 'default', tokens.access_token, tokens.refresh_token, expiry, metadata)
+      `).run(uuid(), 'quickbooks', accountKey, tokens.access_token, tokens.refresh_token, expiry, metadata)
     }
 
     res.redirect('/erp/connectors?success=quickbooks')
@@ -1477,6 +1686,54 @@ router.get('/quickbooks/callback', async (req, res) => {
     console.error('QB callback error:', e.message)
     res.redirect('/erp/connectors?error=quickbooks_failed')
   }
+})
+
+// GET /quickbooks/my-connection — statut de la connexion personnelle de l'utilisateur courant
+router.get('/quickbooks/my-connection', requireAuth, (req, res) => {
+  const r = db.prepare(
+    "SELECT metadata, updated_at FROM connector_oauth WHERE connector='quickbooks' AND account_key=?"
+  ).get(req.user.id)
+  if (!r) return res.json({ connected: false })
+  const m = JSON.parse(r.metadata || '{}')
+  res.json({ connected: true, realmId: m.realm_id || null, updatedAt: r.updated_at })
+})
+
+// DELETE /quickbooks/my-connection — déconnecter sa propre connexion personnelle
+router.delete('/quickbooks/my-connection', requireAuth, (req, res) => {
+  db.prepare(
+    "DELETE FROM connector_oauth WHERE connector='quickbooks' AND account_key=?"
+  ).run(req.user.id)
+  res.json({ ok: true })
+})
+
+// GET /quickbooks/connections — liste de toutes les connexions QB (admin)
+router.get('/quickbooks/connections', requireAdmin, (req, res) => {
+  const rows = db.prepare(
+    "SELECT account_key, metadata, updated_at FROM connector_oauth WHERE connector='quickbooks' ORDER BY (account_key='default') DESC, updated_at DESC"
+  ).all()
+  res.json(rows.map(r => {
+    const m = JSON.parse(r.metadata || '{}')
+    return {
+      accountKey: r.account_key,
+      isDefault: r.account_key === 'default',
+      userId: m.user_id || null,
+      userName: m.user_name || null,
+      realmId: m.realm_id || null,
+      updatedAt: r.updated_at,
+    }
+  }))
+})
+
+// DELETE /quickbooks/connections/:accountKey — déconnecter une connexion personnelle (admin)
+router.delete('/quickbooks/connections/:accountKey', requireAdmin, (req, res) => {
+  const { accountKey } = req.params
+  if (accountKey === 'default') {
+    return res.status(400).json({ error: "La connexion principale ne se supprime pas ici" })
+  }
+  db.prepare(
+    "DELETE FROM connector_oauth WHERE connector='quickbooks' AND account_key=?"
+  ).run(accountKey)
+  res.json({ ok: true })
 })
 
 // GET /api/connectors/quickbooks/accounts — liste des comptes QB
@@ -1640,6 +1897,15 @@ router.post('/sync/hubspot', requireAuth, async (req, res) => {
   const full = !!req.body?.full
   trackedWithLog('hubspot_tasks', () => hsPullDelta({ full }), 'manual')
   res.json({ ok: true })
+})
+
+// POST /api/connectors/hubspot/retry-pushes — rejoue à la demande les push
+// (ERP → HubSpot) persistés en échec dans hubspot_push_failures.
+router.post('/hubspot/retry-pushes', requireAuth, async (req, res) => {
+  try {
+    const out = await hsRetryFailedPushes()
+    res.json({ ok: true, ...out })
+  } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
 // PUT /api/connectors/hubspot/mapping — override explicite user ERP → owner HS

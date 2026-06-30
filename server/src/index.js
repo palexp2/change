@@ -11,6 +11,8 @@ import './config/secrets.js'
 
 import { initSchema, seedSellableProducts } from './db/schema.js'
 import { initChangeLog } from './db/changeLog.js'
+import { startFieldRuleWatcher } from './services/fieldRuleWatcher.js'
+import { startRevenueRecognitionWatcher } from './services/revenueRecognitionWatcher.js'
 import bootstrapRouter from './routes/bootstrap.js'
 import { seedSystemAutomations, logSystemRun, isSystemAutomationActive } from './services/systemAutomations.js'
 import { runPurge } from './services/purge.js'
@@ -55,9 +57,11 @@ import timesheetsRouter from './routes/timesheets.js'
 import activityCodesRouter from './routes/activity-codes.js'
 import hourBankRouter from './routes/hour-bank.js'
 import saleReceiptsRouter from './routes/sale-receipts.js'
+import attachmentsRouter from './routes/attachments.js'
 import journalEntriesRouter from './routes/journal-entries.js'
 import stockMovementsRouter from './routes/stock-movements.js'
 import stripeWebhooksRouter from './routes/stripe-webhooks.js'
+import hooksRouter from './routes/hooks.js'
 import stripeInvoicesRouter from './routes/stripe-invoices.js'
 import customerPayRouter from './routes/customer-pay.js'
 import customerPostPaymentRouter from './routes/customer-post-payment.js'
@@ -70,6 +74,12 @@ import novoxpressRouter from './routes/novoxpress.js'
 import trackRouter from './routes/track.js'
 import installationFeedbackRouter from './routes/installation-feedback.js'
 import { publicFilesRouter, publicFileServeRouter } from './routes/public-files.js'
+import recordsRouter from './routes/records.js'
+import activityRouter from './routes/activity.js'
+import sideEffectsRouter from './routes/sideEffects.js'
+import notificationsRouter from './routes/notifications.js'
+import commentsRouter from './routes/comments.js'
+import reportsTaxesRouter from './routes/reports-taxes.js'
 import { sendInstallationFollowups } from './services/installationFollowup.js'
 import { resolveFromAddress, getAutomationFrom } from './services/postmarkConfig.js'
 import { createRealtimeServer } from './services/realtime.js'
@@ -79,10 +89,13 @@ import { syncAllMailboxes } from './services/gmail.js'
 import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncStockMovements } from './services/airtable.js'
 import { tracked } from './services/syncState.js'
 import { syncStripeSubscriptions, isStripeConfigured } from './services/stripe.js'
+import { syncAndPushStripePayouts } from './services/quickbooks.js'
+import cron from 'node-cron'
 import { initAirtableWebhooks } from './services/airtableWebhooks.js'
 import { getAccessToken as getAirtableToken } from './connectors/airtable.js'
 import { logSync, purgeSyncLogs } from './services/syncLog.js'
-import { pullDelta as hsPullDelta } from './services/hubspotSync.js'
+import { pullDelta as hsPullDelta, retryFailedPushes as hsRetryFailedPushes } from './services/hubspotSync.js'
+import { drainRachatRetryQueue } from './services/subscriptionEvents.js'
 import { isHubSpotConfigured } from './connectors/hubspot.js'
 import db from './db/database.js'
 
@@ -234,6 +247,7 @@ app.use('/api/products', productsRouter)
 app.use('/api/orders', ordersRouter)
 app.use('/api/tickets', ticketsRouter)
 app.use('/api/dashboard', dashboardRouter)
+app.use('/api/reports', reportsTaxesRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api/telemetry', telemetryRouter)
 app.use('/api/undo', undoRouter)
@@ -251,10 +265,15 @@ app.use('/api/documents', documentsRouter)
 app.use('/api/search', searchRouter)
 app.use('/api/shipments', shipmentsRouter)
 app.use('/api/automations', automationsRouter)
+// Webhooks entrants PUBLICS (token = secret, pas de requireAuth) — voir routes/hooks.js
+app.use('/api/hooks', hooksRouter)
 app.use('/api/tasks', tasksRouter)
 app.use('/api/agent', agentRouter)
 app.use('/api/achats-fournisseurs', achatsFournisseursRouter)
 app.use('/api/sale-receipts', saleReceiptsRouter)
+// Pièces jointes polymorphes (toute entité). Le static '/api/attachments'
+// (ligne ~189) sert les fichiers bruts ; ce router gère list/upload/download/delete.
+app.use('/api/attachments', attachmentsRouter)
 app.use('/api/journal-entries', journalEntriesRouter)
 app.use('/api/stock-movements', stockMovementsRouter)
 app.use('/api/stripe-queue', stripeQueueRouter)
@@ -276,6 +295,12 @@ app.use('/api/paies', paiesRouter)
 app.use('/api/timesheets', timesheetsRouter)
 app.use('/api/activity-codes', activityCodesRouter)
 app.use('/api/hour-bank', hourBankRouter)
+// API de mutation générique (phase 1) — pilotée par db/recordRegistry.js
+app.use('/api/records', recordsRouter)
+app.use('/api/activity', activityRouter)
+app.use('/api/side-effects', sideEffectsRouter)
+app.use('/api/notifications', notificationsRouter)
+app.use('/api/comments', commentsRouter)
 app.use('/api/receipt-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')))
 app.use('/api/novoxpress/labels', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')))
 app.use('/api/novoxpress', novoxpressRouter)
@@ -310,15 +335,28 @@ const server = app.listen(PORT, () => {
   initTaskRunner()
   initScheduler()
 
+  // Field-rule automations watcher — tails change_log to fire declarative
+  // rules on direct ERP writes. Gated by the feature flag (off → never starts).
+  if (process.env.FEATURE_FIELD_RULES === 'true') startFieldRuleWatcher()
+
+  // Revenue recognition watcher — tails change_log on shipments→« Envoyé » to
+  // post the sale-recognition JE, and retries persisted failures with backoff.
+  // Démarré sans flag : intégrité comptable (remplace les fire-and-forget de route).
+  startRevenueRecognitionWatcher()
+
   // Gmail sync — toutes les heures
   function scheduleGmailSync() {
     const t0 = Date.now()
-    tracked('gmail', () => syncAllMailboxes())
-      .then(() => {
+    tracked('gmail', () => syncAllMailboxes('scheduled'))
+      .then((summary = {}) => {
+        const { accounts = 0, emailsImported = 0, invoicesImported = 0, errors = [] } = summary
+        const base = `${accounts} boîte(s) — ${emailsImported} courriel(s) + ${invoicesImported} facture(s) importé(s).`
         logSystemRun('sys_gmail_sync', {
-          status: 'success',
-          result: 'Sync Gmail complétée pour toutes les boîtes connectées.',
+          status: errors.length ? 'error' : 'success',
+          result: errors.length ? `${base} ${errors.length} boîte(s)/box en échec : ${errors.join(' ; ')}` : base,
+          error: errors.length ? errors.join(' ; ') : undefined,
           duration_ms: Date.now() - t0,
+          triggerData: summary,
         })
       })
       .catch(e => {
@@ -445,12 +483,69 @@ const server = app.listen(PORT, () => {
         durationMs: Date.now() - t0,
       })
     }).catch(e => {
-      logSync('hubspot_tasks', 'scheduled', { status: 'error', error: e.message, durationMs: Date.now() - t0 })
+      // e.message est déjà enrichi (curseur, fenêtre, nb traité) par pullDelta ;
+      // e.hubspotSyncProgress porte les compteurs partiels appliqués avant l'échec.
+      const p = e.hubspotSyncProgress || {}
+      logSync('hubspot_tasks', 'scheduled', {
+        status: 'error',
+        error: e.message,
+        modified: p.modified || 0,
+        destroyed: p.destroyed || 0,
+        durationMs: Date.now() - t0,
+      })
       console.error('HubSpot pull error:', e.message)
     })
   }
   setTimeout(scheduleHubSpotPull, 45_000)
   setInterval(scheduleHubSpotPull, 2 * 60 * 1000)
+
+  // Reprise des push HubSpot échoués (ERP → HubSpot) — toutes les 2 minutes.
+  // Sans ça, un push fire-and-forget échoué restait une divergence silencieuse :
+  // ici on rejoue ce qui est persisté dans hubspot_push_failures jusqu'à succès.
+  function scheduleHubSpotPushRetry() {
+    if (!isHubSpotConfigured()) return
+    const t0 = Date.now()
+    hsRetryFailedPushes().then((out) => {
+      if (out.attempted > 0) {
+        logSync('hubspot_task_push_retry', 'scheduled', {
+          status: out.stillFailing > 0 ? 'error' : 'success',
+          modified: out.recovered,
+          error: out.stillFailing > 0 ? `${out.stillFailing} push toujours en échec sur ${out.attempted} rejoués` : null,
+          durationMs: Date.now() - t0,
+        })
+      }
+    }).catch(e => {
+      logSync('hubspot_task_push_retry', 'scheduled', { status: 'error', error: e.message, durationMs: Date.now() - t0 })
+      console.error('HubSpot push retry error:', e.message)
+    })
+  }
+  setTimeout(scheduleHubSpotPushRetry, 75_000)
+  setInterval(scheduleHubSpotPushRetry, 2 * 60 * 1000)
+
+  // Reprise des détections de rachat (post-churn) échouées — toutes les 5 min.
+  // detectRachatForChurn() tourne en fire-and-forget à l'ingestion du webhook
+  // Stripe ; un échec y était avalé, laissant un client réabonné marqué churné
+  // sans retry. On rejoue ici ce qui est persisté dans rachat_detect_failures
+  // (backoff exponentiel par event) jusqu'à succès.
+  function scheduleRachatRetry() {
+    const t0 = Date.now()
+    try {
+      const out = drainRachatRetryQueue()
+      if (out.attempted > 0) {
+        logSync('rachat_detect_retry', 'scheduled', {
+          status: out.stillFailing > 0 ? 'error' : 'success',
+          modified: out.recovered,
+          error: out.stillFailing > 0 ? `${out.stillFailing} détection(s) toujours en échec sur ${out.attempted} rejouée(s)` : null,
+          durationMs: Date.now() - t0,
+        })
+      }
+    } catch (e) {
+      logSync('rachat_detect_retry', 'scheduled', { status: 'error', error: e.message, durationMs: Date.now() - t0 })
+      console.error('Rachat detect retry error:', e.message)
+    }
+  }
+  setTimeout(scheduleRachatRetry, 90_000)
+  setInterval(scheduleRachatRetry, 5 * 60 * 1000)
 
   // Installation follow-up — runs daily at 09:00 local. System automation is
   // shipped disabled (default_active: 0); no emails go out until an operator
@@ -496,6 +591,51 @@ const server = app.listen(PORT, () => {
     }, delay)
   }
   scheduleInstallationFollowup()
+
+  // Sync + push QB des Stripe payouts — tous les lundis à 12h00 (local). System
+  // automation shipped disabled (default_active: 0) : aucun push QB tant qu'un
+  // opérateur n'a pas activé `sys_stripe_weekly_payout_push` dans /automations.
+  // La garde anti-erreur vit dans syncAndPushStripePayouts (skip des payouts à
+  // warning). Voir services/quickbooks.js:syncAndPushStripePayouts.
+  async function runStripeWeeklyPayoutPush() {
+    if (!isSystemAutomationActive('sys_stripe_weekly_payout_push')) {
+      logSystemRun('sys_stripe_weekly_payout_push', {
+        status: 'skipped',
+        result: 'Automatisation désactivée — aucun sync ni push.',
+        duration_ms: 0,
+      })
+      return
+    }
+    if (!isStripeConfigured()) {
+      logSystemRun('sys_stripe_weekly_payout_push', {
+        status: 'skipped',
+        result: 'Stripe non configuré — aucun sync ni push.',
+        duration_ms: 0,
+      })
+      return
+    }
+    const t0 = Date.now()
+    try {
+      const out = await syncAndPushStripePayouts({})
+      const pushedLines = out.pushed.map(p => `PUSH — ${p.payout_id} (${p.amount} ${p.currency}) → Deposit ${p.qb_deposit_id}`)
+      const skippedLines = out.skipped.map(s => `SKIP (garde) — ${s.payout_id} : ${s.reason}`)
+      const errorLines = out.errors.map(e => `ERREUR — ${e.payout_id} : ${e.error}`)
+      logSystemRun('sys_stripe_weekly_payout_push', {
+        status: out.errors.length ? 'partial' : 'success',
+        result: [out.summary, '', ...pushedLines, ...skippedLines, ...errorLines].join('\n'),
+        duration_ms: Date.now() - t0,
+        triggerData: { pushed: out.pushed.length, skipped: out.skipped.length, errors: out.errors.length },
+      })
+    } catch (e) {
+      console.error('Stripe weekly payout push error:', e.message)
+      logSystemRun('sys_stripe_weekly_payout_push', {
+        status: 'error',
+        error: e.message,
+        duration_ms: Date.now() - t0,
+      })
+    }
+  }
+  cron.schedule('0 12 * * 1', runStripeWeeklyPayoutPush)
 })
 
 // Kill Claude process on shutdown so pm2 restart doesn't leave orphans

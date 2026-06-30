@@ -18,10 +18,7 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { CATEGORY_LABELS, CATEGORY_COLORS } from '../lib/subscriptionEvents.js'
 import { fmtDate } from '../lib/formatDate.js'
 
-function fmtCad(n) {
-  if (n == null) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
+import { fmtCad } from '../utils/formatters.js'
 
 // Affichage humain d'un YYYY-MM ("2026-05" → "mai 2026").
 function fmtMonth(m) {

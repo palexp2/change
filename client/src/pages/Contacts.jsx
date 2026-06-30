@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { Plus, Send } from 'lucide-react'
 import api from '../lib/api.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
@@ -9,9 +9,11 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import ContactDetail from './ContactDetail.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { HubSpotExportModal } from '../components/HubSpotExportModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 const RENDERS = {
@@ -89,6 +91,7 @@ function ContactForm({ initial = {}, companies = [], onSave, onClose }) {
           />
         </div>
       </div>
+      {!initial.id && <DuplicateWarning kind="contact" values={form} />}
       {error && <p className="text-red-600 text-sm">{error}</p>}
       <div className="flex justify-end gap-3 pt-2">
         <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
@@ -99,7 +102,6 @@ function ContactForm({ initial = {}, companies = [], onSave, onClose }) {
 }
 
 export default function Contacts() {
-  const navigate = useNavigate()
   const [companies, setCompanies] = useState([])
   const [showModal, setShowModal] = useState(false)
   const [showHubspotExport, setShowHubspotExport] = useState(false)
@@ -158,7 +160,12 @@ export default function Contacts() {
           columns={COLUMNS}
           data={contacts}
           loading={loading}
-          onRowClick={row => navigate(`/contacts/${row.id}`)}
+          peek={{
+            title: row => `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'Contact',
+            subtitle: row => row.company_name || row.email || '',
+            to: row => `/contacts/${row.id}`,
+            render: row => <ContactDetail recordId={row.id} embedded />,
+          }}
           searchFields={['first_name', 'last_name', 'email', 'phone', 'mobile', 'company_name']}
           onFilteredDataChange={setFilteredContacts}
           onBulkDelete={async (ids) => {

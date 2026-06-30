@@ -5,6 +5,7 @@ import { v4 as uuid } from 'uuid'
 import FormData from 'form-data'
 import nodeFetch from 'node-fetch'
 import db from '../db/database.js'
+import { logSync } from './syncLog.js'
 
 function convertToMp3IfNeeded(filePath) {
   if (!/\.(amr|mp4)$/i.test(filePath)) return { path: filePath, temp: false }
@@ -16,9 +17,9 @@ function convertToMp3IfNeeded(filePath) {
 
 const queue = new Map() // callId -> promise
 
-export async function enqueueTranscription(callId, filePath) {
+export async function enqueueTranscription(callId, filePath, trigger = 'manual') {
   if (queue.has(callId)) return queue.get(callId)
-  const p = runTranscription(callId, filePath).catch(console.error)
+  const p = runTranscription(callId, filePath, trigger).catch(console.error)
   queue.set(callId, p)
   p.finally(() => queue.delete(callId))
   return p
@@ -77,9 +78,14 @@ export function resolveSpeakerNames(callId) {
   return { agent, client }
 }
 
-async function runTranscription(callId, filePath) {
+async function runTranscription(callId, filePath, trigger = 'manual') {
+  const startedAt = Date.now()
   const apiKey = process.env.OPENAI_API_KEY
-  if (!apiKey) { console.log('⚠️  OPENAI_API_KEY not set, skipping transcription'); return }
+  if (!apiKey) {
+    console.log('⚠️  OPENAI_API_KEY not set, skipping transcription')
+    logSync('transcription', trigger, { status: 'error', error: `${callId}: OPENAI_API_KEY non configurée` })
+    return
+  }
 
   const jobId = uuid()
   db.prepare(`INSERT INTO transcription_jobs (id, call_id, status) VALUES (?,?,'processing')`).run(jobId, callId)
@@ -136,11 +142,13 @@ async function runTranscription(callId, filePath) {
       UPDATE transcription_jobs SET status='done', completed_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?
     `).run(jobId)
     console.log(`✅ Transcription done: ${callId}${sum ? ' (summary OK)' : ''}`)
+    logSync('transcription', trigger, { status: 'success', modified: 1, durationMs: Date.now() - startedAt })
   } catch (e) {
     console.error(`❌ Transcription ${callId}:`, e.message)
     db.prepare(`UPDATE calls SET transcription_status='error' WHERE id=?`).run(callId)
     db.prepare(`UPDATE transcription_jobs SET status='error', error_message=?, completed_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
       .run(e.message, jobId)
+    logSync('transcription', trigger, { status: 'error', error: `${callId}: ${e.message}`, durationMs: Date.now() - startedAt })
   } finally {
     if (converted?.temp && existsSync(converted.path)) unlinkSync(converted.path)
   }

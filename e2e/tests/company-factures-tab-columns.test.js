@@ -43,10 +43,11 @@ describe('CompanyDetail — onglet Factures : colonnes total HT + devise', () =>
     await page.waitForLoadState('networkidle')
 
     await page.click('button:has-text("factures")')
-    // Attend que le tableau soit rendu
-    await page.locator('th:has-text("N° document")').waitFor({ state: 'visible', timeout: 5000 })
+    // Attend que la DataTable soit prête (compteur de lignes de la ViewToolbar)
+    await page.waitForSelector('text=/\\d+\\s+lignes?/', { timeout: 10000 })
 
-    const headers = await page.locator('table thead th').allTextContents()
+    // Les en-têtes DataTable sont des cellules draggables identifiées par leur title.
+    const headers = await page.locator('[title="Clic-droit pour grouper, filtrer, trier ou cacher"]').allTextContents()
     const headerText = headers.join(' | ')
 
     assert.ok(headerText.includes('Total HT'), `Total HT manquant. Headers: ${headerText}`)
@@ -55,9 +56,9 @@ describe('CompanyDetail — onglet Factures : colonnes total HT + devise', () =>
     assert.ok(!headerText.includes('Solde dû'), `Solde dû ne devrait pas être présent. Headers: ${headerText}`)
 
     // Vérifie qu'au moins une ligne a une devise visible (CAD ou USD) et un total non nul
-    const firstRow = page.locator('table tbody tr').first()
+    const firstRow = page.locator('[data-row-id]').first()
     await firstRow.waitFor({ state: 'visible', timeout: 5000 })
-    const cells = await firstRow.locator('td').allTextContents()
+    const cells = await firstRow.locator('> div').allTextContents()
     // Ordre : N° document, Statut, Date, Total HT, Devise
     assert.equal(cells.length, 5, `Devrait avoir 5 colonnes, trouvé: ${JSON.stringify(cells)}`)
     const totalCell = cells[3]

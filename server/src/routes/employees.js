@@ -47,7 +47,7 @@ const ALLOWED = [
   'birth_date', 'hire_date', 'matricule', 'active', 'gender', 'address', 'emergency_contact',
   'end_date', 'office_key', 'insurance_id', 'nethris_username', 'is_salesperson', 'is_consultant',
   'accounting_department', 'hours_per_week', 'last_raise_date', 'group_insurance',
-  'address_verified', 'banking_info', 'issues', 'peer_reviews',
+  'address_verified', 'banking_info', 'issues', 'peer_reviews', 'vacation_days_per_year',
 ]
 
 router.post('/', (req, res) => {

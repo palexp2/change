@@ -58,6 +58,29 @@ export function applyFilter(row, filter, ctx = {}) {
       if (!v || !value) return false
       return new Date(v) > new Date(value)
     }
+    case 'between':
+    case 'is_within': {
+      // Plage de dates inclusive : value === [from, to] (YYYY-MM-DD). Tolère une
+      // borne vide (devient un simple ≥ ou ≤). On compare en UTC pour rester
+      // cohérent avec les dates métier encodées minuit UTC par Airtable, et on
+      // rend la borne `to` inclusive sur toute la journée (+1 jour exclusif).
+      if (!v) return false
+      const arr = Array.isArray(value) ? value : []
+      const from = arr[0]
+      const to = arr[1]
+      if (!from && !to) return false
+      const t = new Date(v).getTime()
+      if (Number.isNaN(t)) return false
+      if (from) {
+        const fromT = new Date(from).getTime()
+        if (!Number.isNaN(fromT) && t < fromT) return false
+      }
+      if (to) {
+        const toT = new Date(to).getTime()
+        if (!Number.isNaN(toT) && t >= toT + 86400000) return false
+      }
+      return true
+    }
     case 'is_any_of': {
       if (!value) return false
       const opts = Array.isArray(value) ? value : [value]
@@ -155,12 +178,31 @@ export function applyFilter(row, filter, ctx = {}) {
   }
 }
 
+// Détecte un nœud "groupe" (parenthèses) vs une règle feuille.
+export function isFilterGroup(node) {
+  return !!(node && node.conjunction && Array.isArray(node.rules))
+}
+
 // Apply a nested filter group (conjunction + rules) to a row
 export function applyFilterGroup(row, group, ctx = {}) {
   if (!group?.rules?.length) return true
   const method = group.conjunction === 'OR' ? 'some' : 'every'
   return group.rules[method](rule => {
-    if (rule.conjunction && rule.rules) return applyFilterGroup(row, rule, ctx)
+    if (isFilterGroup(rule)) return applyFilterGroup(row, rule, ctx)
     return applyFilter(row, rule, ctx)
   })
+}
+
+// Compte les règles feuilles (les groupes ne comptent pas pour eux-mêmes) —
+// utilisé pour le badge du bouton « Filtrer ». Accepte le format plat (array
+// legacy) comme le format imbriqué ({conjunction, rules}).
+export function countFilterRules(filters) {
+  if (Array.isArray(filters)) return filters.length
+  if (filters?.rules) {
+    return filters.rules.reduce(
+      (n, r) => n + (isFilterGroup(r) ? countFilterRules(r) : 1),
+      0,
+    )
+  }
+  return 0
 }

@@ -6,7 +6,7 @@ import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import PDFDocument from 'pdfkit'
-import { emitEntity } from '../services/realtimeEmitters.js'
+import { emitEntity, emitOrder } from '../services/realtimeEmitters.js'
 
 // Reuse the LIST query shape so realtime payload matches what the
 // soumissions list page consumes (Soumissions.jsx).
@@ -302,7 +302,12 @@ router.get('/soumissions/:id', (req, res) => {
     ORDER BY di.sort_order
   `).all(req.params.id)
 
-  res.json({ ...row, items })
+  // Commande issue de cette soumission (quote-to-cash), si conversion déjà faite.
+  const converted_order = db.prepare(
+    'SELECT id, order_number FROM orders WHERE soumission_id = ? AND deleted_at IS NULL ORDER BY created_at LIMIT 1'
+  ).get(req.params.id) || null
+
+  res.json({ ...row, items, converted_order })
 })
 
 const ITEMS_QUERY = `
@@ -332,22 +337,26 @@ router.post('/soumissions', async (req, res) => {
   const autoExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   const id = randomUUID()
-  db.prepare(`
+  // Soumission + ses lignes dans une seule transaction : un échec de contrainte
+  // au milieu de la boucle d'items ne doit pas laisser une soumission orpheline.
+  const insertSoumission = db.prepare(`
     INSERT INTO soumissions
       (id, company_id, contact_id, project_id, language, currency, status, title, notes,
        expiration_date, quote_number, discount_pct, discount_amount)
     VALUES (?, ?, ?, ?, ?, ?, 'Brouillon', ?, ?, ?, ?, ?, ?)
-  `).run(id, company_id || null, contact_id || null, project_id || null,
-         language, currency, autoTitle, notes || null, autoExpiry, next_num,
-         discount_pct, discount_amount)
-
+  `)
   const insertItem = db.prepare(INSERT_ITEM)
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i]
-    insertItem.run(randomUUID(), id, it.catalog_product_id || null,
-                   it.qty || 1, it.unit_price_cad ?? 0, it.discount_pct ?? 0, it.discount_amount ?? 0,
-                   it.description_fr || null, it.description_en || null, i)
-  }
+  db.transaction(() => {
+    insertSoumission.run(id, company_id || null, contact_id || null, project_id || null,
+           language, currency, autoTitle, notes || null, autoExpiry, next_num,
+           discount_pct, discount_amount)
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i]
+      insertItem.run(randomUUID(), id, it.catalog_product_id || null,
+                     it.qty || 1, it.unit_price_cad ?? 0, it.discount_pct ?? 0, it.discount_amount ?? 0,
+                     it.description_fr || null, it.description_en || null, i)
+    }
+  })()
 
   try {
     const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(id)
@@ -373,7 +382,9 @@ router.put('/soumissions/:id', async (req, res) => {
 
   const { language, currency, status, notes, discount_pct, discount_amount, discount_valid_until, items } = req.body
 
-  db.prepare(`
+  // Update du header + remplacement des lignes dans une seule transaction : un échec
+  // au milieu de la ré-insertion ne doit pas laisser la soumission sans ses items.
+  const updateSoumission = db.prepare(`
     UPDATE soumissions SET
       language = COALESCE(?, language),
       currency = COALESCE(?, currency),
@@ -384,19 +395,23 @@ router.put('/soumissions/:id', async (req, res) => {
       discount_valid_until = ?,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ?
-  `).run(language ?? null, currency ?? null, status ?? null, notes ?? null,
-         discount_pct ?? null, discount_amount ?? null, discount_valid_until ?? null, req.params.id)
+  `)
+  const deleteItems = db.prepare("DELETE FROM document_items WHERE document_id = ? AND document_type = 'soumission'")
+  const insertItem = db.prepare(INSERT_ITEM)
+  db.transaction(() => {
+    updateSoumission.run(language ?? null, currency ?? null, status ?? null, notes ?? null,
+           discount_pct ?? null, discount_amount ?? null, discount_valid_until ?? null, req.params.id)
 
-  if (Array.isArray(items)) {
-    db.prepare("DELETE FROM document_items WHERE document_id = ? AND document_type = 'soumission'").run(req.params.id)
-    const insertItem = db.prepare(INSERT_ITEM)
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i]
-      insertItem.run(randomUUID(), req.params.id, it.catalog_product_id || null,
-                     it.qty || 1, it.unit_price_cad ?? 0, it.discount_pct ?? 0, it.discount_amount ?? 0,
-                     it.description_fr || null, it.description_en || null, i)
+    if (Array.isArray(items)) {
+      deleteItems.run(req.params.id)
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i]
+        insertItem.run(randomUUID(), req.params.id, it.catalog_product_id || null,
+                       it.qty || 1, it.unit_price_cad ?? 0, it.discount_pct ?? 0, it.discount_amount ?? 0,
+                       it.description_fr || null, it.description_en || null, i)
+      }
     }
-  }
+  })()
 
   try {
     const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
@@ -420,8 +435,14 @@ router.delete('/soumissions/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   if (row.airtable_id) return res.status(400).json({ error: 'Cannot delete Airtable-synced soumission' })
-  db.prepare("DELETE FROM document_items WHERE document_id = ? AND document_type = 'soumission'").run(req.params.id)
-  db.prepare('DELETE FROM soumissions WHERE id = ?').run(req.params.id)
+  // Suppression des lignes + du header dans une seule transaction : pas de lignes
+  // orphelines si le DELETE de la soumission échoue.
+  const deleteItems = db.prepare("DELETE FROM document_items WHERE document_id = ? AND document_type = 'soumission'")
+  const deleteSoumission = db.prepare('DELETE FROM soumissions WHERE id = ?')
+  db.transaction(() => {
+    deleteItems.run(req.params.id)
+    deleteSoumission.run(req.params.id)
+  })()
   emitEntity('soumission', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   // Clean up PDF
   if (row.generated_pdf_path) {
@@ -527,6 +548,77 @@ router.post('/soumissions/:id/duplicate', async (req, res) => {
   const dupRow = db.prepare(SOUMISSION_LIST_SELECT).get(newId)
   emitEntity('soumission', 'created', newId, dupRow, req.user?.id)
   res.json(dupRow)
+})
+
+// ── Convert to order (quote-to-cash) ────────────────────────────────────────────
+// Crée une commande à partir d'une soumission, en un clic. Les lignes du devis
+// (document_items) deviennent des order_items. Note : order_items est cost-centric
+// (le revenu vient des factures), donc le prix de vente du devis n'a pas
+// d'équivalent direct — unit_cost est repris du coût catalogue du produit, et la
+// description de ligne du devis est conservée dans `notes` (utile pour les lignes
+// personnalisées sans produit). La commande pointe vers la soumission
+// (orders.soumission_id) pour la traçabilité quote-to-cash.
+router.post('/soumissions/:id/convert-to-order', (req, res) => {
+  const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
+  if (!soumission) return res.status(404).json({ error: 'Not found' })
+
+  // Idempotence douce : ne pas créer une 2e commande si cette soumission a déjà
+  // été convertie. On renvoie la commande existante avec un flag plutôt que de
+  // dupliquer silencieusement.
+  const existing = db.prepare(
+    'SELECT id, order_number FROM orders WHERE soumission_id = ? AND deleted_at IS NULL'
+  ).get(req.params.id)
+  if (existing) {
+    return res.json({ id: existing.id, order_number: existing.order_number, already_converted: true })
+  }
+
+  const items = db.prepare(`
+    SELECT di.*, p.unit_cost AS product_cost
+    FROM document_items di
+    LEFT JOIN products p ON di.catalog_product_id = p.id
+    WHERE di.document_id = ? AND di.document_type = 'soumission'
+    ORDER BY di.sort_order
+  `).all(req.params.id)
+
+  const orderId = randomUUID()
+  const { m } = db.prepare('SELECT MAX(order_number) as m FROM orders').get()
+  const orderNumber = (m || 0) + 1
+  const refLabel = soumission.title || (soumission.quote_number ? `QTE-Z-${soumission.quote_number}` : req.params.id)
+
+  const insertOrder = db.prepare(`
+    INSERT INTO orders (id, order_number, company_id, project_id, status, notes, soumission_id)
+    VALUES (?, ?, ?, ?, 'Commande vide', ?, ?)
+  `)
+  const insertItem = db.prepare(`
+    INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes, sort_order)
+    VALUES (?, ?, ?, ?, ?, 'Facturable', ?, ?)
+  `)
+  // Commande + lignes + accusé de conversion sur la soumission dans une seule
+  // transaction : pas de commande à moitié peuplée si une ligne échoue.
+  db.transaction(() => {
+    insertOrder.run(orderId, orderNumber, soumission.company_id || null,
+      soumission.project_id || null, `Convertie depuis la soumission ${refLabel}`, req.params.id)
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i]
+      const lang = soumission.language === 'English' ? 'English' : 'French'
+      const desc = lang === 'English'
+        ? (it.description_en || it.description_fr || '')
+        : (it.description_fr || it.description_en || '')
+      insertItem.run(randomUUID(), orderId, it.catalog_product_id || null,
+        it.qty || 1, it.product_cost ?? 0, desc || null, i)
+    }
+    // Convertir un devis = il est accepté. On promeut Brouillon/Envoyée → Acceptée.
+    if (soumission.status === 'Brouillon' || soumission.status === 'Envoyée') {
+      db.prepare("UPDATE soumissions SET status = 'Acceptée', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
+        .run(req.params.id)
+    }
+  })()
+
+  emitOrder('created', orderId, req.user?.id)
+  const updatedSoumission = db.prepare(SOUMISSION_LIST_SELECT).get(req.params.id)
+  if (updatedSoumission) emitEntity('soumission', 'updated', req.params.id, updatedSoumission, req.user?.id)
+
+  res.status(201).json({ id: orderId, order_number: orderNumber, item_count: items.length })
 })
 
 export default router

@@ -1,8 +1,10 @@
-// Modale Novoxpress — case "Commander un ramassage automatiquement" :
-//   - case présente, cochée par défaut
-//   - quand cochée, l'achat de l'étiquette déclenche automatiquement un appel
-//     POST /api/novoxpress/pickup/:shipmentId avec une fenêtre 9h–16h
-//   - quand décochée, aucun appel pickup n'est fait
+// Modale Novoxpress — découplage étiquette / ramassage :
+//   - la case "Commander un ramassage automatiquement" n'existe plus
+//   - l'achat de l'étiquette NE déclenche PLUS d'appel POST /pickup
+//   - l'étape "done" ne propose plus de ramassage (déplacé sur la fiche envoi)
+//
+// Le ramassage se commande désormais via un bouton dédié sur la fiche de
+// l'envoi (voir envois-detail-commander-ramassage.test.js).
 //
 // Le test mocke /rates, /label et /pickup côté navigateur pour ne pas facturer
 // la prod Novoxpress.
@@ -24,7 +26,7 @@ async function login(page) {
   await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 15000 })
 }
 
-describe('Novoxpress modal — ramassage automatique à l\'achat', () => {
+describe('Novoxpress modal — étiquette découplée du ramassage', () => {
   let browser, ctx, page
   let orderId, shipmentId
 
@@ -91,7 +93,7 @@ describe('Novoxpress modal — ramassage automatique à l\'achat', () => {
         body: JSON.stringify({ shipment_id: 'NX-123', tracking_id: 'TRK-XYZ', label_url: '/erp/api/novoxpress/labels/test.pdf' }),
       })
     })
-    // pickup — capture le payload
+    // pickup — ne devrait PAS être appelé depuis le flux étiquette
     await page.route(`**/api/novoxpress/pickup/${shipmentId}`, async route => {
       if (route.request().method() !== 'POST') return route.continue()
       try { captureRefs.pickupPayload = JSON.parse(route.request().postData() || '{}') } catch {}
@@ -109,7 +111,7 @@ describe('Novoxpress modal — ramassage automatique à l\'achat', () => {
     await page.unroute(`**/api/novoxpress/pickup/${shipmentId}`)
   }
 
-  async function openModalAndGetToConfirm() {
+  async function openModalAndGetToPackage() {
     await page.goto(`${URL}/orders/${orderId}`, { waitUntil: 'networkidle' })
     await page.getByRole('button', { name: /Mode expédition/ }).click()
     await page.locator('h2:has-text("Envois de cette commande")').waitFor({ state: 'visible', timeout: 5000 })
@@ -117,78 +119,43 @@ describe('Novoxpress modal — ramassage automatique à l\'achat', () => {
     await page.locator('text=Créer une étiquette postale').first().waitFor({ state: 'visible', timeout: 5000 })
   }
 
-  test('case "Commander un ramassage" présente et cochée par défaut', async () => {
+  test('plus de case "Commander un ramassage automatiquement" dans la modale', async () => {
     const refs = {}
     await installMocks(refs)
-    await openModalAndGetToConfirm()
+    await openModalAndGetToPackage()
 
-    const checkbox = page.locator('label:has-text("Commander un ramassage")').locator('input[type="checkbox"]')
-    await checkbox.waitFor({ state: 'visible', timeout: 5000 })
-    assert.equal(await checkbox.isChecked(), true, 'la case devrait être cochée par défaut')
+    const checkboxCount = await page.locator('label:has-text("Commander un ramassage")').locator('input[type="checkbox"]').count()
+    assert.equal(checkboxCount, 0, 'la case auto-pickup ne devrait plus exister')
 
     await page.getByRole('button', { name: /^Annuler$/ }).click()
     await uninstallMocks()
   })
 
-  test('case cochée → ramassage planifié automatiquement à l\'achat', async () => {
+  test('achat de l\'étiquette → aucun appel pickup, pas de ramassage proposé', async () => {
     const refs = {}
     await installMocks(refs)
-    await openModalAndGetToConfirm()
+    await openModalAndGetToPackage()
 
     // package → rates
     await page.getByRole('button', { name: /Obtenir les tarifs/ }).click()
     await page.locator('text=Ground').first().waitFor({ state: 'visible', timeout: 5000 })
     await page.locator('button', { hasText: /Ground/ }).first().click()
 
-    // confirm → achat
+    // confirm — la note doit indiquer que le ramassage se commande séparément
     await page.locator('text=Récapitulatif').waitFor({ state: 'visible', timeout: 5000 })
-    // Le récap doit mentionner le ramassage Purolator
-    await page.locator('text=/ramassage.*Purolator/i').first().waitFor({ state: 'visible', timeout: 3000 })
+    await page.locator('text=/ramassage.*séparément/i').first().waitFor({ state: 'visible', timeout: 3000 })
 
     await page.getByRole('button', { name: /Confirmer et acheter/ }).click()
 
-    // done step
+    // done — étiquette créée, AUCUNE mention "Ramassage planifié" ni "Planifier un ramassage ?"
     await page.locator('text=Étiquette créée').first().waitFor({ state: 'visible', timeout: 10000 })
-    await page.locator('text=Ramassage planifié').first().waitFor({ state: 'visible', timeout: 5000 })
+    assert.equal(await page.locator('text=Ramassage planifié').count(), 0, 'pas de ramassage planifié dans le flux étiquette')
+    assert.equal(await page.locator('text=Planifier un ramassage ?').count(), 0, 'plus de prompt de ramassage dans le flux étiquette')
 
     assert.ok(refs.labelCalled, 'label endpoint devrait avoir été appelé')
-    assert.ok(refs.pickupPayload, 'pickup endpoint devrait avoir été appelé')
-    assert.ok(refs.pickupPayload.date?.year, 'pickup payload devrait avoir une date')
-    assert.equal(refs.pickupPayload.ready_until?.hour, 16, 'ready_until devrait être 16h')
-    assert.ok(refs.pickupPayload.ready_at?.hour >= 9, `ready_at hour devrait être ≥ 9 — reçu: ${refs.pickupPayload.ready_at?.hour}`)
-    assert.ok(refs.pickupPayload.ready_at?.hour <= 16, `ready_at hour devrait être ≤ 16 — reçu: ${refs.pickupPayload.ready_at?.hour}`)
+    assert.equal(refs.pickupPayload, undefined, 'pickup ne devrait PAS avoir été appelé depuis le flux étiquette')
 
     await page.locator('button:has-text("Fermer")').first().click()
-    await uninstallMocks()
-  })
-
-  test('case décochée → aucun ramassage planifié à l\'achat', async () => {
-    const refs = {}
-    await installMocks(refs)
-    await openModalAndGetToConfirm()
-
-    // Décoche la case
-    const checkbox = page.locator('label:has-text("Commander un ramassage")').locator('input[type="checkbox"]')
-    await checkbox.uncheck()
-
-    await page.getByRole('button', { name: /Obtenir les tarifs/ }).click()
-    await page.locator('button', { hasText: /Ground/ }).first().click()
-    await page.locator('text=Récapitulatif').waitFor({ state: 'visible', timeout: 5000 })
-
-    // Le récap NE doit PAS mentionner le ramassage automatique
-    const hasAutoPickupNote = await page.locator('text=/ramassage.*Purolator/i').count()
-    assert.equal(hasAutoPickupNote, 0, 'la mention de ramassage auto ne devrait pas apparaître quand décoché')
-
-    await page.getByRole('button', { name: /Confirmer et acheter/ }).click()
-    await page.locator('text=Étiquette créée').first().waitFor({ state: 'visible', timeout: 10000 })
-
-    // Le bloc "Ramassage planifié" ne doit PAS apparaître ; l'ancien prompt manuel doit l'être.
-    await page.locator('text=Planifier un ramassage ?').first().waitFor({ state: 'visible', timeout: 3000 })
-
-    assert.ok(refs.labelCalled, 'label devrait avoir été appelé')
-    assert.equal(refs.pickupPayload, undefined, 'pickup ne devrait PAS avoir été appelé')
-
-    await page.locator('button:has-text("Non merci")').first().click()
     await uninstallMocks()
   })
 })

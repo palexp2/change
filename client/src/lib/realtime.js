@@ -94,6 +94,14 @@ function open() {
       window.dispatchEvent(new CustomEvent('agent:task:stream', { detail: msg }))
       return
     }
+    if (msg.type === 'agent:settings:updated') {
+      window.dispatchEvent(new CustomEvent('agent:settings:updated', { detail: msg.settings }))
+      return
+    }
+    if (msg.type === 'agent:backlog:updated') {
+      window.dispatchEvent(new CustomEvent('agent:backlog:updated', { detail: msg }))
+      return
+    }
     if (msg.type === 'sync:progress') {
       window.dispatchEvent(new CustomEvent('sync:progress', { detail: msg }))
       return

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Plus } from 'lucide-react'
+import { useNavigate, Link } from 'react-router-dom'
+import { Plus, LifeBuoy } from 'lucide-react'
 import api from '../lib/api.js'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
@@ -10,7 +10,9 @@ import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { fmtDate } from '../lib/formatDate.js'
 
 function fmtDuration(mins) {
   if (!mins) return '—'
@@ -22,13 +24,19 @@ const RENDERS = {
   title: row => (
     <div>
       <div className="font-medium text-slate-900">{row.title}</div>
-      {row.contact_name && <div className="text-xs text-slate-400">{row.contact_name}</div>}
+      {row.contact_name && (
+        <div className="text-xs">
+          {row.contact_id
+            ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.contact_name}</Link>
+            : <span className="text-slate-400">{row.contact_name}</span>}
+        </div>
+      )}
     </div>
   ),
   status: row => <Badge color={ticketStatusColor(row.status)}>{row.status}</Badge>,
   type: row => row.type ? <Badge color="gray">{row.type}</Badge> : null,
   duration_minutes: row => <span className="text-slate-500">{fmtDuration(row.duration_minutes)}</span>,
-  created_at: row => row.created_at ? <span className="text-slate-500 text-sm">{new Date(row.created_at).toLocaleDateString('fr-CA')}</span> : null,
+  created_at: row => row.created_at ? <span className="text-slate-500 text-sm">{fmtDate(row.created_at)}</span> : null,
 }
 
 const COLUMNS = TABLE_COLUMN_META.tickets.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
@@ -62,17 +70,29 @@ function TicketForm({ initial = {}, meta = {}, companies = [], users = [], conta
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="label">Type</label>
-          <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className="select">
-            <option value="">—</option>
-            {(meta.types || []).map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
+          <SearchableSelect
+            value={form.type}
+            options={(meta.types || []).map(t => ({ value: t, label: t }))}
+            emptyOption="—"
+            placeholder="—"
+            onChange={v => setForm(f => ({ ...f, type: v }))}
+            className="input"
+            size="sm"
+            testId="ticket-form-type"
+          />
         </div>
         <div>
           <label className="label">Statut</label>
-          <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))} className="select">
-            <option value="">—</option>
-            {(meta.statuses || []).map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
+          <SearchableSelect
+            value={form.status}
+            options={(meta.statuses || []).map(s => ({ value: s, label: s }))}
+            emptyOption="—"
+            placeholder="—"
+            onChange={v => setForm(f => ({ ...f, status: v }))}
+            className="input"
+            size="sm"
+            testId="ticket-form-status"
+          />
         </div>
         <div>
           <label className="label">Entreprise</label>
@@ -176,6 +196,7 @@ export default function Tickets() {
           loading={loading}
           onRowClick={row => navigate(`/tickets/${row.id}`)}
           searchFields={['title', 'company_name', 'contact_name', 'assigned_name']}
+          emptyState={{ icon: LifeBuoy, title: 'Aucun ticket', description: "Aucune demande de support n'est ouverte. Crée un ticket pour suivre une demande client.", cta: { label: 'Nouveau ticket', icon: Plus, onClick: () => setShowModal(true) } }}
         />
       </div>
 

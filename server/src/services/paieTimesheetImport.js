@@ -60,6 +60,17 @@ function computePayableMinutes(userId, start, end) {
   return detailed + simple
 }
 
+// Nombre de feuilles de temps NON approuvées (draft/submitted/rejected) ayant des heures sur la période.
+// Sert à alerter le gestionnaire avant de finaliser la paie : des heures non signées y sont incluses.
+function countUnapprovedDays(userId, start, end) {
+  return db.prepare(`
+    SELECT COUNT(*) AS n FROM timesheet_days
+    WHERE user_id = ? AND deleted_at IS NULL
+      AND date >= ? AND date <= ?
+      AND COALESCE(status, 'draft') != 'approved'
+  `).get(userId, start, end).n
+}
+
 // Importe les heures des feuilles de temps dans une paie donnée.
 //   - Pour chaque paie_item (un par employé):
 //     - Si l'employé a des heures régulières contractuelles (employees.hours_per_week > 0) OU
@@ -107,6 +118,7 @@ export function importTimesheetsForPaie(paieId) {
       }
       const payableMinutes = computePayableMinutes(user.id, start, end)
       const totalHours = Math.round((payableMinutes / 60) * 100) / 100
+      const unapprovedDays = countUnapprovedDays(user.id, start, end)
 
       const contractualHours = Number(employee.hours_per_week) > 0
       if (contractualHours) {
@@ -127,6 +139,7 @@ export function importTimesheetsForPaie(paieId) {
           timesheet_hours: totalHours,
           regular_hours: Number(item.regular_hours) || 0,
           bank_diff: diff,
+          unapproved_days: unapprovedDays,
         })
       } else {
         updateHours.run(totalHours, item.id)
@@ -136,6 +149,7 @@ export function importTimesheetsForPaie(paieId) {
           mode: 'direct',
           timesheet_hours: totalHours,
           regular_hours: totalHours,
+          unapproved_days: unapprovedDays,
         })
       }
     }

@@ -9,6 +9,7 @@ import { pushSaleReceiptToQB } from '../services/quickbooks.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { runExtractionAndUpdate } from '../services/saleReceiptExtraction.js'
+import { listTransactionTypes, suggestTransactionType } from '../services/fiscalStatus.js'
 
 // Construit l'URL QB d'un reçu poussé. Les rangées antérieures au toggle
 // Purchase/Bill n'ont pas de quickbooks_type ; on les traite comme 'purchase'.
@@ -22,9 +23,33 @@ function serializeRow(row) {
   let items = []
   try { items = JSON.parse(row.items || '[]') }
   catch (e) { console.error(`sale_receipts.items malformed for id=${row.id}: ${e.message}`) }
+  // Suggestion de type de transaction (statut fiscal) calculée à la volée — sert de
+  // présélection à confirmer dans le formulaire de publication. Ne persiste rien :
+  // le type confirmé n'est écrit qu'à la publication (transaction_type).
+  let suggested_transaction_type = null
+  try {
+    suggested_transaction_type = suggestTransactionType({
+      company: row.company, currency: row.currency,
+      tps: row.tps, tvq: row.tvq,
+      generalDescription: row.general_description, items,
+    })
+  } catch (e) { console.error(`suggestTransactionType failed for id=${row.id}: ${e.message}`) }
+  // Document multipage : page 1 = filename/file_type, pages suivantes = extra_pages.
+  // On expose une liste unifiée `pages` (métadonnées seules, pas le binaire) + le compte,
+  // pour que la fiche détail affiche chaque page via /:id/file?page=N.
+  let extraPages = []
+  try { extraPages = JSON.parse(row.extra_pages || '[]') }
+  catch (e) { console.error(`sale_receipts.extra_pages malformed for id=${row.id}: ${e.message}`) }
+  const pages = [
+    { file_type: row.file_type, original_name: row.original_name },
+    ...extraPages.map(p => ({ file_type: p.file_type, original_name: p.original_name })),
+  ]
   return {
     ...row,
     items,
+    pages,
+    page_count: pages.length,
+    suggested_transaction_type,
     quickbooks_url: buildQbUrl(row),
   }
 }
@@ -33,6 +58,27 @@ function fetchSaleReceiptRow(id) {
   const row = db.prepare('SELECT * FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(id)
   if (!row) return null
   return serializeRow(row)
+}
+
+// Journal d'événements d'un reçu (ajout / modifications / archivage / publication).
+// Table persistante sale_receipt_events — distincte du change_log (rétention 48h).
+function logReceiptEvent(receiptId, userId, action, detail = null) {
+  try {
+    db.prepare('INSERT INTO sale_receipt_events (id, receipt_id, user_id, action, detail) VALUES (?,?,?,?,?)')
+      .run(randomUUID(), receiptId, userId || null, action, detail)
+  } catch (e) {
+    console.error('logReceiptEvent failed:', e.message)
+  }
+}
+
+// Libellés FR des champs éditables — pour le détail d'un événement 'updated'.
+const FIELD_LABELS = {
+  company: 'Entreprise', address: 'Adresse', receipt_number: 'N° de reçu',
+  payment_method: 'Mode de paiement', receipt_date: 'Date', currency: 'Devise',
+  subtotal: 'Sous-total', tps: 'TPS', tvq: 'TVQ', other_taxes: 'Autres taxes',
+  total: 'Total', items: 'Articles', memo: 'Mémo', general_description: 'Description générale',
+  quickbooks_id: 'Lien QuickBooks', quickbooks_type: 'Type QuickBooks',
+  transaction_type: 'Type de transaction', fiscal_force_reason: 'Justification écart fiscal',
 }
 
 const router = Router()
@@ -75,6 +121,12 @@ router.get('/', (req, res) => {
   res.json({ data: parsed, total, page: parseInt(page), limit: parseInt(limit) })
 })
 
+// Liste des types de transaction (référentiel fiscal) — pour le sélecteur du
+// formulaire de publication. Défini AVANT /:id pour ne pas être pris pour un id.
+router.get('/transaction-types', (req, res) => {
+  res.json({ data: listTransactionTypes() })
+})
+
 router.get('/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM sale_receipts WHERE id=? AND deleted_at IS NULL')
     .get(req.params.id)
@@ -86,14 +138,24 @@ router.patch('/:id', (req, res) => {
   const row = db.prepare('SELECT id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
-  const editable = ['currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'quickbooks_id', 'quickbooks_type']
+  const editable = ['company', 'address', 'receipt_number', 'general_description', 'payment_method', 'receipt_date', 'currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'memo', 'quickbooks_id', 'quickbooks_type', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'transaction_type']
   const numericFields = new Set(['subtotal', 'tps', 'tvq', 'other_taxes', 'total'])
+  // expense_account_id/payment_account_id/tax_code_id : modèle de comptabilisation
+  // mémorisé par fournisseur — éditables à la main pour corriger un modèle erroné.
+  // transaction_type : statut fiscal — éditable pour corriger un classement a posteriori.
+  const textFields = new Set(['company', 'address', 'receipt_number', 'general_description', 'payment_method', 'memo', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'transaction_type'])
   const sets = []
   const values = []
   for (const key of editable) {
     if (key in req.body) {
       let v = req.body[key]
-      if (key === 'currency') {
+      if (textFields.has(key)) {
+        v = v == null ? null : String(v).trim() || null
+      } else if (key === 'receipt_date') {
+        // Date métier date-only (YYYY-MM-DD) — pas de composante horaire/UTC.
+        v = v == null ? null : String(v).trim() || null
+        if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return res.status(400).json({ error: 'receipt_date: format YYYY-MM-DD attendu' })
+      } else if (key === 'currency') {
         v = v == null ? null : String(v).trim().toUpperCase() || null
         if (v && !/^[A-Z]{3}$/.test(v)) return res.status(400).json({ error: 'currency: code ISO 3 lettres attendu' })
       } else if (numericFields.has(key)) {
@@ -126,6 +188,9 @@ router.patch('/:id', (req, res) => {
               quantity:    num(it.quantity),
               unit_price:  num(it.unit_price),
               total:       num(it.total),
+              // Code de taxe QB par ligne (Id QuickBooks) — facultatif. Vide/null =
+              // la ligne suit le code de taxe global du document à la publication.
+              tax_code_id: it.tax_code_id == null || it.tax_code_id === '' ? null : String(it.tax_code_id),
             })
           } catch (e) {
             return res.status(400).json({ error: e.message })
@@ -143,50 +208,176 @@ router.patch('/:id', (req, res) => {
   values.push(req.params.id)
   db.prepare(`UPDATE sale_receipts SET ${sets.join(', ')} WHERE id=?`).run(...values)
 
+  const changedLabels = editable.filter(k => k in req.body).map(k => FIELD_LABELS[k] || k)
+  logReceiptEvent(req.params.id, req.user?.id, 'updated', changedLabels.join(', ') || null)
+
   const updated = fetchSaleReceiptRow(req.params.id)
   if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
   res.json(updated)
 })
 
-router.post('/upload', upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'Aucun fichier reçu' })
+// Upload d'un document : 1 à N fichiers (champ `file` répété) assemblés en UN reçu.
+// Page 1 → filename/file_type/original_name ; pages 2..N → extra_pages (JSON).
+// L'extraction IA consolide l'ensemble des pages en un seul reçu.
+router.post('/upload', upload.array('file', 20), async (req, res) => {
+  const files = req.files || []
+  if (!files.length) return res.status(400).json({ error: 'Aucun fichier reçu' })
 
-  const ext = extname(req.file.originalname).toLowerCase()
+  const [first, ...rest] = files
+  const ext = extname(first.originalname).toLowerCase()
   const id = randomUUID()
+  const extraPages = rest.map(f => ({
+    filename: f.filename,
+    file_type: extname(f.originalname).toLowerCase(),
+    original_name: f.originalname,
+  }))
 
-  // Insert with pending status
+  // Insert with processing status
   db.prepare(`
-    INSERT INTO sale_receipts (id, filename, original_name, file_type, status, created_by)
-    VALUES (?, ?, ?, ?, 'processing', ?)
-  `).run(id, req.file.filename, req.file.originalname, ext, req.user.id)
+    INSERT INTO sale_receipts (id, filename, original_name, file_type, extra_pages, status, created_by)
+    VALUES (?, ?, ?, ?, ?, 'processing', ?)
+  `).run(id, first.filename, first.originalname, ext, JSON.stringify(extraPages), req.user.id)
+
+  const createdDetail = files.length > 1
+    ? `${first.originalname || 'document'} (+${files.length - 1} page${files.length - 1 > 1 ? 's' : ''})`
+    : (first.originalname || null)
+  logReceiptEvent(id, req.user?.id, 'created', createdDetail)
 
   const created = fetchSaleReceiptRow(id)
   if (created) emitEntity('sale_receipt', 'created', id, created, req.user?.id)
 
   // Return immediately, process async
-  res.status(201).json({ id, status: 'processing' })
+  res.status(201).json({ id, status: 'processing', page_count: files.length })
 
-  const filePath = join(uploadsDir, req.file.filename)
-  runExtractionAndUpdate({ saleReceiptId: id, filePath, fileExt: ext, userId: req.user?.id })
+  const pages = files.map(f => ({
+    filePath: join(uploadsDir, f.filename),
+    fileExt: extname(f.originalname).toLowerCase(),
+  }))
+  runExtractionAndUpdate({ saleReceiptId: id, pages, userId: req.user?.id, trigger: 'manual' })
 })
 
+// Relance l'extraction IA sur le ou les fichiers DÉJÀ téléversés — sans re-upload.
+// Utile quand l'extraction a échoué (status='error') : remet status='processing'
+// et rappelle runExtractionAndUpdate sur les pages existantes (filename + extra_pages).
+router.post('/:id/re-extract', (req, res) => {
+  const row = db.prepare('SELECT id, status, filename, file_type, extra_pages FROM sale_receipts WHERE id=? AND deleted_at IS NULL')
+    .get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  if (row.status === 'processing') return res.status(409).json({ error: 'Extraction déjà en cours' })
+
+  // Reconstruit la liste des pages depuis le disque (page 1 + extra_pages).
+  let extra = []
+  try { extra = JSON.parse(row.extra_pages || '[]') } catch {}
+  const pageMeta = [
+    { filename: row.filename, file_type: row.file_type },
+    ...extra.map(p => ({ filename: p.filename, file_type: p.file_type })),
+  ]
+  for (const p of pageMeta) {
+    if (!p.filename || !existsSync(join(uploadsDir, p.filename))) {
+      return res.status(400).json({ error: 'Fichier introuvable — impossible de relancer l\'extraction' })
+    }
+  }
+
+  db.prepare("UPDATE sale_receipts SET status='processing', error_message=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
+    .run(req.params.id)
+  logReceiptEvent(req.params.id, req.user?.id, 'updated', 'Relance de l\'extraction')
+
+  const updated = fetchSaleReceiptRow(req.params.id)
+  if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
+
+  // Traitement async — même pattern que /upload.
+  const pages = pageMeta.map(p => ({
+    filePath: join(uploadsDir, p.filename),
+    fileExt: p.file_type,
+  }))
+  runExtractionAndUpdate({ saleReceiptId: req.params.id, pages, userId: req.user?.id, trigger: 'manual' })
+})
+
+// Sert la page demandée d'un document. ?page=0 (défaut) = page 1 (filename) ;
+// ?page=N (1-based dans extra_pages) = page N+1. Compat : sans ?page → page 1.
 router.get('/:id/file', (req, res) => {
-  const row = db.prepare('SELECT filename, file_type FROM sale_receipts WHERE id=? AND deleted_at IS NULL')
+  const row = db.prepare('SELECT filename, file_type, extra_pages FROM sale_receipts WHERE id=? AND deleted_at IS NULL')
     .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
-  const filePath = join(uploadsDir, row.filename)
+  const pageIdx = parseInt(req.query.page, 10) || 0
+  let filename = row.filename
+  let fileType = row.file_type
+  if (pageIdx > 0) {
+    let extra = []
+    try { extra = JSON.parse(row.extra_pages || '[]') } catch {}
+    const p = extra[pageIdx - 1]
+    if (!p) return res.status(404).json({ error: 'Page not found' })
+    filename = p.filename
+    fileType = p.file_type
+  }
+
+  const filePath = join(uploadsDir, filename)
   if (!existsSync(filePath)) return res.status(404).json({ error: 'File not found' })
 
   const mime = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp', '.pdf': 'application/pdf' }
-  res.set('Content-Type', mime[row.file_type] || 'application/octet-stream')
+  res.set('Content-Type', mime[fileType] || 'application/octet-stream')
   res.sendFile(filePath)
+})
+
+// Historique d'un reçu : ajout, modifications, archivage, publication.
+router.get('/:id/history', (req, res) => {
+  const rec = db.prepare('SELECT id, created_by, created_at FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+  if (!rec) return res.status(404).json({ error: 'Not found' })
+
+  const events = db.prepare(`
+    SELECT e.id, e.action, e.detail, e.created_at, e.user_id, u.name AS user_name
+    FROM sale_receipt_events e
+    LEFT JOIN users u ON u.id = e.user_id
+    WHERE e.receipt_id = ?
+    ORDER BY e.created_at ASC, e.rowid ASC
+  `).all(req.params.id)
+
+  // Reçus antérieurs à la journalisation : synthétiser l'événement de création
+  // depuis created_by / created_at pour toujours afficher « ajouté par … ».
+  if (!events.some(e => e.action === 'created')) {
+    const u = rec.created_by ? db.prepare('SELECT name FROM users WHERE id=?').get(rec.created_by) : null
+    events.unshift({
+      id: 'synthetic-created', action: 'created', detail: null,
+      created_at: rec.created_at, user_id: rec.created_by, user_name: u?.name || null,
+    })
+  }
+
+  events.reverse() // plus récent d'abord
+  res.json({ data: events })
+})
+
+// Transactions passées du même fournisseur déjà publiées sur QuickBooks — pour
+// servir de modèle de comptabilisation. Fournisseur identifié par le champ texte
+// `company` (insensible à la casse / espaces).
+router.get('/:id/vendor-history', (req, res) => {
+  const rec = db.prepare('SELECT id, company FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+  if (!rec) return res.status(404).json({ error: 'Not found' })
+  if (!rec.company || !rec.company.trim()) return res.json({ data: [] })
+
+  const rows = db.prepare(`
+    SELECT * FROM sale_receipts
+    WHERE deleted_at IS NULL
+      AND quickbooks_id IS NOT NULL
+      AND id != ?
+      AND LOWER(TRIM(company)) = LOWER(TRIM(?))
+    ORDER BY COALESCE(receipt_date, created_at) DESC
+    LIMIT 20
+  `).all(req.params.id, rec.company)
+
+  res.json({ data: rows.map(serializeRow) })
 })
 
 router.post('/:id/push-to-qb', async (req, res) => {
   try {
-    const { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate } = req.body
-    const qbId = await pushSaleReceiptToQB(req.params.id, { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate })
+    const { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate, taxCodeId, transactionType, forceReason } = req.body
+    const qbId = await pushSaleReceiptToQB(req.params.id, { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate, taxCodeId, transactionType, forceReason })
+    logReceiptEvent(req.params.id, req.user?.id, 'published', `QuickBooks #${qbId} (${type === 'bill' ? 'facture' : 'dépense'})`)
+    // Trace distincte quand l'opérateur a forcé la publication malgré un écart de statut fiscal.
+    if (forceReason && forceReason.trim()) {
+      logReceiptEvent(req.params.id, req.user?.id, 'fiscal_override', `Écart fiscal forcé : ${forceReason.trim()}`)
+    }
     const updated = fetchSaleReceiptRow(req.params.id)
     if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
     res.json({ ok: true, quickbooks_id: qbId })
@@ -210,14 +401,41 @@ router.delete('/:id/quickbooks-link', (req, res) => {
   res.json({ ok: true })
 })
 
+// Archive / désarchive — soft, conserve le reçu et son fichier. archived_at NULL = actif.
+router.post('/:id/archive', (req, res) => {
+  const row = db.prepare('SELECT id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  db.prepare("UPDATE sale_receipts SET archived_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
+    .run(req.params.id)
+  logReceiptEvent(req.params.id, req.user?.id, 'archived')
+  const updated = fetchSaleReceiptRow(req.params.id)
+  if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
+})
+
+router.post('/:id/unarchive', (req, res) => {
+  const row = db.prepare('SELECT id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  db.prepare("UPDATE sale_receipts SET archived_at=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
+    .run(req.params.id)
+  logReceiptEvent(req.params.id, req.user?.id, 'unarchived')
+  const updated = fetchSaleReceiptRow(req.params.id)
+  if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
+})
+
 router.delete('/:id', (req, res) => {
-  const row = db.prepare('SELECT filename, gmail_message_id FROM sale_receipts WHERE id=? AND deleted_at IS NULL')
+  const row = db.prepare('SELECT filename, extra_pages, gmail_message_id FROM sale_receipts WHERE id=? AND deleted_at IS NULL')
     .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
-  // Le fichier est toujours purgé du disque — on ne garde que le stub en DB
-  const filePath = join(uploadsDir, row.filename)
-  try { if (existsSync(filePath)) unlinkSync(filePath) } catch {}
+  // Toutes les pages (page 1 + extra_pages) sont purgées du disque.
+  let extra = []
+  try { extra = JSON.parse(row.extra_pages || '[]') } catch {}
+  for (const name of [row.filename, ...extra.map(p => p.filename)]) {
+    if (!name) continue
+    try { const fp = join(uploadsDir, name); if (existsSync(fp)) unlinkSync(fp) } catch {}
+  }
 
   // Si la pièce vient d'un email (gmail_message_id), soft-delete pour que
   // syncInvoiceLabel ne la réimporte pas à chaque tour ; sinon, hard-delete.
@@ -226,6 +444,7 @@ router.delete('/:id', (req, res) => {
       .run(req.params.id)
   } else {
     db.prepare('DELETE FROM sale_receipts WHERE id=?').run(req.params.id)
+    db.prepare('DELETE FROM sale_receipt_events WHERE receipt_id=?').run(req.params.id)
   }
   emitEntity('sale_receipt', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })

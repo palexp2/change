@@ -87,6 +87,17 @@ function request(method, path, body) {
       invalidate('/' + segments[1])
       invalidateStale(segments[1])
     }
+    // API générique /records/<table>/... : invalider la ressource sous-jacente
+    // (sinon les GET /<resource> servent le cache obsolète). Le nom de table SQL
+    // utilise des underscores (activity_codes) alors que la route REST utilise
+    // des tirets (activity-codes) — on invalide les deux variantes par sécurité.
+    if (resource === 'records' && segments[1]) {
+      const table = segments[1]
+      for (const variant of new Set([table, table.replace(/_/g, '-')])) {
+        invalidate('/' + variant)
+        invalidateStale(variant)
+      }
+    }
   }
   return rawRequest(method, path, body)
 }
@@ -107,12 +118,15 @@ export const api = {
     me: () => get('/auth/me'),
     users: () => get('/auth/users'),
     changePassword: (current_password, new_password) => post('/auth/change-password', { current_password, new_password }),
+    getPreferences: () => get('/auth/preferences'),
+    updatePreferences: (data) => patch('/auth/preferences', data),
   },
 
   // Companies
   companies: {
     list: (params = {}) => get('/companies?' + new URLSearchParams(params)),
     lookup: () => get('/companies/lookup'),
+    duplicates: (params = {}) => get('/companies/duplicates?' + new URLSearchParams(params)),
     get: (id) => get(`/companies/${id}`),
     create: (data) => post('/companies', data),
     update: (id, data) => put(`/companies/${id}`, data),
@@ -124,6 +138,7 @@ export const api = {
   contacts: {
     list: (params = {}) => get('/contacts?' + new URLSearchParams(params)),
     lookup: () => get('/contacts/lookup'),
+    duplicates: (params = {}) => get('/contacts/duplicates?' + new URLSearchParams(params)),
     get: (id) => get(`/contacts/${id}`),
     create: (data) => post('/contacts', data),
     update: (id, data) => put(`/contacts/${id}`, data),
@@ -241,6 +256,8 @@ export const api = {
     subscriptionEvents: (params = {}) => get('/dashboard/subscription-events?' + new URLSearchParams(params)),
     topProducts: (params = {}) => get('/dashboard/top-products?' + new URLSearchParams(params)),
     balanceSheet: (params = {}) => get('/dashboard/balance-sheet?' + new URLSearchParams(params)),
+    bankAccounts: (params = {}) => get('/dashboard/bank-accounts?' + new URLSearchParams(params)),
+    agingReceivables: () => get('/dashboard/aging-receivables'),
   },
 
   // Admin
@@ -259,6 +276,7 @@ export const api = {
     linkFactureRevenueRecognition: (id, je_id) => post(`/admin/factures/${id}/link-revenue-recognition`, { je_id }),
     linkFactureDeferredRevenue: (id, qb_ref) => post(`/admin/factures/${id}/link-deferred-revenue`, { qb_ref }),
     clearFacturePaidStatus: (id) => post(`/admin/factures/${id}/clear-paid-status`, {}),
+    factureReconciliationAudit: () => get('/admin/facture-reconciliation-audit'),
     factureRawSchema: (id) => get(`/admin/factures/${id}/raw-schema`),
     factureRawUpdate: (id, data) => patch(`/admin/factures/${id}/raw`, data),
     paymentRawSchema: (id) => get(`/admin/payments/${id}/raw-schema`),
@@ -321,6 +339,10 @@ export const api = {
     whisperDriveStatus: () => get('/connectors/whisper/drive-status'),
     whisperDownloadDrive: () => post('/connectors/whisper/download-drive'),
     whisperDownloadProgress: () => get('/connectors/whisper/download-drive/status'),
+    qbMyConnection: () => get('/connectors/quickbooks/my-connection'),
+    qbDisconnectMine: () => del('/connectors/quickbooks/my-connection'),
+    qbConnections: () => get('/connectors/quickbooks/connections'),
+    qbDisconnectUser: (accountKey) => del(`/connectors/quickbooks/connections/${accountKey}`),
   },
 
   // Stripe
@@ -348,6 +370,8 @@ export const api = {
     deleteConfig: () => del('/novoxpress/config'),
     getRates: (shipmentId, data) => post(`/novoxpress/rates/${shipmentId}`, data),
     createLabel: (shipmentId, data) => post(`/novoxpress/label/${shipmentId}`, data),
+    retryLabelPdf: (shipmentId) => post(`/novoxpress/label/${shipmentId}/retry-pdf`),
+    diagnostic: (shipmentId, data) => post(`/novoxpress/diagnostic/${shipmentId}`, data),
     schedulePickup: (shipmentId, data) => post(`/novoxpress/pickup/${shipmentId}`, data),
     cancelPickup: (shipmentId) => del(`/novoxpress/pickup/${shipmentId}`),
   },
@@ -380,6 +404,15 @@ export const api = {
     projetsMappingData: () => get('/connectors/airtable/projets/mapping-data'),
     setProjetsFieldMapping: (data) =>
       post('/connectors/airtable/projets/airtable-field-mapping', data),
+    // Contrôle des champs Airtable généralisé par module (cf. AIRTABLE_FIELD_MODULES
+    // côté serveur). La page ModuleFields utilise ces routes pour tous les modules.
+    fieldModules: () => get('/connectors/airtable/field-modules'),
+    moduleMappingData: (module) => get(`/connectors/airtable/module-fields/${module}/mapping-data`),
+    moduleAirtableFields: (module) => get(`/connectors/airtable/module-fields/${module}/airtable-fields`),
+    setModuleFieldMapping: (module, data) =>
+      post(`/connectors/airtable/module-fields/${module}/airtable-field-mapping`, data),
+    setModuleFieldDisabled: (module, airtable_field_name, disabled) =>
+      post(`/connectors/airtable/module-fields/${module}/airtable-field-disabled`, { airtable_field_name, disabled }),
   },
 
   // Custom fields (utilisateur peut ajouter / supprimer ses propres champs sur certaines tables)
@@ -387,9 +420,15 @@ export const api = {
     list: (erpTable) => get(`/custom-fields/${erpTable}`),
     create: (erpTable, data) => post(`/custom-fields/${erpTable}`, data),
     createFormula: (erpTable, data) => post(`/custom-fields/${erpTable}/formula`, data),
+    previewFormula: (erpTable, data) => post(`/custom-fields/${erpTable}/formula/preview`, data),
     createLookup: (erpTable, data) => post(`/custom-fields/${erpTable}/lookup`, data),
+    createRollup: (erpTable, data) => post(`/custom-fields/${erpTable}/rollup`, data),
+    createAuto: (erpTable, data) => post(`/custom-fields/${erpTable}/auto`, data),
+    createButton: (erpTable, data) => post(`/custom-fields/${erpTable}/button`, data),
+    runButton: (fieldId, recordId) => post(`/custom-fields/button/${fieldId}/run`, { record_id: recordId }),
     update: (id, data) => put(`/custom-fields/${id}`, data),
     delete: (id) => del(`/custom-fields/${id}`),
+    dependents: (id) => get(`/custom-fields/${id}/dependents`),
     lookupMeta: (erpTable) => get(`/custom-fields/_meta/${erpTable}`),
   },
 
@@ -410,7 +449,10 @@ export const api = {
     updatePill: (table, id, data) => put(`/views/${table}/pills/${id}`, data),
     deletePill: (table, id) => del(`/views/${table}/pills/${id}`),
     reorderPills: (table, order) => patch(`/views/${table}/pills/reorder`, { order }),
+    setPillLocked: (table, id, locked) => patch(`/views/${table}/pills/${id}/locked`, { locked }),
     saveColumnWidths: (table, column_widths) => patch(`/views/${table}/column-widths`, { column_widths }),
+    savePillColumnWidths: (table, id, column_widths) => patch(`/views/${table}/pills/${id}/column-widths`, { column_widths }),
+    saveFooterAggregations: (table, footer_aggregations) => patch(`/views/${table}/footer-aggregations`, { footer_aggregations }),
     setBulkDeleteEnabled: (table, enabled) => patch(`/views/${table}/bulk-delete-enabled`, { enabled }),
     getDetailLayout: (entityType) => get(`/views/detail/${entityType}`),
     saveDetailLayout: (entityType, field_order) => put(`/views/detail/${entityType}`, { field_order }),
@@ -420,6 +462,7 @@ export const api = {
   purchases: {
     list: (params = {}) => get('/purchases?' + new URLSearchParams(params)),
     get: (id) => get(`/purchases/${id}`),
+    create: (data) => post('/purchases', data),
     update: (id, data) => patch(`/purchases/${id}`, data),
     delete: (id) => del(`/purchases/${id}`),
   },
@@ -487,6 +530,7 @@ export const api = {
     qbState: (id) => get(`/projets/factures/${id}/qb-state`),
     discounts: (id) => get(`/projets/factures/${id}/discounts`),
     neighbors: (id) => get(`/projets/factures/${id}/neighbors`),
+    retryPdf: (id) => post(`/projets/factures/${id}/retry-pdf`, {}),
   },
 
   // Paiements / remboursements (Stripe et hors-Stripe) attachés aux factures
@@ -511,6 +555,7 @@ export const api = {
     get: (id) => get(`/projets/abonnements/${id}`),
     stripeDetails: (id) => get(`/projets/abonnements/${id}/stripe-details`),
     patch: (id, body) => patch(`/projets/abonnements/${id}`, body),
+    eventCreate: (id, body) => post(`/projets/abonnements/${id}/events`, body),
     eventPatch: (id, eventId, body) => patch(`/projets/abonnements/${id}/events/${eventId}`, body),
     eventDelete: (id, eventId) => del(`/projets/abonnements/${id}/events/${eventId}`),
     events: (params = {}) => get('/projets/abonnement-events?' + new URLSearchParams(params)),
@@ -541,6 +586,7 @@ export const api = {
 
   vacations: {
     list: (params = {}) => get('/vacations?' + new URLSearchParams(params)),
+    balance: (params = {}) => get('/vacations/balance?' + new URLSearchParams(params)),
     create: (data) => post('/vacations', data),
     update: (id, data) => patch(`/vacations/${id}`, data),
     delete: (id) => del(`/vacations/${id}`),
@@ -569,6 +615,7 @@ export const api = {
     update: (id, data) => patch(`/qualification-calls/${id}`, data),
     subscribeCard: (id, body) => post(`/qualification-calls/${id}/subscribe-card`, body),
     saveFarmAddress: (id, body) => post(`/qualification-calls/${id}/farm-address`, body),
+    sendSystemBuilderEmail: (id, body) => post(`/qualification-calls/${id}/send-system-builder-email`, body),
     delete: (id) => del(`/qualification-calls/${id}`),
   },
 
@@ -591,6 +638,7 @@ export const api = {
     getDay: (params = {}) => get('/timesheets/day?' + new URLSearchParams(params)),
     createDay: (data) => post('/timesheets/day', data),
     updateDay: (id, data) => patch(`/timesheets/day/${id}`, data),
+    setDayStatus: (id, data) => patch(`/timesheets/day/${id}/status`, data),
     deleteDay: (id) => del(`/timesheets/day/${id}`),
     addEntry: (dayId, data) => post(`/timesheets/day/${dayId}/entries`, data),
     updateEntry: (id, data) => patch(`/timesheets/entries/${id}`, data),
@@ -636,6 +684,16 @@ export const api = {
     list: (params = {}) => get('/stock-movements?' + new URLSearchParams(params)),
   },
 
+  // Feed des opérations (journal d'activité applicatif — qui / quoi / quand)
+  activity: {
+    list: (params = {}) => get('/activity?' + new URLSearchParams(params)),
+  },
+
+  // Journal des side effects — timeline unifiée (sync_log + automation_logs + activity_log).
+  sideEffects: {
+    list: (params = {}) => get('/side-effects?' + new URLSearchParams(params)),
+  },
+
   // Returns (RMA)
   returns: {
     listByCompany: (companyId) => get(`/companies/${companyId}/returns`),
@@ -661,6 +719,8 @@ export const api = {
     update: (id, data) => put(`/achats-fournisseurs/${id}`, data),
     updateStatus: (id, status) => patch(`/achats-fournisseurs/${id}/status`, { status }),
     delete: (id) => del(`/achats-fournisseurs/${id}`),
+    vendorHistory: (id) => get(`/achats-fournisseurs/${id}/vendor-history`),
+    pushToQb: (id) => post(`/achats-fournisseurs/${id}/push-to-qb`, {}),
     attachments: {
       list: (id) => get(`/achats-fournisseurs/${id}/attachments`),
       fetchFromQB: (id) => post(`/achats-fournisseurs/${id}/fetch-qb-attachments`, {}),
@@ -680,9 +740,51 @@ export const api = {
     },
   },
 
+  // Pièces jointes polymorphes — attachables à n'importe quelle entité
+  // (entityType ∈ companies|contacts|orders|tickets|projects|products|…).
+  attachments: {
+    list: (entityType, entityId) => get(`/attachments/${entityType}/${entityId}`),
+    upload: async (entityType, entityId, files) => {
+      const token = getToken()
+      const fd = new FormData()
+      for (const f of files) fd.append('file', f)
+      const res = await fetch(`${BASE}/attachments/${entityType}/${entityId}`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: fd,
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+      return data
+    },
+    download: async (entityType, entityId, attId) => {
+      const token = getToken()
+      const res = await fetch(`${BASE}/attachments/${entityType}/${entityId}/${attId}/download`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const cd = res.headers.get('content-disposition') || ''
+      const m = cd.match(/filename="?([^";]+)"?/i)
+      const filename = m ? decodeURIComponent(m[1]) : 'piece-jointe'
+      const blob = await res.blob()
+      return { blob, filename }
+    },
+    delete: (entityType, entityId, attId) => del(`/attachments/${entityType}/${entityId}/${attId}`),
+  },
+
   // Global search
   search: {
     query: (q) => get(`/search?q=${encodeURIComponent(q)}`),
+  },
+
+  // API de mutation générique (phase 1) — pilotée par un registre de schémas
+  // côté serveur (server/src/db/recordRegistry.js). `table` est le nom SQL réel
+  // (ex. 'activity_codes', 'vacations'). Couvre uniquement les tables CRUD
+  // simples ; les ressources à logique métier gardent leurs méthodes dédiées.
+  records: {
+    update: (table, id, data) => patch(`/records/${table}/${id}`, data),
+    delete: (table, id) => del(`/records/${table}/${id}`),
+    history: (table, id) => get(`/records/${table}/${id}/history`),
   },
 
 
@@ -696,12 +798,26 @@ export const api = {
     logs: (id) => get(`/automations/${id}/logs`),
     run: (id, body = {}) => post(`/automations/${id}/run`, body),
     testEmail: (id, body) => post(`/automations/${id}/test-email`, body),
-    emailPreview: (id, language) => get(`/automations/${id}/email-preview${language ? `?language=${encodeURIComponent(language)}` : ''}`),
+    emailPreview: (id, language, recordId) => {
+      const qs = new URLSearchParams()
+      if (language) qs.set('language', language)
+      if (recordId) qs.set('record_id', recordId)
+      const q = qs.toString()
+      return get(`/automations/${id}/email-preview${q ? `?${q}` : ''}`)
+    },
     fires: (id, limit = 100) => get(`/automations/${id}/fires?limit=${limit}`),
     resetFires: (id) => post(`/automations/${id}/reset-fires`, {}),
-    test: (id) => post(`/automations/${id}/test`, {}),
+    test: (id, body = {}) => post(`/automations/${id}/test`, body),
+    runDateRule: (id) => post(`/automations/${id}/run-date-rule`, {}),
+    rotateToken: (id) => post(`/automations/${id}/rotate-token`, {}),
     fieldRuleTables: () => get('/automations/field-rule/tables'),
     ruleFieldDefs: (erpTable) => get(`/automations/field-defs?erp_table=${encodeURIComponent(erpTable)}`),
+    retryQueue: (id) => get(`/automations/${id}/retry-queue`),
+    retryNow: (id, retryId) => post(`/automations/${id}/retry-queue/${retryId}/retry`, {}),
+    deferredQueue: (id) => get(`/automations/${id}/deferred-queue`),
+    drainDeferred: (id) => post(`/automations/${id}/drain-deferred`, {}),
+    versions: (id) => get(`/automations/${id}/versions`),
+    restoreVersion: (id, versionId) => post(`/automations/${id}/versions/${versionId}/restore`, {}),
   },
 
   interfaces: {
@@ -733,6 +849,7 @@ export const api = {
       update: (id, data) => put(`/documents/soumissions/${id}`, data),
       delete: (id) => del(`/documents/soumissions/${id}`),
       duplicate: (id) => post(`/documents/soumissions/${id}/duplicate`),
+      convertToOrder: (id) => post(`/documents/soumissions/${id}/convert-to-order`, {}),
       pdfUrl: (id) => `${BASE}/documents/soumissions/${id}/pdf`,
     },
   },
@@ -742,9 +859,15 @@ export const api = {
     createTask:   (data)     => post('/agent/tasks', data),
     updateTask:   (id, data) => patch(`/agent/tasks/${id}`, data),
     deleteTask:   (id)       => del(`/agent/tasks/${id}`),
-    status:       ()         => get('/agent/status'),
-    getMemory:    ()         => get('/agent/memory'),
-    saveMemory:   (content)  => put('/agent/memory', { content }),
+    sendMessage:  (id, text) => post(`/agent/tasks/${id}/message`, { text }),
+    getSettings:  ()         => get('/agent/settings'),
+    saveSettings: (data)     => put('/agent/settings', data),
+    readClaudeMd: ()         => get('/agent/claude-md'),
+    saveClaudeMd: (content)  => put('/agent/claude-md', { content }),
+    listBacklog:  ()         => get('/agent/backlog'),
+    addBacklog:   (text)     => post('/agent/backlog', { text }),
+    deleteBacklog:(id)       => del(`/agent/backlog/${id}`),
+    generate:     ()         => post('/agent/generate', {}),
   },
 
   // QuickBooks journal entries (proxy — no local copy)
@@ -760,10 +883,16 @@ export const api = {
   // Sale receipts (OCR/AI extraction)
   saleReceipts: {
     list: (params = {}) => get('/sale-receipts?' + new URLSearchParams(params)),
+    transactionTypes: () => get('/sale-receipts/transaction-types'),
     get: (id) => get(`/sale-receipts/${id}`),
     update: (id, body) => patch(`/sale-receipts/${id}`, body),
     delete: (id) => del(`/sale-receipts/${id}`),
+    archive: (id) => post(`/sale-receipts/${id}/archive`),
+    unarchive: (id) => post(`/sale-receipts/${id}/unarchive`),
+    history: (id) => get(`/sale-receipts/${id}/history`),
+    vendorHistory: (id) => get(`/sale-receipts/${id}/vendor-history`),
     pushToQb: (id, params) => post(`/sale-receipts/${id}/push-to-qb`, params),
+    reExtract: (id) => post(`/sale-receipts/${id}/re-extract`),
     upload: (formData) => {
       const token = getToken()
       return fetch('/erp/api/sale-receipts/upload', {
@@ -792,6 +921,19 @@ export const api = {
     upload: (formData) => {
       const token = getToken()
       return fetch('/erp/api/public-files/upload', {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      }).then(async r => {
+        const d = await r.json().catch(() => ({}))
+        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
+        return d
+      })
+    },
+    // Remplace le contenu d'un fichier en conservant son lien public (token).
+    replace: (id, formData) => {
+      const token = getToken()
+      return fetch(`/erp/api/public-files/${id}/replace`, {
         method: 'POST',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         body: formData,

@@ -5,7 +5,9 @@ import db from '../db/database.js'
 import { qbGet, qbPost, qbUploadAttachment } from '../connectors/quickbooks.js'
 import { getUsdCadRate } from './fx.js'
 import { getStripeClient } from './stripeInvoices.js'
+import { syncStripePayouts, syncAllPayoutsBalanceTransactions, isStripeConfigured } from './stripe.js'
 import { emitCompany } from './realtimeEmitters.js'
+import { validateTaxCodeAgainstType, getTransactionType } from './fiscalStatus.js'
 
 const SALE_RECEIPT_MIME = {
   '.jpg':  'image/jpeg',
@@ -24,8 +26,12 @@ const SALE_RECEIPT_MIME = {
 // Comparaison lexicographique sûre — document_date est stocké en 'YYYY-MM-DD'.
 export const QB_FACTURE_DATE_CUTOFF = '2026-05-01'
 
-export function assertFactureEligibleForQbWrite(factureRow) {
+// bypassCutoff=true : court-circuite la garde du cutoff. Réservé aux écritures
+// déclenchées manuellement depuis la fiche facture par un opérateur qui assume
+// le posting d'une facture pré-cutoff (bouton « Forcer malgré le cutoff »).
+export function assertFactureEligibleForQbWrite(factureRow, { bypassCutoff = false } = {}) {
   if (!factureRow) return
+  if (bypassCutoff) return
   const docDate = factureRow.document_date
   if (docDate && docDate < QB_FACTURE_DATE_CUTOFF) {
     const label = factureRow.document_number || factureRow.id
@@ -41,7 +47,41 @@ function getQBConfig() {
 // Recherche un fournisseur QB par nom, le crée si absent.
 // Synchronise aussi avec la table companies (type=Fournisseur).
 // Retourne le QB Vendor ID (string).
-async function findOrCreateVendor(vendorName) {
+// Extrait l'Id du conflit d'un message d'erreur QB « Nom en double » (code 6240).
+// QB renvoie l'Id de l'entité qui occupe déjà le nom dans le Detail (« … : Id=425 »).
+// Retourne null si le message n'est pas un conflit de nom.
+export function parseDuplicateNameId(message) {
+  if (!/Nom en double|Duplicate Name|"code":"6240"/i.test(message || '')) return null
+  const m = /Id=(\d+)/.exec(message || '')
+  return m ? m[1] : null
+}
+
+// Crée un fournisseur en gérant le conflit de nom (6240). QB impose des DisplayName
+// UNIQUES entre Fournisseurs, Clients et Employés. Trois cas au conflit :
+//  (a) le nom appartient à un FOURNISSEUR actif que la recherche par nom a raté
+//      (accents/espaces) → on le réutilise via l'Id que QB donne dans l'erreur ;
+//  (b) le nom appartient à un CLIENT/EMPLOYÉ (ou un fournisseur inactif) → on ne peut
+//      pas réutiliser une autre entité comme fournisseur : on crée un fournisseur
+//      distinct suffixé « (Fournisseur) ».
+async function createVendorHandlingDuplicate(name) {
+  try {
+    const created = await qbPost('/vendor', { DisplayName: name })
+    return created.Vendor.Id
+  } catch (e) {
+    const dupId = parseDuplicateNameId(e.message)
+    if (!dupId) throw e
+    // (a) L'Id renvoyé est-il un fournisseur (actif) ? Si oui, on le réutilise.
+    try {
+      const v = await qbGet(`/vendor/${dupId}`)
+      if (v?.Vendor?.Id) return v.Vendor.Id
+    } catch { /* pas un fournisseur joignable (client/employé ou inactif) → on suffixe */ }
+    // (b) Conflit avec une autre liste de noms → fournisseur distinct suffixé.
+    const created = await qbPost('/vendor', { DisplayName: `${name} (Fournisseur)` })
+    return created.Vendor.Id
+  }
+}
+
+export async function findOrCreateVendor(vendorName) {
   // 1. Chercher dans companies par nom pour récupérer un quickbooks_vendor_id déjà connu
   const existing = db.prepare(
     "SELECT id, quickbooks_vendor_id FROM companies WHERE name=? LIMIT 1"
@@ -49,18 +89,21 @@ async function findOrCreateVendor(vendorName) {
 
   if (existing?.quickbooks_vendor_id) return existing.quickbooks_vendor_id
 
-  // 2. Chercher dans QB
+  // 2. Chercher dans QB — exact, puis LIKE insensible à la casse/aux espaces
   const safe = vendorName.replace(/'/g, "\\'")
-  const q = new URLSearchParams({ query: `SELECT * FROM Vendor WHERE DisplayName = '${safe}' MAXRESULTS 1` })
-  const result = await qbGet(`/query?${q}`)
-  const vendors = result.QueryResponse?.Vendor || []
+  const target = vendorName.trim().toLowerCase()
   let qbVendorId
 
-  if (vendors.length > 0) {
-    qbVendorId = vendors[0].Id
+  const exactQ = new URLSearchParams({ query: `SELECT * FROM Vendor WHERE DisplayName = '${safe}' MAXRESULTS 1` })
+  const exact = await qbGet(`/query?${exactQ}`)
+  const exactHit = exact.QueryResponse?.Vendor?.[0]
+  if (exactHit) {
+    qbVendorId = exactHit.Id
   } else {
-    const created = await qbPost('/vendor', { DisplayName: vendorName })
-    qbVendorId = created.Vendor.Id
+    const likeQ = new URLSearchParams({ query: `SELECT * FROM Vendor WHERE DisplayName LIKE '${safe}' MAXRESULTS 5` })
+    const like = await qbGet(`/query?${likeQ}`)
+    const matched = (like.QueryResponse?.Vendor || []).find(v => (v.DisplayName || '').trim().toLowerCase() === target)
+    qbVendorId = matched ? matched.Id : await createVendorHandlingDuplicate(vendorName)
   }
 
   // 3. Mettre à jour ou créer l'entreprise locale
@@ -104,22 +147,55 @@ export async function pushAchatToQB(achatId) {
   if (!row) throw new Error('Achat introuvable')
   if (row.quickbooks_id) throw new Error(`Déjà publié sur QuickBooks (ID: ${row.quickbooks_id})`)
 
+  const round2 = n => Math.round((Number(n) || 0) * 100) / 100
   const cfg = getQBConfig()
-  if (!cfg.expense_account_id) throw new Error('Compte de dépense QuickBooks non configuré')
+
+  // Comptes : modèle mémorisé sur l'achat (dernier choix pour ce fournisseur)
+  // prioritaire sur la config QB globale.
+  const expenseAccountId = row.expense_account_id || cfg.expense_account_id
+  if (!expenseAccountId) throw new Error('Compte de dépense QuickBooks non configuré')
+
+  // Code de taxe : achats stockent un tax_cad global (pas de split TPS/TVQ), donc on
+  // fournit TxnTaxCodeRef + TotalTax sans TaxLine — QB ventile selon les taux du code.
+  // Avec GlobalTaxCalculation:'TaxExcluded', la base des lignes doit être HORS taxe
+  // (amount_cad) sinon QB rajoute la taxe par-dessus → double comptage. Sans code de
+  // taxe, comportement historique conservé : la ligne porte total_cad, aucune taxe QB.
+  const applyTax = !!(row.tax_code_id && row.tax_cad > 0)
+  const lineBase = applyTax ? round2(row.amount_cad) : row.total_cad
+  let taxDetail = {}
+  if (applyTax) {
+    taxDetail = {
+      TxnTaxDetail: { TxnTaxCodeRef: { value: row.tax_code_id }, TotalTax: round2(row.tax_cad) },
+      GlobalTaxCalculation: 'TaxExcluded',
+    }
+  }
+  const lineDetail = { AccountRef: { value: expenseAccountId } }
+  if (applyTax) lineDetail.TaxCodeRef = { value: row.tax_code_id }
+
+  const persist = (qbId, paymentAccountId) => {
+    db.prepare(`
+      UPDATE achats_fournisseurs
+      SET quickbooks_id=?, expense_account_id=?, payment_account_id=?, tax_code_id=?,
+          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id=?
+    `).run(qbId, expenseAccountId || null, paymentAccountId || null, row.tax_code_id || null, achatId)
+  }
 
   if (row.type === 'purchase') {
-    if (!cfg.payment_account_id) throw new Error('Compte de paiement QuickBooks non configuré')
+    const paymentAccountId = row.payment_account_id || cfg.payment_account_id
+    if (!paymentAccountId) throw new Error('Compte de paiement QuickBooks non configuré')
     const purchase = {
       PaymentType: PAYMENT_TYPE_MAP[row.payment_method] || 'Cash',
-      AccountRef: { value: cfg.payment_account_id },
+      AccountRef: { value: paymentAccountId },
       TxnDate: row.date_achat,
       TotalAmt: row.total_cad,
       Line: [{
-        Amount: row.total_cad,
+        Amount: lineBase,
         DetailType: 'AccountBasedExpenseLineDetail',
-        AccountBasedExpenseLineDetail: { AccountRef: { value: cfg.expense_account_id } },
+        AccountBasedExpenseLineDetail: lineDetail,
         Description: row.description || row.category,
       }],
+      ...taxDetail,
     }
     const qbVendorId = await resolveQBVendor(row)
     if (qbVendorId) purchase.EntityRef = { value: qbVendorId, type: 'Vendor' }
@@ -127,7 +203,7 @@ export async function pushAchatToQB(achatId) {
 
     const result = await qbPost('/purchase', purchase)
     const qbId = result.Purchase.Id
-    db.prepare("UPDATE achats_fournisseurs SET quickbooks_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?").run(qbId, achatId)
+    persist(qbId, paymentAccountId)
     return qbId
   }
 
@@ -139,18 +215,19 @@ export async function pushAchatToQB(achatId) {
     VendorRef: { value: vendorId },
     TxnDate: row.date_achat,
     Line: [{
-      Amount: row.total_cad,
+      Amount: lineBase,
       DetailType: 'AccountBasedExpenseLineDetail',
-      AccountBasedExpenseLineDetail: { AccountRef: { value: cfg.expense_account_id } },
+      AccountBasedExpenseLineDetail: lineDetail,
       Description: row.notes || row.vendor_invoice_number || row.vendor,
     }],
+    ...taxDetail,
   }
   if (row.due_date) bill.DueDate = row.due_date
   if (row.vendor_invoice_number) bill.DocNumber = row.vendor_invoice_number
 
   const result = await qbPost('/bill', bill)
   const qbId = result.Bill.Id
-  db.prepare("UPDATE achats_fournisseurs SET quickbooks_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?").run(qbId, achatId)
+  persist(qbId, null)
   return qbId
 }
 
@@ -420,6 +497,101 @@ async function findOrCreateCustomer(customerName, currency = 'CAD') {
 
 // params: { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate }
 // type = 'purchase' (déjà payé, défaut) ou 'bill' (à payer plus tard via AP)
+// Construit le mémo (PrivateNote / « Memo » QB) d'un reçu de vente publié.
+// Priorité au mémo saisi par l'utilisateur ; à défaut, on reporte les
+// descriptions des articles (une par ligne). QB tronque PrivateNote à 4000
+// caractères — on coupe pour éviter un rejet de l'API.
+// Calcule la base HORS TAXES (HT) à envoyer comme montant de ligne à QB pour un
+// reçu fournisseur. QB ajoute la taxe par-dessus (GlobalTaxCalculation:'TaxExcluded'),
+// donc base + taxes doit égaler le total du reçu.
+// - Cas normal : subtotal + taxes ≈ total → on garde subtotal (préserve l'itemisation).
+// - Cas taxes-incluses (Amazon & co.) : subtotal contient déjà la taxe (souvent
+//   subtotal == total), l'invariant ne tient pas → on dérive HT = total - taxes,
+//   sinon QB recompte la taxe et la double.
+// - Sans total exploitable : on retombe sur subtotal, sinon total.
+export function computeReceiptHtBase({ subtotal = 0, totalTax = 0, total = 0 }) {
+  const round2 = x => Math.round(x * 100) / 100
+  const subtotalReconciles = Math.abs((subtotal + totalTax) - total) <= 0.02
+  if (total > 0 && totalTax > 0 && !subtotalReconciles) return round2(total - totalTax)
+  return subtotal > 0 ? subtotal : total
+}
+
+// Mémo QB (PrivateNote, champ « Memo »). On NE veut PAS les 15 lignes d'articles dans
+// le mémo : seulement la description GÉNÉRALE de la facture (l'objet principal). Un mémo
+// personnalisé saisi par l'utilisateur est ajouté en tête, suivi de cette description.
+// Les lignes d'articles détaillées restent publiées sur les lignes QB (Description).
+//
+// Règle « description » :
+// - PLUSIEURS articles → on utilise le résumé IA (general_description), l'objet
+//   principal regroupant les lignes — on ne les énumère pas.
+// - UN SEUL article → pas besoin de résumer : on transcrit directement la description
+//   de cet article (verbatim). Si elle est vide, on retombe sur general_description.
+export function buildReceiptMemo(memo, generalDescription = '', items = []) {
+  const list = Array.isArray(items) ? items : []
+  const soleDesc = list.length === 1 ? (list[0]?.description || '').trim() : ''
+  const desc = (soleDesc || generalDescription || '').trim()
+  const custom = (memo || '').trim()
+  const note = [custom, desc].filter(Boolean).join('\n')
+  return note.length > 4000 ? note.slice(0, 4000) : note
+}
+
+// Sentinel « aucune taxe » pour un tax_code_id PAR LIGNE — identique à NO_TAX côté
+// client (SaleReceiptDetail.jsx). Distinct de null (« suit le code du document ») : il
+// force une ligne sans aucun TaxCodeRef.
+export const NO_TAX_CODE = '__none__'
+
+// Lignes de dépense QB à partir des articles extraits : UNE ligne par article, AVEC
+// sa description, pour que les lignes publiées correspondent au mémo (« chaque ligne
+// d'article se retrouve des deux côtés »). Les montants sont mis à l'échelle pour que
+// leur somme égale la base HT (targetHt) — ainsi les descriptions sont conservées même
+// quand les prix d'articles sont taxes-incluses (au lieu de fusionner en une ligne
+// générique). Sans montant d'article exploitable : une ligne unique au HT, description
+// = descriptions jointes ou libellé de repli.
+export function buildReceiptLines(items, targetHt, { lineDetail, fallbackDescription } = {}) {
+  const round2 = x => Math.round(x * 100) / 100
+  // lineDetail = détail de base (AccountRef + éventuel TaxCodeRef global). Selon le
+  // tax_code_id de l'article, sa ligne reçoit (comme dans QuickBooks) :
+  //  - un Id de code QB → ce TaxCodeRef précis ;
+  //  - le sentinel NO_TAX_CODE → AUCUN TaxCodeRef (taxe explicitement nulle : on retire
+  //    le code global hérité, sinon une ligne « sans taxe » serait taxée au code document) ;
+  //  - null/absent → réutilise lineDetail tel quel (suit le code global ; identité préservée).
+  const mkLine = (amount, description, taxCodeId) => {
+    let detail
+    if (taxCodeId === NO_TAX_CODE) {
+      detail = { ...lineDetail }
+      delete detail.TaxCodeRef
+    } else if (taxCodeId) {
+      detail = { ...lineDetail, TaxCodeRef: { value: String(taxCodeId) } }
+    } else {
+      detail = lineDetail
+    }
+    return { Amount: amount, DetailType: 'AccountBasedExpenseLineDetail', AccountBasedExpenseLineDetail: detail, Description: description }
+  }
+  const itemized = (Array.isArray(items) ? items : [])
+    .map(it => ({
+      description: (it?.description || '').trim(),
+      amount: Number(it?.total) || (Number(it?.unit_price) * Number(it?.quantity)) || 0,
+      taxCodeId: it?.tax_code_id || null,
+    }))
+    .filter(it => it.amount > 0)
+
+  if (itemized.length > 0 && targetHt > 0) {
+    const rawSum = itemized.reduce((s, it) => s + it.amount, 0)
+    const scale = rawSum > 0 ? targetHt / rawSum : 1
+    const lines = itemized.map(it => mkLine(round2(it.amount * scale), it.description, it.taxCodeId))
+    // Reporte l'écart d'arrondi sur la dernière ligne pour que la somme = targetHt.
+    const drift = round2(targetHt - lines.reduce((s, l) => s + l.Amount, 0))
+    if (drift !== 0) lines[lines.length - 1].Amount = round2(lines[lines.length - 1].Amount + drift)
+    return lines
+  }
+
+  const joined = (Array.isArray(items) ? items : [])
+    .map(it => (it?.description || '').trim())
+    .filter(Boolean)
+    .join(' · ')
+  return [mkLine(round2(targetHt), joined || fallbackDescription || 'Reçu')]
+}
+
 export async function pushSaleReceiptToQB(receiptId, params = {}) {
   const rec = db.prepare('SELECT * FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(receiptId)
   if (!rec) throw new Error('Reçu introuvable')
@@ -457,11 +629,21 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
   // vendor si dispo, sinon on retombe sur la devise extraite du reçu.
   let txnCurrency = (rec.currency || 'CAD').toUpperCase()
   if (vendorId) {
+    // La lecture de la CurrencyRef du vendor NE DOIT PAS échouer en silence : si l'appel
+    // QB tombe (429/503/timeout), on ne sait PAS si le fournisseur est en USD ou en CAD.
+    // Retomber muettement sur la devise du reçu (souvent CAD) publierait une facture USD
+    // avec la mauvaise devise/FX — erreur comptable invisible. On abandonne donc le push
+    // avec une erreur explicite (le caller la renvoie en 400, re-push possible une fois QB
+    // de nouveau joignable). Le cas légitime « vendor sans CurrencyRef » (appel OK, valeur
+    // absente) conserve le fallback ci-dessous — seul un échec d'appel interrompt.
+    let vRes
     try {
-      const vRes = await qbGet(`/vendor/${vendorId}`)
-      const vendorCurrency = vRes?.Vendor?.CurrencyRef?.value
-      if (vendorCurrency) txnCurrency = vendorCurrency.toUpperCase()
-    } catch {}
+      vRes = await qbGet(`/vendor/${vendorId}`)
+    } catch (e) {
+      throw new Error(`Impossible de lire la devise du fournisseur QB #${vendorId} (${e.message}) — push annulé pour éviter une devise/FX erronée`)
+    }
+    const vendorCurrency = vRes?.Vendor?.CurrencyRef?.value
+    if (vendorCurrency) txnCurrency = vendorCurrency.toUpperCase()
   }
 
   const items = JSON.parse(rec.items || '[]')
@@ -471,50 +653,130 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
   const tvqAmt = rec.tvq || 0
   const totalTax = tpsAmt + tvqAmt
 
-  // Résoudre le code de taxe à appliquer aux lignes (HT) selon la combinaison TPS/TVQ.
-  // Sans ça, QB enregistre la dépense sans ventiler la taxe — les rapports TPS/TVQ ne la
-  // récupèrent pas et la balance subtotal+taxes vs total se perd.
+  // Base HORS TAXES (HT) à envoyer à QB. Avec GlobalTaxCalculation:'TaxExcluded',
+  // QB rajoute la taxe PAR-DESSUS le montant des lignes — pour que le total final
+  // de la transaction QB égale `total`, la base des lignes doit valoir total - taxes.
+  // En temps normal subtotal == total - taxes et on garde subtotal (préserve la
+  // ventilation par article). MAIS certaines factures — Amazon en tête — affichent
+  // un prix de ligne et un sous-total TAXES INCLUSES ; l'extraction pose alors
+  // subtotal = total (taxes déjà dedans) tout en remplissant TPS/TVQ. Envoyer ce
+  // subtotal comme HT ferait recompter la taxe par QB → taxes comptées EN DOUBLE
+  // (ex. reçu Amazon 11,19 $ → 11,19 HT + 1,46 taxe = 12,65 $ au lieu de 11,19 $).
+  // On détecte l'incohérence : si subtotal + taxes ne réconcilie pas avec total, la
+  // base HT est dérivée de total - taxes (auto-correction du cas taxes-incluses).
+  const targetHt = computeReceiptHtBase({ subtotal: subtotalAmt, totalTax, total: totalAmt })
+
+  // Résoudre le code de taxe à appliquer aux lignes (HT).
+  // - Si l'appelant fournit explicitement params.taxCodeId (choix dans le menu déroulant),
+  //   on l'utilise tel quel (chaîne = ce code QB ; null/'' = aucune taxe). Permet de poser
+  //   un code groupé spécifique (ex. TPS-TVQ-repas, TPS-TVQ-kilométrage) que la déduction
+  //   automatique ne saurait pas inférer des seuls montants TPS/TVQ.
+  // - Sinon (param absent), on retombe sur la déduction par les montants TPS/TVQ. Sans code,
+  //   QB enregistre la dépense sans ventiler la taxe — les rapports TPS/TVQ ne la récupèrent
+  //   pas et la balance subtotal+taxes vs total se perd.
   let lineTaxCodeId = null
-  if (tpsAmt > 0 && tvqAmt > 0) lineTaxCodeId = await resolveTaxCodeByName('TPS/TVQ QC - 9,975')
+  if (params.taxCodeId !== undefined) {
+    lineTaxCodeId = params.taxCodeId || null
+  } else if (tpsAmt > 0 && tvqAmt > 0) lineTaxCodeId = await resolveTaxCodeByName('TPS/TVQ QC - 9,975')
   else if (tpsAmt > 0) lineTaxCodeId = await resolveTaxCodeByName('TPS')
   else if (tvqAmt > 0) lineTaxCodeId = await resolveTaxCodeByName('TVQ QC - 9,975')
+
+  // ── Vérification du statut fiscal (cf. services/fiscalStatus.js) ──────────────
+  // Le type de transaction est OBLIGATOIRE : il détermine le code de taxe QB attendu.
+  // On compare le code effectivement sur le point d'être publié (résolu ci-dessus) au
+  // code attendu pour ce type. Si écart → on BLOQUE, sauf si l'opérateur fournit une
+  // justification explicite (forceReason) — échappatoire tracée en DB et au journal.
+  // Empêche le bug « publié hors-champ » : Détaxé/Exonéré/Hors-champ donnent tous 0 $
+  // de taxe mais sont 3 codes QB distincts dans des cases de rapport différentes.
+  const transactionType = params.transactionType || null
+  const forceReason = (params.forceReason || '').trim() || null
+  if (!transactionType) {
+    throw new Error('Type de transaction requis pour vérifier le statut fiscal avant publication.')
+  }
+  if (!getTransactionType(transactionType)) {
+    throw new Error(`Type de transaction inconnu: "${transactionType}".`)
+  }
+  const selectedCodeName = await resolveTaxCodeNameById(lineTaxCodeId)
+  const fiscalCheck = validateTaxCodeAgainstType(transactionType, selectedCodeName)
+  if (!fiscalCheck.ok && !forceReason) {
+    const sel = selectedCodeName || 'Aucune taxe'
+    throw new Error(
+      `Écart de statut fiscal : « ${fiscalCheck.typeLabel} » attend le statut ${fiscalCheck.statusLabel} `
+      + `(code « ${fiscalCheck.recommendedCode} »), mais le code sélectionné est « ${sel} ». `
+      + `Corrigez le code de taxe, ou publiez en fournissant une justification.`,
+    )
+  }
 
   const lineDetail = { AccountRef: { value: expenseAccountId } }
   if (lineTaxCodeId) lineDetail.TaxCodeRef = { value: lineTaxCodeId }
 
-  // Construire les lignes HT à partir des articles extraits
-  let lines = []
-  if (items.length > 0) {
-    lines = items.map(item => ({
-      Amount: item.total || (item.unit_price * item.quantity) || 0,
-      DetailType: 'AccountBasedExpenseLineDetail',
-      AccountBasedExpenseLineDetail: lineDetail,
-      Description: item.description || '',
-    })).filter(l => l.Amount > 0)
-  }
+  // Une ligne QB par article (avec sa description), montants mis à l'échelle sur la
+  // base HT. Les descriptions des lignes publiées correspondent ainsi au mémo.
+  const lines = buildReceiptLines(items, targetHt, {
+    lineDetail,
+    fallbackDescription: rec.company || rec.original_name,
+  })
 
-  // Si pas d'articles ou somme ≠ HT → une seule ligne au HT (subtotal si dispo, sinon total).
-  // On préfère subtotal pour que QB applique correctement la taxe via TaxCodeRef ;
-  // si subtotal absent, on retombe sur total (sans taxe).
-  const linesSum = lines.reduce((s, l) => s + l.Amount, 0)
-  const targetHt = subtotalAmt > 0 ? subtotalAmt : totalAmt
-  if (lines.length === 0 || Math.abs(linesSum - targetHt) > 0.01) {
-    lines = [{
-      Amount: targetHt,
-      DetailType: 'AccountBasedExpenseLineDetail',
-      AccountBasedExpenseLineDetail: lineDetail,
-      Description: rec.company || rec.original_name || 'Reçu',
-    }]
-  }
+  // Mémo QB (PrivateNote, champ « Memo ») : objet principal de la facture, pas la liste
+  // des articles. Plusieurs articles → résumé général ; un seul → sa description verbatim.
+  // Mémo personnalisé éventuel ajouté en tête.
+  const privateNote = buildReceiptMemo(rec.memo, rec.general_description, items)
 
   const txnDate = rec.receipt_date || new Date().toISOString().slice(0, 10)
 
-  // TxnTaxDetail : QB calcule normalement la taxe depuis TaxCodeRef + GlobalTaxCalculation,
-  // mais on fournit TotalTax pour figer le montant exact extrait du reçu (évite les
-  // arrondis qui décaleraient bill_total de quelques cents par rapport au reçu papier).
-  const taxDetail = (lineTaxCodeId && totalTax > 0)
-    ? { TxnTaxDetail: { TxnTaxCodeRef: { value: lineTaxCodeId }, TotalTax: totalTax }, GlobalTaxCalculation: 'TaxExcluded' }
-    : {}
+  // Codes de taxe effectifs PAR LIGNE (override d'article sinon code global du document).
+  // Dès qu'une ligne diffère du code global, on bascule sur la voie « par ligne » : QB
+  // applique le TaxCodeRef de chaque ligne et on agrège un TaxLine[] exact par taux.
+  const round2 = n => Math.round(n * 100) / 100
+  const effectiveLines = lines.map(l => ({
+    amount: l.Amount,
+    taxCodeId: l.AccountBasedExpenseLineDetail?.TaxCodeRef?.value || null,
+  }))
+  const hasPerLineCodes = effectiveLines.some(l => (l.taxCodeId || null) !== (lineTaxCodeId || null))
+
+  // TxnTaxDetail : sur un Purchase/Bill, fournir TxnTaxCodeRef + TotalTax SANS TaxLine
+  // ne fige PAS le montant — QB ignore TotalTax et recalcule la taxe depuis le % du
+  // TaxCode de chaque ligne (ex. 5% × 14,30 = 0,72 au lieu des 0,65 du reçu). Pour
+  // publier le montant EXACT saisi (champs TPS/TVQ), on construit un TaxLine[] explicite
+  // avec les montants tels quels — QB honore alors l'override et ne recalcule pas.
+  let taxDetail = {}
+  let txnTotalAmt = totalAmt
+  if (hasPerLineCodes) {
+    // ── Voie « code de taxe par ligne » (comme dans QuickBooks) ──────────────────
+    // On calcule la taxe de chaque ligne d'après les taux de SON code, puis on cumule
+    // par TaxRate. La taxe totale est dérivée des lignes (et non des champs TPS/TVQ du
+    // document, qui ne distinguent pas les codes), donc le TotalAmt du Purchase est
+    // recomposé = base HT + taxe agrégée pour réconcilier avec la vue de QB.
+    let agg = null
+    try {
+      const distinct = [...new Set(effectiveLines.map(l => l.taxCodeId).filter(Boolean))]
+      const ratesByCode = new Map()
+      for (const code of distinct) ratesByCode.set(code, await resolveTaxCodeRates(code))
+      agg = aggregateLineTaxLines(effectiveLines, ratesByCode)
+    } catch (e) {
+      console.warn(`pushSaleReceiptToQB: taux par ligne indisponibles pour ${receiptId} (${e.message}) — fallback auto-calc QB`)
+    }
+    if (agg && agg.taxLines.length) {
+      taxDetail = {
+        TxnTaxDetail: { TotalTax: agg.totalTax, TaxLine: agg.taxLines },
+        GlobalTaxCalculation: 'TaxExcluded',
+      }
+      txnTotalAmt = round2(targetHt + agg.totalTax)
+    } else {
+      // Sans taux résolus : on laisse QB recalculer la taxe depuis les TaxCodeRef de ligne.
+      taxDetail = { GlobalTaxCalculation: 'TaxExcluded' }
+    }
+  } else if (lineTaxCodeId && totalTax > 0) {
+    let taxLines = null
+    try {
+      taxLines = await buildPurchaseTaxLines(lineTaxCodeId, { tpsAmt, tvqAmt, subtotalAmt })
+    } catch (e) {
+      console.warn(`pushSaleReceiptToQB: TaxLine exactes indisponibles pour ${receiptId} (${e.message}) — fallback auto-calc QB`)
+    }
+    const txnTaxDetail = { TxnTaxCodeRef: { value: lineTaxCodeId }, TotalTax: Math.round(totalTax * 100) / 100 }
+    if (taxLines) txnTaxDetail.TaxLine = taxLines
+    taxDetail = { TxnTaxDetail: txnTaxDetail, GlobalTaxCalculation: 'TaxExcluded' }
+  }
 
   // CurrencyRef obligatoire dès que la devise diffère de la home currency. QB
   // rejette sinon un Bill avec un vendor non-CAD (« devise de l'opération doit
@@ -543,6 +805,7 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
     }
     if (params.dueDate) bill.DueDate = params.dueDate
     if (rec.receipt_number) bill.DocNumber = rec.receipt_number
+    if (privateNote) bill.PrivateNote = privateNote
     const result = await qbPost('/bill', bill)
     qbId = result.Bill.Id
   } else {
@@ -550,29 +813,59 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
       PaymentType: PAYMENT_TYPE_MAP[rec.payment_method] || 'Cash',
       AccountRef: { value: paymentAccountId },
       TxnDate: txnDate,
-      TotalAmt: totalAmt,
+      TotalAmt: txnTotalAmt,
       Line: lines,
       ...currencyFields,
       ...taxDetail,
     }
     if (vendorId) purchase.EntityRef = { value: vendorId, type: 'Vendor' }
     if (rec.receipt_number) purchase.DocNumber = rec.receipt_number
+    if (privateNote) purchase.PrivateNote = privateNote
     const result = await qbPost('/purchase', purchase)
     qbId = result.Purchase.Id
   }
 
-  db.prepare("UPDATE sale_receipts SET quickbooks_id=?, quickbooks_type=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?").run(qbId, type, receiptId)
+  // Conserver les choix de comptabilisation effectivement utilisés (résolus :
+  // params explicites ou déduction/config) pour servir de modèle aux prochains
+  // reçus du même fournisseur. paymentAccountId est null pour un Bill.
+  db.prepare(`
+    UPDATE sale_receipts
+    SET quickbooks_id=?, quickbooks_type=?,
+        expense_account_id=?, payment_account_id=?, tax_code_id=?, vendor_id=?,
+        transaction_type=?, fiscal_force_reason=?,
+        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id=?
+  `).run(qbId, type, expenseAccountId || null, paymentAccountId || null, lineTaxCodeId || null, vendorId || null, transactionType, forceReason, receiptId)
 
-  // Joindre la pièce justificative (image ou PDF du reçu) à l'entité QB créée.
+  // Joindre la/les pièce(s) justificative(s) (images ou PDF du reçu) à l'entité QB.
+  // Document multipage : on attache la page 1 (filename) + chaque page de extra_pages.
   // Une erreur d'upload ne doit pas invalider la transaction comptable déjà postée.
   try {
     const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')
-    const filePath = join(uploadsDir, rec.filename)
-    if (existsSync(filePath)) {
-      const ext = (rec.file_type || extname(rec.filename) || '').toLowerCase()
+    let extraPages = []
+    try { extraPages = JSON.parse(rec.extra_pages || '[]') } catch {}
+    const pages = [
+      { filename: rec.filename, file_type: rec.file_type, original_name: rec.original_name },
+      ...extraPages,
+    ]
+    const multi = pages.length > 1
+    for (let i = 0; i < pages.length; i++) {
+      const pg = pages[i]
+      if (!pg?.filename) continue
+      const filePath = join(uploadsDir, pg.filename)
+      if (!existsSync(filePath)) {
+        console.warn(`pushSaleReceiptToQB: fichier introuvable pour ${receiptId} (${filePath})`)
+        continue
+      }
+      const ext = (pg.file_type || extname(pg.filename) || '').toLowerCase()
       const contentType = SALE_RECEIPT_MIME[ext] || 'application/octet-stream'
       const buffer = readFileSync(filePath)
-      const baseName = (rec.original_name || rec.filename || `receipt${ext}`).replace(/[/\\]/g, '_')
+      let baseName = (pg.original_name || pg.filename || `receipt${ext}`).replace(/[/\\]/g, '_')
+      // Suffixe -pN pour distinguer les pages d'un même document dans QB.
+      if (multi) {
+        const dot = baseName.lastIndexOf('.')
+        baseName = dot > 0 ? `${baseName.slice(0, dot)}-p${i + 1}${baseName.slice(dot)}` : `${baseName}-p${i + 1}`
+      }
       await qbUploadAttachment({
         entityType: type === 'bill' ? 'Bill' : 'Purchase',
         entityId: qbId,
@@ -580,8 +873,6 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
         fileName: baseName,
         contentType,
       })
-    } else {
-      console.warn(`pushSaleReceiptToQB: fichier introuvable pour ${receiptId} (${filePath})`)
     }
   } catch (e) {
     console.error(`pushSaleReceiptToQB: attachement QB échoué pour ${receiptId}:`, e.message)
@@ -731,13 +1022,156 @@ async function resolveAccountByAcctNum(acctNum) {
   return cache.byAcctNum.get(String(acctNum)) || null
 }
 
+// Construit le TxnTaxDetail.TaxLine[] avec des montants de taxe EXACTS pour un
+// Purchase/Bill (override). Sans TaxLine explicite, QB ignore TotalTax et recalcule
+// la taxe depuis le % du TaxCode — ce qui décale le montant du reçu (ex. 0,72 au lieu
+// de 0,65). On lit les TaxRate d'ACHAT rattachés au TaxCode choisi, puis on y ventile
+// les montants tps/tvq tels que saisis. Retourne null si on ne peut pas mapper (le
+// caller retombe alors sur l'auto-calc QB).
+// Résout les taux d'achat d'un code de taxe QB → [{id, percent}]. Un code à 0 % (ex.
+// Hors champ, Détaxé, Exonéré) renvoie [] (aucun TaxRate d'achat). NE PAS avaler un
+// échec d'appel : si le fetch tombe (429/503/timeout) percent resterait null et la
+// ventilation par % zapperait la taxe en silence — on laisse l'erreur remonter pour
+// que le caller retombe sur l'auto-calc QB plutôt que de publier une taxe muette à 0.
+async function resolveTaxCodeRates(taxCodeId) {
+  const tcRes = await qbGet(`/taxcode/${taxCodeId}`)
+  const details = tcRes?.TaxCode?.PurchaseTaxRateList?.TaxRateDetail || []
+  const rates = []
+  for (const d of details) {
+    const rid = d.TaxRateRef?.value
+    if (!rid) continue
+    const rr = await qbGet(`/taxrate/${rid}`)
+    const v = Number(rr?.TaxRate?.RateValue)
+    rates.push({ id: rid, percent: Number.isFinite(v) ? v : null })
+  }
+  return rates
+}
+
+// Agrège les TaxLine d'une transaction à codes de taxe PAR LIGNE. Pour chaque ligne
+// (montant HT + son code de taxe), applique les taux du code et cumule par TaxRate.
+// Retourne { taxLines, totalTax } avec NetAmountTaxable = somme des HT taxés à ce taux.
+// ratesByCode : Map(taxCodeId -> [{id, percent}]). Un code sans taux (Hors champ,
+// Détaxé, Exonéré) ne génère aucune taxe — sa ligne reste comptabilisée à 0 $ de taxe.
+export function aggregateLineTaxLines(lines, ratesByCode) {
+  const round2 = n => Math.round(n * 100) / 100
+  const byRate = new Map() // rateId -> { percent, net, tax }
+  for (const ln of (Array.isArray(lines) ? lines : [])) {
+    const amount = Number(ln?.amount) || 0
+    if (amount <= 0) continue
+    const rates = ratesByCode.get(ln?.taxCodeId) || []
+    for (const r of rates) {
+      if (r?.percent == null) continue
+      const agg = byRate.get(r.id) || { percent: r.percent, net: 0, tax: 0 }
+      agg.net = round2(agg.net + amount)
+      agg.tax = round2(agg.tax + amount * r.percent / 100)
+      byRate.set(r.id, agg)
+    }
+  }
+  const taxLines = []
+  let totalTax = 0
+  for (const [id, agg] of byRate) {
+    if (agg.tax <= 0) continue
+    taxLines.push({
+      Amount: agg.tax,
+      DetailType: 'TaxLineDetail',
+      TaxLineDetail: {
+        TaxRateRef: { value: String(id) },
+        PercentBased: true,
+        ...(agg.percent != null ? { TaxPercent: agg.percent } : {}),
+        NetAmountTaxable: agg.net,
+      },
+    })
+    totalTax = round2(totalTax + agg.tax)
+  }
+  return { taxLines, totalTax }
+}
+
+async function buildPurchaseTaxLines(taxCodeId, { tpsAmt = 0, tvqAmt = 0, subtotalAmt = 0 }) {
+  // % de chaque TaxRate pour distinguer TPS (~5%) de TVQ (~9,975%) sur un code groupé.
+  const rates = await resolveTaxCodeRates(taxCodeId)
+  if (!rates.length) return null
+
+  const round2 = n => Math.round(n * 100) / 100
+  const net = round2(subtotalAmt)
+  const mkLine = (r, amt) => ({
+    Amount: round2(amt),
+    DetailType: 'TaxLineDetail',
+    TaxLineDetail: {
+      TaxRateRef: { value: String(r.id) },
+      PercentBased: true,
+      ...(r.percent != null ? { TaxPercent: r.percent } : {}),
+      NetAmountTaxable: net,
+    },
+  })
+
+  const lines = []
+  if (rates.length === 1) {
+    // Code à un seul taux (ex. TPS seul) → tout le montant de taxe va sur ce taux.
+    const amt = round2(tpsAmt + tvqAmt)
+    if (amt > 0) lines.push(mkLine(rates[0], amt))
+  } else {
+    // Code groupé (TPS+TVQ) → ventiler par % : ≈5% = TPS, ≈9,975% = TVQ.
+    for (const r of rates) {
+      let amt = 0
+      if (r.percent != null && Math.abs(r.percent - 5) < 1) amt = tpsAmt
+      else if (r.percent != null && Math.abs(r.percent - 9.975) < 1.5) amt = tvqAmt
+      if (round2(amt) > 0) lines.push(mkLine(r, amt))
+    }
+  }
+  return lines.length ? lines : null
+}
+
+// Erreur métier « code de taxe légitimement absent » — à distinguer d'un échec
+// réseau/API transitoire de QB. Un appelant peut traiter taxCodeNotFound comme un
+// null métier (poser la JE sans TaxCodeRef), mais doit PROPAGER toute autre erreur
+// (blip réseau, 401/500 QB) pour faire échouer la pose et la rejouer plus tard —
+// sinon la taxe disparaît silencieusement du revenu. Voir isTaxCodeNotFoundError.
+class TaxCodeNotFoundError extends Error {
+  constructor(name) {
+    super(`TaxCode QB introuvable: "${name}"`)
+    this.name = 'TaxCodeNotFoundError'
+    this.taxCodeNotFound = true
+    this.taxCodeName = name
+  }
+}
+
+// Vrai uniquement pour l'absence métier d'un code de taxe (réponse QB valide mais
+// vide). Toute autre erreur (qbGet qui throw : réseau, timeout, 4xx/5xx) renvoie
+// false et doit donc être propagée par l'appelant.
+export function isTaxCodeNotFoundError(e) {
+  return !!(e && e.taxCodeNotFound === true)
+}
+
 async function resolveTaxCodeByName(name) {
   const safe = name.replace(/'/g, "\\'")
   const q = new URLSearchParams({ query: `SELECT Id, Name FROM TaxCode WHERE Name = '${safe}' MAXRESULTS 1` })
   const r = await qbGet(`/query?${q}`)
   const tc = r.QueryResponse?.TaxCode?.[0]
-  if (!tc) throw new Error(`TaxCode QB introuvable: "${name}"`)
+  if (!tc) throw new TaxCodeNotFoundError(name)
   return tc.Id
+}
+
+// Résout en lot des NOMS de code de taxe QB → Map(nom -> Id|null), en une seule requête.
+// Sert à pré-remplir les codes de taxe par ligne calculés à l'extraction (transport
+// multi-régions). Lève si QB est injoignable — l'appelant retombe alors sur des codes
+// vides (l'opérateur choisit à la main). Un nom absent du fichier QB → valeur null.
+export async function resolveTaxCodeIdsByName(names) {
+  const unique = [...new Set((Array.isArray(names) ? names : []).filter(Boolean))]
+  if (!unique.length) return new Map()
+  const q = new URLSearchParams({ query: 'SELECT Id, Name FROM TaxCode WHERE Active = true MAXRESULTS 1000' })
+  const r = await qbGet(`/query?${q}`)
+  const byName = new Map((r.QueryResponse?.TaxCode || []).map(c => [c.Name, c.Id]))
+  return new Map(unique.map(n => [n, byName.get(n) || null]))
+}
+
+// Nom d'un code de taxe QB depuis son Id (pour la vérification du statut fiscal).
+// Retourne null si l'Id est vide ou introuvable.
+async function resolveTaxCodeNameById(id) {
+  if (!id) return null
+  const safe = String(id).replace(/'/g, "\\'")
+  const q = new URLSearchParams({ query: `SELECT Id, Name FROM TaxCode WHERE Id = '${safe}' MAXRESULTS 1` })
+  const r = await qbGet(`/query?${q}`)
+  return r.QueryResponse?.TaxCode?.[0]?.Name || null
 }
 
 // Résout le QB Customer ID pour une facture, en choisissant le Customer dans la
@@ -956,7 +1390,15 @@ async function resolveTaxCodeForInvoice(invoice) {
   const totalTax = taxes.reduce((s, t) => s + t.amount, 0)
 
   if (totalTax === 0) {
-    return resolveTaxCodeByName('Détaxé').catch(() => null)
+    try {
+      return await resolveTaxCodeByName('Détaxé')
+    } catch (e) {
+      if (isTaxCodeNotFoundError(e)) return null
+      // Échec réseau/API transitoire : ne pas confondre avec un null métier —
+      // propager pour faire échouer la pose et la rejouer (sinon JE sans TaxCode).
+      console.error('resolveTaxCodeForInvoice: échec transitoire résolution "Détaxé" — pose annulée pour retry:', e.message)
+      throw e
+    }
   }
 
   // Récupérer les juridictions Stripe pour distinguer 15% NB/PE/NL et 14% NS.
@@ -986,7 +1428,15 @@ async function resolveTaxCodeForInvoice(invoice) {
   else if (has9975) codeName = 'TVQ QC - 9,975'
   else codeName = 'Détaxé'  // fallback (devrait être rare maintenant)
 
-  try { return await resolveTaxCodeByName(codeName) } catch { return null }
+  try {
+    return await resolveTaxCodeByName(codeName)
+  } catch (e) {
+    if (isTaxCodeNotFoundError(e)) return null  // code absent en QB → null métier
+    // Échec réseau/API transitoire : propager pour que l'appelant échoue et rejoue,
+    // plutôt que poser le Deposit/JE sans TaxCodeRef (taxe non ventilée, sans trace).
+    console.error(`resolveTaxCodeForInvoice: échec transitoire résolution "${codeName}" — pose annulée pour retry:`, e.message)
+    throw e
+  }
 }
 
 async function resolveQBStripeAccounts() {
@@ -1206,12 +1656,19 @@ export async function buildDepositFromPayout(payoutStripeId) {
       let factureKind = null
       if (bt.stripe_invoice_id) {
         factureForBt = db.prepare(
-          'SELECT id, document_number, kind, revenue_recognized_at, balance_due FROM factures WHERE invoice_id=? LIMIT 1'
+          'SELECT id, document_number, kind, revenue_recognized_at, balance_due, deferred_revenue_at FROM factures WHERE invoice_id=? LIMIT 1'
         ).get(bt.stripe_invoice_id)
         if (factureForBt) {
           factureKind = factureForBt.kind
-          if (factureForBt.revenue_recognized_at && (factureForBt.balance_due || 0) > 0) {
-            isAR = true  // constatée + AR ouvert
+          if (factureForBt.deferred_revenue_at) {
+            // Passif 23900 « Revenus perçus d'avance » déjà matérialisé sur la facture —
+            // soit par un Deposit antérieur, soit par postRevenueRecognitionJE quand le
+            // constat à l'expédition a précédé ce payout (commande payée constatée avant
+            // l'arrivée du payout Stripe). La contrepartie de cette charge/refund est donc
+            // 23900, jamais les comptes clients. Doit primer sur le test isAR ci-dessous.
+            isDeferred = true
+          } else if (factureForBt.revenue_recognized_at && (factureForBt.balance_due || 0) > 0) {
+            isAR = true  // constatée + AR ouvert (vente à crédit, non prépayée par Stripe)
           } else if (factureKind !== 'subscription' && !factureHasLinkedShipment(factureForBt.id)) {
             isDeferred = true
           }
@@ -1268,8 +1725,20 @@ export async function buildDepositFromPayout(payoutStripeId) {
         detail.TaxApplicableOn = 'Sales'
       }
 
-      // Montant HT (= bt.amount - taxes ; bt.invoice_tax_* déjà en cents via Stripe)
-      const invoiceTax = (bt.invoice_tax_gst || 0) + (bt.invoice_tax_qst || 0)
+      // Montant HT (= bt.amount - taxes). bt.invoice_tax_gst/qst sont la ventilation
+      // produite par classifyTaxRate. Filet défensif : si la ventilation est nulle mais
+      // que tax_details porte un montant réel (tax_rate non reconnu en amont — ex. une
+      // TVH provinciale au libellé exotique), on retombe sur la somme des tax_details
+      // (en cents) pour soustraire quand même la taxe du HT. Sinon QB recalcule la taxe
+      // via TaxCodeRef par-dessus un brut non réduit → grosse ligne « arrondi taxes ».
+      let invoiceTax = (bt.invoice_tax_gst || 0) + (bt.invoice_tax_qst || 0)
+      if (invoiceTax === 0 && bt.tax_details && bt.tax_details !== '[]') {
+        try {
+          const td = JSON.parse(bt.tax_details)
+          const sumCents = td.reduce((s, t) => s + (Number(t.amount) || 0), 0)
+          if (sumCents > 0) invoiceTax = Math.round(sumCents) / 100
+        } catch {}
+      }
       const netRevenueAmount = bt.amount - invoiceTax
 
       const lineDescription = isDeferred ? `${baseLabel} · revenu reçu d'avance`
@@ -1546,6 +2015,29 @@ export async function pushDepositFromPayout(payoutStripeId) {
   }
   const delta = Math.round((expectedTotal - persistedTotal) * 100) / 100
   console.log(`[push-deposit] payout=${payoutStripeId} expected=${expectedTotal} persisted=${persistedTotal} delta=${delta}`)
+
+  // Garde-fou : l'« arrondi de taxes » ne doit éponger que du bruit d'arrondi (quelques
+  // centimes). Un delta > 5 $ signale une vraie taxe mal capturée en amont (charge dont
+  // la taxe n'a pas été soustraite du HT, fee non buckété…) qui se déverserait en bloc
+  // dans la ligne d'ajustement. On refuse de publier : on supprime le dépôt qu'on vient
+  // de créer (non réconcilié → supprimable) et on lève une erreur. qb_deposit_id n'est
+  // pas encore écrit en DB, donc le payout reste republiable après correction.
+  const TAX_ROUNDING_MAX = 5
+  if (Math.abs(delta) > TAX_ROUNDING_MAX) {
+    let cleanup = ''
+    try {
+      await qbPost('/deposit?operation=delete', { Id: qbId, SyncToken: syncToken })
+    } catch (e) {
+      cleanup = ` ⚠️ Le dépôt ${qbId} a été créé dans QuickBooks mais n'a PAS pu être supprimé (${e.message}) — le supprimer manuellement avant de réessayer.`
+    }
+    throw new Error(
+      `Dépôt non publié : l'ajustement d'arrondi de taxes serait de ${delta.toFixed(2)} $ ` +
+      `(plafond ${TAX_ROUNDING_MAX} $). Cela indique une taxe mal ventilée sur une charge ` +
+      `du payout — vérifier/corriger la classification de taxe (tax_rate Stripe → code QB) ` +
+      `avant de republier ce payout.${cleanup}`
+    )
+  }
+
   if (Math.abs(delta) >= 0.01) {
     const accounts = await resolveQBStripeAccounts()
     const adjustmentLine = {
@@ -1579,7 +2071,7 @@ export async function pushDepositFromPayout(payoutStripeId) {
       created = updated.Deposit
       console.log(`[push-deposit] payout=${payoutStripeId} adjustment ${delta.toFixed(2)} appliqué — nouveau TotalAmt=${created.TotalAmt}`)
     } catch (e) {
-      warnings.push(`Ajustement d'arrondi de ${delta.toFixed(2)} non appliqué — Deposit reste à ${totalAmt.toFixed(2)} (vs payout ${expectedTotal.toFixed(2)}): ${e.message}`)
+      warnings.push(`Ajustement d'arrondi de ${delta.toFixed(2)} non appliqué — Deposit reste à ${persistedTotal.toFixed(2)} (vs payout ${expectedTotal.toFixed(2)}): ${e.message}`)
     }
   }
 
@@ -1825,7 +2317,7 @@ export async function postRevenueRecognitionJE(factureId, options = {}) {
   if (!f) throw new Error('Facture introuvable')
   if (f.kind === 'subscription') throw new Error('Constat à l\'expédition non applicable aux abonnements')
   if (f.status === 'Void') throw new Error(`Facture #${f.document_number || f.id} annulée (status=Void) — constatation bloquée`)
-  assertFactureEligibleForQbWrite(f)
+  assertFactureEligibleForQbWrite(f, { bypassCutoff: options.bypassCutoff === true })
   // bypassShipmentCheck=true quand on déclenche depuis le toggle « Envoyée »
   // forcé manuellement (facture sans matériel physique).
   if (!options.bypassShipmentCheck && !factureHasLinkedShipment(f.id)) {
@@ -1849,20 +2341,35 @@ export async function postRevenueRecognitionJE(factureId, options = {}) {
   }
 
   // Tout ce qui suit le claim DOIT pouvoir rollback (UPDATE revenue_recognized_at=NULL)
-  // si une exception remonte avant que le je_id soit posé en DB.
+  // si une exception remonte AVANT que le POST QB ait eu lieu. Dès qu'un JE existe en
+  // QB, le rollback est interdit : on ne doit jamais remettre la facture éligible alors
+  // qu'un JE a déjà été posé, sous peine de double constatation au prochain run.
+  let postedJeId = null
   try {
     const accounts = await resolveQBStripeAccounts()
 
-    // Choix du compte de débit selon l'état d'encaissement.
-    const isDeferred = !!f.deferred_revenue_at
+    // Choix du compte de débit selon l'état d'encaissement RÉEL de la facture.
+    //
+    //   - Commande payée (status 'Payé')  → 23900 « Revenus perçus d'avance ».
+    //     Le client a déjà réglé (via Stripe) : la contrepartie du revenu constaté est
+    //     toujours le passif déféré, jamais les comptes clients — même si le payout
+    //     Stripe n'a pas encore été déposé en QB (donc deferred_revenue_at encore NULL
+    //     au moment du constat). C'est le cas du constat-first : l'expédition précède
+    //     l'arrivée du payout. Voir modèle comptable Stripe ↔ QB.
+    //   - Commande non payée (À payer / En retard) → comptes clients (12000/12100) :
+    //     vente à crédit, le paiement (manuel) viendra solder l'AR.
+    //
+    // deferred_revenue_at force aussi le pivot 23900 (passif déjà matérialisé par le
+    // Deposit du payout, cas normal où le payout précède l'expédition).
+    const useDeferred = !!f.deferred_revenue_at || (f.kind === 'order' && f.status === 'Payé')
     let amount, currency
-    if (isDeferred) {
+    if (f.deferred_revenue_at) {
       if (!f.deferred_revenue_amount_native) throw new Error('Montant déféré inconnu — relance le push du payout')
       amount = Math.round(f.deferred_revenue_amount_native * 100) / 100
       currency = f.deferred_revenue_currency || 'CAD'
     } else {
-      // Pas encaissé → on prend le HT de la facture (amount_before_tax_cad porte le subtotal
-      // dans la devise native, malgré son nom historique). Devise = facture.currency.
+      // Montant HT de la facture (amount_before_tax_cad porte le subtotal dans la devise
+      // native, malgré son nom historique). Devise = facture.currency.
       if (!f.amount_before_tax_cad) throw new Error('Montant HT inconnu sur la facture')
       amount = Math.round(f.amount_before_tax_cad * 100) / 100
       currency = f.currency || 'CAD'
@@ -1875,10 +2382,10 @@ export async function postRevenueRecognitionJE(factureId, options = {}) {
       if (!exchangeRate) throw new Error(`Taux USD→CAD indisponible pour ${today}`)
     }
 
-    const debitAccountId = isDeferred
+    const debitAccountId = useDeferred
       ? accounts.revenue_deferred
       : (currency === 'USD' ? accounts.accounts_receivable_usd : accounts.accounts_receivable_cad)
-    const debitLabel = isDeferred ? 'Revenus perçus d\'avance' : `Comptes clients ${currency}`
+    const debitLabel = useDeferred ? 'Revenus perçus d\'avance' : `Comptes clients ${currency}`
 
     // Customer tracking — Entity sur les deux lignes pour rapports par client.
     // Pas de TaxCodeRef ici : la taxe a déjà été constatée à l'encaissement (postPaymentDeposit).
@@ -1916,21 +2423,60 @@ export async function postRevenueRecognitionJE(factureId, options = {}) {
     const result = await qbPost('/journalentry', je)
     const jeId = result.JournalEntry?.Id
     if (!jeId) throw new Error('QB n\'a pas retourné d\'Id pour le JournalEntry')
+    postedJeId = String(jeId)
 
-    // Le claim est déjà posé (revenue_recognized_at). On finalise avec le je_id.
+    // Le claim est déjà posé (revenue_recognized_at). On persiste le je_id IMMÉDIATEMENT
+    // après le POST, AVANT tout update dépendant (deferred), pour fermer la fenêtre
+    // d'orphelin : si un update suivant plante, le lien facture↔JE est déjà en DB.
     db.prepare(`
       UPDATE factures
       SET revenue_recognized_je_id = ?,
           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = ?
-    `).run(String(jeId), factureId)
+    `).run(postedJeId, factureId)
+
+    // Constat-first sur commande payée : on vient de débiter 23900 alors que le Deposit
+    // du payout Stripe n'est pas encore poussé (deferred_revenue_at était NULL). On
+    // matérialise le passif 23900 sur la facture pour que buildDepositFromPayout crédite
+    // 23900 (et non les comptes clients) quand il déposera le payout — sinon le passif
+    // posé ici resterait ouvert et les livres ne balanceraient pas. Idempotent.
+    if (useDeferred && !f.deferred_revenue_at) {
+      db.prepare(`
+        UPDATE factures
+        SET deferred_revenue_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+            deferred_revenue_amount_native = ?,
+            deferred_revenue_amount_cad = ?,
+            deferred_revenue_currency = ?,
+            deferred_revenue_qb_ref = ?,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = ? AND deferred_revenue_at IS NULL
+      `).run(
+        amount,
+        Math.round(amount * exchangeRate * 100) / 100,
+        currency,
+        `recognition:${jeId}`,
+        factureId,
+      )
+    }
 
     return { qb_journal_entry_id: String(jeId), amount, currency, debit_account: debitLabel }
   } catch (err) {
-    // Rollback du claim — la facture redevient éligible. Note : si POST QB a réussi
-    // mais que c'est l'UPDATE final qui a planté, on rollback quand même et on
-    // laisse derrière un JE orphelin en QB. Cas rare ; le diff sera détecté au
-    // prochain audit (QB JE sans revenue_recognized_je_id correspondant).
+    if (postedJeId) {
+      // Le JE existe déjà en QB : interdit de rollback le claim (sinon double constat
+      // au prochain run). On (re)tente en best-effort la persistance du je_id pour
+      // garantir le lien facture↔JE — si l'UPDATE post-POST avait planté, ce filet
+      // referme la fenêtre d'orphelin — puis on remonte l'erreur d'origine.
+      try {
+        db.prepare(`
+          UPDATE factures
+          SET revenue_recognized_je_id = ?,
+              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          WHERE id = ? AND revenue_recognized_je_id IS NULL
+        `).run(postedJeId, factureId)
+      } catch { /* best-effort : le claim reste posé, le JE est lié ou le sera à l'audit */ }
+      throw err
+    }
+    // Aucun POST QB n'a eu lieu — rollback du claim, la facture redevient éligible.
     db.prepare(`
       UPDATE factures
       SET revenue_recognized_at = NULL,
@@ -2106,13 +2652,11 @@ async function _resolveTaxCodeForFacturePayment(p) {
   // Le SELECT dans processRefund ne retourne pas stripe_invoice_id ; on le fetch.
   const stripeInvoiceId = p.stripe_invoice_id || db.prepare('SELECT invoice_id FROM factures WHERE id = ?').get(p.facture_id)?.invoice_id
   if (!stripeInvoiceId) return null
-  try {
-    const inv = await getStripeClient().invoices.retrieve(stripeInvoiceId)
-    return await resolveTaxCodeForInvoice(inv)
-  } catch (e) {
-    console.error(`Tax code non résolu pour facture ${p.facture_id}:`, e.message)
-    return null
-  }
+  const inv = await getStripeClient().invoices.retrieve(stripeInvoiceId)
+  // resolveTaxCodeForInvoice renvoie déjà null pour un code absent et propage les
+  // erreurs transitoires (réseau/API QB ou Stripe). On laisse donc remonter : poser
+  // un refund sans TaxCodeRef sur un blip annulerait silencieusement la taxe.
+  return await resolveTaxCodeForInvoice(inv)
 }
 
 async function _postRefundJE({ paymentId, amount, currency, exchangeRate, txnDate, debitAccountId, debitLabel, creditAccountId, creditLabel, docNumber, factureId, taxCodeId, customerId }) {
@@ -2328,6 +2872,170 @@ export async function reconcileFactureRevenueRecognition(factureId) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Audit read-only de la constatation des revenus.
+//
+// `reconcileFactureRevenueRecognition` (ci-dessus) pose l'état de constatation
+// dans des colonnes locales (revenue_recognized_at / revenue_recognized_je_id /
+// deferred_revenue_*). En production, ces colonnes peuvent se désynchroniser :
+// une JE supprimée à la main dans QB, un import Airtable partiel, un payout
+// poussé sans deferred, etc. La route `/factures/:id/qb-state` ne vérifie qu'une
+// facture à la fois et fait des appels QB.
+//
+// Cette fonction agrège, à partir des SEULES colonnes locales (aucun appel QB,
+// donc instantané et exécutable en continu), toutes les factures dont l'état de
+// constatation est « orphelin » — une combinaison de colonnes incohérente.
+//
+// Catégories (une facture peut en cumuler plusieurs) :
+//   je_without_timestamp          — revenue_recognized_je_id posé mais revenue_recognized_at NULL
+//   deferred_ref_without_date     — deferred_revenue_qb_ref posé mais deferred_revenue_at NULL
+//   deferred_date_without_ref     — deferred_revenue_at posé mais deferred_revenue_qb_ref NULL
+//   deferred_without_amount       — deferred_revenue_at posé mais deferred_revenue_amount_cad NULL
+//   deferred_not_released         — passif 23900 posé + vente constatée, mais sans JE de libération
+//   recognized_on_void            — facture Void mais revenue_recognized_at posé
+//   subscription_with_recognition — abonnement avec colonnes de constatation/différé posées
+//
+// NB : le cas revenue_recognized_at posé + je_id NULL + deferred_revenue_at NULL
+// n'est PAS une anomalie — c'est la « constatation directe par la ligne 40000
+// d'un Deposit Stripe » (cf. buildEvents dans FactureAccountingSection.jsx).
+export const RECONCILIATION_ISSUE_DEFS = {
+  je_without_timestamp: {
+    label: 'JE liée sans date de constatation',
+    severity: 'error',
+    hint: 'revenue_recognized_je_id pointe une Journal Entry mais revenue_recognized_at est NULL — la facture n\'est pas comptée comme constatée.',
+  },
+  deferred_ref_without_date: {
+    label: 'Référence QB de différé sans date',
+    severity: 'error',
+    hint: 'deferred_revenue_qb_ref pointe une transaction QB mais deferred_revenue_at est NULL.',
+  },
+  deferred_date_without_ref: {
+    label: 'Différé posé sans référence QB',
+    severity: 'warning',
+    hint: 'deferred_revenue_at est posé mais aucune deferred_revenue_qb_ref — le passif 23900 n\'est pas traçable jusqu\'à QB.',
+  },
+  deferred_without_amount: {
+    label: 'Différé sans montant',
+    severity: 'warning',
+    hint: 'deferred_revenue_at est posé mais deferred_revenue_amount_cad est NULL.',
+  },
+  deferred_not_released: {
+    label: 'Passif 23900 jamais libéré',
+    severity: 'error',
+    hint: 'Vente constatée alors qu\'un revenu perçu d\'avance est posé, mais sans JE de libération (revenue_recognized_je_id NULL) — le passif 23900 reste ouvert dans QB.',
+  },
+  recognized_on_void: {
+    label: 'Revenu constaté sur facture annulée',
+    severity: 'error',
+    hint: 'La facture est au statut Void mais revenue_recognized_at est posé.',
+  },
+  subscription_with_recognition: {
+    label: 'Abonnement avec constatation manuelle',
+    severity: 'warning',
+    hint: 'Les abonnements sont constatés via leur propre flux Stripe — ces colonnes ne devraient pas être posées manuellement.',
+  },
+}
+
+const RECONCILIATION_SEVERITY_RANK = { error: 2, warning: 1, ok: 0 }
+
+function detectFactureReconciliationIssues(f) {
+  const issues = []
+  const has = v => v != null && v !== ''
+  const isVoid = String(f.status || '').toLowerCase() === 'void'
+  const isSub = f.kind === 'subscription'
+
+  if (has(f.revenue_recognized_je_id) && !has(f.revenue_recognized_at)) {
+    issues.push('je_without_timestamp')
+  }
+  if (has(f.deferred_revenue_qb_ref) && !has(f.deferred_revenue_at)) {
+    issues.push('deferred_ref_without_date')
+  }
+  if (has(f.deferred_revenue_at) && !has(f.deferred_revenue_qb_ref)) {
+    issues.push('deferred_date_without_ref')
+  }
+  if (has(f.deferred_revenue_at) && f.deferred_revenue_amount_cad == null) {
+    issues.push('deferred_without_amount')
+  }
+  if (has(f.deferred_revenue_at) && has(f.revenue_recognized_at) && !has(f.revenue_recognized_je_id)) {
+    issues.push('deferred_not_released')
+  }
+  if (isVoid && has(f.revenue_recognized_at)) {
+    issues.push('recognized_on_void')
+  }
+  if (isSub && (has(f.revenue_recognized_at) || has(f.deferred_revenue_at))) {
+    issues.push('subscription_with_recognition')
+  }
+  return issues
+}
+
+export function auditFactureReconciliation() {
+  const rows = db.prepare(`
+    SELECT id, document_number, document_date, status, kind, currency,
+           amount_before_tax_cad, total_amount, balance_due,
+           revenue_recognized_at, revenue_recognized_je_id,
+           deferred_revenue_at, deferred_revenue_qb_ref,
+           deferred_revenue_amount_cad, deferred_revenue_currency
+    FROM factures
+  `).all()
+
+  const byCode = Object.fromEntries(Object.keys(RECONCILIATION_ISSUE_DEFS).map(c => [c, 0]))
+  const bySeverity = { error: 0, warning: 0 }
+  const flagged = []
+  let recognizedCount = 0
+  let deferredOpenCount = 0
+
+  for (const f of rows) {
+    if (f.revenue_recognized_at) recognizedCount++
+    if (f.deferred_revenue_at && !f.revenue_recognized_at) deferredOpenCount++
+
+    const issues = detectFactureReconciliationIssues(f)
+    if (issues.length === 0) continue
+    for (const code of issues) byCode[code]++
+    const severity = issues.some(c => RECONCILIATION_ISSUE_DEFS[c].severity === 'error') ? 'error' : 'warning'
+    bySeverity[severity]++
+    flagged.push({
+      id: f.id,
+      document_number: f.document_number,
+      document_date: f.document_date,
+      status: f.status,
+      kind: f.kind,
+      currency: f.currency || 'CAD',
+      amount_before_tax_cad: f.amount_before_tax_cad,
+      total_amount: f.total_amount,
+      balance_due: f.balance_due,
+      revenue_recognized_at: f.revenue_recognized_at,
+      revenue_recognized_je_id: f.revenue_recognized_je_id,
+      deferred_revenue_at: f.deferred_revenue_at,
+      deferred_revenue_qb_ref: f.deferred_revenue_qb_ref,
+      severity,
+      issues,
+    })
+  }
+
+  // Tri : erreurs d'abord, puis par date de document décroissante (plus récent
+  // en haut — c'est ce qu'un opérateur veut corriger en priorité).
+  flagged.sort((a, b) => {
+    const s = RECONCILIATION_SEVERITY_RANK[b.severity] - RECONCILIATION_SEVERITY_RANK[a.severity]
+    if (s !== 0) return s
+    return String(b.document_date || '').localeCompare(String(a.document_date || ''))
+  })
+
+  return {
+    generated_at: new Date().toISOString(),
+    defs: RECONCILIATION_ISSUE_DEFS,
+    summary: {
+      total_factures: rows.length,
+      recognized: recognizedCount,
+      deferred_open: deferredOpenCount,
+      flagged: flagged.length,
+      errors: bySeverity.error,
+      warnings: bySeverity.warning,
+      by_code: byCode,
+    },
+    factures: flagged,
+  }
+}
+
 // Réconcilie toutes les factures kind='order' liées à une commande, soit
 // directement (factures.order_id), soit via le projet (factures.project_id =
 // orders.project_id). Élargit le scope vs. ancien recognizeRevenueForOrder
@@ -2355,3 +3063,64 @@ export async function reconcileFacturesForOrder(orderId) {
 
 // Alias rétrocompat — préfère reconcileFacturesForOrder dans le nouveau code.
 export const recognizeRevenueForOrder = reconcileFacturesForOrder
+
+// Orchestre le job hebdomadaire « Sync + push QB des Stripe payouts » (lundi midi) :
+//   1. syncStripePayouts({ fullHistory:false })  — pull les nouveaux payouts depuis Stripe
+//   2. syncAllPayoutsBalanceTransactions({ onlyMissing:true }) — sync les BT manquantes
+//   3. pour chaque payout réglé (status='paid') pas encore poussé en QB → buildDepositFromPayout
+//      puis pushDepositFromPayout.
+//
+// GARDE ANTI-ERREUR : avant chaque push, on construit le Deposit (dry build) et on
+// inspecte `warnings`. Un payout dont le build produit le moindre warning (client QB
+// non résolu, taxe sur frais non imputée, TaxCode manquant…) n'est PAS poussé
+// automatiquement — il est laissé en attente de revue manuelle. Idem pour les payouts
+// non réglés ou sans balance_transaction synchronisée : on ne pousse jamais à l'aveugle.
+// dryRun=true s'arrête après le build (aucun Deposit créé en QB) — utilisé pour la preview.
+export async function syncAndPushStripePayouts({ dryRun = false } = {}) {
+  if (!isStripeConfigured()) throw new Error('Stripe non configuré')
+
+  // 1+2. Sync incrémentale des payouts puis des balance_transactions manquantes.
+  const payoutSync = await syncStripePayouts({ fullHistory: false })
+  const btSync = await syncAllPayoutsBalanceTransactions({ onlyMissing: true })
+
+  // 3. Candidats : réglés, pas encore poussés, et ayant au moins une BT synchronisée.
+  const candidates = db.prepare(`
+    SELECT sp.stripe_id, sp.amount, sp.currency
+    FROM stripe_payouts sp
+    WHERE sp.qb_deposit_id IS NULL
+      AND sp.status = 'paid'
+      AND EXISTS (SELECT 1 FROM stripe_balance_transactions bt WHERE bt.payout_stripe_id = sp.stripe_id)
+    ORDER BY sp.created_date
+  `).all()
+
+  const pushed = []
+  const skipped = []
+  const errors = []
+
+  for (const p of candidates) {
+    try {
+      const { warnings } = await buildDepositFromPayout(p.stripe_id)
+      if (warnings && warnings.length) {
+        // Garde : warning détecté → on ne pousse pas, on laisse pour revue manuelle.
+        skipped.push({ payout_id: p.stripe_id, amount: p.amount, currency: p.currency, reason: warnings.join(' ; ') })
+        continue
+      }
+      if (dryRun) {
+        pushed.push({ payout_id: p.stripe_id, amount: p.amount, currency: p.currency, dryRun: true })
+        continue
+      }
+      const r = await pushDepositFromPayout(p.stripe_id)
+      pushed.push({ payout_id: p.stripe_id, amount: p.amount, currency: p.currency, qb_deposit_id: r.qb_deposit_id })
+    } catch (e) {
+      errors.push({ payout_id: p.stripe_id, error: e.message })
+    }
+  }
+
+  const summary =
+    `Sync payouts: +${payoutSync.created} créé(s)/${payoutSync.updated} MAJ · ` +
+    `BT: +${btSync.created} créé(s) (${btSync.errors.length} err) · ` +
+    `${candidates.length} candidat(s) → ${pushed.length} dépôt(s) ${dryRun ? '(dry-run) ' : ''}poussé(s) · ` +
+    `${skipped.length} bloqué(s) par garde · ${errors.length} erreur(s)`
+
+  return { summary, dryRun, payoutSync, btSync, candidates: candidates.length, pushed, skipped, errors }
+}

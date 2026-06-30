@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Truck, Package, FileText, X, Printer,
   GripVertical, Copy, Check, Trash2, ScanBarcode, Boxes,
@@ -7,12 +7,15 @@ import {
 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
+import Attachments from '../components/Attachments.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
 
@@ -48,14 +51,30 @@ const FULFILLMENT_STATUS = {
 
 // ── Barcode scanner hook ───────────────────────────────────────────────────────
 
-function useBarcodeScanner(onScan, { minLength = 3, maxDelay = 50 } = {}) {
+// `maxDelay` = intervalle MAX toléré entre deux frappes d'un même code.
+// Un pistolet émet ses caractères en rafale puis un Enter terminateur ; on
+// repart à zéro seulement après une vraie pause (frappe orpheline restée en
+// buffer). 50 ms était trop serré : un scanner Bluetooth ou avec gigue USB/OS
+// envoie souvent à 60–100 ms/caractère, avec des pointes occasionnelles bien
+// plus hautes. Dès qu'UN seul intervalle dépassait 50 ms, le buffer était vidé
+// et il ne restait qu'un caractère → onScan jamais appelé. 500 ms absorbe la
+// gigue d'un scanner lent ; l'Enter vide le buffer de toute façon, donc deux
+// scans successifs ne fusionnent pas.
+function useBarcodeScanner(onScan, { minLength = 3, maxDelay = 500 } = {}) {
   const bufferRef = useRef('')
   const lastTimeRef = useRef(0)
 
   useEffect(() => {
+    // Signale qu'un scanner est actif sur cette page. `Layout` s'en sert pour
+    // désactiver ses raccourcis clavier à lettre unique (d/t/b/p/c) : sinon le
+    // 1er caractère d'un code (ex. « T » de TH5267 → raccourci /feuille-de-temps)
+    // déclenche une navigation avant que le code complet ne soit lu. Compteur
+    // (et non booléen) pour rester correct si plusieurs scanners coexistent.
+    window.__barcodeScannerActive = (window.__barcodeScannerActive || 0) + 1
     function handleKeyDown(e) {
       const tag = document.activeElement?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
+      if (e.ctrlKey || e.metaKey || e.altKey) return
 
       const now = Date.now()
       if (now - lastTimeRef.current > maxDelay && bufferRef.current.length > 0) {
@@ -71,7 +90,10 @@ function useBarcodeScanner(onScan, { minLength = 3, maxDelay = 50 } = {}) {
       if (e.key.length === 1) bufferRef.current += e.key
     }
     window.addEventListener('keydown', handleKeyDown)
-    return () => window.removeEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.__barcodeScannerActive = Math.max(0, (window.__barcodeScannerActive || 1) - 1)
+    }
   }, [onScan, minLength, maxDelay])
 }
 
@@ -136,7 +158,7 @@ function AddItemModal({ orderId, onSave, onClose }) {
           onChange={handleProductChange}
         />
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Quantité *</label>
           <input type="number" min="1" value={form.qty} onChange={e => setForm(f => ({ ...f, qty: e.target.value }))} className="input" required />
@@ -182,7 +204,7 @@ function AddShipmentModal({ orderId, onSave, onClose }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Transporteur</label>
           <input value={form.carrier} onChange={e => setForm(f => ({ ...f, carrier: e.target.value }))} className="input" placeholder="Purolator, FedEx..." />
@@ -619,14 +641,18 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
   const pct = totalItems > 0 ? Math.round((doneCount / totalItems) * 100) : 0
 
   return (
-    <div className="min-h-screen bg-slate-100">
+    <div className="min-h-screen bg-slate-100" data-testid="expedition-view">
       {/* Expedition header */}
       <div className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
         <div className="max-w-3xl mx-auto px-4 py-3 flex items-center gap-3">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-bold text-slate-900 text-lg">#{order.order_number}</span>
-              {order.company_name && <span className="text-slate-500 text-sm truncate">{order.company_name}</span>}
+              {order.company_name && (
+                order.company_id
+                  ? <Link to={`/companies/${order.company_id}`} className="text-brand-600 hover:underline text-sm truncate">{order.company_name}</Link>
+                  : <span className="text-slate-500 text-sm truncate">{order.company_name}</span>
+              )}
             </div>
           </div>
           <button
@@ -894,9 +920,13 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
 export default function OrderDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [order, setOrder] = useState(null)
   const [loading, setLoading] = useState(true)
-  const [expeditionMode, setExpeditionMode] = useState(false)
+  const [loadError, setLoadError] = useState(null)
+  // `?mode=expedition` (ex. depuis Priorité d'assemblage → Commande à envoyer)
+  // ouvre directement la fiche en mode expédition.
+  const [expeditionMode, setExpeditionMode] = useState(() => searchParams.get('mode') === 'expedition')
 
   // Commercial mode state
   const [showAddItem, setShowAddItem] = useState(false)
@@ -913,16 +943,47 @@ export default function OrderDetail() {
   const [scanToast, setScanToast] = useState(null)
   const [flashItemId, setFlashItemId] = useState(null)
 
+  // Rentabilité — brouillon du champ override (revenu manuel)
+  const [overrideDraft, setOverrideDraft] = useState('')
+  const [savingOverride, setSavingOverride] = useState(false)
+
   async function load() {
     setLoading(true)
+    setLoadError(null)
     try {
       const data = await api.orders.get(id)
       setOrder(data)
+    } catch (e) {
+      setLoadError(e?.message || 'Erreur de chargement')
     } finally { setLoading(false) }
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [id])
+
+  // Synchronise le brouillon override avec la commande chargée.
+  useEffect(() => {
+    setOverrideDraft(order?.revenue_override_cad != null ? String(order.revenue_override_cad) : '')
+  }, [order?.id, order?.revenue_override_cad])
+
+  // Autosave de l'override de revenu (on blur). '' ⇒ null ⇒ revenu calculé.
+  // `rawValue` permet de forcer une valeur (ex: bouton effacer) sans dépendre
+  // de l'état asynchrone du brouillon.
+  async function saveOverride(rawValue) {
+    const raw = (rawValue !== undefined ? rawValue : overrideDraft).trim()
+    const current = order?.revenue_override_cad ?? null
+    const next = raw === '' ? null : Number(raw)
+    if (next !== null && !Number.isFinite(next)) {
+      setOverrideDraft(current != null ? String(current) : '')
+      return
+    }
+    if (next === current) return
+    setSavingOverride(true)
+    try {
+      await api.orders.update(id, { ...order, revenue_override_cad: next })
+      await load()
+    } finally { setSavingOverride(false) }
+  }
 
   // Realtime: another tab/user mutates this order → merge into local state.
   // Item events (`order:item:*`) need full-record refetch for bulk/reorder
@@ -1084,8 +1145,9 @@ export default function OrderDetail() {
   }
 
   if (loading) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
+    return <Layout><Spinner center /></Layout>
   }
+  if (loadError && !order) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
   if (!order) return <Layout><div className="p-6 text-slate-500">Commande introuvable.</div></Layout>
 
   // ── Expedition mode ─────────────────────────────────────────────────────────
@@ -1180,6 +1242,11 @@ export default function OrderDetail() {
             <p className="text-sm text-slate-600 whitespace-pre-wrap">{order.notes}</p>
           </div>
         )}
+
+        {/* Pièces jointes */}
+        <div className="mb-4">
+          <Attachments entityType="orders" entityId={order.id} />
+        </div>
 
         {/* Items section */}
         <div className="card mb-4">
@@ -1276,7 +1343,7 @@ export default function OrderDetail() {
                             const val = e.target.value
                             setEditValues(v => ({ ...v, item_type: val }))
                             if (val !== (item.item_type || 'Facturable')) {
-                              api.orders.updateItem(id, item.id, { item_type: val }).then(load).catch(() => {})
+                              api.orders.updateItem(id, item.id, { item_type: val }).then(load).catch(e => setScanToast({ message: e.message || 'Échec de la sauvegarde du type', status: 'error' }))
                             }
                             setEditingItemId(null)
                           }}
@@ -1389,6 +1456,76 @@ export default function OrderDetail() {
             </table>
           )}
         </div>
+
+        {/* Rentabilité */}
+        {(() => {
+          const p = order.profitability || {}
+          const revenue = p.revenue_effective ?? 0
+          const cogs = p.cogs ?? 0
+          const profit = p.profit ?? (revenue - cogs)
+          const margin = p.margin_pct
+          const overrideActive = p.revenue_override_cad != null
+          const profitColor = profit > 0 ? 'text-emerald-600' : profit < 0 ? 'text-red-600' : 'text-slate-600'
+          return (
+            <div className="card mb-4">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+                <h2 className="font-semibold text-slate-900">Rentabilité</h2>
+                {savingOverride && <span className="text-xs text-slate-400 animate-pulse">Enregistrement…</span>}
+              </div>
+              <div className="p-5">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-5">
+                  <div>
+                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Revenus</div>
+                    <div className="text-xl font-bold text-slate-900">{_fmtCad(revenue)}</div>
+                    {overrideActive
+                      ? <div className="text-xs text-amber-600 mt-0.5">Override · calculé {_fmtCad(p.revenue_computed ?? 0)}</div>
+                      : <div className="text-xs text-slate-400 mt-0.5">{order.is_subscription ? '1re facture × 38 (HT)' : 'Factures liées (HT)'}</div>}
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Coûts</div>
+                    <div className="text-xl font-bold text-slate-900">{_fmtCad(cogs)}</div>
+                    <div className="text-xs text-slate-400 mt-0.5">Pièces à l'envoi (Facturable)</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Profit</div>
+                    <div className={`text-xl font-bold ${profitColor}`}>{_fmtCad(profit)}</div>
+                    <div className="text-xs text-slate-400 mt-0.5">{margin != null ? `Marge ${margin.toFixed(1)} %` : 'Marge —'}</div>
+                  </div>
+                </div>
+                <div className="border-t border-slate-100 pt-4">
+                  <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">
+                    Revenu override (CAD)
+                  </label>
+                  <div className="flex items-center gap-2 max-w-xs">
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={overrideDraft}
+                      onChange={e => setOverrideDraft(e.target.value)}
+                      onBlur={() => saveOverride()}
+                      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                      placeholder="Vide = revenu calculé"
+                      className="input py-1.5 text-sm w-full"
+                    />
+                    {overrideDraft.trim() !== '' && (
+                      <button
+                        onClick={() => { setOverrideDraft(''); saveOverride('') }}
+                        className="text-slate-400 hover:text-red-600 p-1 rounded"
+                        title="Effacer l'override"
+                      >
+                        <X size={16} />
+                      </button>
+                    )}
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1.5">
+                    Quick fix de la valeur réelle de la commande. Si rempli, remplace le revenu calculé
+                    ici et dans le tableau Rentabilité du dashboard.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )
+        })()}
 
       </div>
 

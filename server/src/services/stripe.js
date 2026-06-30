@@ -20,6 +20,15 @@ export function isStripeConfigured() {
   return !!getStripeKey()
 }
 
+// Vrai uniquement quand Stripe confirme que le record n'existe pas (404 /
+// resource_missing). Un outage transitoire — rate-limit (429), 5xx, coupure
+// réseau — ne doit PAS matcher : sinon on traite « API momentanément KO »
+// comme « facture absente » et le refund est classé 'unmatched' de façon
+// permanente alors que la donnée existe (incohérence comptable silencieuse).
+function isStripeResourceMissing(e) {
+  return e?.code === 'resource_missing' || e?.statusCode === 404
+}
+
 // Fixes refund factures that are missing document_number by resolving the
 // original invoice via Stripe API (refund → charge → invoice) and using its
 // document_number with a "-R" suffix. Idempotent — skips rows already set.
@@ -57,7 +66,12 @@ export async function fixRefundDocumentNumbers({ dryRun = false } = {}) {
         if (!chargeId) {
           // py_/pyr_ identifiers aren't retrievable as charges directly;
           // fall back to refunds.list filtered by payment_intent if needed.
-          const refund = await stripe.refunds.retrieve(refundId).catch(() => null)
+          // Ne swallow que le « record absent » — toute autre erreur (outage,
+          // rate-limit) remonte au catch externe et incrémente `errors`.
+          const refund = await stripe.refunds.retrieve(refundId).catch((e) => {
+            if (isStripeResourceMissing(e)) return null
+            throw e
+          })
           if (refund) chargeId = typeof refund.charge === 'string' ? refund.charge : refund.charge?.id
         }
       }
@@ -66,7 +80,12 @@ export async function fixRefundDocumentNumbers({ dryRun = false } = {}) {
         const charge = await stripe.charges.retrieve(chargeId)
         stripeInvoiceId = typeof charge.invoice === 'string' ? charge.invoice : charge.invoice?.id
         if (stripeInvoiceId && !charge.invoice?.number) {
-          const inv = await stripe.invoices.retrieve(stripeInvoiceId).catch(() => null)
+          // Idem : une facture réellement absente → null (on retombera sur les
+          // fallbacks) ; un outage Stripe doit échouer franc et être compté.
+          const inv = await stripe.invoices.retrieve(stripeInvoiceId).catch((e) => {
+            if (isStripeResourceMissing(e)) return null
+            throw e
+          })
           stripeInvoiceNumber = inv?.number || null
         } else {
           stripeInvoiceNumber = charge.invoice?.number || null
@@ -364,7 +383,7 @@ function splitFeeDetails(bt) {
 // Relies on display_name/description (plain text) with a percentage fallback
 // (5% → GST, 9.975% → QST). Option 1 per user decision — pas de colonne tax_type
 // sur stripe_qb_tax_mapping, on détecte depuis les métadonnées Stripe.
-function classifyTaxRate(tr) {
+export function classifyTaxRate(tr) {
   if (!tr) return null
   const name = `${tr.display_name || ''} ${tr.description || ''}`.toLowerCase()
   if (/\b(qst|tvq)\b/.test(name)) return 'qst'
@@ -373,6 +392,12 @@ function classifyTaxRate(tr) {
   if (Number.isFinite(pct)) {
     if (Math.abs(pct - 9.975) < 0.1) return 'qst'
     if (Math.abs(pct - 5) < 0.1) return 'gst'
+    // TVH mono-taux des provinces harmonisées (ON 13 %, NB/NL/NS/PE 15 %) : Stripe
+    // les nomme parfois « Sales tax 13% ON » sans mot-clé HST/TVH. On les classe en
+    // 'gst' (taxe fédérale harmonisée, même convention que « HST 13% » plus haut) pour
+    // que le montant soit bien soustrait de la ligne HT du Deposit. Sans ça, la taxe
+    // n'est pas ventilée et QB la recalcule par-dessus le brut → gros « arrondi taxes ».
+    if (Math.abs(pct - 13) < 0.1 || Math.abs(pct - 15) < 0.1) return 'gst'
   }
   return null
 }
@@ -397,6 +422,26 @@ function autoInferQbTaxCode(taxRates) {
     if (states.includes('PE')) return '26'  // TVH Î.-P.-É. 2016
   }
   return null
+}
+
+// Proratise la taxe d'un remboursement au montant effectivement remboursé.
+// Un refund ne porte qu'une fraction de la taxe de la facture d'origine,
+// proportionnelle au brut (TTC) remboursé. `fullTax` est la taxe TOTALE de la
+// facture (un type : TPS ou TVQ), `refundGross` le brut remboursé (positif, en
+// monnaie native), `invoiceGross` le total TTC de la facture d'origine.
+// Retourne la taxe (positive) à attribuer au refund pour ce type.
+//
+// Sans cette proratisation, un refund partiel hérite de 100 % de la taxe de la
+// facture (bug : payout po_1TcF3rEO122sMsbJQ1Bl5wao → Deposit 17431, juin 2026 —
+// refund 730 $ portait 625,96 $ de taxe au lieu de ~95 $, déversant 610 $ dans la
+// ligne « Ajustement d'arrondi taxes »). Cf. computeRefundHt qui proratise déjà le
+// HT côté table factures — ici on aligne la taxe stockée sur la même logique.
+export function proRateRefundTax(fullTax, refundGross, invoiceGross) {
+  if (!fullTax) return 0
+  // Pas de total facture fiable → comportement legacy (taxe pleine = refund complet).
+  if (!(invoiceGross > 0)) return fullTax
+  const ratio = Math.min(1, refundGross / invoiceGross)
+  return Math.round(fullTax * ratio * 100) / 100
 }
 
 // Pulls all balance_transactions for a payout with source expansion.
@@ -472,7 +517,11 @@ export async function syncStripeBalanceTransactions(payoutStripeId) {
         invoice = typeof charge.invoice === 'object' ? charge.invoice : null
         customer = typeof charge.customer === 'object' ? charge.customer : null
         paymentIntentId = charge.payment_intent || null
-      } catch {}
+      } catch (e) {
+        // Le refund perd son lien charge→facture : il deviendra orphelin sans numéro.
+        const chargeId = typeof src.charge === 'string' ? src.charge : src.charge?.id
+        console.warn(`⚠️  [stripe] refund ${bt.source_id || bt.id}: échec charges.retrieve(${chargeId}) — lien charge→facture perdu:`, e.message)
+      }
     }
 
     // Fallback: charge.invoice is no longer populated in the newer Stripe API.
@@ -556,10 +605,16 @@ export async function syncStripeBalanceTransactions(payoutStripeId) {
         qbTaxCode = '4'
       }
     }
-    // For refunds, invoice taxes flow back out — invert signs so the stored value reflects the BT direction.
+    // For refunds, invoice taxes flow back out — invert signs so the stored value
+    // reflects the BT direction. Proratise au brut effectivement remboursé : un
+    // refund partiel ne porte qu'une fraction de la taxe de la facture d'origine
+    // (sinon il hérite de 100 % de la taxe → cf. proRateRefundTax). Base de
+    // proratisation : le total TTC de la facture (invoice.total / amount_paid).
     if (isRefund) {
-      invoiceTaxGst = -invoiceTaxGst
-      invoiceTaxQst = -invoiceTaxQst
+      const refundGross = Math.abs((bt.amount || 0) / 100)
+      const invoiceGross = (invoice?.total ?? invoice?.amount_paid ?? 0) / 100
+      invoiceTaxGst = -proRateRefundTax(invoiceTaxGst, refundGross, invoiceGross)
+      invoiceTaxQst = -proRateRefundTax(invoiceTaxQst, refundGross, invoiceGross)
     }
 
     // Taxes que Stripe applique à ses propres frais (visible dans fee_details).
@@ -672,7 +727,10 @@ function deriveRefundDocNumber(bt) {
     const raw = JSON.parse(bt.raw || '{}')
     parentCharge = raw?.source?.charge || null
     parentPI = raw?.source?.payment_intent || null
-  } catch {}
+  } catch (e) {
+    // raw illisible : on ne peut plus dériver le numéro de document via charge/PI.
+    console.warn(`⚠️  [stripe] deriveRefundDocNumber: JSON.parse(raw) échoué pour BT ${bt.source_id || bt.stripe_id || bt.id} — numéro de document non résolu via charge/PI:`, e.message)
+  }
   if (parentCharge) {
     const orig = db.prepare(
       'SELECT document_number FROM factures WHERE (paid_charge_id=? OR invoice_id=?) AND document_number IS NOT NULL LIMIT 1'
@@ -767,7 +825,10 @@ export function backfillRefundsToFactures({ dryRun = false } = {}) {
     try {
       const raw = JSON.parse(bt.raw || '{}')
       chargeId = raw?.source?.charge || null
-    } catch {}
+    } catch (e) {
+      // raw illisible : pas de charge parent → dédup native/AT et matching facture dégradés.
+      console.warn(`⚠️  [stripe] backfillRefundsToFactures: JSON.parse(raw) échoué pour refund ${refundId} — charge parent introuvable:`, e.message)
+    }
 
     const nativeRow = findRow.get(refundId)
     const atRow = chargeId ? findRow.get(chargeId) : null
@@ -954,7 +1015,11 @@ export function migrateRefundsToPayments({ dryRun = false } = {}) {
     const bt = refundId ? findBT.get(refundId) : null
     let chargeId = null
     if (bt?.raw) {
-      try { chargeId = JSON.parse(bt.raw)?.source?.charge || null } catch {}
+      try { chargeId = JSON.parse(bt.raw)?.source?.charge || null }
+      catch (e) {
+        // raw illisible : charge parent introuvable pour la réconciliation du refund.
+        console.warn(`⚠️  [stripe] migrateRefundsToPayments: JSON.parse(raw) échoué pour refund ${refundId} (facture ${rf.id}) — charge parent introuvable:`, e.message)
+      }
     }
 
     // 2) Find original facture

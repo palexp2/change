@@ -91,7 +91,7 @@ describe("AbonnementDetailModal — édition et suppression d'event d'historique
     await page.locator('button:has-text("abonnements"), button:has-text("Abonnements")').first().click()
     await page.waitForTimeout(500)
 
-    const rows = page.locator('table tbody tr')
+    const rows = page.locator('[data-row-id]')
     const count = await rows.count()
     if (!count) throw new Error("Aucune ligne d'abonnement pour cette entreprise")
 
@@ -106,9 +106,10 @@ describe("AbonnementDetailModal — édition et suppression d'event d'historique
 
       const marker = await page.locator(`[data-testid="event-row-${evtId}"]`).count()
       if (marker > 0) return
-      // Pas trouvé — referme cette ligne pour passer à la suivante
-      await row.click()
-      await page.waitForTimeout(150)
+      // Pas trouvé — referme la modale (Escape) pour réessayer la ligne suivante.
+      // Re-cliquer la ligne ne marche pas : la modale ouverte intercepte le clic.
+      await page.keyboard.press('Escape')
+      await page.waitForTimeout(250)
     }
     throw new Error(`event-row-${evtId} introuvable dans aucune ligne (parcouru ${count})`)
   }
@@ -122,7 +123,20 @@ describe("AbonnementDetailModal — édition et suppression d'event d'historique
     await row.locator('[data-testid="event-delete"]').waitFor({ state: 'visible', timeout: 2000 })
   })
 
-  test("éditer catégorie/montants persiste et auto-recalcule le delta", async () => {
+  // Autosave : les champs persistent on blur (plus de bouton « Enregistrer » sur
+  // l'édition d'un record existant). On poll la DB car le PATCH est async.
+  async function waitForDb(query, predicate, timeout = 8000) {
+    const start = Date.now()
+    let last
+    while (Date.now() - start < timeout) {
+      last = db.prepare(query).get(evtId)
+      if (predicate(last)) return last
+      await new Promise(r => setTimeout(r, 150))
+    }
+    throw new Error('waitForDb timeout — dernier état: ' + JSON.stringify(last))
+  }
+
+  test("éditer catégorie/montants autosave on blur et auto-recalcule le delta", async () => {
     const row = page.locator(`[data-testid="event-row-${evtId}"]`)
     await row.hover()
     await row.locator('[data-testid="event-edit"]').click()
@@ -130,33 +144,41 @@ describe("AbonnementDetailModal — édition et suppression d'event d'historique
     const editor = page.locator(`[data-testid="event-row-${evtId}-edit"]`)
     await editor.waitFor({ state: 'visible', timeout: 3000 })
 
-    // Catégorie = upgrade, prev=100, new=150 → delta auto-calculé doit être 50
+    // Plus aucun bouton « Enregistrer » sur l'édition d'un record existant.
+    assert.equal(await editor.locator('button:has-text("Enregistrer")').count(), 0,
+      'l\'édition existante ne doit plus avoir de bouton Enregistrer (autosave)')
+
+    // Catégorie = upgrade, prev=100, new=150 → delta auto-calculé doit être 50.
+    // Chaque fill suivant blur le champ précédent → autosave.
     await editor.locator('[data-testid="event-category"]').selectOption('upgrade')
     await editor.locator('[data-testid="event-prev-amount"]').fill('100')
     await editor.locator('[data-testid="event-new-amount"]').fill('150')
-    // Devise
-    await editor.locator('[data-testid="event-currency"]').fill('USD')
 
-    // Vérifie que le delta a été auto-recalculé
+    // Vérifie que le delta a été auto-recalculé avant de toucher la devise
     const deltaValue = await editor.locator('[data-testid="event-delta"]').inputValue()
     assert.equal(deltaValue, '50', `delta auto-recalculé attendu = 50, observé = ${deltaValue}`)
 
-    await editor.locator('button:has-text("Enregistrer")').click()
-    await editor.waitFor({ state: 'detached', timeout: 8000 })
+    await editor.locator('[data-testid="event-currency"]').fill('USD')
+    await editor.locator('[data-testid="event-currency"]').blur() // déclenche le dernier autosave
 
-    // Persistance DB sur tous les champs
-    const dbRow = db.prepare(`
-      SELECT category, currency, previous_amount_cad, new_amount_cad, amount_cad_delta
-      FROM subscription_events WHERE id=?
-    `).get(evtId)
+    // Persistance DB sur tous les champs (poll car PATCH async)
+    const dbRow = await waitForDb(
+      `SELECT category, currency, previous_amount_cad, new_amount_cad, amount_cad_delta
+       FROM subscription_events WHERE id=?`,
+      r => r && r.currency === 'USD' && r.amount_cad_delta === 50,
+    )
     assert.equal(dbRow.category, 'upgrade')
     assert.equal(dbRow.currency, 'USD')
     assert.equal(dbRow.previous_amount_cad, 100)
     assert.equal(dbRow.new_amount_cad, 150)
     assert.equal(dbRow.amount_cad_delta, 50)
+
+    // Referme l'éditeur (action purement locale, pas de save)
+    await editor.locator('[data-testid="event-done"]').click()
+    await editor.waitFor({ state: 'detached', timeout: 8000 })
   })
 
-  test("override manuel du delta est respecté côté serveur", async () => {
+  test("override manuel du delta est respecté côté serveur (autosave)", async () => {
     const row = page.locator(`[data-testid="event-row-${evtId}"]`)
     await row.hover()
     await row.locator('[data-testid="event-edit"]').click()
@@ -164,14 +186,17 @@ describe("AbonnementDetailModal — édition et suppression d'event d'historique
     const editor = page.locator(`[data-testid="event-row-${evtId}-edit"]`)
     await editor.waitFor({ state: 'visible', timeout: 3000 })
 
-    // Override le delta manuellement à 999.99 sans toucher prev/new
+    // Override le delta manuellement à 999.99 sans toucher prev/new, puis blur
     await editor.locator('[data-testid="event-delta"]').fill('999.99')
+    await editor.locator('[data-testid="event-delta"]').blur()
 
-    await editor.locator('button:has-text("Enregistrer")').click()
+    await waitForDb(
+      'SELECT amount_cad_delta FROM subscription_events WHERE id=?',
+      r => r && r.amount_cad_delta === 999.99,
+    )
+
+    await editor.locator('[data-testid="event-done"]').click()
     await editor.waitFor({ state: 'detached', timeout: 8000 })
-
-    const dbRow = db.prepare('SELECT amount_cad_delta FROM subscription_events WHERE id=?').get(evtId)
-    assert.equal(dbRow.amount_cad_delta, 999.99)
   })
 
   test("supprimer une entrée la retire de la liste et de la DB", async () => {

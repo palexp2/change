@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { X } from 'lucide-react'
+import { X, BookOpen, Plus, ShoppingCart } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -8,12 +8,17 @@ import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { VendorSelect } from '../components/VendorSelect.jsx'
 import { LineItemsTable } from '../components/LineItemsTable.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
+import { fmtCad } from '../utils/formatters.js'
+
+const NO_TAX = '__none__'
 
 const STATUS_COLORS = {
   'Brouillon': 'gray',
@@ -33,11 +38,6 @@ const BILL_STATUS = ['Brouillon', 'Reçue', 'Approuvée', 'Payée partiellement'
 const PURCHASE_STATUS = ['Brouillon', 'Soumis', 'Approuvé', 'Refusé', 'Remboursé']
 const CATEGORIES = ['Fournitures', 'Voyage', 'Repas', 'Loyer', 'Assurance', 'Services', 'Équipement', 'Marketing', 'Logiciels', 'Autre']
 const PAYMENT_METHODS = ['Carte de crédit', 'Chèque', 'Virement', 'Comptant', 'Autre']
-
-function fmtCad(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
 
 const RENDERS = {
   type: row => row.type === 'bill'
@@ -206,6 +206,10 @@ function AchatModal({ achat, initialType, onClose, onSaved }) {
 
       <LineItemsTable lines={form.lines} />
 
+      {achat?.id && (
+        <AchatAccountingSection achat={achat} form={form} setForm={setForm} onSaved={onSaved} />
+      )}
+
       {achat?.id && achat?.quickbooks_id && (
         <QBAttachmentsSection achatId={achat.id} />
       )}
@@ -217,6 +221,222 @@ function AchatModal({ achat, initialType, onClose, onSaved }) {
         </button>
       </div>
     </form>
+  )
+}
+
+// Comptabilisation QuickBooks d'un achat : choix mémorisé par fournisseur (compte de
+// dépense, compte de paiement, code de taxe), pré-rempli depuis le dernier achat publié
+// du même vendor. Chaque champ s'autosauvegarde (règle autosave). Le type (dépense/
+// facture) est intrinsèque à l'achat — pas repris de l'historique. Le code de taxe
+// n'est PAS auto-rempli depuis l'historique (déduction par achat conservée).
+function AchatAccountingSection({ achat, form, setForm, onSaved }) {
+  const { addToast } = useToast()
+  const confirm = useConfirm()
+  const [accounts, setAccounts] = useState([])
+  const [taxCodes, setTaxCodes] = useState([])
+  const [history, setHistory] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [savingField, setSavingField] = useState(null)
+  const [error, setError] = useState('')
+  const [pushing, setPushing] = useState(false)
+  const [autoAppliedFrom, setAutoAppliedFrom] = useState(null)
+
+  const autoAppliedRef = useRef(false)
+  const userTouchedRef = useRef(false)
+
+  const isPurchase = form.type === 'purchase'
+  const published = !!achat.quickbooks_id
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([api.quickbooks.accounts(), api.quickbooks.taxCodes()])
+      .then(([accs, codes]) => {
+        if (cancelled) return
+        setAccounts(accs || [])
+        setTaxCodes(codes || [])
+      })
+      .catch(() => { if (!cancelled) setError('Impossible de charger les comptes QuickBooks') })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    api.achatsFournisseurs.vendorHistory(achat.id)
+      .then(r => { if (!cancelled) setHistory(r.data || []) })
+      .catch(() => { if (!cancelled) setHistory([]) })
+    return () => { cancelled = true }
+  }, [achat.id])
+
+  // Autosave d'un champ comptable (+ maintien du form parent en phase pour que le
+  // bouton « Enregistrer » ne réécrase pas la valeur autosauvegardée).
+  const saveField = useCallback(async (key, value) => {
+    setForm(p => ({ ...p, [key]: value }))
+    setSavingField(key)
+    setError('')
+    try {
+      await api.achatsFournisseurs.update(achat.id, { [key]: value })
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSavingField(null)
+    }
+  }, [achat.id, setForm])
+
+  // Pré-remplissage auto depuis le dernier achat publié du même fournisseur — une fois,
+  // jamais sur un achat déjà publié, jamais après édition manuelle, uniquement les
+  // champs encore vides. Le code de taxe est volontairement exclu.
+  useEffect(() => {
+    if (loading || autoAppliedRef.current || userTouchedRef.current || published) return
+    if (history.length === 0) return
+    const txn = history.find(t => t.expense_account_id || t.payment_account_id)
+    if (!txn) return
+    const patch = {}
+    if (!form.expense_account_id && txn.expense_account_id) patch.expense_account_id = txn.expense_account_id
+    if (isPurchase && !form.payment_account_id && txn.payment_account_id) patch.payment_account_id = txn.payment_account_id
+    if (Object.keys(patch).length === 0) return
+    autoAppliedRef.current = true
+    setAutoAppliedFrom(txn)
+    setForm(p => ({ ...p, ...patch }))
+    // Persiste le pré-remplissage pour qu'il survive sans clic « Enregistrer ».
+    api.achatsFournisseurs.update(achat.id, patch).catch(e => setError(e.message || 'Échec de la sauvegarde du pré-remplissage'))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, history])
+
+  const onChangeField = key => value => { userTouchedRef.current = true; saveField(key, value === NO_TAX ? null : value) }
+
+  async function handlePush() {
+    const label = isPurchase ? 'une dépense' : 'une facture'
+    const ok = await confirm({
+      title: 'Comptabiliser sur QuickBooks',
+      message: `Cette action crée ${label} dans QuickBooks pour ${fmtCad(form.total_cad ?? (parseFloat(form.amount_cad) || 0) + (parseFloat(form.tax_cad) || 0))} (fournisseur « ${form.vendor || '—'} »). Continuer ?`,
+      confirmLabel: 'Comptabiliser',
+    })
+    if (!ok) return
+    setPushing(true)
+    setError('')
+    try {
+      await api.achatsFournisseurs.pushToQb(achat.id)
+      addToast({ message: 'Achat comptabilisé sur QuickBooks.', type: 'success' })
+      onSaved()
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setPushing(false)
+    }
+  }
+
+  const expenseAccounts = accounts.filter(a => ['Expense', 'Other Expense', 'Cost of Goods Sold', 'Other Current Asset'].includes(a.AccountType))
+  const paymentAccounts = accounts.filter(a => ['Bank', 'Credit Card'].includes(a.AccountType))
+  const accountLabel = a => (a.AcctNum ? `${a.AcctNum} — ${a.Name}` : a.Name)
+  const expenseOptions = expenseAccounts.map(a => ({ value: a.Id, label: accountLabel(a) }))
+  const paymentOptions = paymentAccounts.map(a => ({ value: a.Id, label: `${accountLabel(a)} (${a.AccountType})` }))
+  const taxCodeOptions = [{ value: NO_TAX, label: '— Aucune taxe —' }, ...taxCodes.map(c => ({ value: c.Id, label: c.Name }))]
+
+  return (
+    <div className="border border-green-200 bg-green-50 rounded-xl p-4 space-y-3" data-testid="achat-accounting">
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Comptabilisation QuickBooks</h3>
+        {published && (
+          <span className="inline-flex items-center gap-1 text-xs text-green-700"><BookOpen size={12} /> Publié (#{achat.quickbooks_id})</span>
+        )}
+      </div>
+
+      {loading ? (
+        <p className="text-xs text-slate-400">Chargement des comptes QuickBooks…</p>
+      ) : (
+        <>
+          {autoAppliedFrom && !userTouchedRef.current && (
+            <p data-testid="achat-prefill-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 leading-snug">
+              Pré-rempli depuis la dernière compta de ce fournisseur{autoAppliedFrom.date_achat ? ` — ${fmtDate(autoAppliedFrom.date_achat)}` : ''}.
+            </p>
+          )}
+
+          <div>
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">
+              Compte de dépense{savingField === 'expense_account_id' && <span className="ml-2 text-slate-400 normal-case">enregistrement…</span>}
+            </label>
+            <SearchableSelect
+              testId="achat-expense-select"
+              value={form.expense_account_id || ''}
+              options={expenseOptions}
+              onChange={onChangeField('expense_account_id')}
+              placeholder="— Sélectionner —"
+            />
+          </div>
+
+          {isPurchase && (
+            <div>
+              <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">
+                Compte de paiement{savingField === 'payment_account_id' && <span className="ml-2 text-slate-400 normal-case">enregistrement…</span>}
+              </label>
+              <SearchableSelect
+                testId="achat-payment-select"
+                value={form.payment_account_id || ''}
+                options={paymentOptions}
+                onChange={onChangeField('payment_account_id')}
+                placeholder="— Sélectionner —"
+              />
+            </div>
+          )}
+
+          <div>
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">
+              Code de taxe{savingField === 'tax_code_id' && <span className="ml-2 text-slate-400 normal-case">enregistrement…</span>}
+            </label>
+            <SearchableSelect
+              testId="achat-taxcode-select"
+              value={form.tax_code_id || NO_TAX}
+              options={taxCodeOptions}
+              onChange={onChangeField('tax_code_id')}
+              placeholder="— Aucune taxe —"
+            />
+          </div>
+
+          {error && <p className="text-xs text-red-600 bg-red-100 rounded-lg px-3 py-2">{error}</p>}
+
+          {!published && (
+            <button type="button" onClick={handlePush} disabled={pushing} className="btn-primary text-xs py-1.5 px-3">
+              <BookOpen size={12} /> {pushing ? 'Comptabilisation…' : 'Comptabiliser sur QuickBooks'}
+            </button>
+          )}
+
+          {history.length > 0 && (
+            <div className="border-t border-green-200 pt-3" data-testid="achat-vendor-history">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Déjà comptabilisé pour ce fournisseur</p>
+              <ul className="space-y-1.5">
+                {history.map(txn => {
+                  const acc = txn.expense_account_id ? accounts.find(a => a.Id === txn.expense_account_id) : null
+                  return (
+                    <li key={txn.id} className="flex items-center gap-2 text-xs bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
+                      <span className="text-slate-500 w-24 shrink-0">{txn.date_achat ? fmtDate(txn.date_achat) : '—'}</span>
+                      <span className="tabular-nums font-medium text-slate-700 w-20 shrink-0 text-right">{fmtCad(txn.total_cad)}</span>
+                      <span className="text-slate-500 truncate flex-1 min-w-0">{acc ? accountLabel(acc) : <span className="text-slate-300">compte non enregistré</span>}</span>
+                      {acc && !published && (
+                        <button
+                          type="button"
+                          data-testid="achat-use-template"
+                          onClick={() => {
+                            userTouchedRef.current = true
+                            if (txn.expense_account_id) saveField('expense_account_id', txn.expense_account_id)
+                            if (isPurchase && txn.payment_account_id) saveField('payment_account_id', txn.payment_account_id)
+                            if (txn.tax_code_id) saveField('tax_code_id', txn.tax_code_id)
+                            addToast({ message: 'Réglages copiés depuis la transaction passée.', type: 'success' })
+                          }}
+                          className="shrink-0 text-[11px] font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200 rounded px-2 py-0.5"
+                        >
+                          Utiliser
+                        </button>
+                      )}
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )}
+        </>
+      )}
+    </div>
   )
 }
 
@@ -324,6 +544,7 @@ export default function AchatsFournisseurs() {
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState(null)
   const [searchParams, setSearchParams] = useSearchParams()
+  const confirm = useConfirm()
 
   const load = useCallback(async () => {
     await loadProgressive(
@@ -369,6 +590,17 @@ export default function AchatsFournisseurs() {
   }
 
   async function handleQBImport() {
+    const ok = await confirm({
+      title: 'Importer depuis QuickBooks ?',
+      message:
+        'Cette opération va interroger QuickBooks et créer ou mettre à jour en cascade des enregistrements dans cet ERP :\n\n' +
+        '• Factures fournisseurs (bills) — création des nouvelles, mise à jour de celles déjà importées\n' +
+        '• Dépenses — création des nouvelles, mise à jour de celles déjà importées\n\n' +
+        'Les enregistrements importés depuis QuickBooks seront alignés sur les données de QuickBooks. Continuer ?',
+      confirmLabel: 'Importer depuis QB',
+      danger: false,
+    })
+    if (!ok) return
     setSyncing(true)
     setSyncResult(null)
     try {
@@ -412,7 +644,7 @@ export default function AchatsFournisseurs() {
             {syncResult?.error && (
               <span className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1">{syncResult.error}</span>
             )}
-            <button onClick={handleQBImport} disabled={syncing} className="btn-secondary">
+            <button onClick={handleQBImport} disabled={syncing} className="btn-secondary" data-testid="qb-import-btn">
               {syncing ? 'Importation…' : 'Importer depuis QB'}
             </button>
             <TableConfigModal table="achats_fournisseurs" />
@@ -445,6 +677,7 @@ export default function AchatsFournisseurs() {
           loading={loading}
           onRowClick={row => setEditing(row)}
           searchFields={['vendor', 'description', 'reference', 'vendor_invoice_number', 'bill_number', 'category', 'total_cad', 'amount_paid_cad', 'balance_due_cad']}
+          emptyState={{ icon: ShoppingCart, title: 'Aucun achat fournisseur', description: "Aucune facture ni dépense fournisseur n'est enregistrée. Crée-en une pour suivre les coûts.", cta: { label: 'Nouvelle facture fournisseur', icon: Plus, onClick: () => setCreating('bill') } }}
         />
       </div>
 

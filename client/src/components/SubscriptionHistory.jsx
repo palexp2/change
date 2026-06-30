@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Pencil, Trash2, Check, X } from 'lucide-react'
+import { Pencil, Trash2, Check, X, Plus } from 'lucide-react'
 import api from '../lib/api.js'
 import { useConfirm } from './ConfirmProvider.jsx'
-import { fmtDate } from '../lib/formatDate.js'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { CATEGORIES, CATEGORY_LABELS, CATEGORY_COLORS } from '../lib/subscriptionEvents.js'
 import { Badge } from './Badge.jsx'
 import { RachatPicker } from './RachatPicker.jsx'
@@ -36,6 +37,7 @@ function fmtAmount(v) {
 
 export function SubscriptionHistory({ subscriptionId, history, onChanged }) {
   const confirm = useConfirm()
+  const { addToast } = useToast()
   const [editingId, setEditingId] = useState(null)
   const [editDate, setEditDate] = useState('')
   const [editCategory, setEditCategory] = useState('')
@@ -45,8 +47,6 @@ export function SubscriptionHistory({ subscriptionId, history, onChanged }) {
   const [editDelta, setEditDelta] = useState('')
   const [savingEvent, setSavingEvent] = useState(false)
   const [deletingId, setDeletingId] = useState(null)
-
-  if (!history?.length) return null
 
   function recomputeDelta(cat, prevStr, newStr) {
     const d = autoComputeDelta(cat, parseAmount(prevStr), parseAmount(newStr))
@@ -90,19 +90,58 @@ export function SubscriptionHistory({ subscriptionId, history, onChanged }) {
     if (!editingId) return
     setSavingEvent(true)
     try {
-      await api.abonnements.eventPatch(subscriptionId, editingId, {
+      const payload = {
         event_date: combineEventDate(editDate, originalIso),
         category: editCategory || null,
         currency: editCurrency || null,
         previous_amount_cad: parseAmount(editPrev),
         new_amount_cad: parseAmount(editNew),
         amount_cad_delta: parseAmount(editDelta),
-      })
+      }
+      if (editingId === '__new__') {
+        await api.abonnements.eventCreate(subscriptionId, payload)
+      } else {
+        await api.abonnements.eventPatch(subscriptionId, editingId, payload)
+      }
       cancelEditEvent()
       onChanged?.()
     } finally {
       setSavingEvent(false)
     }
+  }
+
+  // Autosave d'un événement existant : PATCH sur blur de chaque champ. Pas de
+  // bouton « Enregistrer » (règle autosave) — seule la création (__new__) garde
+  // un bouton car le record n'a pas encore d'id.
+  async function autosaveEvent(originalIso) {
+    if (!editingId || editingId === '__new__') return
+    setSavingEvent(true)
+    try {
+      const payload = {
+        event_date: combineEventDate(editDate, originalIso),
+        category: editCategory || null,
+        currency: editCurrency || null,
+        previous_amount_cad: parseAmount(editPrev),
+        new_amount_cad: parseAmount(editNew),
+        amount_cad_delta: parseAmount(editDelta),
+      }
+      await api.abonnements.eventPatch(subscriptionId, editingId, payload)
+      onChanged?.()
+    } catch (e) {
+      addToast({ message: e.message || 'Échec de l\'enregistrement', type: 'error' })
+    } finally {
+      setSavingEvent(false)
+    }
+  }
+
+  function startAddEvent() {
+    setEditingId('__new__')
+    setEditDate(localISODate())
+    setEditCategory('')
+    setEditCurrency('CAD')
+    setEditPrev('')
+    setEditNew('')
+    setEditDelta('')
   }
 
   async function handleDeleteEvent(eventId) {
@@ -122,106 +161,152 @@ export function SubscriptionHistory({ subscriptionId, history, onChanged }) {
     }
   }
 
+  const renderEditRow = (originalIso, rowKey, isNew) => {
+    // Édition d'un record existant → autosave on blur. Création (__new__) →
+    // bouton manuel (pas encore d'id, exception à la règle autosave).
+    const onBlurSave = isNew ? undefined : () => autosaveEvent(originalIso)
+    const inputsDisabled = isNew && savingEvent
+    return (
+    <div key={rowKey} data-testid={rowKey === '__new__' ? 'event-row-new' : `event-row-${rowKey}-edit`} className="px-4 py-3 bg-amber-50/40 space-y-2">
+      <div className="flex items-start gap-3">
+        <div className="flex-shrink-0 w-32 space-y-1.5">
+          <input
+            type="date"
+            value={editDate}
+            onChange={e => setEditDate(e.target.value)}
+            onBlur={onBlurSave}
+            disabled={inputsDisabled}
+            className="w-full text-xs border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500"
+          />
+          <select
+            data-testid="event-category"
+            value={editCategory}
+            onChange={e => onChangeCategory(e.target.value)}
+            onBlur={onBlurSave}
+            disabled={inputsDisabled}
+            className="w-full text-xs border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500"
+          >
+            <option value="">— aucun mouvement —</option>
+            {CATEGORIES.map(c => <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>)}
+          </select>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+        <div>
+          <label className="block text-[10px] text-slate-500 mb-0.5">Devise</label>
+          <input
+            data-testid="event-currency"
+            type="text"
+            value={editCurrency}
+            onChange={e => setEditCurrency(e.target.value.toUpperCase().slice(0, 3))}
+            onBlur={onBlurSave}
+            disabled={inputsDisabled}
+            placeholder="CAD"
+            className="w-full border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono uppercase"
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] text-slate-500 mb-0.5">Avant (CAD)</label>
+          <input
+            data-testid="event-prev-amount"
+            type="number"
+            step="0.01"
+            value={editPrev}
+            onChange={e => onChangePrev(e.target.value)}
+            onBlur={onBlurSave}
+            disabled={inputsDisabled}
+            className="w-full border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono"
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] text-slate-500 mb-0.5">Après (CAD)</label>
+          <input
+            data-testid="event-new-amount"
+            type="number"
+            step="0.01"
+            value={editNew}
+            onChange={e => onChangeNew(e.target.value)}
+            onBlur={onBlurSave}
+            disabled={inputsDisabled}
+            className="w-full border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono"
+          />
+        </div>
+        <div>
+          <label className="block text-[10px] text-slate-500 mb-0.5" title="Contribue au Net MRR du dashboard. Recalculé auto sur changement de Avant/Après/Catégorie ; éditable manuellement.">Δ Net MRR (CAD)</label>
+          <input
+            data-testid="event-delta"
+            type="number"
+            step="0.01"
+            value={editDelta}
+            onChange={e => setEditDelta(e.target.value)}
+            onBlur={onBlurSave}
+            disabled={inputsDisabled}
+            className="w-full border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono"
+          />
+        </div>
+      </div>
+      {isNew ? (
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={cancelEditEvent}
+            disabled={savingEvent}
+            className="text-xs px-3 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          >
+            Annuler
+          </button>
+          <button
+            type="button"
+            onClick={() => saveEvent(originalIso)}
+            disabled={savingEvent}
+            data-testid="event-save"
+            className="text-xs px-3 py-1 rounded bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 inline-flex items-center gap-1"
+          >
+            <Check size={12} /> {savingEvent ? 'Enregistrement…' : 'Enregistrer'}
+          </button>
+        </div>
+      ) : (
+        <div className="flex justify-end items-center gap-2">
+          <span className="text-[10px] text-slate-400" data-testid="event-autosave-status">
+            {savingEvent ? 'Enregistrement…' : 'Enregistré automatiquement'}
+          </span>
+          <button
+            type="button"
+            onClick={cancelEditEvent}
+            data-testid="event-done"
+            className="text-xs px-3 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 inline-flex items-center gap-1"
+          >
+            <Check size={12} /> Terminé
+          </button>
+        </div>
+      )}
+    </div>
+    )
+  }
+
   return (
     <div>
-      <h4 className="text-sm font-semibold text-slate-700 mb-2">Historique des changements</h4>
+      <div className="flex items-center justify-between mb-2">
+        <h4 className="text-sm font-semibold text-slate-700">Historique des changements</h4>
+        <button
+          type="button"
+          onClick={startAddEvent}
+          disabled={editingId !== null}
+          data-testid="event-add"
+          className="text-xs px-2 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-30 inline-flex items-center gap-1"
+        >
+          <Plus size={12} /> Ajouter une entrée
+        </button>
+      </div>
       <div className="border border-slate-200 rounded-lg divide-y divide-slate-100">
-        {history.map((h, i) => {
+        {editingId === '__new__' && renderEditRow(null, '__new__', true)}
+        {!history?.length && editingId !== '__new__' && (
+          <div className="px-4 py-3 text-xs text-slate-400 italic">Aucune entrée d'historique.</div>
+        )}
+        {history?.map((h, i) => {
           const rowKey = h.id || i
           if (h.id && editingId === h.id) {
-            return (
-              <div key={rowKey} data-testid={`event-row-${h.id}-edit`} className="px-4 py-3 bg-amber-50/40 space-y-2">
-                <div className="flex items-start gap-3">
-                  <div className="flex-shrink-0 w-32 space-y-1.5">
-                    <input
-                      type="date"
-                      value={editDate}
-                      onChange={e => setEditDate(e.target.value)}
-                      disabled={savingEvent}
-                      className="w-full text-xs border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                    />
-                    <select
-                      data-testid="event-category"
-                      value={editCategory}
-                      onChange={e => onChangeCategory(e.target.value)}
-                      disabled={savingEvent}
-                      className="w-full text-xs border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500"
-                    >
-                      <option value="">— aucun mouvement —</option>
-                      {CATEGORIES.map(c => <option key={c} value={c}>{CATEGORY_LABELS[c]}</option>)}
-                    </select>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-                  <div>
-                    <label className="block text-[10px] text-slate-500 mb-0.5">Devise</label>
-                    <input
-                      data-testid="event-currency"
-                      type="text"
-                      value={editCurrency}
-                      onChange={e => setEditCurrency(e.target.value.toUpperCase().slice(0, 3))}
-                      disabled={savingEvent}
-                      placeholder="CAD"
-                      className="w-full border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono uppercase"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-slate-500 mb-0.5">Avant (CAD)</label>
-                    <input
-                      data-testid="event-prev-amount"
-                      type="number"
-                      step="0.01"
-                      value={editPrev}
-                      onChange={e => onChangePrev(e.target.value)}
-                      disabled={savingEvent}
-                      className="w-full border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-slate-500 mb-0.5">Après (CAD)</label>
-                    <input
-                      data-testid="event-new-amount"
-                      type="number"
-                      step="0.01"
-                      value={editNew}
-                      onChange={e => onChangeNew(e.target.value)}
-                      disabled={savingEvent}
-                      className="w-full border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[10px] text-slate-500 mb-0.5" title="Contribue au Net MRR du dashboard. Recalculé auto sur changement de Avant/Après/Catégorie ; éditable manuellement.">Δ Net MRR (CAD)</label>
-                    <input
-                      data-testid="event-delta"
-                      type="number"
-                      step="0.01"
-                      value={editDelta}
-                      onChange={e => setEditDelta(e.target.value)}
-                      disabled={savingEvent}
-                      className="w-full border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono"
-                    />
-                  </div>
-                </div>
-                <div className="flex justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={cancelEditEvent}
-                    disabled={savingEvent}
-                    className="text-xs px-3 py-1 rounded border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-                  >
-                    Annuler
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => saveEvent(h.date)}
-                    disabled={savingEvent}
-                    className="text-xs px-3 py-1 rounded bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 inline-flex items-center gap-1"
-                  >
-                    <Check size={12} /> {savingEvent ? 'Enregistrement…' : 'Enregistrer'}
-                  </button>
-                </div>
-              </div>
-            )
+            return renderEditRow(h.date, h.id, false)
           }
           const isDeleting = deletingId === h.id
           return (

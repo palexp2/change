@@ -1,21 +1,21 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, ShoppingBag, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { fmtCad } from '../utils/formatters.js'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 const STATUS_COLORS = { 'Commandé': 'blue', 'Reçu partiellement': 'yellow', 'Reçu': 'green', 'Annulé': 'red' }
 const STATUS_OPTIONS = ['Commandé', 'Reçu partiellement', 'Reçu', 'Annulé']
 
-function fmtCad(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
 
 const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
@@ -135,18 +135,29 @@ export default function PurchaseDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [purchase, setPurchase] = useState(null)
+  const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [fieldSaving, setFieldSaving] = useState({})
   const [deleting, setDeleting] = useState(false)
   const confirm = useConfirm()
   const { addToast } = useToast()
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true)
+    setLoadError(null)
     api.purchases.get(id)
       .then(setPurchase)
-      .catch(() => setPurchase(null))
+      .catch((e) => { setPurchase(null); setLoadError(e?.message || 'Erreur de chargement') })
       .finally(() => setLoading(false))
   }, [id])
+
+  useEffect(() => { load() }, [load])
+
+  // Liste minimale (id + name) des entreprises pour le picker Fournisseur.
+  useEffect(() => {
+    api.companies.lookup().then(setCompanies).catch(() => setCompanies([]))
+  }, [])
 
   useRealtimeChannel(id ? `purchase:${id}` : null, (msg) => {
     if (msg.type === 'purchase:updated') setPurchase(p => p ? { ...p, ...msg.payload } : p)
@@ -179,7 +190,10 @@ export default function PurchaseDetail() {
   }
 
   if (loading) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
+    return <Layout><Spinner center /></Layout>
+  }
+  if (loadError && !purchase) {
+    return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
   }
   if (!purchase) {
     return <Layout><div className="p-6 text-slate-500">Achat introuvable.</div></Layout>
@@ -222,16 +236,33 @@ export default function PurchaseDetail() {
             <FieldShell label="Statut" saving={fieldSaving.status}>
               <EditableSelect value={purchase.status} options={STATUS_OPTIONS} saving={fieldSaving.status} onCommit={v => saveField('status', v)} />
             </FieldShell>
-            <FieldShell label="Fournisseur" saving={fieldSaving.supplier}>
-              {purchase.supplier_company_id ? (
-                <div className="text-sm">
-                  <Link to={`/companies/${purchase.supplier_company_id}`} className="text-brand-600 hover:underline">
-                    {purchase.supplier_company_name || purchase.supplier}
-                  </Link>
-                </div>
-              ) : (
-                <EditableText value={purchase.supplier} saving={fieldSaving.supplier} onCommit={v => saveField('supplier', v)} />
-              )}
+            <FieldShell label="Fournisseur" saving={fieldSaving.supplier_company_id || fieldSaving.supplier}>
+              {/* Règle FK (CLAUDE.md) : toujours offrir une affordance de sélection
+                  (picker recherchable) + une affordance de navigation (lien) quand lié. */}
+              <div className="space-y-1.5">
+                <SearchableSelect
+                  testId="purchase-supplier-company"
+                  value={purchase.supplier_company_id || ''}
+                  options={companies}
+                  getOptionValue={c => c.id}
+                  getOptionLabel={c => c.name}
+                  emptyOption="Aucune entreprise liée"
+                  placeholder="Lier une entreprise…"
+                  className={inp}
+                  size="sm"
+                  disabled={fieldSaving.supplier_company_id}
+                  onChange={v => saveField('supplier_company_id', v || null)}
+                />
+                {purchase.supplier_company_id ? (
+                  <div className="text-sm">
+                    <Link to={`/companies/${purchase.supplier_company_id}`} className="text-brand-600 hover:underline">
+                      {purchase.supplier_company_name || purchase.supplier || 'Voir la fiche entreprise'}
+                    </Link>
+                  </div>
+                ) : (
+                  <EditableText value={purchase.supplier} saving={fieldSaving.supplier} onCommit={v => saveField('supplier', v)} placeholder="Fournisseur (texte libre)" />
+                )}
+              </div>
             </FieldShell>
             <FieldShell label="Emplacement" saving={fieldSaving.emplacement}>
               <EditableText value={purchase.emplacement} saving={fieldSaving.emplacement} onCommit={v => saveField('emplacement', v)} />

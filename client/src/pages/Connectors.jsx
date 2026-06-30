@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
-import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent } from 'lucide-react'
+import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent, ShoppingCart, User } from 'lucide-react'
 import api from '../lib/api.js'
+import { useAuth } from '../lib/auth.jsx'
 import AirtableConfig from './AirtableConfig.jsx'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
@@ -8,6 +9,11 @@ import { useSyncStatus } from '../lib/useSyncStatus.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { TaxMappingModal } from '../components/TaxMappingModal.jsx'
+import QuickBooksAccountCard from '../components/QuickBooksAccountCard.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { fmtDateTime } from '../lib/formatDate.js'
 
 function WhisperConfig() {
   const { addToast } = useToast()
@@ -278,12 +284,18 @@ function CubeAcrConfig({ onRefresh }) {
               </div>
               <div>
                 <label className="label text-xs">Utilisateur ERP</label>
-                <select className="input" value={form.erpUserId} onChange={e => setForm(f => ({ ...f, erpUserId: e.target.value }))}>
-                  <option value="">— Sélectionner —</option>
-                  {data.erpUsers.filter(u => !u.ftp_username).map(u => (
-                    <option key={u.id} value={u.id}>{u.name}</option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  testId="cubeacr-erpuser-select"
+                  className="input"
+                  size="sm"
+                  value={form.erpUserId}
+                  onChange={v => setForm(f => ({ ...f, erpUserId: v }))}
+                  options={data.erpUsers.filter(u => !u.ftp_username)}
+                  getOptionValue={u => u.id}
+                  getOptionLabel={u => u.name}
+                  placeholder="— Sélectionner —"
+                  searchPlaceholder="Rechercher un utilisateur…"
+                />
               </div>
               <div>
                 <label className="label text-xs">Identifiant FTP</label>
@@ -316,6 +328,7 @@ const CONNECTORS = [
   { id: 'stripe',     name: 'Stripe',      icon: CreditCard, color: 'bg-purple-50 text-purple-600', apiKeyManaged: true },
   { id: 'novoxpress', name: 'Novoxpress',  icon: Truck,      color: 'bg-orange-50 text-orange-600', apiKeyManaged: true },
   { id: 'hubspot',    name: 'HubSpot',     icon: Users,      color: 'bg-rose-50 text-rose-600',     apiKeyManaged: true },
+  { id: 'amazon',     name: 'Amazon Business', icon: ShoppingCart, color: 'bg-orange-50 text-orange-700' },
 ]
 
 function SyncBtn({ label, syncKey, syncStatus, onSync }) {
@@ -367,6 +380,21 @@ function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
   const [folders, setFolders] = useState(() => parseDriveFolders(config))
   const [_users, setUsers] = useState([])
   const [saving, setSaving] = useState(false)
+  const confirm = useConfirm()
+
+  async function disconnect(account) {
+    const ok = await confirm({
+      title: 'Déconnecter le compte Google',
+      message: `Déconnecter « ${account.account_email} » ?\n\n` +
+        `• Les tokens OAuth chiffrés de ce compte seront supprimés (irréversible).\n` +
+        `• La synchronisation Gmail/Drive de ce compte s'arrêtera.\n` +
+        `• Pour le reconnecter, il faudra refaire tout le flux d'autorisation Google.`,
+      confirmLabel: 'Déconnecter',
+    })
+    if (!ok) return
+    await api.connectors.disconnect(account.id)
+    onRefresh()
+  }
 
   useEffect(() => {
     api.admin.listUsers().then(setUsers).catch(() => {})
@@ -412,7 +440,7 @@ function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
                 >
                   <Link2 size={12} /> Reconnecter
                 </button>
-                <button onClick={() => api.connectors.disconnect(a.id).then(onRefresh)} className="text-red-400 hover:text-red-600 p-1">
+                <button onClick={() => disconnect(a)} className="text-red-400 hover:text-red-600 p-1" title="Déconnecter">
                   <Trash2 size={14} />
                 </button>
               </div>
@@ -471,12 +499,19 @@ function PostmarkConfig() {
         <p className="text-xs text-slate-500">
           Utilisée pour tous les courriels transactionnels (notifications d'expédition, suivi d'installation, field rules). Le domaine <code>orisha.io</code> est DKIM-verified chez Postmark — toute adresse <code>@orisha.io</code> est acceptée.
         </p>
-        <select className="input" value={value} onChange={e => setValue(e.target.value)}>
-          <option value="">— Aucun —</option>
-          {data.addresses.map(a => (
-            <option key={a} value={a}>{a}</option>
-          ))}
-        </select>
+        <SearchableSelect
+          testId="postmark-default-from-select"
+          className="input"
+          size="sm"
+          value={value}
+          onChange={setValue}
+          options={data.addresses}
+          getOptionValue={a => a}
+          getOptionLabel={a => a}
+          emptyOption="— Aucun —"
+          placeholder="— Aucun —"
+          searchPlaceholder="Rechercher une adresse…"
+        />
         <div className="flex gap-2">
           <button onClick={save} disabled={saving || value === (data.default_from || '')} className="btn-primary btn-sm">
             {saving ? 'Sauvegarde…' : 'Enregistrer'}
@@ -495,10 +530,25 @@ function PostmarkConfig() {
 function QuickBooksConfig({ accounts, onRefresh }) {
   const connectedAccounts = accounts.filter(a => a.connector === 'quickbooks')
   const [taxModalOpen, setTaxModalOpen] = useState(false)
+  const confirm = useConfirm()
 
   const reconnect = () => {
     const token = localStorage.getItem('erp_token')
     window.location.href = `/erp/api/connectors/quickbooks/connect?token=${token}`
+  }
+
+  const disconnect = async (account) => {
+    const ok = await confirm({
+      title: 'Déconnecter QuickBooks',
+      message: `Déconnecter QuickBooks ?\n\n` +
+        `• Les tokens OAuth chiffrés seront supprimés (irréversible).\n` +
+        `• La publication des reçus/dépôts/dépenses vers QuickBooks s'arrêtera.\n` +
+        `• Pour le reconnecter, il faudra refaire tout le flux d'autorisation QuickBooks.`,
+      confirmLabel: 'Déconnecter',
+    })
+    if (!ok) return
+    await api.connectors.disconnect(account.id)
+    onRefresh()
   }
 
   return (
@@ -513,7 +563,7 @@ function QuickBooksConfig({ accounts, onRefresh }) {
             <button onClick={reconnect} className="btn-secondary btn-sm text-xs" title="Réautoriser QuickBooks (si le token a expiré)">
               <Link2 size={12} /> Reconnecter
             </button>
-            <button onClick={() => api.connectors.disconnect(a.id).then(onRefresh)} className="text-red-400 hover:text-red-600 p-1" title="Déconnecter">
+            <button onClick={() => disconnect(a)} className="text-red-400 hover:text-red-600 p-1" title="Déconnecter">
               <Trash2 size={14} />
             </button>
           </div>
@@ -521,6 +571,8 @@ function QuickBooksConfig({ accounts, onRefresh }) {
       ))}
       {connectedAccounts.length > 0 && (
         <>
+          <MyQuickBooksConnection />
+          <QuickBooksUserConnections />
           <p className="text-xs text-slate-400">
             Les comptes de dépense, de paiement et le fournisseur sont sélectionnés par l'opérateur au moment de publier chaque reçu depuis la page <strong>Extraction de données</strong>.
           </p>
@@ -540,11 +592,137 @@ function QuickBooksConfig({ accounts, onRefresh }) {
   )
 }
 
+// Connexion QuickBooks personnelle de l'utilisateur courant (section dans l'onglet
+// Connecteurs). Le même bloc est aussi exposé dans /settings pour les non-admins.
+function MyQuickBooksConnection() {
+  return (
+    <div className="pt-2 border-t border-slate-100 space-y-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600">
+        <User size={12} /> Mon compte QuickBooks
+      </div>
+      <QuickBooksAccountCard />
+    </div>
+  )
+}
+
+// Vue admin : liste des connexions QuickBooks personnelles de tous les utilisateurs.
+function QuickBooksUserConnections() {
+  const { user } = useAuth()
+  const [conns, setConns] = useState([])
+  const confirm = useConfirm()
+
+  const load = async () => {
+    try { setConns(await api.connectors.qbConnections()) } catch { setConns([]) }
+  }
+  useEffect(() => { if (user?.role === 'admin') load() }, [user?.role])
+
+  if (user?.role !== 'admin') return null
+  const personal = conns.filter(c => !c.isDefault)
+  if (personal.length === 0) return null
+
+  const disconnect = async (c) => {
+    const ok = await confirm({
+      title: 'Déconnecter cette personne',
+      message: `Déconnecter le compte QuickBooks de ${c.userName || 'cet utilisateur'} ?\n\n` +
+        `Ses prochaines publications seront de nouveau attribuées au compte principal.`,
+      confirmLabel: 'Déconnecter',
+    })
+    if (!ok) return
+    await api.connectors.qbDisconnectUser(c.accountKey)
+    load()
+  }
+
+  return (
+    <div className="pt-2 border-t border-slate-100 space-y-1.5">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600">
+        <Users size={12} /> Comptes personnels connectés
+      </div>
+      {personal.map(c => (
+        <div key={c.accountKey} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg">
+          <div className="flex items-center gap-2">
+            <CheckCircle size={14} className="text-green-500" />
+            <span className="text-xs text-slate-700">{c.userName || c.accountKey}</span>
+            {c.updatedAt && <span className="text-[11px] text-slate-400">depuis le {fmtDateTime(c.updatedAt)}</span>}
+          </div>
+          <button onClick={() => disconnect(c)} className="text-red-400 hover:text-red-600 p-1" title="Déconnecter">
+            <Trash2 size={14} />
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function AmazonConfig({ accounts, configured, syncStatus, onRefresh }) {
+  const connectedAccounts = accounts.filter(a => a.connector === 'amazon')
+  const confirm = useConfirm()
+
+  const reconnect = () => {
+    const token = localStorage.getItem('erp_token')
+    window.location.href = `/erp/api/connectors/amazon/connect?token=${token}`
+  }
+
+  const sync = async () => {
+    await api.connectors.sync('amazon')
+    onRefresh()
+  }
+
+  const disconnect = async (account) => {
+    const ok = await confirm({
+      title: 'Déconnecter Amazon Business',
+      message: `Déconnecter Amazon Business ?\n\n` +
+        `• Les tokens OAuth seront supprimés (irréversible).\n` +
+        `• La récupération automatique des factures Amazon s'arrêtera.\n` +
+        `• Pour le reconnecter, il faudra refaire le flux d'autorisation Amazon.`,
+      confirmLabel: 'Déconnecter',
+    })
+    if (!ok) return
+    await api.connectors.disconnect(account.id)
+    onRefresh()
+  }
+
+  return (
+    <div className="mt-4 space-y-3">
+      {!configured && (
+        <p className="text-xs text-amber-600 bg-amber-50 rounded-lg p-2">
+          ⚠ Identifiants API Amazon Business absents (<code>AMAZON_CLIENT_ID</code> / <code>AMAZON_CLIENT_SECRET</code>).
+          La connexion sera possible une fois l'onboarding développeur Amazon Business approuvé et les clés ajoutées au serveur.
+        </p>
+      )}
+      {connectedAccounts.map(a => (
+        <div key={a.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg">
+          <div className="flex items-center gap-2">
+            <CheckCircle size={14} className="text-green-500" />
+            <span className="text-sm text-slate-700">Amazon Business connecté</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <button onClick={reconnect} className="btn-secondary btn-sm text-xs" title="Réautoriser Amazon (si le token a expiré)">
+              <Link2 size={12} /> Reconnecter
+            </button>
+            <button onClick={() => disconnect(a)} className="text-red-400 hover:text-red-600 p-1" title="Déconnecter">
+              <Trash2 size={14} />
+            </button>
+          </div>
+        </div>
+      ))}
+      {connectedAccounts.length > 0 && (
+        <>
+          <SyncBtn label="Importer les factures" syncKey="amazon" syncStatus={syncStatus} onSync={sync} />
+          <p className="text-xs text-slate-400">
+            Les factures Amazon récupérées arrivent dans la page <strong>Extraction de données</strong> où l'IA extrait les montants, comme pour les reçus importés par courriel.
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
+
 function NovoxpressConfig({ configured: initialConfigured, onRefresh }) {
   const { addToast } = useToast()
   const [configured, setConfigured] = useState(initialConfigured)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [apiToken, setApiToken] = useState('')
   const [showPass, setShowPass] = useState(false)
   const [saving, setSaving] = useState(false)
   const confirm = useConfirm()
@@ -552,8 +730,13 @@ function NovoxpressConfig({ configured: initialConfigured, onRefresh }) {
   const save = async () => {
     setSaving(true)
     try {
-      await api.novoxpress.saveConfig({ username, password })
-      setUsername(''); setPassword('')
+      // username+password vont ensemble ; api_token (diagnostic env dev) peut
+      // être sauvegardé seul — on n'envoie que ce qui est rempli.
+      const body = {}
+      if (username && password) { body.username = username; body.password = password }
+      if (apiToken) body.api_token = apiToken
+      await api.novoxpress.saveConfig(body)
+      setUsername(''); setPassword(''); setApiToken('')
       setConfigured(true)
       onRefresh()
     } catch (e) { addToast({ message: e.message, type: 'error' }) }
@@ -599,9 +782,17 @@ function NovoxpressConfig({ configured: initialConfigured, onRefresh }) {
               {showPass ? <EyeOff size={14} /> : <Eye size={14} />}
             </button>
           </div>
+          <input
+            type="password"
+            className="input"
+            placeholder="Token API (diagnostic env. dev — généré sur app.novoxpress.ca/generate-my-token)"
+            value={apiToken}
+            onChange={e => setApiToken(e.target.value)}
+            autoComplete="off"
+          />
         </div>
         <div className="flex gap-2">
-          <button onClick={save} disabled={saving || !username || !password} className="btn-primary btn-sm">
+          <button onClick={save} disabled={saving || (!(username && password) && !apiToken)} className="btn-primary btn-sm">
             {saving ? 'Sauvegarde…' : configured ? 'Mettre à jour' : 'Enregistrer'}
           </button>
           {configured && (
@@ -818,20 +1009,20 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
                             <div className="text-xs text-slate-400">{u.email || '—'}</div>
                           </td>
                           <td className="py-1.5 px-2">
-                            <select
-                              value={value}
-                              onChange={e => setMapping(u.id, e.target.value || null)}
-                              className="input py-1 text-xs w-full max-w-xs"
-                            >
-                              <option value="">
-                                — {u.auto_owner_id ? `auto: ${ownerById[u.auto_owner_id]?.name || u.auto_owner_id}` : 'aucun'} —
-                              </option>
-                              {owners.map(o => (
-                                <option key={o.id} value={o.id}>
-                                  {o.name}{o.email && o.email !== o.name ? ` (${o.email})` : ''}
-                                </option>
-                              ))}
-                            </select>
+                            <div className="max-w-xs">
+                              <SearchableSelect
+                                value={value}
+                                options={owners}
+                                getOptionValue={o => o.id}
+                                getOptionLabel={o => `${o.name}${o.email && o.email !== o.name ? ` (${o.email})` : ''}`}
+                                getOptionKey={o => o.id}
+                                emptyOption={`— ${u.auto_owner_id ? `auto: ${ownerById[u.auto_owner_id]?.name || u.auto_owner_id}` : 'aucun'} —`}
+                                onChange={v => setMapping(u.id, v || null)}
+                                placeholder="—"
+                                className="input py-1 text-xs w-full"
+                                testId={`hubspot-owner-select-${u.id}`}
+                              />
+                            </div>
                           </td>
                           <td className="py-1.5 px-2 text-xs">
                             {isOverride && <span className="text-blue-600 font-medium">manuel</span>}
@@ -859,7 +1050,7 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
   )
 }
 
-function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured, novoxpressConfigured, hubspotConfigured }) {
+function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured, novoxpressConfigured, hubspotConfigured, amazonConfigured }) {
   const [expanded, setExpanded] = useState(false)
   const { icon: Icon, color } = connector
   const connectorAccounts = accounts.filter(a => a.connector === connector.id)
@@ -931,6 +1122,9 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
           {connector.id === 'hubspot' && (
             <HubSpotConfig configured={hubspotConfigured} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
+          {connector.id === 'amazon' && (
+            <AmazonConfig accounts={connectorAccounts} configured={amazonConfigured} syncStatus={syncStatus} onRefresh={onRefresh} />
+          )}
         </div>
       )}
     </div>
@@ -947,30 +1141,49 @@ const MODULE_LABELS = {
   achats: 'Achats', billets: 'Billets', serials: 'N° de série', envois: 'Envois',
   soumissions: 'Soumissions', retours: 'Retours', retour_items: 'Items retour',
   adresses: 'Adresses', bom: 'BOM', serial_changes: 'Changements série',
-  assemblages: 'Assemblages', factures: 'Factures',
+  assemblages: 'Assemblages', factures: 'Factures', amazon: 'Amazon Business',
 }
+
+const SYNC_LOG_RENDERS = {
+  created_at:       l => <span className="text-slate-500 whitespace-nowrap">{fmtDateTime(l.created_at)}</span>,
+  module:           l => <span className="font-medium text-slate-700">{MODULE_LABELS[l.module] || l.module}</span>,
+  trigger:          l => (
+    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${TRIGGER_COLORS[l.trigger] || 'bg-slate-100 text-slate-600'}`}>
+      {TRIGGER_LABELS[l.trigger] || l.trigger}
+    </span>
+  ),
+  status:           l => l.status === 'success'
+    ? <span className="text-green-600 font-medium">OK</span>
+    : <span className="text-red-500 font-medium">Erreur</span>,
+  records_modified: l => (
+    (l.records_modified > 0 || l.records_destroyed > 0)
+      ? <span>
+          {l.records_modified > 0 && <span className="text-slate-600">+{l.records_modified}</span>}
+          {l.records_destroyed > 0 && <span className="text-red-400 ml-1">-{l.records_destroyed}</span>}
+        </span>
+      : <span className="text-slate-300">—</span>
+  ),
+  duration_ms:      l => <span className="text-slate-400">{l.duration_ms != null ? `${(l.duration_ms / 1000).toFixed(1)}s` : '—'}</span>,
+  error_message:    l => <span className="text-red-400 block max-w-xs truncate" title={l.error_message || ''}>{l.error_message || '—'}</span>,
+}
+const SYNC_LOG_COLUMNS = TABLE_COLUMN_META.sync_log.map(meta => ({ ...meta, render: SYNC_LOG_RENDERS[meta.id] }))
 
 function SyncLogPanel() {
   const [open, setOpen] = useState(false)
   const [logs, setLogs] = useState([])
   const [loading, setLoading] = useState(true)
-  const [filter, setFilter] = useState('')
 
   const load = async () => {
     try {
-      const params = { limit: open ? 'all' : 50 }
-      if (filter) params.module = filter
-      const data = await api.syncLog.list(params)
+      const data = await api.syncLog.list({ limit: open ? 'all' : 50 })
       setLogs(data)
     } catch {} finally { setLoading(false) }
   }
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load() }, [filter, open])
+  useEffect(() => { load() }, [open])
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { const id = setInterval(load, 15000); return () => clearInterval(id) }, [filter, open])
-
-  const modules = [...new Set(logs.map(l => l.module))].sort()
+  useEffect(() => { const id = setInterval(load, 15000); return () => clearInterval(id) }, [open])
 
   const fmtTime = (iso) => {
     if (!iso) return '—'
@@ -978,12 +1191,8 @@ function SyncLogPanel() {
     const diff = Date.now() - d
     if (diff < 60000) return 'à l\'instant'
     if (diff < 3600000) return `il y a ${Math.floor(diff / 60000)}min`
-    if (diff < 86400000) return d.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit' })
-    return d.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+    return fmtDateTime(iso)
   }
-
-  const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' }) : '—'
-  const fmtClock = (iso) => iso ? new Date(iso).toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '—'
 
   // Stats summary
   const last24h = logs.filter(l => new Date(l.created_at) > new Date(Date.now() - 86400000))
@@ -1010,72 +1219,22 @@ function SyncLogPanel() {
 
       {open && (
         <div className="border-t border-slate-100">
-          <div className="px-4 py-2 flex items-center justify-between bg-slate-50/50">
+          <div className="px-4 py-2 bg-slate-50/50">
             <div className="flex gap-4 text-xs text-slate-500">
               <span>{logs.length} entrée{logs.length > 1 ? 's' : ''} · 7 derniers jours</span>
               {lastScheduled && <span>Dernière planifiée : {fmtTime(lastScheduled.created_at)}</span>}
               {lastWebhook && <span>Dernier webhook : {fmtTime(lastWebhook.created_at)}</span>}
             </div>
-            <select
-              value={filter}
-              onChange={e => { setFilter(e.target.value); setLoading(true) }}
-              className="text-xs border border-slate-200 rounded-lg px-2 py-1.5 bg-white text-slate-600"
-            >
-              <option value="">Tous les modules</option>
-              {modules.map(m => <option key={m} value={m}>{MODULE_LABELS[m] || m}</option>)}
-            </select>
           </div>
 
-          {loading && logs.length === 0 ? (
-            <div className="flex items-center justify-center h-20">
-              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-brand-600" />
-            </div>
-          ) : logs.length === 0 ? (
-            <div className="px-5 py-6 text-center text-sm text-slate-400">Aucun log</div>
-          ) : (
-            <div className="max-h-[70vh] overflow-y-auto">
-              <table className="w-full text-xs">
-                <thead className="bg-slate-50 sticky top-0">
-                  <tr>
-                    <th className="text-left px-4 py-2 font-medium text-slate-500">Date</th>
-                    <th className="text-left px-4 py-2 font-medium text-slate-500">Heure</th>
-                    <th className="text-left px-4 py-2 font-medium text-slate-500">Module</th>
-                    <th className="text-left px-4 py-2 font-medium text-slate-500">Source</th>
-                    <th className="text-left px-4 py-2 font-medium text-slate-500">Statut</th>
-                    <th className="text-right px-4 py-2 font-medium text-slate-500">Modifiés</th>
-                    <th className="text-right px-4 py-2 font-medium text-slate-500">Durée</th>
-                    <th className="text-left px-4 py-2 font-medium text-slate-500">Erreur</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-50">
-                  {logs.map(l => (
-                    <tr key={l.id} className={l.status === 'error' ? 'bg-red-50/50' : ''}>
-                      <td className="px-4 py-1.5 text-slate-500 whitespace-nowrap">{fmtDate(l.created_at)}</td>
-                      <td className="px-4 py-1.5 text-slate-500 whitespace-nowrap tabular-nums">{fmtClock(l.created_at)}</td>
-                      <td className="px-4 py-1.5 font-medium text-slate-700">{MODULE_LABELS[l.module] || l.module}</td>
-                      <td className="px-4 py-1.5">
-                        <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium ${TRIGGER_COLORS[l.trigger] || 'bg-slate-100 text-slate-600'}`}>
-                          {TRIGGER_LABELS[l.trigger] || l.trigger}
-                        </span>
-                      </td>
-                      <td className="px-4 py-1.5">
-                        {l.status === 'success'
-                          ? <span className="text-green-600 font-medium">OK</span>
-                          : <span className="text-red-500 font-medium">Erreur</span>}
-                      </td>
-                      <td className="px-4 py-1.5 text-right text-slate-600">
-                        {l.records_modified > 0 && <span>+{l.records_modified}</span>}
-                        {l.records_destroyed > 0 && <span className="text-red-400 ml-1">-{l.records_destroyed}</span>}
-                        {l.records_modified === 0 && l.records_destroyed === 0 && <span className="text-slate-300">—</span>}
-                      </td>
-                      <td className="px-4 py-1.5 text-right text-slate-400">{l.duration_ms != null ? `${(l.duration_ms / 1000).toFixed(1)}s` : '—'}</td>
-                      <td className="px-4 py-1.5 text-red-400 max-w-48 truncate" title={l.error_message || ''}>{l.error_message || ''}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
+          <DataTable
+            table="sync_log"
+            columns={SYNC_LOG_COLUMNS}
+            data={logs}
+            loading={loading}
+            searchFields={['module', 'trigger', 'status', 'error_message']}
+            height="60vh"
+          />
         </div>
       )}
     </div>
@@ -1090,7 +1249,7 @@ const SYNC_LABELS = {
 }
 
 export function ConnectorsContent() {
-  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, projets_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false, novoxpress_configured: false, hubspot_configured: false })
+  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, projets_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false, novoxpress_configured: false, hubspot_configured: false, amazon_configured: false })
   const [loading, setLoading] = useState(true)
   const { status: syncStatus, anyRunning } = useSyncStatus(3000)
 
@@ -1149,6 +1308,7 @@ export function ConnectorsContent() {
                   stripeConfigured={!!data.stripe_configured}
                   novoxpressConfigured={!!data.novoxpress_configured}
                   hubspotConfigured={!!data.hubspot_configured}
+                  amazonConfigured={!!data.amazon_configured}
                   syncConfigs={{
                     contacts:      data.contacts_sync    || {},
                     companies:     data.companies_sync   || {},

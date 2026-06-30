@@ -1,32 +1,53 @@
 import { useState, useEffect, useRef, Fragment } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowRight, SlidersHorizontal, X, Check, Target, Trophy, GripVertical, ChevronDown } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { GeoClientsMap } from '../components/GeoClientsMap.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { Modal } from '../components/Modal.jsx'
 import { AbonnementEventsTable } from '../components/AbonnementEventsTable.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
 
 const WIDGET_DEFS = [
-  { id: 'section_project_goal',     label: 'Objectif de projets',      group: 'Objectifs' },
-  { id: 'section_subscription_events', label: 'Mouvements d\'abonnements', group: 'Graphiques' },
-  { id: 'section_profitability',    label: 'Rentabilité',              group: 'Graphiques' },
-  { id: 'section_replacement_rate', label: 'Taux de remplacement',     group: 'Graphiques' },
-  { id: 'section_projects_created', label: 'Projets créés par mois',   group: 'Graphiques' },
-  { id: 'section_closing',       label: 'Taux de closing',       group: 'Graphiques' },
-  { id: 'section_shipments',     label: 'Livraisons par semaine', group: 'Graphiques' },
-  { id: 'section_shipping_costs', label: 'Coûts d\'expédition',    group: 'Graphiques' },
-  { id: 'section_geo_map',       label: 'Carte des clients',     group: 'Graphiques' },
-  { id: 'section_top_products', label: 'Meilleurs vendeurs',     group: 'Graphiques' },
-  { id: 'section_inventory_valuation', label: 'Valeur de l\'inventaire', group: 'Inventaire' },
-  { id: 'section_balance_sheet', label: 'Bilan QuickBooks',         group: 'Comptabilité' },
-  { id: 'section_tickets_monthly', label: 'Billets par mois',       group: 'Support' },
-  { id: 'section_support_weekly', label: 'Amélioration du support', group: 'Support' },
+  { id: 'section_project_goal',     label: 'Objectif de projets',      group: 'Objectifs',     slug: 'objectif-de-projets' },
+  { id: 'section_subscription_events', label: 'Mouvements d\'abonnements', group: 'Graphiques', slug: 'mouvements-abonnements' },
+  { id: 'section_profitability',    label: 'Rentabilité',              group: 'Graphiques',    slug: 'rentabilite' },
+  { id: 'section_replacement_rate', label: 'Taux de remplacement',     group: 'Graphiques',    slug: 'taux-de-remplacement' },
+  { id: 'section_projects_created', label: 'Projets créés par mois',   group: 'Graphiques',    slug: 'projets-crees' },
+  { id: 'section_closing',       label: 'Taux de closing',       group: 'Graphiques',    slug: 'taux-de-closing' },
+  { id: 'section_shipments',     label: 'Livraisons par semaine', group: 'Graphiques',    slug: 'livraisons' },
+  { id: 'section_shipping_costs', label: 'Coûts d\'expédition',    group: 'Graphiques',    slug: 'couts-expedition' },
+  { id: 'section_geo_map',       label: 'Carte des clients',     group: 'Graphiques',    slug: 'carte-clients' },
+  { id: 'section_top_products', label: 'Meilleurs vendeurs',     group: 'Graphiques',    slug: 'meilleurs-vendeurs' },
+  { id: 'section_inventory_valuation', label: 'Valeur de l\'inventaire', group: 'Inventaire', slug: 'valeur-inventaire' },
+  { id: 'section_bank_accounts', label: 'Soldes bancaires & CC',    group: 'Comptabilité', slug: 'soldes-bancaires' },
+  { id: 'section_balance_sheet', label: 'Bilan QuickBooks',         group: 'Comptabilité', slug: 'bilan' },
+  { id: 'section_tickets_monthly', label: 'Billets par mois',       group: 'Support',       slug: 'billets-par-mois' },
+  { id: 'section_support_weekly', label: 'Amélioration du support', group: 'Support',       slug: 'amelioration-support' },
 ]
 
+// Normalise un slug pour un matching tolérant : minuscules + suppression de
+// tout ce qui n'est pas alphanumérique. Ainsi « taux-de-remplacement »,
+// « tauxderemplacement » et « tauxDeRemplacement » résolvent vers la même section.
+function normalizeSlug(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replace(/[^a-z0-9]/g, '')
+}
+
+// Résout un slug d'URL (ex: 'tauxderemplacement') vers un id de section
+// (ex: 'section_replacement_rate'). Accepte aussi directement l'id complet.
+function resolveSectionSlug(slug) {
+  if (!slug) return null
+  const norm = normalizeSlug(slug)
+  const def = WIDGET_DEFS.find(w => normalizeSlug(w.slug) === norm || normalizeSlug(w.id) === norm)
+  return def ? def.id : null
+}
+
 const DEFAULT_PREFS = Object.fromEntries(WIDGET_DEFS.map(w => [w.id, true]))
+const WIDGET_LABEL = Object.fromEntries(WIDGET_DEFS.map(w => [w.id, w.label]))
+const WIDGET_SLUG = Object.fromEntries(WIDGET_DEFS.map(w => [w.id, w.slug]))
 
 function loadPrefs(userId) {
   try {
@@ -52,10 +73,10 @@ function saveCollapsed(userId, collapsed) {
   localStorage.setItem(`dashboard_collapsed_${userId}`, JSON.stringify(collapsed))
 }
 
-function CollapsibleCard({ id, title, description, leadingIcon, action, collapsed, onToggle, testId, children }) {
+function CollapsibleCard({ id, title, description, leadingIcon, action, collapsed, onToggle, testId, highlighted, children }) {
   const wrapperProps = {
     'data-section-id': id,
-    className: `card p-5 ${collapsed ? 'mb-3' : 'mb-6'}`,
+    className: `card p-5 ${collapsed ? 'mb-3' : 'mb-6'} transition-shadow ${highlighted ? 'ring-2 ring-brand-400 ring-offset-2' : ''}`,
   }
   if (testId) wrapperProps['data-testid'] = testId
   return (
@@ -262,6 +283,7 @@ function ProjectGoalWidget({ goal, onEdit }) {
 }
 
 function GoalEditorModal({ isOpen, onClose, onSave }) {
+  const { addToast } = useToast()
   const [loading, setLoading] = useState(false)
   const [form, setForm] = useState({ target_qty: '', start_date: '', end_date: '' })
 
@@ -283,7 +305,7 @@ function GoalEditorModal({ isOpen, onClose, onSave }) {
       onSave()
       onClose()
     } catch (err) {
-      alert(err.message)
+      addToast({ message: err.message, type: 'error' })
     } finally {
       setLoading(false)
     }
@@ -1156,19 +1178,35 @@ function ProfitabilityChart({ data, recentOrders }) {
       achatRevenue: achat?.revenue || 0, achatCogs: achat?.cogs || 0 })
   }
 
-  // 28-day rolling = last 4 weeks
-  const last4 = weeks.slice(-4)
-  const rolling28Revenue = last4.reduce((s, w) => s + w.revenue, 0)
-  const rolling28Cogs    = last4.reduce((s, w) => s + w.cogs, 0)
+  // Chaque point = fenêtre glissante 28 jours (4 semaines) se terminant à cette semaine.
+  // On résume les commandes des 28 derniers jours, pas seulement de la semaine.
+  const rollingWeeks = weeks.map((w, i) => {
+    const window = weeks.slice(Math.max(0, i - 3), i + 1)
+    return {
+      ...w,
+      revenue:       window.reduce((s, x) => s + x.revenue, 0),
+      cogs:          window.reduce((s, x) => s + x.cogs, 0),
+      subRevenue:    window.reduce((s, x) => s + x.subRevenue, 0),
+      subCogs:       window.reduce((s, x) => s + x.subCogs, 0),
+      achatRevenue:  window.reduce((s, x) => s + x.achatRevenue, 0),
+      achatCogs:     window.reduce((s, x) => s + x.achatCogs, 0),
+      windowWeeks:   window.length,
+    }
+  })
+
+  // 28-day rolling courant = fenêtre du dernier point
+  const current28 = rollingWeeks[rollingWeeks.length - 1] || { revenue: 0, cogs: 0, subRevenue: 0, achatRevenue: 0 }
+  const rolling28Revenue = current28.revenue
+  const rolling28Cogs    = current28.cogs
   const rolling28Margin  = rolling28Revenue - rolling28Cogs
   const rolling28Pct     = rolling28Revenue > 0 ? Math.round((rolling28Margin / rolling28Revenue) * 100) : null
 
   // Sub vs Achat breakdown for 28j
-  const subRevenue28   = last4.reduce((s, w) => s + w.subRevenue, 0)
-  const achatRevenue28 = last4.reduce((s, w) => s + w.achatRevenue, 0)
+  const subRevenue28   = current28.subRevenue
+  const achatRevenue28 = current28.achatRevenue
 
-  // Compute margin % per week
-  const weekMargins = weeks.map(w => w.revenue > 0 ? Math.round(((w.revenue - w.cogs) / w.revenue) * 100) : null)
+  // Compute margin % per point (sur la fenêtre 28 jours)
+  const weekMargins = rollingWeeks.map(w => w.revenue > 0 ? Math.round(((w.revenue - w.cogs) / w.revenue) * 100) : null)
 
   const W = 600, H = 160
   const padL = 32, padR = 8, padT = 12, padB = 28
@@ -1278,8 +1316,8 @@ function ProfitabilityChart({ data, recentOrders }) {
             return <polyline points={points.join(' ')} fill="none" stroke="#10b981" strokeWidth="2" strokeLinejoin="round" />
           })()}
 
-          {/* Points + hover zones */}
-          {weeks.map((w, i) => {
+          {/* Points + hover zones — chaque point résume la fenêtre 28 jours */}
+          {rollingWeeks.map((w, i) => {
             if (weekMargins[i] === null) return null
             const cx = xPos(i)
             const cy = yPos(weekMargins[i])
@@ -1322,14 +1360,16 @@ function ProfitabilityChart({ data, recentOrders }) {
             const tx = Math.min(Math.max(tooltip.x, 70), W - 70)
             const ty = Math.max(tooltip.y - 8, padT + 4)
             const w = tooltip.w
-            const label = w.date.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
+            // Fin de la fenêtre 28j = dimanche de la semaine du point
+            const endDate = new Date(w.date.getTime() + 6 * 86400000)
+            const label = endDate.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
             const hasBreakdown = activeFilter === 'Tous' && (w.subRevenue > 0 || w.achatRevenue > 0)
             const tooltipH = hasBreakdown ? 82 : 66
             return (
               <g pointerEvents="none">
                 <rect x={tx - 64} y={ty - 14} width={128} height={tooltipH} rx="5" fill="#1e293b" opacity="0.93" />
                 <text x={tx} y={ty + 2} textAnchor="middle" fontSize="9" fill="#94a3b8">
-                  Sem. du {label}
+                  28j au {label}
                 </text>
                 <text x={tx} y={ty + 16} textAnchor="middle" fontSize="10" fontWeight="bold"
                   fill={tooltip.pct >= 40 ? '#6ee7b7' : tooltip.pct >= 20 ? '#fbbf24' : '#f87171'}>
@@ -1351,8 +1391,8 @@ function ProfitabilityChart({ data, recentOrders }) {
           })()}
         </svg>
         <div className="flex items-center gap-4 text-xs text-slate-400 mt-1 px-1">
-          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" /> Marge %</span>
-          <span className="ml-auto">Points opaques = 28 derniers jours</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-emerald-500 inline-block" /> Marge % (28j glissants)</span>
+          <span className="ml-auto">Chaque point = 28 jours glissants</span>
         </div>
       </div>
 
@@ -1362,20 +1402,28 @@ function ProfitabilityChart({ data, recentOrders }) {
           : activeFilter === 'Abonnement' ? recentOrders.filter(o => o.is_subscription)
           : recentOrders.filter(o => !o.is_subscription)
 
+        // Fenêtre 28 jours se terminant à la semaine sélectionnée (point cliqué)
         let weekStart = null, weekEnd = null, weekLabel = null
         if (selectedWeek) {
           const [yr, mo, dy] = selectedWeek.split('-').map(Number)
-          weekStart = new Date(yr, mo - 1, dy)
-          weekEnd = new Date(weekStart.getTime() + 7 * 86400000)
-          weekLabel = weekStart.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', year: 'numeric' })
+          const monday = new Date(yr, mo - 1, dy)
+          weekEnd = new Date(monday.getTime() + 7 * 86400000)       // dimanche soir de la semaine du point
+          weekStart = new Date(monday.getTime() - 21 * 86400000)    // 28 jours avant la fin de fenêtre
+          weekLabel = new Date(monday.getTime() + 6 * 86400000)
+            .toLocaleDateString('fr-CA', { month: 'short', day: 'numeric', year: 'numeric' })
         }
+        // Point sélectionné → fenêtre 28j de ce point. Sinon → 28 derniers jours
+        // (le serveur renvoie 140j pour couvrir tout le graphe, on borne ici l'affichage par défaut).
         const filtered = selectedWeek
           ? byType.filter(o => {
               if (!o.last_shipped_at) return false
               const t = new Date(o.last_shipped_at).getTime()
               return t >= weekStart.getTime() && t < weekEnd.getTime()
             })
-          : byType
+          : byType.filter(o => {
+              if (!o.last_shipped_at) return false
+              return new Date(o.last_shipped_at).getTime() >= Date.now() - 28 * 86400000
+            })
 
         if (!byType.length && !selectedWeek) return null
         return (
@@ -1387,7 +1435,7 @@ function ProfitabilityChart({ data, recentOrders }) {
               >
                 <span className="text-xs">{showOrders ? '▼' : '▶'}</span>
                 {selectedWeek
-                  ? `Commandes — semaine du ${weekLabel} (${filtered.length})`
+                  ? `Commandes — 28 jours au ${weekLabel} (${filtered.length})`
                   : `Commandes envoyées — 28 derniers jours (${filtered.length})`}
               </button>
               {selectedWeek && (
@@ -1444,7 +1492,7 @@ function ProfitabilityChart({ data, recentOrders }) {
                     <tr>
                       <td colSpan={7} className="px-3 py-4 text-center text-slate-400 text-sm">
                         {selectedWeek
-                          ? `Aucune commande envoyée la semaine du ${weekLabel}${weekEnd && weekEnd.getTime() < Date.now() - 28 * 86400000 ? ' (au-delà de la fenêtre 28 jours du tableau)' : ''}`
+                          ? `Aucune commande envoyée dans les 28 jours au ${weekLabel}`
                           : 'Aucune commande'}
                       </td>
                     </tr>
@@ -1682,7 +1730,7 @@ function ReplacementRateChart({ replacementRate }) {
                       <td className="px-3 py-1.5 text-center text-slate-600">{it.qty}</td>
                       <td className="px-3 py-1.5 text-right text-slate-600">{fmtCad(it.unit_cost)}</td>
                       <td className="px-3 py-1.5 text-right font-medium text-amber-700">{fmtCad(it.total_cost)}</td>
-                      <td className="px-3 py-1.5 text-right text-slate-500">{it.shipped_at ? new Date(it.shipped_at).toLocaleDateString('fr-CA') : '—'}</td>
+                      <td className="px-3 py-1.5 text-right text-slate-500">{it.shipped_at ? fmtDate(it.shipped_at) : '—'}</td>
                     </tr>
                   ))}
                   {filteredItems.length === 0 && (
@@ -1887,6 +1935,85 @@ function fmtMoney(n, currency) {
   } catch {
     return `${Number(n).toFixed(2)} ${currency || ''}`.trim()
   }
+}
+
+function BankAccountsPanel() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  const load = (opts = {}) => {
+    setLoading(true)
+    setError(null)
+    api.dashboard.bankAccounts(opts)
+      .then(r => { setData(r); setLoading(false) })
+      .catch(e => { setError(e?.message || 'Erreur'); setLoading(false) })
+  }
+
+  useEffect(() => { load() }, [])
+
+  if (loading && !data) {
+    return <div className="h-32 flex items-center justify-center text-slate-400 text-sm">Chargement des soldes…</div>
+  }
+  if (error) {
+    return (
+      <div className="text-sm text-rose-600">
+        Impossible de charger les soldes QuickBooks : {error}
+        <button onClick={load} className="ml-2 underline">Réessayer</button>
+      </div>
+    )
+  }
+  if (!data?.accounts?.length) {
+    return <div className="text-sm text-slate-500">Aucun compte bancaire ou carte de crédit renvoyé par QuickBooks.</div>
+  }
+
+  const banks = data.accounts.filter(a => a.type === 'Bank')
+  const cards = data.accounts.filter(a => a.type === 'Credit Card')
+
+  const renderGroup = (label, rows, total) => rows.length ? (
+    <>
+      <tr className="border-b border-slate-100 bg-slate-50 font-semibold text-slate-900">
+        <td className="py-1.5 px-3" colSpan={2}>{label}</td>
+      </tr>
+      {rows.map(a => (
+        <tr key={a.id} className="border-b border-slate-100 text-slate-600">
+          <td className="py-1.5 px-3">{a.name}</td>
+          <td className="py-1.5 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
+            {fmtMoney(a.balance, a.currency || data.currency)}
+          </td>
+        </tr>
+      ))}
+      <tr className="border-b border-slate-200 font-medium text-slate-800">
+        <td className="py-1.5 px-3">Sous-total {label.toLowerCase()}</td>
+        <td className="py-1.5 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
+          {fmtMoney(total, data.currency)}
+        </td>
+      </tr>
+    </>
+  ) : null
+
+  return (
+    <div data-testid="dashboard-bank-accounts">
+      <div className="flex items-center justify-between mb-3 text-xs text-slate-500">
+        <span>Soldes du jour · Devise {data.currency}</span>
+        <button onClick={() => load({ refresh: true })} className="text-brand-600 hover:underline">Rafraîchir</button>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <tbody>
+            {renderGroup('Comptes bancaires', banks, data.totals?.bank ?? 0)}
+            {renderGroup('Cartes de crédit', cards, data.totals?.credit_card ?? 0)}
+            <tr className="font-semibold text-slate-900">
+              <td className="py-2 px-3">Net (banques − cartes)</td>
+              <td className="py-2 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
+                {fmtMoney(data.totals?.net ?? 0, data.currency)}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
 }
 
 function BalanceSheetRow({ node, currency, expanded, onToggle }) {
@@ -2175,8 +2302,11 @@ export default function Dashboard() {
   const [showGoalEditor, setShowGoalEditor] = useState(false)
   const { user } = useAuth()
   const navigate = useNavigate()
+  const { section: sectionParam } = useParams()
   const [prefs, setPrefs] = useState(() => loadPrefs(user?.id || 'default'))
   const [collapsed, setCollapsed] = useState(() => loadCollapsed(user?.id || 'default'))
+  const [highlightId, setHighlightId] = useState(null)
+  const [activeId, setActiveId] = useState(null)
 
   const refresh = () => {
     setLoading(true)
@@ -2187,6 +2317,32 @@ export default function Dashboard() {
   useEffect(() => {
     refresh()
   }, [])
+
+  // Scrolle vers une section, la déplie si repliée, et la met en surbrillance
+  // brièvement. Réutilisé par le deep-link (URL) et la table des matières.
+  function scrollToSection(targetId) {
+    if (!targetId) return
+    if (collapsed[targetId]) {
+      setCollapsed(prev => ({ ...prev, [targetId]: false }))
+    }
+    setTimeout(() => {
+      const el = document.querySelector(`[data-section-id="${targetId}"]`)
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        setHighlightId(targetId)
+        setTimeout(() => setHighlightId(null), 2000)
+      }
+    }, 100)
+  }
+
+  // Deep-link vers une section : /dashboard/:section (ex: /dashboard/taux-de-remplacement).
+  // On attend que les données soient chargées (sections rendues) avant de scroller.
+  useEffect(() => {
+    const targetId = resolveSectionSlug(sectionParam)
+    if (!targetId || loading) return
+    scrollToSection(targetId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sectionParam, loading])
 
   function updatePrefs(newPrefs) {
     setPrefs(newPrefs)
@@ -2204,6 +2360,34 @@ export default function Dashboard() {
   const show = (id) => prefs[id] !== false
   const isCollapsed = (id) => collapsed[id] === true
   const orderedIds = getOrderedIds(prefs)
+  // Sections effectivement affichées (visibles via prefs), dans l'ordre courant.
+  const visibleIds = orderedIds.filter(show)
+  const visibleKey = visibleIds.join(',')
+
+  // Scroll-spy : surligne dans la table des matières la section actuellement
+  // en haut du viewport. IntersectionObserver avec une bande de détection en
+  // haut du conteneur de scroll (<main>).
+  useEffect(() => {
+    if (loading) return
+    const ids = visibleKey ? visibleKey.split(',') : []
+    if (!ids.length) return
+    const visible = new Set()
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        const id = e.target.getAttribute('data-section-id')
+        if (e.isIntersecting) visible.add(id)
+        else visible.delete(id)
+      }
+      const first = ids.find(id => visible.has(id))
+      if (first) setActiveId(first)
+    }, { rootMargin: '-72px 0px -65% 0px', threshold: 0 })
+    ids.forEach(id => {
+      const el = document.querySelector(`[data-section-id="${id}"]`)
+      if (el) io.observe(el)
+    })
+    return () => io.disconnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, visibleKey])
 
   // Map id → JSX. L'ordre d'affichage est piloté par `orderedIds`, pas par
   // l'ordre déclaré ici — quand tu ajoutes une nouvelle section, ajoute-la
@@ -2213,6 +2397,7 @@ export default function Dashboard() {
     id,
     collapsed: isCollapsed(id),
     onToggle: () => toggleCollapsed(id),
+    highlighted: highlightId === id,
     ...extra,
   })
 
@@ -2325,6 +2510,15 @@ export default function Dashboard() {
         <GeoClientsMap geoData={data?.geoClients || []} unplacedCount={data?.geoClientsUnplaced || 0} />
       </CollapsibleCard>
     ),
+    section_bank_accounts: (
+      <CollapsibleCard
+        {...cardProps('section_bank_accounts', { testId: 'section-bank-accounts' })}
+        title="Soldes bancaires & cartes de crédit"
+        description="Solde courant du jour de chaque compte bancaire et carte de crédit — source QuickBooks (CurrentBalance)"
+      >
+        <BankAccountsPanel />
+      </CollapsibleCard>
+    ),
     section_balance_sheet: (
       <CollapsibleCard
         {...cardProps('section_balance_sheet', { testId: 'section-balance-sheet' })}
@@ -2367,9 +2561,7 @@ export default function Dashboard() {
   if (loading && !data) {
     return (
       <Layout>
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" />
-        </div>
+        <Spinner center />
       </Layout>
     )
   }
@@ -2394,11 +2586,46 @@ export default function Dashboard() {
           <DashboardEditor prefs={prefs} onChange={updatePrefs} onClose={() => setShowEditor(false)} />
         )}
 
-        {orderedIds.map(id => (
-          show(id) && cards[id]
-            ? <Fragment key={id}>{cards[id]}</Fragment>
-            : null
-        ))}
+        <div className="flex gap-6 items-start">
+          {/* Table des matières — sticky, masquée sous lg. Reflète l'ordre et la
+              visibilité courants des sections. Cliquer scrolle vers la section. */}
+          <nav
+            aria-label="Sections du tableau de bord"
+            className="hidden lg:block w-56 shrink-0 sticky top-6 self-start max-h-[calc(100vh-6rem)] overflow-y-auto"
+            data-testid="dashboard-toc"
+          >
+            <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide px-3 mb-1">Sections</div>
+            <ul className="space-y-0.5">
+              {visibleIds.map(id => {
+                const isActive = activeId === id
+                return (
+                  <li key={id}>
+                    <Link
+                      to={`/dashboard/${WIDGET_SLUG[id]}`}
+                      data-testid={`toc-link-${id}`}
+                      data-active={isActive ? 'true' : 'false'}
+                      className={`block text-sm px-3 py-1.5 rounded-md border-l-2 transition-colors truncate ${
+                        isActive
+                          ? 'border-brand-500 bg-brand-50 text-brand-700 font-medium'
+                          : 'border-transparent text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                      }`}
+                    >
+                      {WIDGET_LABEL[id]}
+                    </Link>
+                  </li>
+                )
+              })}
+            </ul>
+          </nav>
+
+          <div className="flex-1 min-w-0">
+            {orderedIds.map(id => (
+              show(id) && cards[id]
+                ? <Fragment key={id}>{cards[id]}</Fragment>
+                : null
+            ))}
+          </div>
+        </div>
 
         <GoalEditorModal
           isOpen={showGoalEditor}

@@ -11,8 +11,9 @@ const router = Router()
 // airtable_field_defs doit pouvoir y figurer.
 const ALLOWED_TABLES = new Set([
   'companies', 'contacts', 'projects', 'products',
-  'orders', 'tickets', 'purchases', 'serial_numbers', 'interactions', 'shipments',
-  'abonnements', 'retours', 'factures', 'assemblages', 'achats_fournisseurs', 'tasks',
+  'orders', 'order_items', 'tickets', 'purchases', 'serial_numbers', 'interactions', 'shipments',
+  'abonnements', 'retours', 'returns', 'return_items', 'adresses', 'soumissions',
+  'factures', 'assemblages', 'achats_fournisseurs', 'tasks',
   'employees', 'paies', 'paie_items', 'bom_items',
   'company_serials',
 ])

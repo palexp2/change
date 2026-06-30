@@ -62,8 +62,8 @@ describe('CompanyDetail — clic sur un billet de support ouvre le ticket', () =
     // Ouvre l'onglet Support
     await page.click('button:has-text("support")')
 
-    // La ligne du billet doit être présente puis cliquable
-    const row = page.locator(`tr:has-text("E2E click ticket")`).first()
+    // La ligne du billet (div DataTable) doit être présente puis cliquable
+    const row = page.locator('[data-row-id]', { hasText: 'E2E click ticket' }).first()
     await row.waitFor({ state: 'visible', timeout: 5000 })
 
     // Le curseur doit indiquer que la ligne est cliquable

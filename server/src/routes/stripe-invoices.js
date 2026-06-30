@@ -9,6 +9,8 @@ import {
   createOrRefreshCheckoutSession,
 } from '../services/stripeInvoices.js'
 import { sendEmail } from '../services/gmail.js'
+import { checkForeignKeys } from '../utils/fkExists.js'
+import { logSync } from '../services/syncLog.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -83,6 +85,8 @@ router.post('/', async (req, res) => {
   } = req.body || {}
 
   if (!company_id) return res.status(400).json({ error: 'company_id requis' })
+  const fkErr = checkForeignKeys({ company_id })
+  if (fkErr) return res.status(400).json({ error: fkErr.message })
   if (!shipping_province) {
     return res.status(400).json({
       error: 'Aucune adresse de livraison avec province trouvée pour cette entreprise. Créez une adresse de livraison avant de générer une facture.',
@@ -137,6 +141,13 @@ router.post('/', async (req, res) => {
         db.prepare(`UPDATE pending_invoices SET status='sent', sent_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(id)
       } catch (e) {
         emailErr = e.message
+        // Échec d'envoi client-facing (email de facture) = opération durable
+        // qui doit rester auditable 7 jours dans sync_log. La facture reste 'draft'.
+        logSync('stripe-invoice-email', 'manual', {
+          status: 'error',
+          error: `${id}: ${e.message}`,
+          durationMs: Date.now() - started,
+        })
       }
     }
   } else {
@@ -335,12 +346,20 @@ async function sendInvoiceEmail({ pendingId, userId, overrides }) {
 
   const sent = await sendEmail(recipientEmail, subject, html, { userId })
 
-  db.prepare(`INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
-    VALUES (?,?,?,?,'email','out',?)`)
-    .run(interactionId, recipientContactId, pending.company_id, userId, ts)
-  db.prepare(`INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, gmail_message_id, gmail_thread_id, automated, open_count)
-    VALUES (?,?,?,?,?,?,?,?,0,0)`)
-    .run(emailRowId, interactionId, subject, html, sent.account_email, recipientEmail, sent.message_id, sent.thread_id || null)
+  // L'email est DÉJÀ parti. On persiste l'interaction et l'email dans une seule
+  // transaction : sans ça, si le second INSERT échoue on aurait une interaction
+  // orpheline et l'email n'apparaîtrait jamais dans le CRM — l'utilisateur croirait
+  // l'envoi raté alors qu'il a bel et bien eu lieu. Les deux lignes commitent
+  // ensemble ou pas du tout.
+  const persistEmail = db.transaction(() => {
+    db.prepare(`INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
+      VALUES (?,?,?,?,'email','out',?)`)
+      .run(interactionId, recipientContactId, pending.company_id, userId, ts)
+    db.prepare(`INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, gmail_message_id, gmail_thread_id, automated, open_count)
+      VALUES (?,?,?,?,?,?,?,?,0,0)`)
+      .run(emailRowId, interactionId, subject, html, sent.account_email, recipientEmail, sent.message_id, sent.thread_id || null)
+  })
+  persistEmail()
 
   return {
     emailedTo: recipientEmail,

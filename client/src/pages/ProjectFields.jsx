@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { ChevronLeft, RefreshCw, Trash2, Plus, X } from 'lucide-react'
 import { Layout } from '../components/Layout.jsx'
 import api from '../lib/api.js'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 
 // Compat type Airtable (côté ERP) ↔ type colonne ERP. Aligné sur TYPE_COMPAT
@@ -177,27 +178,31 @@ function MappingPicker({ erpColumn, airtableFields, tableMap, onSave, savingId }
 
   return (
     <div className="space-y-1.5 bg-slate-50 p-2 rounded border border-slate-200">
-      <select
+      <SearchableSelect
+        testId="mapping-airtable-field"
         value={atFieldName}
-        onChange={e => setAtFieldName(e.target.value)}
-        className="input text-xs w-full"
-      >
-        <option value="">— Champ Airtable —</option>
-        {candidates.map(c => (
-          <option key={c.airtable_field_name} value={c.airtable_field_name}>
-            {c.airtable_field_name} ({c.airtable_field_type})
-          </option>
-        ))}
-      </select>
+        options={candidates}
+        getOptionValue={c => c.airtable_field_name}
+        getOptionLabel={c => `${c.airtable_field_name} (${c.airtable_field_type})`}
+        getOptionKey={c => c.airtable_field_name}
+        onChange={setAtFieldName}
+        emptyOption="— Champ Airtable —"
+        placeholder="— Champ Airtable —"
+        searchPlaceholder="Rechercher un champ…"
+      />
       {isLink && (
-        <select
+        <SearchableSelect
+          testId="mapping-target-table"
           value={target}
-          onChange={e => setTarget(e.target.value)}
-          className="input text-xs w-full"
-        >
-          <option value="">— Table ERP cible —</option>
-          {linkTargets.map(t => <option key={t} value={t}>{t}</option>)}
-        </select>
+          options={linkTargets}
+          getOptionValue={t => t}
+          getOptionLabel={t => t}
+          getOptionKey={t => t}
+          onChange={setTarget}
+          emptyOption="— Table ERP cible —"
+          placeholder="— Table ERP cible —"
+          searchPlaceholder="Rechercher une table…"
+        />
       )}
       {err && <div className="text-[11px] text-red-600">{err}</div>}
       <div className="flex justify-end gap-1">
@@ -301,17 +306,36 @@ function AirtableConfigSection({ onSynced }) {
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-xs text-slate-500 mb-1">Base</label>
-          <select className="input text-sm w-full" value={baseId} onChange={e => { setBaseId(e.target.value); setTableId('') }}>
-            <option value="">— Sélectionner —</option>
-            {bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-          </select>
+          <SearchableSelect
+            testId="projets-base-select"
+            className="input"
+            size="sm"
+            value={baseId}
+            options={bases}
+            getOptionValue={b => b.id}
+            getOptionLabel={b => b.name}
+            onChange={v => { setBaseId(v); setTableId('') }}
+            emptyOption="— Sélectionner —"
+            placeholder="Choisir une base…"
+            searchPlaceholder="Rechercher une base…"
+          />
         </div>
         <div>
           <label className="block text-xs text-slate-500 mb-1">Table projets</label>
-          <select className="input text-sm w-full" value={tableId} onChange={e => setTableId(e.target.value)} disabled={!baseId}>
-            <option value="">— Sélectionner —</option>
-            {tables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-          </select>
+          <SearchableSelect
+            testId="projets-table-select"
+            className="input"
+            size="sm"
+            value={tableId}
+            options={tables}
+            getOptionValue={t => t.id}
+            getOptionLabel={t => t.name}
+            onChange={setTableId}
+            emptyOption="— Sélectionner —"
+            placeholder="Choisir une table…"
+            searchPlaceholder="Rechercher une table…"
+            disabled={!baseId}
+          />
         </div>
       </div>
       {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
@@ -319,21 +343,80 @@ function AirtableConfigSection({ onSynced }) {
   )
 }
 
+// Bandeau de statut source pour les modules autres que projets. La config
+// base/table de ces modules vit dans Connecteurs → Airtable ; ici on se contente
+// d'afficher l'état + un bouton de sync, et un lien vers la config si non
+// configurée.
+function ModuleSourceStatus({ data, onSynced }) {
+  const { status: syncStatus } = useSyncStatus(3000)
+  const syncing = !!(data?.sync_key && syncStatus?.[data.sync_key]?.running)
+  const [error, setError] = useState(null)
+
+  const wasSyncing = useRef(false)
+  useEffect(() => {
+    if (syncing) { wasSyncing.current = true; return }
+    if (wasSyncing.current) { wasSyncing.current = false; onSynced?.() }
+  }, [syncing, onSynced])
+
+  async function handleSync() {
+    if (!data?.sync_key || !data.configured) return
+    setError(null)
+    try { await api.airtable.sync(data.sync_key) } catch (e) { setError(e.message || 'Erreur sync') }
+  }
+
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-700">Source Airtable</h2>
+          <div className="text-xs text-slate-500 flex items-center gap-2 mt-0.5">
+            {data?.configured ? (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                <span>Configurée</span>
+              </>
+            ) : (
+              <>
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                <span className="text-amber-600">
+                  Non configurée — <Link to="/connectors" className="underline hover:text-amber-700">choisir la base/table dans Connecteurs</Link>
+                </span>
+              </>
+            )}
+            {syncing && <span className="text-amber-600 font-medium animate-pulse">Synchronisation en cours…</span>}
+          </div>
+        </div>
+        <button onClick={handleSync} disabled={syncing || !data?.configured} className="btn-primary btn-sm flex items-center gap-1.5">
+          <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
+          {syncing ? 'Synchronisation…' : 'Synchroniser'}
+        </button>
+      </div>
+      {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
+    </div>
+  )
+}
+
 export default function ProjectFields() {
+  const { module: moduleParam } = useParams()
+  const module = moduleParam || 'projets'
   const [data, setData] = useState(null)
   const [filter, setFilter] = useState('')
   const [savingId, setSavingId] = useState(null)
   const confirm = useConfirm()
   const { addToast } = useToast()
 
+  // Table ERP cible du module (pour upsert orphelines + invalidation DataTable).
+  // Fallback 'projects' tant que la mapping-data n'est pas chargée.
+  const erpTable = data?.erp_table || (module === 'projets' ? 'projects' : null)
+
   const reload = useCallback(() => {
-    return api.airtable.projetsMappingData()
+    return api.airtable.moduleMappingData(module)
       .then(d => setData(d))
       .catch(e => addToast({ message: e.message || 'Erreur chargement', type: 'error' }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [module])
 
-  useEffect(() => { reload() }, [reload])
+  useEffect(() => { setData(null); reload() }, [reload])
 
   // Helper : upsert def par column (gère orphelines automatiquement)
   async function applyChange(col, payload) {
@@ -341,12 +424,12 @@ export default function ProjectFields() {
     try {
       if (col.def_id) {
         await api.airtableFields.update(col.def_id, payload)
-      } else {
-        await api.airtableFields.upsertByColumn('projects', col.column_name, payload)
+      } else if (erpTable) {
+        await api.airtableFields.upsertByColumn(erpTable, col.column_name, payload)
       }
       await reload()
       // Notifie les DataTable ouverts pour rafraîchir le rendu (labels/types).
-      window.dispatchEvent(new CustomEvent('views:updated', { detail: { table: 'projects' } }))
+      if (erpTable) window.dispatchEvent(new CustomEvent('views:updated', { detail: { table: erpTable } }))
     } catch (e) {
       addToast({ message: e.message || 'Erreur', type: 'error' })
     } finally {
@@ -367,9 +450,9 @@ export default function ProjectFields() {
   async function handleMappingSave(payload) {
     setSavingId(payload.column_name || '__unmap__')
     try {
-      await api.airtable.setProjetsFieldMapping(payload)
+      await api.airtable.setModuleFieldMapping(module, payload)
       await reload()
-      window.dispatchEvent(new CustomEvent('views:updated', { detail: { table: 'projects' } }))
+      if (erpTable) window.dispatchEvent(new CustomEvent('views:updated', { detail: { table: erpTable } }))
     } finally {
       setSavingId(null)
     }
@@ -387,7 +470,7 @@ export default function ProjectFields() {
       await api.airtableFields.delete(col.def_id)
       addToast({ message: 'Colonne supprimée', type: 'success' })
       await reload()
-      window.dispatchEvent(new CustomEvent('views:updated', { detail: { table: 'projects' } }))
+      if (erpTable) window.dispatchEvent(new CustomEvent('views:updated', { detail: { table: erpTable } }))
     } catch (e) {
       addToast({ message: e.message || 'Erreur', type: 'error' })
     } finally {
@@ -410,11 +493,11 @@ export default function ProjectFields() {
     <Layout>
       <div className="p-6 max-w-6xl">
         <div className="flex items-center gap-3 mb-4">
-          <Link to="/pipeline" className="text-slate-400 hover:text-slate-600">
+          <Link to={module === 'projets' ? '/pipeline' : '/connectors'} className="text-slate-400 hover:text-slate-600">
             <ChevronLeft size={20} />
           </Link>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Champs — Projets</h1>
+            <h1 className="text-2xl font-bold text-slate-900">Champs — {data?.label || (module === 'projets' ? 'Projets' : module)}</h1>
             <p className="text-sm text-slate-500 mt-0.5">
               {cols.length} champ{cols.length !== 1 ? 's' : ''}
               {data && (
@@ -424,7 +507,9 @@ export default function ProjectFields() {
           </div>
         </div>
 
-        <AirtableConfigSection onSynced={reload} />
+        {module === 'projets'
+          ? <AirtableConfigSection onSynced={reload} />
+          : <ModuleSourceStatus data={data} onSynced={reload} />}
 
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">

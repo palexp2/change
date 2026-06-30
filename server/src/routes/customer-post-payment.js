@@ -3,6 +3,23 @@ import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { getStripeClient, ensureStripeCustomer } from '../services/stripeInvoices.js'
 import { normalizeShortToken } from '../utils/shortToken.js'
+import { logSync } from '../services/syncLog.js'
+
+// Crée/synchronise le customer Stripe sans bloquer la réponse, mais trace tout
+// échec dans sync_log au lieu de l'avaler silencieusement : si le customer
+// n'existe pas côté Stripe, les opérations d'abonnement/paiement suivantes
+// référenceraient un customer fantôme — divergence d'état non détectée sur un
+// flux qui touche l'argent.
+async function ensureStripeCustomerTraced(stripe, companyId, flow) {
+  try {
+    await ensureStripeCustomer(stripe, companyId)
+  } catch (e) {
+    logSync('stripe', 'webhook', {
+      status: 'error',
+      error: `ensureStripeCustomer(${flow}) company=${companyId}: ${e.message}`,
+    })
+  }
+}
 
 const router = Router()
 
@@ -228,33 +245,55 @@ router.post('/:sessionId/submit', async (req, res) => {
     }
     if (!row.is_new_site) return res.status(400).json({ error: 'is_new_site requis avant soumission' })
 
-    // Upsert addresses if company is known
-    if (row.company_id) {
-      const farm = row.farm_address_json ? JSON.parse(row.farm_address_json) : null
-      const ship = row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null
-      const sameAsShipping = !!row.shipping_same_as_farm
+    // Finalisation atomique. Endpoint public sans auth = exposé aux double-submits
+    // (le client peut renvoyer /submit deux fois, ou deux onglets concurrents).
+    // On enveloppe la réclamation du statut ET les upserts d'adresses dans une
+    // seule transaction better-sqlite3 :
+    //   1. Un UPDATE conditionnel (WHERE status != 'submitted') « réclame » la
+    //      soumission de façon atomique. Une seule des requêtes concurrentes voit
+    //      changes===1 ; les autres voient changes===0 et n'exécutent aucun upsert.
+    //      Cela empêche deux requêtes de voir un SELECT d'adresse vide simultané
+    //      puis d'INSÉRER chacune une adresse 'Livraison' en double (orpheline).
+    //   2. Les upserts d'adresses tournent dans la même transaction : tout est
+    //      commité ensemble, ou rien (rollback si une exception est levée).
+    const finalize = db.transaction(() => {
+      const claim = db.prepare(
+        `UPDATE customer_onboarding_responses SET status='submitted', submitted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND status != 'submitted'`
+      ).run(row.id)
+      if (claim.changes === 0) return { alreadySubmitted: true }
 
-      function upsertAddress(type, addr) {
-        if (!addr || !addr.line1 || !addr.province) return
-        const existing = db.prepare(
-          "SELECT id FROM adresses WHERE company_id=? AND address_type=? ORDER BY created_at DESC LIMIT 1"
-        ).get(row.company_id, type)
-        if (existing) {
-          db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
-            .run(addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada', existing.id)
-        } else {
-          db.prepare(`INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country) VALUES (?,?,?,?,?,?,?,?)`)
-            .run(randomUUID(), row.company_id, type, addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada')
+      // Upsert addresses if company is known
+      if (row.company_id) {
+        const farm = row.farm_address_json ? JSON.parse(row.farm_address_json) : null
+        const ship = row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null
+        const sameAsShipping = !!row.shipping_same_as_farm
+
+        function upsertAddress(type, addr) {
+          if (!addr || !addr.line1 || !addr.province) return
+          const existing = db.prepare(
+            "SELECT id FROM adresses WHERE company_id=? AND address_type=? ORDER BY created_at DESC LIMIT 1"
+          ).get(row.company_id, type)
+          if (existing) {
+            db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
+              .run(addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada', existing.id)
+          } else {
+            db.prepare(`INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country) VALUES (?,?,?,?,?,?,?,?)`)
+              .run(randomUUID(), row.company_id, type, addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada')
+          }
         }
+
+        if (row.is_new_site === 'new' && farm) upsertAddress('Ferme', farm)
+        if (row.is_new_site === 'new' && sameAsShipping && farm) upsertAddress('Livraison', farm)
+        else if (ship) upsertAddress('Livraison', ship)
       }
+      return { alreadySubmitted: false }
+    })
 
-      if (row.is_new_site === 'new' && farm) upsertAddress('Ferme', farm)
-      if (row.is_new_site === 'new' && sameAsShipping && farm) upsertAddress('Livraison', farm)
-      else if (ship) upsertAddress('Livraison', ship)
-    }
-
-    db.prepare(`UPDATE customer_onboarding_responses SET status='submitted', submitted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(row.id)
+    const { alreadySubmitted } = finalize()
     const refreshed = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)
+    if (alreadySubmitted) {
+      return res.json({ ok: true, already_submitted: true, response: shapeResponse(refreshed) })
+    }
     res.json({ ok: true, response: shapeResponse(refreshed) })
   } catch (e) {
     if (e.message === 'not_paid') return res.status(402).json({ error: 'Paiement non confirmé' })
@@ -302,14 +341,18 @@ router.post('/:sessionId/extras', async (req, res) => {
     if (!province) return res.status(400).json({ error: 'Aucune province de livraison déterminée — soumettez d\'abord vos adresses' })
     const country = ship?.country || 'Canada'
 
-    // Create pending invoice
+    // Create pending invoice + lier au formulaire client de façon atomique :
+    // si le lien échoue, la facture ne doit pas exister orpheline (impossible à
+    // retracer depuis la réponse du client, surtout une fois la Checkout Session créée).
     const id = randomUUID()
-    db.prepare(`
-      INSERT INTO pending_invoices (id, company_id, currency, items_json, shipping_province, shipping_country, due_days, status, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?)
-    `).run(id, row.company_id, 'CAD', JSON.stringify(resolved), province, country, 30, 'sent', null)
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO pending_invoices (id, company_id, currency, items_json, shipping_province, shipping_country, due_days, status, created_by)
+        VALUES (?,?,?,?,?,?,?,?,?)
+      `).run(id, row.company_id, 'CAD', JSON.stringify(resolved), province, country, 30, 'sent', null)
 
-    db.prepare(`UPDATE customer_onboarding_responses SET extras_pending_invoice_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(id, row.id)
+      db.prepare(`UPDATE customer_onboarding_responses SET extras_pending_invoice_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(id, row.id)
+    })()
 
     // Create the Checkout Session immediately so we can redirect right away
     const stripe = getStripeClient()
@@ -318,7 +361,7 @@ router.post('/:sessionId/extras', async (req, res) => {
     const pending = db.prepare('SELECT * FROM pending_invoices WHERE id=?').get(id)
     const { url } = await createOrRefreshCheckoutSession({ stripe, pending, baseAppUrl: baseUrl })
     // Make sure the customer has a Stripe customer id
-    await ensureStripeCustomer(stripe, row.company_id).catch(() => {})
+    await ensureStripeCustomerTraced(stripe, row.company_id, 'extras-by-session')
 
     res.json({ ok: true, pending_invoice_id: id, checkout_url: url, pay_url: `${baseUrl}/erp/pay/${id}` })
   } catch (e) {
@@ -533,7 +576,7 @@ router.post('/by-token/:token/valve-blocks-checkout', async (req, res) => {
       successUrl: `${baseUrl}/erp/d/${row.public_token}?paid=1`,
       cancelUrl: `${baseUrl}/erp/d/${row.public_token}?cancelled=1`,
     })
-    await ensureStripeCustomer(stripe, row.company_id).catch(() => {})
+    await ensureStripeCustomerTraced(stripe, row.company_id, 'extras-by-token')
 
     res.json({
       ok: true,

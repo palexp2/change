@@ -75,12 +75,16 @@ describe('FactureDetail — édition manuelle de la date d\'un événement (admi
     await input.waitFor({ timeout: 5000 })
 
     // Force une nouvelle date stable (1er janv 2020 à 12h00 heure locale).
+    // Autosave on blur (plus de bouton « Enregistrer ») : on quitte le champ
+    // et la valeur se sauvegarde automatiquement.
     const newLocalValue = '2020-01-01T12:00'
     await input.fill(newLocalValue)
-    await page.click('[data-testid="edit-event-date-save"]')
+    await input.blur()
 
-    // La modale se ferme une fois le save terminé.
-    await input.waitFor({ state: 'detached', timeout: 10000 })
+    // L'indicateur « Enregistré ✓ » confirme la fin de l'autosave ;
+    // la modale reste ouverte.
+    await page.waitForSelector('[data-testid="edit-event-date-status"]:has-text("Enregistré")', { timeout: 10000 })
+    await input.waitFor({ state: 'attached', timeout: 1000 })
 
     // Vérification DB via API : created_at doit être le ISO UTC correspondant.
     const after = await page.evaluate(async (args) => {

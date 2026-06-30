@@ -5,18 +5,14 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
-import { Plus, FileDown, Trash2, ChevronUp, ChevronDown } from 'lucide-react'
+import { Plus, FileDown, Trash2, ChevronUp, ChevronDown, FileText } from 'lucide-react'
 import { fmtDate } from '../lib/formatDate.js'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-
-function fmtCad(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
+import { fmtCad } from '../utils/formatters.js'
 
 
 const STATUS_COLORS = {
@@ -307,12 +303,21 @@ const RENDERS = {
   title: row => (
     <div>
       <div className="font-medium text-slate-900">{row.title || <span className="text-slate-400 italic">Sans titre</span>}</div>
-      {row.contact_name && <div className="text-xs text-slate-500">{row.contact_name}</div>}
+      {row.contact_name && (
+        <div className="text-xs">
+          {row.contact_id
+            ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.contact_name}</Link>
+            : <span className="text-slate-500">{row.contact_name}</span>}
+        </div>
+      )}
     </div>
   ),
   company_name: row => row.company_id
     ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline text-sm">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
+  contact_name: row => row.contact_id
+    ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline text-sm">{row.contact_name}</Link>
+    : (row.contact_name ? <span className="text-sm text-slate-600">{row.contact_name}</span> : <span className="text-slate-400">—</span>),
   status: row => row.status
     ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
     : <span className="text-slate-400">—</span>,
@@ -382,6 +387,7 @@ export default function Soumissions() {
           loading={loading}
           onRowClick={row => navigate(`/soumissions/${row.id}`)}
           searchFields={['title', 'company_name', 'contact_name']}
+          emptyState={{ icon: FileText, title: 'Aucune soumission', description: "Aucune soumission n'a encore été créée. Crée une soumission pour proposer un prix à un client.", cta: { label: 'Nouvelle soumission', icon: Plus, onClick: () => setShowCreate(true) } }}
         />
 
         {showCreate && (

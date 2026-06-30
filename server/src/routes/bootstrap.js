@@ -50,7 +50,9 @@ router.get('/', requireAuth, (req, res) => {
   for (const tableName of Object.keys(specs)) {
     const spec = specs[tableName]
     try {
-      const rowsObj = db.prepare(`SELECT ${spec.selectClause} FROM ${tableName}`).all()
+      // Tables à soft-delete : ne jamais envoyer les records supprimés au cache.
+      const where = spec.hasSoftDelete ? ' WHERE deleted_at IS NULL' : ''
+      const rowsObj = db.prepare(`SELECT ${spec.selectClause} FROM ${tableName}${where}`).all()
       tables[tableName] = toColumnar(rowsObj, spec.columns)
     } catch (err) {
       console.error(`[bootstrap] failed to load ${tableName}:`, err.message)
@@ -118,15 +120,26 @@ router.get('/delta', requireAuth, (req, res) => {
     if (upsertIds.length > 0) {
       // Re-lit les rows actuelles (au cas où il y aurait eu plusieurs mutations
       // entre `since` et maintenant — on ne renvoie que l'état final).
+      // Tables à soft-delete : on ne relit que les records vivants ; ceux qui
+      // ont été supprimés (deleted_at posé) sont émis comme tombstones plus bas.
       const placeholders = upsertIds.map(() => '?').join(',')
+      const softWhere = spec.hasSoftDelete ? ' AND deleted_at IS NULL' : ''
       try {
         upsertRowsObj = db.prepare(`
           SELECT ${spec.selectClause}
           FROM ${tableName}
-          WHERE ${spec.idColumn} IN (${placeholders})
+          WHERE ${spec.idColumn} IN (${placeholders})${softWhere}
         `).all(...upsertIds)
       } catch (err) {
         console.error(`[bootstrap/delta] failed to load ${tableName} upserts:`, err.message)
+      }
+    }
+    // Soft-delete : tout upsertId qui n'est pas revenu vivant a été supprimé →
+    // tombstone pour que le client le retire de son cache.
+    if (spec.hasSoftDelete && upsertIds.length > 0) {
+      const liveIds = new Set(upsertRowsObj.map(r => r[spec.idColumn]))
+      for (const uid of upsertIds) {
+        if (!liveIds.has(uid)) deleteIds.push(uid)
       }
     }
     const { columns, rows } = toColumnar(upsertRowsObj, spec.columns)

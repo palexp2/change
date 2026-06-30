@@ -9,6 +9,7 @@ import { buildPurchaseOrderPdf, fetchOrishaLogo } from '../services/purchaseOrde
 import { sendEmail as sendGmail } from '../services/gmail.js';
 import { insertPurchasesFromPo } from '../services/purchaseOrder.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
+import { parseFiniteInt, parsePositiveInt, parseNonNegativeInt } from '../utils/validateNumbers.js';
 
 const INSTALLATION_DOC_FIELDS = [
   { url: 'lien_pdf_installation_fr', local: 'lien_pdf_installation_fr_local', type: 'installation-fr' },
@@ -146,7 +147,7 @@ router.put('/:id', (req, res) => {
       'monthly_price_cad', 'monthly_price_usd', 'is_sellable', 'min_stock', 'order_qty',
       'location', 'supplier', 'supplier_company_id', 'buy_via_po', 'procurement_type',
       'weight_lbs', 'notes', 'active', 'manufacturier', 'order_email',
-      'role'],
+      'role', 'purchase_snooze_until'],
     nonNullable: new Set(['name_fr']),
     coerce: {
       is_sellable: v => v ? 1 : 0,
@@ -171,7 +172,7 @@ router.post('/:id/stock', (req, res) => {
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
   if (!product) return res.status(404).json({ error: 'Product not found' });
 
-  const { type, qty, reason, reference_id } = req.body;
+  const { type, qty, reason, reference_id, allow_negative } = req.body;
   if (!type || !['in', 'out', 'adjustment'].includes(type)) {
     return res.status(400).json({ error: 'type must be in|out|adjustment' });
   }
@@ -181,20 +182,45 @@ router.post('/:id/stock', (req, res) => {
 
   const movId = uuidv4();
   let newQty;
+  let movQty;
 
+  // Validation impossible-by-design : aucune quantité NaN/décimale/négative ne
+  // doit pouvoir corrompre l'inventaire. Le stock résultant ne peut pas passer
+  // sous zéro sauf override explicite (`allow_negative`).
   if (type === 'adjustment') {
-    newQty = parseInt(qty);
-  } else if (type === 'in') {
-    newQty = product.stock_qty + parseInt(qty);
+    // qty = niveau de stock absolu cible.
+    const target = allow_negative ? parseFiniteInt(qty) : parseNonNegativeInt(qty);
+    if (target === null) {
+      return res.status(400).json({
+        error: allow_negative
+          ? 'qty must be a finite integer'
+          : 'qty must be an integer >= 0 (set allow_negative to force a negative stock level)',
+      });
+    }
+    newQty = target;
+    // On journalise la quantité telle qu'entrée (niveau cible), comme avant —
+    // ne pas changer la sémantique stockée dans stock_movements.qty.
+    movQty = target;
   } else {
-    newQty = product.stock_qty - parseInt(qty);
+    // in/out : qty = montant du mouvement, strictement positif.
+    const amount = parsePositiveInt(qty);
+    if (amount === null) {
+      return res.status(400).json({ error: 'qty must be a positive integer' });
+    }
+    newQty = type === 'in' ? product.stock_qty + amount : product.stock_qty - amount;
+    if (newQty < 0 && !allow_negative) {
+      return res.status(400).json({
+        error: `Resulting stock would be negative (${newQty}). Set allow_negative to force.`,
+      });
+    }
+    movQty = amount;
   }
 
   const run = db.transaction(() => {
     db.prepare(
       `INSERT INTO stock_movements (id, product_id, type, qty, reason, reference_id, user_id)
        VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(movId, req.params.id, type, parseInt(qty), reason || null, reference_id || null, req.user.id);
+    ).run(movId, req.params.id, type, movQty, reason || null, reference_id || null, req.user.id);
 
     db.prepare(`UPDATE products SET stock_qty=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(newQty, req.params.id);
@@ -369,18 +395,13 @@ router.post('/:id/purchase-order/send-email', async (req, res) => {
       : null
     const interactionId = uuidv4()
     const emailId = uuidv4()
-    const senderUserId = db.prepare('SELECT id FROM users WHERE lower(email)=lower(?)').get(result.account_email)?.id || req.user?.id || null
-    db.prepare(`
-      INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
-      VALUES (?, ?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    `).run(interactionId, contactId, companyId, senderUserId)
-    db.prepare(`
-      INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, gmail_message_id, gmail_thread_id, automated)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-    `).run(emailId, interactionId, finalSubject, finalHtml, result.account_email, to, cc || null, result.message_id, result.thread_id)
-
-    // Créer un achat fournisseur (bill brouillon) à partir du PO envoyé
     const achatId = uuidv4()
+    const senderUserId = db.prepare('SELECT id FROM users WHERE lower(email)=lower(?)').get(result.account_email)?.id || req.user?.id || null
+
+    // L'email est déjà parti (side effect irréversible) : on regroupe toutes les
+    // écritures DB qui en découlent (interaction, email, achat fournisseur, achats)
+    // dans une seule transaction pour éviter des records orphelins si une écriture
+    // tardive échoue. achats_fournisseurs = comptabilité, doit rester cohérent.
     const subtotal = po.items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.rate) || 0), 0)
     const linesJson = JSON.stringify(po.items.map(it => ({
       amount: (Number(it.qty) || 0) * (Number(it.rate) || 0),
@@ -389,28 +410,42 @@ router.post('/:id/purchase-order/send-email', async (req, res) => {
       description: it.product,
     })))
     const descSummary = po.items.map(it => it.product).filter(Boolean).slice(0, 3).join(', ')
-    db.prepare(`
-      INSERT INTO achats_fournisseurs
-        (id, type, date_achat, vendor, vendor_id, bill_number, reference, description,
-         amount_cad, tax_cad, total_cad, amount_paid_cad, currency, exchange_rate,
-         status, lines, notes)
-      VALUES (?, 'bill', ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, 1, 'Brouillon', ?, ?)
-    `).run(
-      achatId,
-      po.date,
-      po.supplier || null,
-      companyId,
-      po.po_number,
-      po.po_number,
-      descSummary || null,
-      subtotal,
-      subtotal,
-      po.currency || 'CAD',
-      linesJson,
-      `Créé automatiquement depuis PO ${po.po_number} envoyé à ${to}.${po.details ? ' ' + po.details : ''}`,
-    )
 
-    const purchaseIds = insertPurchasesFromPo(db, po, { supplierCompanyId: companyId, to })
+    const persist = db.transaction(() => {
+      db.prepare(`
+        INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
+        VALUES (?, ?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      `).run(interactionId, contactId, companyId, senderUserId)
+      db.prepare(`
+        INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, gmail_message_id, gmail_thread_id, automated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+      `).run(emailId, interactionId, finalSubject, finalHtml, result.account_email, to, cc || null, result.message_id, result.thread_id)
+
+      // Créer un achat fournisseur (bill brouillon) à partir du PO envoyé
+      db.prepare(`
+        INSERT INTO achats_fournisseurs
+          (id, type, date_achat, vendor, vendor_id, bill_number, reference, description,
+           amount_cad, tax_cad, total_cad, amount_paid_cad, currency, exchange_rate,
+           status, lines, notes)
+        VALUES (?, 'bill', ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, 1, 'Brouillon', ?, ?)
+      `).run(
+        achatId,
+        po.date,
+        po.supplier || null,
+        companyId,
+        po.po_number,
+        po.po_number,
+        descSummary || null,
+        subtotal,
+        subtotal,
+        po.currency || 'CAD',
+        linesJson,
+        `Créé automatiquement depuis PO ${po.po_number} envoyé à ${to}.${po.details ? ' ' + po.details : ''}`,
+      )
+
+      return insertPurchasesFromPo(db, po, { supplierCompanyId: companyId, to })
+    })
+    const purchaseIds = persist()
 
     res.json({ success: true, interaction_id: interactionId, email_id: emailId, achat_id: achatId, purchase_ids: purchaseIds })
   } catch (e) {

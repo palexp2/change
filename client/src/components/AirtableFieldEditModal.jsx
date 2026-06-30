@@ -30,17 +30,22 @@ export function AirtableFieldEditModal({ isOpen, onClose, field, onSaved }) {
     setError(null)
   }, [isOpen, field])
 
-  async function handleSubmit(e) {
-    e?.preventDefault()
-    if (!field) return
+  // Autosave : le changement de type est persisté dès la sélection (règle
+  // « autosave partout » — pas de bouton Enregistrer sur l'édition d'un record
+  // existant). En cas d'échec, on restaure la valeur précédente pour que l'UI
+  // reflète l'état réellement enregistré.
+  async function handleTypeChange(nextType) {
+    if (!field || nextType === type) return
+    const prevType = type
+    setType(nextType)
     setError(null)
     setSaving(true)
     try {
-      const updated = await api.airtableFields.update(field.id, { field_type: type })
+      const updated = await api.airtableFields.update(field.id, { field_type: nextType })
       addToast({ message: 'Type modifié', type: 'success' })
       onSaved?.(updated)
-      onClose?.()
     } catch (e) {
+      setType(prevType)
       setError(e.message || 'Erreur')
     } finally {
       setSaving(false)
@@ -49,7 +54,7 @@ export function AirtableFieldEditModal({ isOpen, onClose, field, onSaved }) {
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Modifier la colonne" size="sm">
-      <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="space-y-4">
         <div>
           <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Nom</label>
           <div className="text-sm text-slate-700 px-3 py-2 rounded border border-slate-200 bg-slate-50">
@@ -59,10 +64,15 @@ export function AirtableFieldEditModal({ isOpen, onClose, field, onSaved }) {
         </div>
 
         <div>
-          <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Type</label>
+          <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">
+            Type
+            {saving && <span className="ml-2 text-[11px] font-normal normal-case tracking-normal text-slate-400">Enregistrement…</span>}
+          </label>
           <select
+            data-testid="airtable-field-type"
             value={type}
-            onChange={e => setType(e.target.value)}
+            onChange={e => handleTypeChange(e.target.value)}
+            disabled={saving}
             className="input text-sm w-full"
           >
             {TYPE_OPTIONS.map(o => (
@@ -70,17 +80,16 @@ export function AirtableFieldEditModal({ isOpen, onClose, field, onSaved }) {
             ))}
           </select>
           <p className="text-[11px] text-slate-400 mt-1">
-            Le changement de type modifie l'affichage (filtres, tri, formatage) — la donnée stockée n'est pas reconvertie.
+            Le changement de type modifie l'affichage (filtres, tri, formatage) — la donnée stockée n'est pas reconvertie. Enregistré automatiquement.
           </p>
         </div>
 
         {error && <div className="rounded bg-red-50 border border-red-200 p-2 text-xs text-red-700">{error}</div>}
 
         <div className="flex justify-end gap-2 pt-2">
-          <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-          <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
+          <button type="button" onClick={onClose} className="btn-secondary">Fermer</button>
         </div>
-      </form>
+      </div>
     </Modal>
   )
 }

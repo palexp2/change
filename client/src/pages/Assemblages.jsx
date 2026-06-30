@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -11,7 +12,9 @@ import { fmtDate } from '../lib/formatDate.js'
 const RENDERS = {
   product_name: row => (
     <div>
-      <div className="font-medium text-slate-900">{row.product_name || '—'}</div>
+      {row.product_id
+        ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="font-medium text-brand-600 hover:underline">{row.product_name || '—'}</Link>
+        : <div className="font-medium text-slate-900">{row.product_name || '—'}</div>}
       {row.sku && <div className="text-xs text-slate-400 font-mono">{row.sku}</div>}
     </div>
   ),

@@ -69,4 +69,57 @@ describe('Contacts — export vers HubSpot', () => {
     })
     assert.equal(resp.status(), 400)
   })
+
+  // Cliquer « Créer la liste HubSpot » ne doit PAS pousser immédiatement vers
+  // HubSpot : une modale de confirmation explicite des side effects doit
+  // d'abord s'afficher (règle CLAUDE.md « confirmation des side effects »).
+  // Le test ne confirme jamais — il Annule — donc aucune liste réelle n'est
+  // créée dans HubSpot : rien à nettoyer.
+  test('« Créer la liste HubSpot » ouvre une confirmation et ne pousse rien sans confirmer', async () => {
+    // Sentinelle : tout POST /hubspot/contact-segment (= push réel) est noté.
+    let pushCalled = false
+    await page.route('**/api/hubspot/contact-segment', route => {
+      if (route.request().method() === 'POST') pushCalled = true
+      route.continue()
+    })
+
+    await page.goto(`${URL}/contacts`, { waitUntil: 'networkidle' })
+    await page.locator('button:has-text("Exporter vers HubSpot")').first().click()
+    await page.waitForSelector('text=/Effets de bord/i', { timeout: 5000 })
+
+    // Le bouton de soumission s'active dès qu'il y a au moins un email valide
+    // dans la vue (contacts réels). On attend qu'il soit cliquable.
+    const submitBtn = page.locator('button:has-text("Créer la liste HubSpot")').first()
+    await submitBtn.waitFor({ state: 'visible', timeout: 5000 })
+    await page.waitForFunction(() => {
+      const b = Array.from(document.querySelectorAll('button')).find(x => x.textContent?.includes('Créer la liste HubSpot'))
+      return b && !b.disabled
+    }, { timeout: 8000 })
+
+    // Clic → la confirmation doit apparaître, PAS de push immédiat
+    await submitBtn.click()
+
+    const confirm = page.locator('.fixed.inset-0.z-50 .bg-white.rounded-2xl').filter({
+      hasText: 'Confirmer le push vers HubSpot',
+    }).first()
+    await confirm.waitFor({ state: 'visible', timeout: 5000 })
+
+    // La confirmation liste explicitement les side effects HubSpot
+    const confirmText = await confirm.innerText()
+    assert.match(confirmText, /liste statique/i, 'doit mentionner la création de liste statique')
+    assert.match(confirmText, /matché/i, 'doit mentionner le matching des contacts existants')
+    assert.match(confirmText, /aucun nouveau contact/i, 'doit clarifier qu\'aucun contact n\'est créé')
+
+    // Rien n'a été poussé avant confirmation
+    assert.equal(pushCalled, false, 'aucun POST /contact-segment avant confirmation')
+
+    // Annuler ferme la confirmation sans rien pousser
+    await confirm.locator('button:has-text("Annuler")').click()
+    await confirm.waitFor({ state: 'hidden', timeout: 5000 })
+    assert.equal(pushCalled, false, 'annuler ne doit rien pousser vers HubSpot')
+
+    // On revient au formulaire (pas d'écran de résultat « Liste créée »)
+    const dialogText = await page.locator('[role="dialog"], .modal, body').first().innerText()
+    assert.ok(!/Liste créée dans HubSpot/i.test(dialogText), 'aucun résultat ne doit s\'afficher après annulation')
+  })
 })

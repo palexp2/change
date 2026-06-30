@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { randomUUID } from 'crypto'
+import * as postmark from 'postmark'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { getStripeClient, ensureStripeCustomer, getOrCreateTaxRate } from '../services/stripeInvoices.js'
@@ -54,6 +55,7 @@ const SELECT_COLS = `
   heard_about, red_flags, created_by,
   quote_currency, quote_helper_count, quote_chief_count,
   quote_paid_at, quote_paid_email, quote_subscription_id,
+  system_builder_notes,
   airtable_created_at, created_at, updated_at
 `
 
@@ -137,6 +139,7 @@ const EDITABLE_COLS = new Set([
   'challenges', 'short_term_goals', 'summary', 'next_steps', 'notes',
   'status',
   'quote_currency', 'quote_helper_count', 'quote_chief_count',
+  'system_builder_notes',
 ])
 
 router.patch('/:id', (req, res) => {
@@ -235,33 +238,40 @@ router.post('/:id/farm-address', (req, res) => {
     return res.status(400).json({ error: `address_type invalide (attendu : ${[...UPSERTABLE_ADDRESS_TYPES].join(', ')})` })
   }
 
-  // (a) Maj du champ freeform companies.address (utilisé partout dans l'ERP)
-  if (formatted_address !== null) {
-    db.prepare(`UPDATE companies SET address = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
-      .run(formatted_address || null, call.company_id)
-  }
-
-  // (b) Upsert de la row structurée pour le type demandé (seulement si on a
-  //     au moins un champ structuré)
+  // Les deux écritures (freeform companies.address + row structurée adresses)
+  // doivent être atomiques : si la 2e échoue, l'adresse freeform et l'adresse
+  // structurée divergeraient — source d'erreurs de taxes et d'adresse de
+  // facturation Stripe incomplète. On les enveloppe dans une transaction.
   const hasStructured = line1 || city || province || postal_code || country
-  if (hasStructured) {
-    const existing = db.prepare(
-      "SELECT id FROM adresses WHERE company_id=? AND address_type=? ORDER BY created_at DESC LIMIT 1"
-    ).get(call.company_id, address_type)
-    if (existing) {
-      db.prepare(`
-        UPDATE adresses
-           SET line1 = ?, city = ?, province = ?, postal_code = ?, country = ?,
-               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?
-      `).run(line1 || null, city || null, province || null, postal_code || null, country || null, existing.id)
-    } else {
-      db.prepare(`
-        INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(randomUUID(), call.company_id, address_type, line1 || null, city || null, province || null, postal_code || null, country || null)
+  const upsertAddress = db.transaction(() => {
+    // (a) Maj du champ freeform companies.address (utilisé partout dans l'ERP)
+    if (formatted_address !== null) {
+      db.prepare(`UPDATE companies SET address = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+        .run(formatted_address || null, call.company_id)
     }
-  }
+
+    // (b) Upsert de la row structurée pour le type demandé (seulement si on a
+    //     au moins un champ structuré)
+    if (hasStructured) {
+      const existing = db.prepare(
+        "SELECT id FROM adresses WHERE company_id=? AND address_type=? ORDER BY created_at DESC LIMIT 1"
+      ).get(call.company_id, address_type)
+      if (existing) {
+        db.prepare(`
+          UPDATE adresses
+             SET line1 = ?, city = ?, province = ?, postal_code = ?, country = ?,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+           WHERE id = ?
+        `).run(line1 || null, city || null, province || null, postal_code || null, country || null, existing.id)
+      } else {
+        db.prepare(`
+          INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(randomUUID(), call.company_id, address_type, line1 || null, city || null, province || null, postal_code || null, country || null)
+      }
+    }
+  })
+  upsertAddress()
 
   res.json({ ok: true })
 })
@@ -303,16 +313,22 @@ router.post('/:id/subscribe-card', async (req, res) => {
     const postal_code = typeof fa.postal_code === 'string' ? fa.postal_code.trim() : ''
     const country = typeof fa.country === 'string' ? fa.country.trim().toUpperCase() : ''
     if (postal_code && province && country) {
-      const existing = db.prepare(
-        "SELECT id FROM adresses WHERE company_id=? AND address_type='Facturation' ORDER BY created_at DESC LIMIT 1"
-      ).get(call.company_id)
-      if (existing) {
-        db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
-          .run(line1 || null, city || null, province, postal_code, country, existing.id)
-      } else {
-        db.prepare(`INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country) VALUES (?, ?, 'Facturation', ?, ?, ?, ?, ?)`)
-          .run(randomUUID(), call.company_id, line1 || null, city || null, province, postal_code, country)
-      }
+      // Upsert atomique : le SELECT-puis-UPDATE/INSERT forme une seule unité,
+      // pour que la row Facturation structurée reste cohérente (taxes + adresse
+      // de facturation Stripe) même si une écriture intermédiaire échoue.
+      const upsertBilling = db.transaction(() => {
+        const existing = db.prepare(
+          "SELECT id FROM adresses WHERE company_id=? AND address_type='Facturation' ORDER BY created_at DESC LIMIT 1"
+        ).get(call.company_id)
+        if (existing) {
+          db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
+            .run(line1 || null, city || null, province, postal_code, country, existing.id)
+        } else {
+          db.prepare(`INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country) VALUES (?, ?, 'Facturation', ?, ?, ?, ?, ?)`)
+            .run(randomUUID(), call.company_id, line1 || null, city || null, province, postal_code, country)
+        }
+      })
+      upsertBilling()
     }
   }
   const curr = String(currency).toUpperCase()
@@ -528,6 +544,90 @@ router.post('/:id/subscribe-card', async (req, res) => {
   } catch (e) {
     console.error('subscribe-card error:', e.message)
     return res.status(400).json({ error: e.message || 'Échec du paiement' })
+  }
+})
+
+// POST /:id/send-system-builder-email — envoie au client un email (Postmark,
+// expéditeur info@orisha.io) contenant le lien System Builder pré-rempli généré
+// dans l'onglet System builder du guide d'appel. Side effect : l'UI affiche une
+// confirmation listant le destinataire avant d'appeler cette route.
+function escapeHtmlText(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+function escapeHtmlAttr(s) {
+  return escapeHtmlText(s).replace(/"/g, '&quot;')
+}
+function buildSystemBuilderEmailHtml({ firstName, url }) {
+  const greeting = firstName ? `Hey ${escapeHtmlText(firstName)},` : 'Hey there,'
+  const href = escapeHtmlAttr(url)
+  return `<!DOCTYPE html>
+<html>
+  <head><meta charset="utf-8"><title>System Builder</title></head>
+  <body style="margin: 0; padding: 0; background-color: #f4f4f4; font-family: Arial, sans-serif;">
+    <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f4f4f4;">
+      <tr>
+        <td align="center">
+          <table width="600" border="0" cellspacing="0" cellpadding="0" style="background-color: #ffffff; border-radius: 4px; overflow: hidden;">
+            <tr>
+              <td align="center" style="padding: 20px; background-color: #ffffff;">
+                <img src="https://orisha.us-east-1.linodeobjects.com/logo.png" alt="Logo Orisha" style="max-width: 150px; display: block;">
+              </td>
+            </tr>
+            <tr><td style="background-color: #22b14c; height: 5px; line-height: 5px; font-size: 0;"></td></tr>
+            <tr>
+              <td style="padding: 20px;">
+                <p style="margin: 0 0 10px 0; font-size: 16px; color: #333333;">${greeting}</p>
+                <br>
+                <p style="margin: 0 0 20px 0; font-size: 16px; color: #333333;">
+                  This is the <a href="${href}">link to your System Builder</a>. We need this information to send equipment to your farm.
+                </p>
+                <br>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 20px; text-align: center;">
+                <p style="margin: center; font-size: 16px; color: #333333;"><a href="https://www.orisha.io/contact">Need help?</a></p>
+              </td>
+            </tr>
+            <tr>
+              <td align="center" style="padding: 20px; background-color: #f4f4f4; font-size: 12px; color: #777777;">
+                Automatisation Orisha Inc. 1535 ch. Ste-Foy Bureau 220 Québec, QC G1S 2P1
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`
+}
+router.post('/:id/send-system-builder-email', async (req, res) => {
+  const call = db.prepare('SELECT id FROM qualification_calls WHERE id = ?').get(req.params.id)
+  if (!call) return res.status(404).json({ error: 'Appel introuvable' })
+  const { email, link, first_name } = req.body || {}
+  const to = (email || '').trim()
+  if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) {
+    return res.status(400).json({ error: 'Adresse email destinataire invalide' })
+  }
+  const url = (link || '').trim()
+  if (!/^https?:\/\//i.test(url)) {
+    return res.status(400).json({ error: 'Lien System Builder invalide' })
+  }
+  const token = process.env.POSTMARK_API_KEY
+  if (!token) return res.status(500).json({ error: 'POSTMARK_API_KEY manquant' })
+  try {
+    const client = new postmark.ServerClient(token)
+    await client.sendEmail({
+      From: 'info@orisha.io',
+      To: to,
+      Bcc: '5156324@bcc.hubspot.com',
+      Subject: 'Last step before we send your Orisha',
+      HtmlBody: buildSystemBuilderEmailHtml({ firstName: (first_name || '').trim(), url }),
+    })
+    res.json({ ok: true })
+  } catch (e) {
+    res.status(502).json({ error: e.message || 'Échec de l\'envoi de l\'email' })
   }
 })
 

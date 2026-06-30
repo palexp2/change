@@ -1,16 +1,14 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, Barcode, History } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
 import { fmtDate } from '../lib/formatDate.js'
-
-function fmtCad(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
+import { fmtCad } from '../utils/formatters.js'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 function Field({ label, children }) {
   return (
@@ -26,20 +24,28 @@ export default function SerialDetail() {
   const navigate = useNavigate()
   const [serial, setSerial] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [history, setHistory] = useState([])
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true)
+    setLoadError(null)
     api.serials.get(id)
       .then(setSerial)
-      .catch(() => setSerial(null))
+      .catch((e) => { setSerial(null); setLoadError(e?.message || 'Erreur de chargement') })
       .finally(() => setLoading(false))
     api.serials.history(id)
       .then(r => setHistory(r.data || []))
       .catch(() => setHistory([]))
   }, [id])
 
+  useEffect(() => { load() }, [load])
+
   if (loading) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
+    return <Layout><Spinner center /></Layout>
+  }
+  if (loadError && !serial) {
+    return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
   }
   if (!serial) {
     return <Layout><div className="p-6 text-slate-500">Numéro de série introuvable.</div></Layout>

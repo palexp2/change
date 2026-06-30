@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { Phone, Mail, MessageSquare, Users, FileText, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
@@ -289,7 +289,9 @@ export default function Interactions() {
         ? <Badge color={DIRECTION_COLORS[row.direction]}>{row.direction === 'in' ? 'Entrant' : 'Sortant'}</Badge>
         : <span className="text-slate-300">—</span> :
       meta.id === 'contact_name' ? row =>
-        <span className="text-slate-700">{row.contact_name?.trim() || <span className="text-slate-300">—</span>}</span> :
+        row.contact_id && row.contact_name?.trim()
+          ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.contact_name.trim()}</Link>
+          : <span className="text-slate-700">{row.contact_name?.trim() || <span className="text-slate-300">—</span>}</span> :
       meta.id === 'phone_number' ? row =>
         row.phone_number
           ? <span className="font-mono text-slate-600 text-xs">{row.phone_number}</span>

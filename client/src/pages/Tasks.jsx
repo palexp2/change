@@ -67,7 +67,9 @@ const RENDERS = {
   ticket_title: (row) => row.ticket_id
     ? <Link to={`/tickets/${row.ticket_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline text-sm">{row.ticket_title}</Link>
     : <span className="text-slate-400">—</span>,
-  assigned_name: (row) => row.assigned_name || <span className="text-slate-400">—</span>,
+  assigned_name: (row) => row.assigned_employee_id
+    ? <Link to={`/employees/${row.assigned_employee_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline text-sm">{row.assigned_name}</Link>
+    : (row.assigned_name || <span className="text-slate-400">—</span>),
   created_at: (row) => fmtDate(row.created_at),
 }
 
@@ -90,6 +92,7 @@ export default function Tasks() {
     const cById = new Map(companies.map(c => [c.id, c.name]))
     const ctById = new Map(contacts.map(c => [c.id, `${c.first_name || ''} ${c.last_name || ''}`.trim()]))
     const uById = new Map(users.map(u => [u.id, u.name]))
+    const uEmpById = new Map(users.map(u => [u.id, u.employee_id]))
     const tkById = new Map(tickets.map(t => [t.id, t.title]))
     const list = tasksRaw.filter(t => !t.deleted_at)
     return list.map(r => ({
@@ -97,6 +100,7 @@ export default function Tasks() {
       company_name: cById.get(r.company_id) || r.company_name,
       contact_name: ctById.get(r.contact_id) || r.contact_name,
       assigned_name: uById.get(r.assigned_to) || r.assigned_name,
+      assigned_employee_id: uEmpById.get(r.assigned_to) || null,
       ticket_title: tkById.get(r.ticket_id) || r.ticket_title,
     }))
   }, [tasksRaw, companies, contacts, users, tickets])
@@ -106,10 +110,11 @@ export default function Tasks() {
     await syncStore()
   }
 
+  // Autosave (mode édition de TaskForm) : on persiste sans fermer la modale —
+  // la fermeture se fait via « Fermer » (onClose).
   async function handleEdit(form) {
     await api.tasks.update(editing.id, form)
     await syncStore()
-    setEditing(null)
   }
 
   async function handleDelete(row) {

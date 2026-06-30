@@ -124,14 +124,17 @@ router.post('/ftp-ingest', requireFtpSecret, upload.single('recording'), async (
   // (device clock, Montreal local). Normalize to ISO UTC before storage.
   const ts = normalizeToUtcIso(timestamp) || new Date().toISOString()
 
-  db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
-    .run(interactionId, resolvedContactId, resolvedCompanyId, user.id, 'call', direction || 'in', ts)
+  // Atomique : interaction + call insérés ensemble, sinon rollback (pas d'interaction orpheline)
+  db.transaction(() => {
+    db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
+      .run(interactionId, resolvedContactId, resolvedCompanyId, user.id, 'call', direction || 'in', ts)
 
-  db.prepare('INSERT INTO calls (id, interaction_id, recording_path, caller_number, callee_number, duration_seconds, original_filename) VALUES (?,?,?,?,?,?,?)')
-    .run(callId, interactionId, req.file.filename, caller_number || null, callee_number || null, duration_seconds ? Number(duration_seconds) : null, origName)
+    db.prepare('INSERT INTO calls (id, interaction_id, recording_path, caller_number, callee_number, duration_seconds, original_filename) VALUES (?,?,?,?,?,?,?)')
+      .run(callId, interactionId, req.file.filename, caller_number || null, callee_number || null, duration_seconds ? Number(duration_seconds) : null, origName)
+  })()
 
   const filePath = join(uploadsDir, req.file.filename)
-  enqueueTranscription(callId, filePath).catch(console.error)
+  enqueueTranscription(callId, filePath, 'ftp-ingest').catch(console.error)
 
   console.log(`📞 FTP ingest: ${origName} → vendeur=${ftp_username}, contact=${resolvedContactId || 'non résolu'}`)
   emitEntity('call', 'created', callId, buildCallRow(callId), null)
@@ -158,14 +161,17 @@ router.post('/upload', requireAuth, upload.single('recording'), async (req, res)
   const callId = uuid()
   const ts = normalizeToUtcIso(timestamp) || new Date().toISOString()
 
-  db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
-    .run(interactionId, resolvedContactId, resolvedCompanyId, req.user.id, 'call', direction || 'in', ts)
+  // Atomique : interaction + call insérés ensemble, sinon rollback (pas d'interaction orpheline)
+  db.transaction(() => {
+    db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
+      .run(interactionId, resolvedContactId, resolvedCompanyId, req.user.id, 'call', direction || 'in', ts)
 
-  db.prepare('INSERT INTO calls (id, interaction_id, recording_path, caller_number, callee_number, duration_seconds) VALUES (?,?,?,?,?,?)')
-    .run(callId, interactionId, req.file.filename, caller_number || null, callee_number || null, duration_seconds ? Number(duration_seconds) : null)
+    db.prepare('INSERT INTO calls (id, interaction_id, recording_path, caller_number, callee_number, duration_seconds) VALUES (?,?,?,?,?,?)')
+      .run(callId, interactionId, req.file.filename, caller_number || null, callee_number || null, duration_seconds ? Number(duration_seconds) : null)
+  })()
 
   const filePath = join(uploadsDir, req.file.filename)
-  enqueueTranscription(callId, filePath).catch(console.error)
+  enqueueTranscription(callId, filePath, 'upload').catch(console.error)
 
   emitEntity('call', 'created', callId, buildCallRow(callId), req.user?.id)
   res.status(201).json({ id: callId, interaction_id: interactionId })
@@ -252,7 +258,7 @@ router.post('/:id/retranscribe', requireAuth, async (req, res) => {
   if (!row.recording_path) return res.status(400).json({ error: 'No recording' })
 
   const filePath = join(uploadsDir, row.recording_path)
-  enqueueTranscription(row.id, filePath).catch(console.error)
+  enqueueTranscription(row.id, filePath, 'retranscribe').catch(console.error)
   res.json({ ok: true })
 })
 

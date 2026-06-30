@@ -38,6 +38,24 @@ const SYNC_FNS = {
   factures: syncFactureLinksFromWebhook,
 }
 
+// Dependency-aware dispatch order. Lower number = synced first. Companies/contacts
+// (`airtable`) must run before `projets` (which references companies), and projets
+// before modules that reference projects (orders, soumissions, factures, envois…).
+// Without this the webhook would dispatch in tableId-arrival order, so 'Projets'
+// could be synced before 'Companies' and fail the company_id FK / import orphans.
+const MODULE_SYNC_PRIORITY = {
+  airtable: 0,     // companies + contacts — base dependency for everything else
+  projets: 1,      // references companies
+  pieces: 1,
+  serials: 1,
+  orders: 2,       // reference projects + companies
+  soumissions: 2,
+  factures: 2,
+  envois: 2,
+  retours: 2,
+}
+const modulePriority = (m) => (m in MODULE_SYNC_PRIORITY ? MODULE_SYNC_PRIORITY[m] : 3)
+
 // Per-module local tables used to snapshot records before/after sync for diff display.
 // Only modules whose records map to a UI-addressable entity are listed.
 const MODULE_DIFF_TARGETS = {
@@ -51,9 +69,15 @@ const MODULE_DIFF_TARGETS = {
 
 const DIFF_SKIP_FIELDS = new Set(['updated_at', 'created_at', 'last_hubspot_uptade'])
 
+// Returns { snap, errors }. `errors` is non-empty when a target table's snapshot
+// query failed (schema drift, table renamed/dropped…). On failure the diff for that
+// module is incomplete, so the error is propagated to the caller and logged — rather
+// than swallowed by a silent catch, which previously masked real mutations behind
+// an empty `diffs: []`.
 function snapshotModule(module, airtableIds) {
   const targets = MODULE_DIFF_TARGETS[module]
-  if (!targets || !airtableIds.length) return new Map()
+  const errors = []
+  if (!targets || !airtableIds.length) return { snap: new Map(), errors }
   const snap = new Map()
   const placeholders = airtableIds.map(() => '?').join(',')
   for (const t of targets) {
@@ -62,9 +86,13 @@ function snapshotModule(module, airtableIds) {
         `SELECT * FROM ${t.table} WHERE airtable_id IN (${placeholders})`
       ).all(...airtableIds)
       for (const row of rows) snap.set(row.airtable_id, { target: t, row })
-    } catch {}
+    } catch (e) {
+      const msg = `snapshot ${t.table} échoué: ${e.message}`
+      errors.push(msg)
+      console.error(`⚠️  snapshotModule(${module}) — ${msg}`)
+    }
   }
-  return snap
+  return { snap, errors }
 }
 
 function diffRows(before, after) {
@@ -179,6 +207,38 @@ export async function registerWebhookForBase(baseId) {
   return row
 }
 
+// Fire-and-forget wrapper autour de registerWebhookForBase avec trace durable de
+// l'échec. Les appelants (callback OAuth Airtable, sauvegardes de config) lançaient
+// l'enregistrement sans l'attendre et avalaient l'erreur dans un simple console.error
+// volatil. Or si l'enregistrement échoue, AUCUN webhook n'est posé : les changements
+// Airtable ne se synchronisent plus jamais et personne n'est alerté — le seul signal
+// était `sys_airtable_webhook_router 'fetch failed'` côté ping, qui ne se déclenche
+// même pas puisqu'aucun ping n'arrive. On trace donc l'échec sur les deux canaux de
+// diagnostic : la DataTable sync_log de Connectors.jsx et la ligne system run de
+// sys_airtable_webhook_router. Ne throw jamais (résout à null en cas d'échec) — sûr
+// à appeler en fin de handler après `res.json()`.
+export async function registerWebhookForBaseTraced(baseId, trigger = 'oauth-callback') {
+  const started = Date.now()
+  try {
+    return await registerWebhookForBase(baseId)
+  } catch (e) {
+    const msg = `Enregistrement webhook échoué (base=${baseId}): ${e.message}`
+    console.error('Webhook reg error:', e.message)
+    logSync('airtable', 'webhook-register', {
+      status: 'error',
+      error: msg,
+      durationMs: Date.now() - started,
+    })
+    logSystemRun('sys_airtable_webhook_router', {
+      status: 'error',
+      error: msg,
+      duration_ms: Date.now() - started,
+      triggerData: { baseId, trigger, source: 'registerWebhookForBase' },
+    })
+    return null
+  }
+}
+
 // Queue failed changes for retry
 function queueRetry(module, changes, error) {
   const id = uuid()
@@ -195,6 +255,11 @@ export async function processRetryQueue() {
     "SELECT * FROM webhook_sync_retry WHERE next_retry_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ORDER BY created_at LIMIT 20"
   ).all()
   if (rows.length === 0) return
+
+  // Process in dependency order so a retried `projets` runs after a retried
+  // `airtable` (companies) in the same batch. syncProjets also self-heals by
+  // pulling missing companies, but ordering avoids a wasted first attempt.
+  rows.sort((a, b) => modulePriority(a.module) - modulePriority(b.module))
 
   console.log(`🔄 Retry queue: ${rows.length} pending`)
   for (const row of rows) {
@@ -213,6 +278,14 @@ export async function processRetryQueue() {
       const attempts = row.attempts + 1
       if (attempts >= 5) {
         db.prepare('DELETE FROM webhook_sync_retry WHERE id=?').run(row.id)
+        // Trace persistante de l'abandon : sans ça le changement disparaît sans
+        // laisser de trace, et un module chroniquement désync reste invisible
+        // jusqu'à ce qu'un humain remarque des données périmées. Visible dans la
+        // DataTable sync_log de Connectors.jsx.
+        logSync(row.module, 'webhook-retry', {
+          status: 'error',
+          error: `Abandonné après ${attempts} tentatives: ${e.message}`,
+        })
         console.error(`❌ Retry ${row.module}: abandoned after ${attempts} attempts (${e.message})`)
       } else {
         // Exponential backoff: 5min, 15min, 45min, 2h
@@ -328,19 +401,22 @@ export async function processWebhookPing(webhookId) {
     const totalDestroyed = [...tableChanges.values()].reduce((s, t) => s + t.destroyedIds.size, 0)
     console.log(`🔔 Webhook Airtable → [${[...moduleChanges.keys()].join(', ')}] +${totalRecords} modifiés, -${totalDestroyed} supprimés`)
 
-    // Await each sync — queue failures for retry, log results
+    // Await each sync — queue failures for retry, log results.
+    // Dispatch in dependency order so companies are synced before projets, etc.
+    const orderedModules = [...moduleChanges].sort((a, b) => modulePriority(a[0]) - modulePriority(b[0]))
     const moduleResults = []
-    for (const [module, changes] of moduleChanges) {
+    for (const [module, changes] of orderedModules) {
       const fn = SYNC_FNS[module]
       if (!fn) continue
       const modifiedCount = Object.values(changes).reduce((s, c) => s + (c.recordIds?.length || 0), 0)
       const destroyedCount = Object.values(changes).reduce((s, c) => s + (c.destroyedIds?.length || 0), 0)
       const allRecordIds = [...new Set(Object.values(changes).flatMap(c => c.recordIds || []))]
-      const before = snapshotModule(module, allRecordIds)
+      const { snap: before, errors: beforeErrors } = snapshotModule(module, allRecordIds)
       const t0 = Date.now()
       try {
         await tracked(module, () => fn(changes))
-        const after = snapshotModule(module, allRecordIds)
+        const { snap: after, errors: afterErrors } = snapshotModule(module, allRecordIds)
+        const snapshotErrors = [...new Set([...beforeErrors, ...afterErrors])]
         const diffs = []
         for (const id of allRecordIds) {
           const b = before.get(id)
@@ -353,8 +429,16 @@ export async function processWebhookPing(webhookId) {
           if (action === 'modifié' && changed.length === 0) continue
           diffs.push({ target, action, localId: row?.id, label: recordLabel(row), changes: changed })
         }
-        logSync(module, 'webhook', { status: 'success', modified: modifiedCount, destroyed: destroyedCount, durationMs: Date.now() - t0 })
-        moduleResults.push({ module, ok: true, modified: modifiedCount, destroyed: destroyedCount, diffs })
+        // Un échec de snapshot rend le diff incomplet : on le trace dans le sync_log
+        // (status 'warning') au lieu de logguer un succès silencieux avec diffs vides.
+        logSync(module, 'webhook', {
+          status: snapshotErrors.length ? 'warning' : 'success',
+          modified: modifiedCount,
+          destroyed: destroyedCount,
+          error: snapshotErrors.length ? `Diff incomplet — ${snapshotErrors.join(' ; ')}` : undefined,
+          durationMs: Date.now() - t0,
+        })
+        moduleResults.push({ module, ok: true, modified: modifiedCount, destroyed: destroyedCount, diffs, snapshotErrors })
       } catch (e) {
         console.error(`Sync webhook error (${module}):`, e.message)
         logSync(module, 'webhook', { status: 'error', modified: modifiedCount, destroyed: destroyedCount, error: e.message, durationMs: Date.now() - t0 })
@@ -367,6 +451,11 @@ export async function processWebhookPing(webhookId) {
     const lines = [`${moduleResults.length} module(s) dispatché(s)`]
     for (const r of moduleResults) {
       lines.push(`  • ${r.module} : ${r.ok ? 'OK' : 'ERR'} — ${r.modified} modifiés, ${r.destroyed} supprimés${r.error ? ' — ' + r.error : ''}`)
+      // Snapshot incomplet : signaler explicitement que le diff affiché peut masquer
+      // des mutations réelles (table absente / schéma changé).
+      for (const se of (r.snapshotErrors || [])) {
+        lines.push(`    ⚠️  diff incomplet — ${se}`)
+      }
       const shown = (r.diffs || []).slice(0, 20)
       for (const d of shown) {
         lines.push('')
@@ -382,10 +471,15 @@ export async function processWebhookPing(webhookId) {
       }
     }
 
+    const snapWarned = moduleResults.filter(r => r.snapshotErrors?.length)
     logSystemRun('sys_airtable_webhook_router', {
-      status: failed.length > 0 ? 'error' : 'success',
+      status: failed.length > 0 ? 'error' : (snapWarned.length > 0 ? 'warning' : 'success'),
       result: lines.join('\n'),
-      error: failed.length > 0 ? `${failed.length} module(s) en échec (retry queue)` : null,
+      error: failed.length > 0
+        ? `${failed.length} module(s) en échec (retry queue)`
+        : (snapWarned.length > 0
+          ? `Diff incomplet sur ${snapWarned.length} module(s) — snapshot échoué, des mutations peuvent être masquées`
+          : null),
       duration_ms: Date.now() - started,
       triggerData: { webhookId, baseId, modules: [...moduleChanges.keys()] },
     })
@@ -435,11 +529,7 @@ export async function initAirtableWebhooks() {
   }
 
   for (const baseId of getConfiguredBases()) {
-    try {
-      await registerWebhookForBase(baseId)
-    } catch (e) {
-      console.error(`❌ Webhook init échoué base=${baseId}:`, e.message)
-    }
+    await registerWebhookForBaseTraced(baseId, 'startup')
   }
 
   // Renouvellement quotidien
@@ -449,7 +539,29 @@ export async function initAirtableWebhooks() {
 
   // Retry queue — check every 2 minutes
   setInterval(async () => {
-    try { await processRetryQueue() } catch (e) { console.error('Retry queue error:', e.message) }
+    const started = Date.now()
+    try {
+      await processRetryQueue()
+    } catch (e) {
+      // Crash global de la boucle de retry (lock DB, write concurrent, bug). Sans
+      // trace durable, les syncs en attente s'empilent invisiblement : aucun module
+      // individuel n'échoue (logSync), aucun ping ne tourne (logSystemRun) — le seul
+      // signal était un console.error volatil. On enregistre l'échec sur les deux
+      // canaux de diagnostic : la ligne system run de sys_airtable_webhook_router et
+      // la DataTable sync_log de Connectors.jsx.
+      console.error('Retry queue error:', e.message)
+      logSystemRun('sys_airtable_webhook_router', {
+        status: 'error',
+        error: `Échec global de la retry queue: ${e.message}`,
+        duration_ms: Date.now() - started,
+        triggerData: { source: 'processRetryQueue-interval' },
+      })
+      logSync('airtable', 'webhook-retry', {
+        status: 'error',
+        error: `Échec global de la retry queue: ${e.message}`,
+        durationMs: Date.now() - started,
+      })
+    }
   }, 2 * 60 * 1000)
 
   console.log('✅ Airtable webhooks initialisés')

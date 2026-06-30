@@ -8,9 +8,13 @@ import { postRevenueRecognitionJE, reconcileFactureRevenueRecognition, factureHa
 import { logSystemRun } from '../services/systemAutomations.js'
 import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { computeCanadaTaxes } from '../services/taxes.js'
-import { CATEGORIES as SUBSCRIPTION_EVENT_CATEGORIES, emitSubscriptionEvent, detectRachatForChurn, backfillRachatDetection } from '../services/subscriptionEvents.js'
+import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
+import { logSync } from '../services/syncLog.js'
+import { CATEGORIES as SUBSCRIPTION_EVENT_CATEGORIES, emitSubscriptionEvent, safeDetectRachatForChurn, backfillRachatDetection, getRachatFailureStatus } from '../services/subscriptionEvents.js'
 import { requireAdmin } from '../middleware/auth.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
+import { getCurrentItemsSnapshot, enrichItemsWithErpProductId } from '../services/subscriptionItemsSnapshot.js'
+import { buildExternalLinks } from '../services/externalLinks.js'
 
 // Calcule les taxes d'une facture (tableau {name, percentage, amount}).
 // Stratégie :
@@ -223,7 +227,9 @@ router.get('/bom', (req, res) => {
   const rows = db.prepare(`
     SELECT b.*,
       p.name_fr as product_name, p.sku as product_sku, p.image_url as product_image_url,
-      c.name_fr as component_name, c.sku as component_sku, c.image_url as component_image_url
+      c.name_fr as component_name, c.sku as component_sku, c.image_url as component_image_url,
+      c.stock_qty as component_stock_qty, c.min_stock as component_min_stock,
+      c.procurement_type as component_procurement_type
     FROM bom_items b
     LEFT JOIN products p ON b.product_id = p.id
     LEFT JOIN products c ON b.component_id = c.id
@@ -239,7 +245,9 @@ router.get('/bom/:id', (req, res) => {
   const row = db.prepare(`
     SELECT b.*,
       p.name_fr as product_name, p.sku as product_sku, p.image_url as product_image_url,
-      c.name_fr as component_name, c.sku as component_sku, c.image_url as component_image_url
+      c.name_fr as component_name, c.sku as component_sku, c.image_url as component_image_url,
+      c.stock_qty as component_stock_qty, c.min_stock as component_min_stock,
+      c.procurement_type as component_procurement_type
     FROM bom_items b
     LEFT JOIN products p ON b.product_id = p.id
     LEFT JOIN products c ON b.component_id = c.id
@@ -545,6 +553,13 @@ router.get('/factures/:id', async (req, res) => {
       tech_responses: techResponses,
       deferred_revenue_qb_url: deferredQb,
       revenue_recognized_qb_url: recognizedQb,
+      // Liens profonds vers le record source (dashboard Stripe + Airtable factures).
+      external_links: buildExternalLinks({
+        stripeId: row.invoice_id,
+        stripeFallback: row.lien_stripe,
+        airtableModule: 'factures',
+        airtableId: row.airtable_id,
+      }),
       taxes: computeFactureTaxes(row),
       last_payment_in: lastPaymentIn,
       payments_in_count: paymentsInCount,
@@ -877,6 +892,30 @@ router.get('/retours/:id', (req, res) => {
     ORDER BY ri.created_at
   `).all(req.params.id)
 
+  // `received_by` / `analyzed_by` sont du texte libre venu d'Airtable (prénom,
+  // surnom ou valeur non-personne comme « Legacy » / « PA »), pas un FK employé.
+  // On résout vers un id employé seulement quand un unique employé actif porte
+  // ce prénom — sinon on laisse l'affichage en texte (pas de lien fabriqué).
+  const names = new Set()
+  for (const it of items) {
+    if (it.received_by) names.add(it.received_by.trim().toLowerCase())
+    if (it.analyzed_by) names.add(it.analyzed_by.trim().toLowerCase())
+  }
+  const empByFirstName = {}
+  if (names.size) {
+    const counts = {}
+    for (const e of db.prepare("SELECT id, first_name FROM employees WHERE active=1 AND first_name IS NOT NULL").all()) {
+      const k = e.first_name.trim().toLowerCase()
+      counts[k] = (counts[k] || 0) + 1
+      empByFirstName[k] = e.id
+    }
+    for (const k of Object.keys(counts)) if (counts[k] > 1) delete empByFirstName[k] // prénom ambigu → pas de lien
+  }
+  for (const it of items) {
+    it.received_by_employee_id = it.received_by ? (empByFirstName[it.received_by.trim().toLowerCase()] || null) : null
+    it.analyzed_by_employee_id = it.analyzed_by ? (empByFirstName[it.analyzed_by.trim().toLowerCase()] || null) : null
+  }
+
   res.json({ ...row, items })
 })
 
@@ -1048,7 +1087,9 @@ router.get('/abonnement-events/:id/rachat-candidates', (req, res) => {
 // critère ou un import massif d'historiques.
 router.post('/abonnement-events/backfill-rachat', requireAdmin, (req, res) => {
   const result = backfillRachatDetection()
-  res.json(result)
+  // Expose l'état de la file de retry (events dont la détection a échoué et
+  // attend une re-tentative) pour que l'opérateur voie la divergence résiduelle.
+  res.json({ ...result, retryQueue: getRachatFailureStatus() })
 })
 
 // POST /api/projets/abonnement-events/:id/detect-rachat
@@ -1059,7 +1100,7 @@ router.post('/abonnement-events/:id/detect-rachat', (req, res) => {
   const ev = db.prepare('SELECT id, subscription_id, category FROM subscription_events WHERE id=?').get(req.params.id)
   if (!ev) return res.status(404).json({ error: 'Événement introuvable' })
   if (ev.category !== 'churn') return res.status(400).json({ error: 'Catégorie != churn' })
-  detectRachatForChurn(req.params.id)
+  safeDetectRachatForChurn(req.params.id, 'manual')
   emitSubscriptionEvent('updated', req.params.id, ev.subscription_id, req.user?.id)
   res.json({ ok: true })
 })
@@ -1098,6 +1139,21 @@ router.get('/abonnements', (req, res) => {
     row.rachat_candidate = (row.status === 'canceled' || row.status === 'Annulé')
       ? findRachatCandidate(row.company_id, row.cancel_date, usdRate)
       : null
+
+    // Produit lié (FK cliquable) : un sub n'a pas de product_id direct, on le
+    // résout depuis le snapshot d'items courant enrichi du product_id ERP.
+    // On prend le premier item rattaché à un produit ERP (sinon le 1er item
+    // pour au moins afficher le nom Stripe en texte).
+    const snap = getCurrentItemsSnapshot(row.id)
+    if (Array.isArray(snap) && snap.length > 0) {
+      const enriched = enrichItemsWithErpProductId(snap)
+      const primary = enriched.find(it => it.product_id) || enriched[0]
+      row.product_id = primary?.product_id || null
+      row.product_name = primary?.name || null
+    } else {
+      row.product_id = null
+      row.product_name = null
+    }
   }
 
   res.json({ data: rows, total, page: parseInt(page), limit: parseInt(limit) })
@@ -1286,6 +1342,54 @@ router.patch('/abonnements/:id', (req, res) => {
     emitEntity('subscription', 'updated', req.params.id, sub, req.user?.id)
   }
   res.json({ ok: true })
+})
+
+// Création manuelle d'une entrée d'historique d'abonnement. Réservé aux
+// ajustements ; les events Stripe passent par recordEvent() côté webhook.
+router.post('/abonnements/:id/events', (req, res) => {
+  const sub = db.prepare(
+    'SELECT id, company_id FROM subscriptions WHERE id=?'
+  ).get(req.params.id)
+  if (!sub) return res.status(404).json({ error: 'Abonnement introuvable' })
+
+  const d = req.body.event_date
+  if (!d || typeof d !== 'string') return res.status(400).json({ error: 'event_date requis' })
+  const parsed = new Date(d)
+  if (Number.isNaN(parsed.getTime())) return res.status(400).json({ error: 'event_date invalide' })
+  const eventDateIso = parsed.toISOString()
+
+  const cat = req.body.category ?? null
+  if (cat !== null && !SUBSCRIPTION_EVENT_CATEGORIES.includes(cat)) {
+    return res.status(400).json({ error: `category doit être null ou parmi : ${SUBSCRIPTION_EVENT_CATEGORIES.join(', ')}` })
+  }
+
+  const cur = req.body.currency ?? 'CAD'
+  if (cur !== null && (typeof cur !== 'string' || !/^[A-Z]{3}$/.test(cur))) {
+    return res.status(400).json({ error: 'currency doit être null ou un code ISO 3 lettres majuscules' })
+  }
+
+  const amounts = {}
+  for (const field of ['previous_amount_cad', 'new_amount_cad', 'amount_cad_delta']) {
+    const v = req.body[field] ?? null
+    if (v !== null && (typeof v !== 'number' || !Number.isFinite(v))) {
+      return res.status(400).json({ error: `${field} doit être null ou un nombre` })
+    }
+    amounts[field] = v
+  }
+
+  const id = randomUUID()
+  db.prepare(`
+    INSERT INTO subscription_events (
+      id, subscription_id, company_id, event_date, event_type, category,
+      amount_cad_delta, previous_amount_cad, new_amount_cad, currency
+    ) VALUES (?,?,?,?,?,?,?,?,?,?)
+  `).run(
+    id, sub.id, sub.company_id, eventDateIso,
+    cat || 'manual', cat,
+    amounts.amount_cad_delta, amounts.previous_amount_cad, amounts.new_amount_cad, cur,
+  )
+  emitSubscriptionEvent('created', id, sub.id, req.user?.id)
+  res.json({ ok: true, id })
 })
 
 // Édition manuelle d'une entrée d'historique d'abonnement.
@@ -1528,7 +1632,11 @@ router.post('/factures/:id/recognize-revenue', async (req, res) => {
     // bypassShipmentCheck=true → force le constat même sans envoi lié (constatation
     // manuelle déclenchée depuis le bouton « Constater sur QuickBooks » de la fiche).
     const bypassShipmentCheck = req.body?.bypassShipmentCheck === true
-    const out = await postRevenueRecognitionJE(req.params.id, { bypassShipmentCheck })
+    // bypassCutoff=true → force le posting d'une facture pré-cutoff (avant
+    // QB_FACTURE_DATE_CUTOFF). Déclenché depuis le bouton « Forcer malgré le
+    // cutoff » de la fiche facture, sous confirmation explicite de l'opérateur.
+    const bypassCutoff = req.body?.bypassCutoff === true
+    const out = await postRevenueRecognitionJE(req.params.id, { bypassShipmentCheck, bypassCutoff })
     const fresh = db.prepare(`
       SELECT f.*, co.name as company_name, p.name as project_name, o.order_number,
         EXISTS (
@@ -1547,6 +1655,48 @@ router.post('/factures/:id/recognize-revenue', async (req, res) => {
     res.json({ ...out, facture: fresh })
   } catch (e) {
     res.status(400).json({ error: e.message || 'Erreur lors de la création du Journal Entry' })
+  }
+})
+
+// POST /factures/:id/retry-pdf
+// Re-télécharge le PDF d'une facture Stripe quand le download a échoué au webhook
+// (airtable_pdf_path resté null) : rien ne le retente automatiquement tant qu'aucun
+// nouvel event invoice n'arrive, donc on l'offre à la demande depuis la fiche.
+// L'URL `invoice_pdf` de Stripe expirant, on re-retrieve l'invoice live pour avoir
+// un lien frais avant de télécharger. Même esprit que retry-pdf Novoxpress / retry-qb.
+router.post('/factures/:id/retry-pdf', async (req, res) => {
+  const row = db.prepare('SELECT id, invoice_id, airtable_pdf_path FROM factures WHERE id=?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Facture introuvable' })
+  if (!row.invoice_id) return res.status(400).json({ error: "Cette facture n'a pas d'invoice Stripe associée" })
+  const key = getStripeKey()
+  if (!key) return res.status(400).json({ error: 'Connecteur Stripe non configuré' })
+
+  const t0 = Date.now()
+  try {
+    const stripe = new Stripe(key)
+    const inv = await stripe.invoices.retrieve(row.invoice_id)
+    if (!inv?.invoice_pdf) {
+      return res.status(400).json({ error: "Stripe n'a pas fourni de PDF pour cette facture" })
+    }
+    const relPath = await downloadStripeInvoicePdf(inv, row.id)
+    if (!relPath) return res.status(502).json({ error: 'Échec du téléchargement du PDF' })
+    db.prepare('UPDATE factures SET airtable_pdf_path=?, updated_at=strftime(\'%Y-%m-%dT%H:%M:%fZ\', \'now\') WHERE id=?').run(relPath, row.id)
+    logSync('stripe-invoice-pdf', 'manual-retry', {
+      status: 'success',
+      modified: 1,
+      durationMs: Date.now() - t0,
+    })
+    const fresh = db.prepare('SELECT * FROM factures WHERE id=?').get(row.id)
+    if (fresh) emitEntity('facture', 'updated', row.id, fresh, req.user?.id)
+    res.json({ ok: true, airtable_pdf_path: relPath })
+  } catch (e) {
+    console.error(`❌ retry-pdf facture ${row.id}:`, e.message)
+    logSync('stripe-invoice-pdf', 'manual-retry', {
+      status: 'error',
+      error: `facture ${row.id} (invoice ${row.invoice_id}): ${e.message}`,
+      durationMs: Date.now() - t0,
+    })
+    res.status(502).json({ error: e.message || 'Erreur lors du re-téléchargement du PDF' })
   }
 })
 

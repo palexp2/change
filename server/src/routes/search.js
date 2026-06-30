@@ -57,7 +57,7 @@ router.get('/', requireAuth, (req, res) => {
     SELECT o.id, o.order_number, c.name AS company_name
     FROM orders o
     LEFT JOIN companies c ON c.id = o.company_id
-    WHERE (o.order_number LIKE ? OR c.name LIKE ?)
+    WHERE o.deleted_at IS NULL AND (o.order_number LIKE ? OR c.name LIKE ?)
     LIMIT 6
   `).all(like, like)
   orders.forEach(r => results.push({

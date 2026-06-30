@@ -1,13 +1,16 @@
 import { useState, useMemo } from 'react'
 import { ExternalLink, Loader2 } from 'lucide-react'
 import { Modal } from './Modal.jsx'
+import { useConfirm } from './ConfirmProvider.jsx'
 import api from '../lib/api.js'
+import { fmtDateTime } from '../lib/formatDate.js'
 
 // Modale d'export d'une vue filtrée de contacts vers une liste statique
 // HubSpot. Ne crée AUCUN contact dans HubSpot — matche uniquement les
 // emails existants. Le rapport final liste les emails non trouvés.
 export function HubSpotExportModal({ isOpen, onClose, filteredContacts }) {
-  const [name, setName] = useState(`Segment ERP — ${new Date().toLocaleString('fr-CA', { dateStyle: 'short', timeStyle: 'short' })}`)
+  const confirm = useConfirm()
+  const [name, setName] = useState(`Segment ERP — ${fmtDateTime(new Date())}`)
   const [submitting, setSubmitting] = useState(false)
   const [result, setResult] = useState(null)
   const [error, setError] = useState('')
@@ -41,9 +44,32 @@ export function HubSpotExportModal({ isOpen, onClose, filteredContacts }) {
     setErrorDetails(null)
     if (!name.trim()) { setError('Nom de liste requis'); return }
     if (emails.length === 0) { setError('Aucun email valide à exporter'); return }
+
+    // Confirmation explicite avant la mutation HubSpot (création de liste +
+    // matching des contacts existants — side effect dans un système tiers).
+    const listName = name.trim()
+    const plural = emails.length > 1
+    const ok = await confirm({
+      title: 'Confirmer le push vers HubSpot',
+      message: (
+        <>
+          {'Cette action va modifier votre compte HubSpot :'}
+          {'\n\n'}
+          {`• Création d'une liste statique « ${listName} »`}
+          {'\n'}
+          {`• ${emails.length} email${plural ? 's' : ''} matché${plural ? 's' : ''} contre les contacts HubSpot existants`}
+          {'\n'}
+          {'• Ajout des contacts trouvés à la liste (aucun nouveau contact créé)'}
+        </>
+      ),
+      confirmLabel: 'Créer la liste',
+      danger: false,
+    })
+    if (!ok) return
+
     setSubmitting(true)
     try {
-      const r = await api.hubspot.createContactSegment(name.trim(), emails)
+      const r = await api.hubspot.createContactSegment(listName, emails)
       setResult(r)
     } catch (err) {
       setError(err.message || 'Erreur inconnue')

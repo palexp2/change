@@ -122,6 +122,60 @@ function hsTaskToErpFields(hs, cache) {
   }
 }
 
+// ── Push failure persistence & retry ─────────────────────────────────────────
+//
+// pushTaskFireAndForget() ne bloque pas l'utilisateur, mais avant cette file un
+// échec de push était simplement loggé puis oublié : l'ERP croyait la tâche
+// synchronisée alors qu'elle divergeait silencieusement de HubSpot. On persiste
+// désormais chaque échec dans `hubspot_push_failures` et un worker les rejoue.
+
+// Backoff exponentiel borné. `attempts` est le compteur APRÈS l'échec courant
+// (1 = premier échec). 1er retry ≈ 1 min, plafonné à 1 h pour rester observable
+// et finir par réussir quand HubSpot se rétablit, sans marteler l'API.
+const PUSH_RETRY_BASE_MS = 60 * 1000
+const PUSH_RETRY_MAX_MS = 60 * 60 * 1000
+export function computePushRetryDelayMs(attempts) {
+  const n = Math.max(1, attempts)
+  return Math.min(PUSH_RETRY_BASE_MS * 2 ** (n - 1), PUSH_RETRY_MAX_MS)
+}
+
+// Enregistre/incrémente un échec de push. `first_failed_at` n'est jamais écrasé
+// (omis du DO UPDATE) afin de conserver l'ancienneté réelle de la divergence.
+export function recordPushFailure(taskId, errorMessage, conn = db) {
+  const now = Date.now()
+  const nowIso = new Date(now).toISOString()
+  const prev = conn.prepare('SELECT attempts FROM hubspot_push_failures WHERE task_id=?').get(taskId)
+  const attempts = (prev?.attempts || 0) + 1
+  const nextRetry = new Date(now + computePushRetryDelayMs(attempts)).toISOString()
+  conn.prepare(`
+    INSERT INTO hubspot_push_failures
+      (task_id, attempts, last_error, first_failed_at, last_attempt_at, next_retry_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(task_id) DO UPDATE SET
+      attempts      = excluded.attempts,
+      last_error    = excluded.last_error,
+      last_attempt_at = excluded.last_attempt_at,
+      next_retry_at = excluded.next_retry_at
+  `).run(taskId, attempts, String(errorMessage || '').slice(0, 2000), nowIso, nowIso, nextRetry)
+  return { attempts, nextRetry }
+}
+
+export function clearPushFailure(taskId, conn = db) {
+  conn.prepare('DELETE FROM hubspot_push_failures WHERE task_id=?').run(taskId)
+}
+
+export function getPushFailureStatus(conn = db) {
+  const row = conn.prepare(`
+    SELECT COUNT(*) AS count, MIN(first_failed_at) AS oldest, MAX(attempts) AS max_attempts
+    FROM hubspot_push_failures
+  `).get()
+  return {
+    count: row?.count || 0,
+    oldest: row?.oldest || null,
+    max_attempts: row?.max_attempts || 0,
+  }
+}
+
 // ── Push (ERP → HubSpot) ─────────────────────────────────────────────────────
 
 // Coalesce per-task pushes to avoid bursts when multiple PATCHes fire quickly.
@@ -133,7 +187,7 @@ export async function pushTask(taskId) {
   const p = (async () => {
     try {
       const task = db.prepare('SELECT * FROM tasks WHERE id=?').get(taskId)
-      if (!task) return
+      if (!task) { clearPushFailure(taskId); return }
       const cache = await getOwnerCache()
 
       // Soft-deleted in ERP → archive in HS (if it exists there)
@@ -143,6 +197,7 @@ export async function pushTask(taskId) {
             if (!/404/.test(e.message)) throw e
           }
         }
+        clearPushFailure(taskId)
         return
       }
 
@@ -157,8 +212,16 @@ export async function pushTask(taskId) {
         db.prepare('UPDATE tasks SET hubspot_task_id=?, last_hubspot_sync=? WHERE id=?')
           .run(res.id, ts, taskId)
       }
+      // Push réussi → la divergence est résorbée.
+      clearPushFailure(taskId)
     } catch (e) {
-      console.error(`HubSpot push task ${taskId}:`, e.message)
+      // Persiste l'échec pour reprise au lieu de l'avaler dans un log volatil.
+      try {
+        const { attempts, nextRetry } = recordPushFailure(taskId, e.message)
+        console.error(`HubSpot push task ${taskId} (tentative ${attempts}, retry ${nextRetry}):`, e.message)
+      } catch (persistErr) {
+        console.error(`HubSpot push task ${taskId} (échec persistance file):`, persistErr.message, '— erreur d\'origine:', e.message)
+      }
     } finally {
       pendingPushes.delete(taskId)
     }
@@ -169,6 +232,33 @@ export async function pushTask(taskId) {
 
 export function pushTaskFireAndForget(taskId) {
   pushTask(taskId).catch(e => console.error('HubSpot push:', e.message))
+}
+
+/**
+ * Rejoue les push échoués dont next_retry_at est échu. Borné par `limit` pour
+ * lisser la charge sur l'API HubSpot. pushTask() reclasse chaque tâche : succès
+ * → ligne supprimée, nouvel échec → next_retry_at repoussé (backoff). Le JOIN
+ * sur tasks ignore les tâches disparues (la ligne file est nettoyée par
+ * ON DELETE CASCADE / clearPushFailure).
+ */
+export async function retryFailedPushes({ limit = 25 } = {}) {
+  if (!isHubSpotConfigured()) return { attempted: 0, recovered: 0, stillFailing: 0 }
+  const nowIso = new Date().toISOString()
+  const due = db.prepare(`
+    SELECT f.task_id FROM hubspot_push_failures f
+    JOIN tasks t ON t.id = f.task_id
+    WHERE f.next_retry_at IS NULL OR f.next_retry_at <= ?
+    ORDER BY f.next_retry_at ASC
+    LIMIT ?
+  `).all(nowIso, limit)
+  let recovered = 0, stillFailing = 0
+  for (const { task_id } of due) {
+    await pushTask(task_id)
+    const still = db.prepare('SELECT 1 FROM hubspot_push_failures WHERE task_id=?').get(task_id)
+    if (still) stillFailing++
+    else recovered++
+  }
+  return { attempted: due.length, recovered, stillFailing }
 }
 
 // ── Pull (HubSpot → ERP) ─────────────────────────────────────────────────────
@@ -188,56 +278,110 @@ function setLastPullCursor(iso) {
 }
 
 /**
+ * Construit un suffixe de message d'erreur décrivant la progression partielle
+ * d'un pull avant l'échec. Pur (testable sans DB ni réseau).
+ *
+ * `ctx` = objet `hubspotSearch` attaché à l'erreur par le connecteur :
+ *   { windowFrom, windowTo, after, fetchedInWindow }
+ */
+export function describeSyncFailure({ processed = 0, modified = 0, ctx = {} } = {}) {
+  const parts = [
+    `tâches traitées avant l'échec: ${processed}`,
+    `dont écrites en ERP: ${modified}`,
+    ctx.windowFrom
+      ? `fenêtre demandée: ${ctx.windowFrom} → ${ctx.windowTo}`
+      : 'mode backfill (sans curseur)',
+    ctx.after != null && ctx.after !== ''
+      ? `curseur after: ${ctx.after}`
+      : 'curseur after: (1re page de la fenêtre)',
+  ]
+  if (ctx.fetchedInWindow != null) {
+    parts.push(`résultats récupérés dans la fenêtre fautive avant l'échec: ${ctx.fetchedInWindow}`)
+  }
+  return `[progression sync hubspot_tasks — ${parts.join(' · ')}]`
+}
+
+/**
  * Pull incremental changes from HubSpot. Also detects deletions by checking
  * whether tasks known to the ERP still exist on HubSpot.
+ *
+ * Le pull traite HubSpot fenêtre par fenêtre (cf. searchTasksModifiedSince) et
+ * avance le curseur après chaque fenêtre appliquée. Si une fenêtre échoue (500
+ * persistant), l'erreur remontée est enrichie via describeSyncFailure (curseur,
+ * nb traité, fenêtre fautive) et `e.hubspotSyncProgress` porte les compteurs
+ * partiels pour que sync_log les enregistre.
  */
 export async function pullDelta({ full = false } = {}) {
   if (!isHubSpotConfigured()) return { modified: 0, destroyed: 0 }
-  let modified = 0, destroyed = 0
+  let modified = 0, destroyed = 0, processed = 0
   const cache = await getOwnerCache()
   const since = full ? null : getLastPullCursor()
   const startedAt = Date.now()
-  const results = await searchTasksModifiedSince(since)
+  const sinceMs = since ? new Date(since).getTime() : 0
+  let maxModified = sinceMs
 
-  let maxModified = since ? new Date(since).getTime() : 0
+  // Applique les résultats d'une fenêtre HubSpot à l'ERP. Extrait en closure pour
+  // le traitement incrémental : appelé une fois par fenêtre par
+  // searchTasksModifiedSince.
+  const applyResults = (results) => {
+    for (const hs of results) {
+      const hsModifiedMs = Date.parse(hs.properties?.hs_lastmodifieddate) || Date.now()
+      if (hsModifiedMs > maxModified) maxModified = hsModifiedMs
+      const hsId = String(hs.id)
+      const existing = db.prepare('SELECT * FROM tasks WHERE hubspot_task_id=?').get(hsId)
+      const fields = hsTaskToErpFields(hs, cache)
+      processed++
 
-  for (const hs of results) {
-    const hsModifiedMs = Date.parse(hs.properties?.hs_lastmodifieddate) || Date.now()
-    if (hsModifiedMs > maxModified) maxModified = hsModifiedMs
-    const hsId = String(hs.id)
-    const existing = db.prepare('SELECT * FROM tasks WHERE hubspot_task_id=?').get(hsId)
-    const fields = hsTaskToErpFields(hs, cache)
-
-    if (existing) {
-      // Echo guard: if ERP last_hubspot_sync >= HS modified, we pushed this change.
-      if (existing.last_hubspot_sync) {
-        const lastSync = Date.parse(existing.last_hubspot_sync)
-        if (!isNaN(lastSync) && lastSync >= hsModifiedMs) continue
+      if (existing) {
+        // Echo guard: if ERP last_hubspot_sync >= HS modified, we pushed this change.
+        if (existing.last_hubspot_sync) {
+          const lastSync = Date.parse(existing.last_hubspot_sync)
+          if (!isNaN(lastSync) && lastSync >= hsModifiedMs) continue
+        }
+        if (existing.deleted_at) {
+          db.prepare(`UPDATE tasks SET deleted_at=NULL WHERE id=?`).run(existing.id)
+        }
+        db.prepare(`
+          UPDATE tasks SET title=?, description=?, status=?, priority=?, due_date=?,
+            assigned_to=?, last_hubspot_sync=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          WHERE id=?
+        `).run(
+          fields.title, fields.description, fields.status, fields.priority,
+          fields.due_date, fields.assigned_to, fields.last_hubspot_sync, existing.id
+        )
+        modified++
+      } else {
+        const id = uuidv4()
+        db.prepare(`
+          INSERT INTO tasks (id, title, description, status, priority, due_date,
+            assigned_to, keywords, hubspot_task_id, last_hubspot_sync)
+          VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)
+        `).run(
+          id, fields.title, fields.description, fields.status, fields.priority,
+          fields.due_date, fields.assigned_to, hsId, fields.last_hubspot_sync
+        )
+        modified++
       }
-      if (existing.deleted_at) {
-        db.prepare(`UPDATE tasks SET deleted_at=NULL WHERE id=?`).run(existing.id)
-      }
-      db.prepare(`
-        UPDATE tasks SET title=?, description=?, status=?, priority=?, due_date=?,
-          assigned_to=?, last_hubspot_sync=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        WHERE id=?
-      `).run(
-        fields.title, fields.description, fields.status, fields.priority,
-        fields.due_date, fields.assigned_to, fields.last_hubspot_sync, existing.id
-      )
-      modified++
-    } else {
-      const id = uuidv4()
-      db.prepare(`
-        INSERT INTO tasks (id, title, description, status, priority, due_date,
-          assigned_to, keywords, hubspot_task_id, last_hubspot_sync)
-        VALUES (?, ?, ?, ?, ?, ?, ?, '[]', ?, ?)
-      `).run(
-        id, fields.title, fields.description, fields.status, fields.priority,
-        fields.due_date, fields.assigned_to, hsId, fields.last_hubspot_sync
-      )
-      modified++
     }
+  }
+
+  try {
+    await searchTasksModifiedSince(since, (results, win) => {
+      applyResults(results)
+      // Avance le curseur fenêtre par fenêtre (deltas seulement) : sur un échec
+      // d'une fenêtre ultérieure, le prochain run reprend ici au lieu de tout
+      // recommencer. On ancre sur maxModified (= plus récente modif vue) pour ne
+      // pas dépasser ce qu'on a réellement appliqué.
+      if (win.to != null && maxModified > sinceMs) {
+        setLastPullCursor(new Date(maxModified).toISOString())
+      }
+    })
+  } catch (e) {
+    // Enrichit le message (visible dans sync_log.error_message) et attache les
+    // compteurs partiels pour que l'appelant les journalise aussi.
+    e.message = `${e.message} ${describeSyncFailure({ processed, modified, ctx: e.hubspotSearch || {} })}`
+    e.hubspotSyncProgress = { processed, modified, destroyed, ...(e.hubspotSearch || {}) }
+    throw e
   }
 
   // Deletion detection — sample up to 50 ERP tasks not touched in the last 24h
@@ -269,7 +413,9 @@ export async function pullDelta({ full = false } = {}) {
   // forward — avoids re-pulling the 11k+ historical COMPLETED tasks.
   if (!since) {
     setLastPullCursor(new Date(startedAt).toISOString())
-  } else if (maxModified > 0) {
+  } else if (maxModified > sinceMs) {
+    // Backstop : le curseur a déjà été avancé fenêtre par fenêtre ci-dessus,
+    // on ré-ancre par sécurité sur la modif la plus récente réellement appliquée.
     setLastPullCursor(new Date(maxModified).toISOString())
   }
   return { modified, destroyed }
@@ -289,6 +435,7 @@ export async function getOwnerMappingStatus() {
     return {
       configured: true,
       owners,
+      push_failures: getPushFailureStatus(),
       users: users.map(u => {
         const autoId = cache.erpEmailToHsId.get((u.email || '').toLowerCase()) || null
         const overrideId = u.hubspot_owner_id || null

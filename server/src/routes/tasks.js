@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { pushTaskFireAndForget } from '../services/hubspotSync.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
+import { notifyAssignment } from '../services/notifications.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -137,12 +138,19 @@ router.post('/', (req, res) => {
 
   const task = buildTaskRow(id)
   emitEntity('task', 'created', id, task, req.user?.id);
+  notifyAssignment({
+    assignedTo: assigned_to,
+    actorUserId: req.user?.id,
+    type: 'task:assigned',
+    title: `Tâche assignée : ${title}`,
+    link: '/tasks',
+  });
   res.status(201).json(task);
 });
 
 // PUT /api/tasks/:id — partial update
 router.put('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM tasks WHERE id = ?').get(req.params.id);
+  const existing = db.prepare('SELECT id, assigned_to, title FROM tasks WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Task not found' });
 
   const { setClause, values, error } = buildPartialUpdate(req.body, {
@@ -163,6 +171,16 @@ router.put('/:id', (req, res) => {
 
   const updated = buildTaskRow(req.params.id)
   emitEntity('task', 'updated', req.params.id, updated, req.user?.id);
+  if ('assigned_to' in req.body) {
+    notifyAssignment({
+      assignedTo: req.body.assigned_to,
+      prevAssignedTo: existing.assigned_to,
+      actorUserId: req.user?.id,
+      type: 'task:assigned',
+      title: `Tâche assignée : ${updated?.title || existing.title}`,
+      link: '/tasks',
+    });
+  }
   res.json(updated);
 });
 
@@ -182,7 +200,7 @@ router.patch('/:id/status', (req, res) => {
 
   const updated = buildTaskRow(req.params.id)
   emitEntity('task', 'updated', req.params.id, updated, req.user?.id);
-  res.json(db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id));
+  res.json(updated);
 });
 
 // DELETE /api/tasks/:id

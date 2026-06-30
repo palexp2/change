@@ -12,3 +12,15 @@ server/storage/
 .agents/
 .claude/
 deploy.log
+
+# Agent autonome — fichiers transitoires (le store .json reste versionné)
+.agent-pid
+.agent-exec-*
+agent-tasks.json.tmp
+agent-backlog.json.tmp
+agent-settings.json.tmp
+
+# Env backups & variants (contain live secrets — never commit)
+.env.*
+server/.env*
+!server/.env.example

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus, X } from 'lucide-react'
+import { Plus, X, Building2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
@@ -8,6 +8,8 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge, phaseBadgeColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
@@ -67,17 +69,31 @@ function CompanyForm({ initial = {}, onSave, onClose }) {
         </div>
         <div>
           <label className="label">Type</label>
-          <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className="select">
-            <option value="">— Sélectionner —</option>
-            {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
+          {/* Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche. */}
+          <SearchableSelect
+            value={form.type}
+            options={TYPES.map(t => ({ value: t, label: t }))}
+            onChange={v => setForm(f => ({ ...f, type: v }))}
+            emptyOption="— Sélectionner —"
+            placeholder="— Sélectionner —"
+            className="input w-full"
+            size="sm"
+            testId="company-form-type"
+          />
         </div>
         <div>
           <label className="label">Phase</label>
-          <select value={form.lifecycle_phase} onChange={e => setForm(f => ({ ...f, lifecycle_phase: e.target.value }))} className="select">
-            <option value="">— Sélectionner —</option>
-            {PHASES.map(p => <option key={p} value={p}>{p}</option>)}
-          </select>
+          {/* Cohérence : même composant searchable que « Type » ci-dessus et que CompanyDetail. */}
+          <SearchableSelect
+            value={form.lifecycle_phase}
+            options={PHASES.map(p => ({ value: p, label: p }))}
+            onChange={v => setForm(f => ({ ...f, lifecycle_phase: v }))}
+            emptyOption="— Sélectionner —"
+            placeholder="— Sélectionner —"
+            className="input w-full"
+            size="sm"
+            testId="company-form-phase"
+          />
         </div>
         <div>
           <label className="label">Téléphone</label>
@@ -108,6 +124,8 @@ function CompanyForm({ initial = {}, onSave, onClose }) {
           <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input" rows={3} />
         </div>
       </div>
+      {/* Création seulement : on n'avertit pas en édition (pas de doublon avec soi-même). */}
+      {!initial.id && <DuplicateWarning kind="company" values={form} />}
       {error && <p className="text-red-600 text-sm">{error}</p>}
       <div className="flex justify-end gap-3 pt-2">
         <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
@@ -208,6 +226,7 @@ export default function Companies() {
               onChange: load,
             })
           }}
+          emptyState={{ icon: Building2, title: 'Aucune entreprise', description: "Aucune entreprise n'est encore enregistrée. Ajoute une entreprise pour gérer ses contacts, commandes et factures.", cta: { label: 'Nouvelle entreprise', icon: Plus, onClick: () => setShowModal(true) } }}
         />
       </div>
 

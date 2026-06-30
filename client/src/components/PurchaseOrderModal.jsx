@@ -2,6 +2,8 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { Mail, Download, Plus, Trash2, RefreshCw, CheckCircle, Search } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Modal } from './Modal.jsx'
+import { SearchableSelect } from './SearchableSelect.jsx'
+import { useConfirm } from './ConfirmProvider.jsx'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
@@ -39,6 +41,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
   const [error, setError] = useState('')
   const [fromAccount, setFromAccount] = useState('')
   const [gmailAccounts, setGmailAccounts] = useState([])
+  const confirm = useConfirm()
 
   useEffect(() => {
     if (!isOpen) return
@@ -152,8 +155,25 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
 
   async function handleSend() {
     if (!emailTo || !emailTo.includes('@')) { setError('Adresse courriel invalide'); return }
-    setSending(true)
     setError('')
+
+    // Confirmation explicite du side effect (envoi d'un courriel + PDF au fournisseur).
+    const ok = await confirm({
+      title: "Confirmer l'envoi du bon de commande",
+      message: (
+        <>
+          Un courriel avec le PDF <strong>{po?.po_number}.pdf</strong> en pièce jointe sera envoyé à{' '}
+          <strong>{emailTo}</strong>
+          {emailCc ? <> (Cc&nbsp;: <strong>{emailCc}</strong>)</> : null}
+          {fromAccount ? <>, depuis <strong>{fromAccount}</strong></> : null}.
+        </>
+      ),
+      confirmLabel: 'Envoyer',
+      danger: false,
+    })
+    if (!ok) return
+
+    setSending(true)
     try {
       await api.products.poSendEmail(productId, {
         to: emailTo,
@@ -194,14 +214,18 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
         <div className="space-y-4">
           <div>
             <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Envoyer depuis</label>
-            <select className={inp} value={fromAccount} onChange={e => setFromAccount(e.target.value)}>
-              <option value="">— choisir un compte —</option>
-              {gmailAccounts.map(a => (
-                <option key={a.account_email} value={a.account_email}>
-                  {a.account_email}{a.is_current_user ? ' (vous)' : ''}
-                </option>
-              ))}
-            </select>
+            <SearchableSelect
+              testId="po-from-account-select"
+              className={inp}
+              size="sm"
+              value={fromAccount}
+              onChange={setFromAccount}
+              options={gmailAccounts}
+              getOptionValue={a => a.account_email}
+              getOptionLabel={a => `${a.account_email}${a.is_current_user ? ' (vous)' : ''}`}
+              placeholder="— choisir un compte —"
+              searchPlaceholder="Rechercher un compte…"
+            />
             {!gmailAccounts.some(a => a.is_current_user) && (
               <p className="text-xs text-amber-700 mt-1">
                 Votre compte Gmail n'est pas connecté. Connectez-le dans Connectors, ou sélectionnez un autre compte pour envoyer.
@@ -211,25 +235,29 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
           <div>
             <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Destinataire</label>
             {emailToMode === 'select' && supplierContacts.length > 0 ? (
-              <select
+              <SearchableSelect
+                testId="po-recipient-select"
                 className={inp}
+                size="sm"
                 value={emailTo}
-                onChange={e => {
-                  if (e.target.value === '__custom__') {
+                onChange={v => {
+                  if (v === '__custom__') {
                     setEmailToMode('custom')
                     setEmailTo('')
                   } else {
-                    setEmailTo(e.target.value)
+                    setEmailTo(v)
                   }
                 }}
-              >
-                {supplierContacts.map(c => (
-                  <option key={c.id} value={c.email}>
-                    {[c.first_name, c.last_name].filter(Boolean).join(' ')} — {c.email}
-                  </option>
-                ))}
-                <option value="__custom__">Autre / Saisir manuellement…</option>
-              </select>
+                options={[
+                  ...supplierContacts.map(c => ({
+                    value: c.email,
+                    label: `${[c.first_name, c.last_name].filter(Boolean).join(' ')} — ${c.email}`,
+                  })),
+                  { value: '__custom__', label: 'Autre / Saisir manuellement…' },
+                ]}
+                placeholder="— Choisir un contact —"
+                searchPlaceholder="Rechercher un contact…"
+              />
             ) : (
               <>
                 <input className={inp} value={emailTo} onChange={e => setEmailTo(e.target.value)} placeholder="fournisseur@exemple.com" />

@@ -9,11 +9,30 @@ import { requireAuth } from '../middleware/auth.js'
 import * as postmark from 'postmark'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { getAutomationFrom } from '../services/postmarkConfig.js'
-import { recognizeRevenueForOrder } from '../services/quickbooks.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
+import { writeBackRecord, createInAirtable } from '../services/airtableWriteback.js'
+import { logSync } from '../services/syncLog.js'
+import { buildExternalLinks } from '../services/externalLinks.js'
 
 const router = Router()
 router.use(requireAuth)
+
+// Liens profonds vers le record source (Airtable « envois »).
+function shipmentExternalLinks(row) {
+  return buildExternalLinks({ airtableModule: 'envois', airtableId: row?.airtable_id })
+}
+
+// Filet pour les write-backs ERP → Airtable lancés en fire-and-forget. Les fonctions
+// du service tracent déjà leurs propres échecs dans sync_log ; ce wrapper garantit
+// qu'AUCUNE rejection résiduelle (throw inattendu hors de leur try) ne soit avalée
+// par un simple console.error — sinon l'envoi reste sans airtable_id, 2-way sync
+// rompu, sans aucune trace ni alerte (cf. signaux 'fetch failed' Airtable).
+function traceAirtablePush(promise, trigger, recordId) {
+  return promise.catch(e => {
+    console.error(`${trigger} envois ${recordId} (async):`, e.message)
+    logSync('envois', trigger, { status: 'error', error: `${recordId}: ${e.message}` })
+  })
+}
 
 function buildShipmentRow(id) {
   return db.prepare(`
@@ -117,15 +136,29 @@ router.get('/:id', (req, res) => {
 
   if (!row) return res.status(404).json({ error: 'Envoi introuvable' })
 
-  const order_items = db.prepare(`
+  // Articles assignés explicitement à cet envoi (order_items.shipment_id).
+  let order_items = db.prepare(`
     SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.weight_lbs
     FROM order_items oi
     LEFT JOIN products pr ON oi.product_id = pr.id
-    WHERE oi.order_id = ?
+    WHERE oi.shipment_id = ?
     ORDER BY oi.created_at
-  `).all(row.order_id)
+  `).all(req.params.id)
 
-  res.json({ ...row, order_items })
+  // Fallback : aucun item lié (envoi sans assignation) → afficher toute la commande.
+  let items_fallback = false
+  if (order_items.length === 0) {
+    items_fallback = true
+    order_items = db.prepare(`
+      SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.weight_lbs
+      FROM order_items oi
+      LEFT JOIN products pr ON oi.product_id = pr.id
+      WHERE oi.order_id = ?
+      ORDER BY oi.created_at
+    `).all(row.order_id)
+  }
+
+  res.json({ ...row, order_items, items_fallback, external_links: shipmentExternalLinks(row) })
 })
 
 // POST /api/shipments
@@ -145,6 +178,13 @@ router.post('/', (req, res) => {
 
   const created = buildShipmentRow(id)
   emitEntity('shipment', 'created', id, created, req.user?.id)
+
+  // Création ERP → Airtable (2-way sync). Asynchrone, non bloquant : l'envoi est
+  // créé dans l'ERP même si Airtable est indisponible. Pousse les scalaires + les
+  // linked records (commande, adresse, items) et stocke l'airtable_id retourné.
+  // La garde anti-boucle empêche le webhook de création de retour de le ré-importer.
+  traceAirtablePush(createInAirtable('envois', id), 'erp-create', id)
+
   res.status(201).json(created)
 })
 
@@ -182,38 +222,33 @@ router.patch('/:id', (req, res) => {
       WHERE shipment_id = ? AND shipped_unit_cost IS NULL
     `).run(req.params.id)
 
-    // Constat de vente — pour chaque facture liée à la commande (kind='order'),
-    // pose la JE Dr 23900|AR / Cr 40000. Asynchrone et idempotent : si QB est down
-    // ou si la JE est déjà posée, on continue sans bloquer la réponse PATCH.
-    const ship = db.prepare('SELECT order_id FROM shipments WHERE id = ?').get(req.params.id)
-    if (ship?.order_id) {
-      recognizeRevenueForOrder(ship.order_id).then(r => {
-        if (r.recognized.length || r.errors.length) {
-          logSystemRun('sys_revenue_recognition', {
-            status: r.errors.length ? 'error' : 'success',
-            result: [
-              `Commande ${ship.order_id} (shipment ${req.params.id} → Envoyé)`,
-              `Constatées : ${r.recognized.length} (${r.recognized.map(x => `#${x.document_number || x.facture_id} ${x.amount} ${x.currency} via ${x.debit_account}`).join(', ') || '—'})`,
-              `Skip : ${r.skipped.length}`,
-              r.errors.length ? `Erreurs : ${r.errors.map(e => `${e.facture_id}: ${e.error}`).join(' | ')}` : null,
-            ].filter(Boolean).join('\n'),
-            error: r.errors.length ? r.errors.map(e => e.error).join(' | ') : undefined,
-            triggerData: { order_id: ship.order_id, shipment_id: req.params.id },
-          })
-        }
-      }).catch(err => {
-        console.error('recognizeRevenueForOrder error:', err.message)
-        logSystemRun('sys_revenue_recognition', {
-          status: 'error', error: err.message,
-          triggerData: { order_id: ship.order_id, shipment_id: req.params.id },
-        })
-      })
-    }
+    // Constat de vente : plus déclenché ici. L'UPDATE shipments (status='Envoyé')
+    // est journalisé dans change_log et capté par revenueRecognitionWatcher, qui
+    // pose la JE Dr 23900|AR / Cr 40000 et persiste/retente tout échec (QB down,
+    // montant manquant). Voir services/revenueRecognitionWatcher.js.
   }
 
   const updated = buildShipmentRow(req.params.id)
   emitEntity('shipment', 'updated', req.params.id, updated, req.user?.id)
-  res.json(updated)
+
+  // Write-back ERP → Airtable (scalaires uniquement : tracking, carrier, status,
+  // shipped_at, notes). Asynchrone, non bloquant : l'édition ERP réussit même si
+  // Airtable est indisponible. La garde anti-boucle (airtable_writeback_guard +
+  // consumeWritebackEcho dans syncEnvois) empêche le webhook de retour de réécrire
+  // la valeur dans l'ERP. Les linked records et le lookup « pays » sont exclus
+  // côté WRITEBACK_MODULES.envois — pas besoin de les filtrer ici.
+  if (updated?.airtable_id) {
+    const changedColumns = ['tracking_number', 'carrier', 'status', 'shipped_at', 'notes', 'pays', 'address_id']
+      .filter(k => req.body[k] !== undefined)
+    traceAirtablePush(writeBackRecord('envois', req.params.id, changedColumns), 'erp-writeback', req.params.id)
+  } else {
+    // Envoi pas encore lié à Airtable (créé dans l'ERP avant le 2-way sync, ou
+    // dont la création initiale a échoué) : on le crée maintenant. Sert de chemin
+    // de récupération — éditer un vieil envoi le pousse enfin vers Airtable.
+    traceAirtablePush(createInAirtable('envois', req.params.id), 'erp-create', req.params.id)
+  }
+
+  res.json({ ...updated, external_links: shipmentExternalLinks(updated) })
 })
 
 const TRACKING_URLS = {
@@ -354,22 +389,27 @@ router.post('/:id/send-tracking', async (req, res) => {
 
     // Logger l'interaction
     const interactionId = uuidv4()
-    db.prepare(`
-      INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
-      VALUES (?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    `).run(interactionId, row.address_contact_id || null, row.company_id || null)
-    db.prepare(`
-      INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, automated)
-      VALUES (?, ?, ?, ?, ?, ?, 1)
-    `).run(emailId, interactionId, subject, html, fromAddress, to)
+    // Tout-ou-rien post-envoi : interaction + email + marquage de l'expédition
+    // doivent réussir ensemble, sinon on resterait dans un état incohérent
+    // (email envoyé mais expédition non marquée → re-envoi, ou records orphelins).
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
+        VALUES (?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      `).run(interactionId, row.address_contact_id || null, row.company_id || null)
+      db.prepare(`
+        INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, automated)
+        VALUES (?, ?, ?, ?, ?, ?, 1)
+      `).run(emailId, interactionId, subject, html, fromAddress, to)
 
-    db.prepare(`
-      UPDATE shipments SET
-        tracking_email_sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-        tracking_email_interaction_id = ?,
-        tracking_email_contact_id = ?
-      WHERE id = ?
-    `).run(interactionId, row.address_contact_id || null, req.params.id)
+      db.prepare(`
+        UPDATE shipments SET
+          tracking_email_sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+          tracking_email_interaction_id = ?,
+          tracking_email_contact_id = ?
+        WHERE id = ?
+      `).run(interactionId, row.address_contact_id || null, req.params.id)
+    })()
 
     const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
     const nowIso = new Date().toISOString()

@@ -1,6 +1,7 @@
 import db from '../db/database.js'
 import { sendInstallationFollowups } from './installationFollowup.js'
 import { getAutomationFrom } from './postmarkConfig.js'
+import { syncAndPushStripePayouts } from './quickbooks.js'
 
 // Registry of system automations that can be invoked manually from the UI
 // (dry-run to preview, or run-now to execute). Omit an id here to keep it
@@ -16,6 +17,9 @@ export const MANUAL_RUNNERS = {
       summary: `${out.total} éligible(s) · ${out.sent} envoyé(s) · ${out.skipped} dry-run · ${out.errors} erreur(s)`,
       details: out.details,
     }
+  },
+  sys_stripe_weekly_payout_push: async ({ dryRun }) => {
+    return await syncAndPushStripePayouts({ dryRun })
   },
 }
 
@@ -51,6 +55,23 @@ export const SYSTEM_AUTOMATIONS = [
       kind: 'manual',
       source: 'POST /api/shipments/:id/send-tracking',
       summary: "Déclenché manuellement depuis la fiche envoi (bouton « Envoyer le suivi »)",
+    },
+  },
+  {
+    id: 'sys_revenue_recognition',
+    name: 'Constat de vente à l\'expédition (Dr 23900|AR / Cr 40000)',
+    description:
+      "Quand un envoi passe à « Envoyé », le revenu des factures kind='order' liées à la commande est constaté en QB " +
+      "(JournalEntry Dr 23900 Revenus perçus d'avance | AR / Cr 40000 Ventes). " +
+      "Déclenché par modification DB via un watcher qui tail change_log sur la table shipments (revenueRecognitionWatcher) — " +
+      "plus aucune route front-end n'appelle la reconnaissance directement. " +
+      "Idempotent (skip si déjà constaté, abonnement, pas d'envoi lié, ou payout Stripe en attente). " +
+      "Les échecs (QB indisponible, montant manquant) sont persistés dans revenue_recognition_queue et retentés avec backoff " +
+      "jusqu'au succès — le revenu n'est jamais silencieusement perdu.",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'change_log(shipments) → revenueRecognitionWatcher',
+      summary: "Déclenché à l'écriture DB d'un shipment status='Envoyé' (toute origine : UI, Novoxpress, sync Airtable)",
     },
   },
   {
@@ -177,6 +198,25 @@ export const SYSTEM_AUTOMATIONS = [
       source: 'index.js:scheduleInstallationFollowup',
       cron: 'every 24h at 09:00',
       summary: 'Scheduler interne — une fois par jour à 9h (local)',
+    },
+    default_active: 0,
+  },
+  {
+    id: 'sys_stripe_weekly_payout_push',
+    name: 'Sync + push QB des Stripe payouts (lundi midi)',
+    description:
+      "Chaque lundi à 12h00 (local) : pull incrémental des nouveaux Stripe payouts, sync des balance_transactions manquantes, " +
+      "puis push automatique de chaque dépôt QuickBooks pour les payouts réglés (status='paid') pas encore poussés. " +
+      "GARDE ANTI-ERREUR : avant chaque push, le Deposit est construit en dry build et inspecté — tout payout générant un warning " +
+      "(client QB non résolu, taxe sur frais non imputée, TaxCode manquant…) est laissé en attente de revue manuelle, jamais poussé à l'aveugle. " +
+      "Idempotent : un payout déjà lié à un Deposit (qb_deposit_id) est ignoré. " +
+      "⚠️ Désactivé par défaut au premier déploiement — activer manuellement depuis cette page après vérification. " +
+      "Exécutable en dry-run (preview) ou run-now depuis cette page.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'index.js:scheduleStripeWeeklyPayoutPush',
+      cron: '0 12 * * 1 (lundi 12h00 local)',
+      summary: 'Scheduler interne — tous les lundis à midi (local)',
     },
     default_active: 0,
   },

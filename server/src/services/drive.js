@@ -114,7 +114,7 @@ async function syncFolder(drive, folderId, userId) {
     db.prepare('INSERT INTO calls (id, interaction_id, recording_path, caller_number, callee_number, duration_seconds, drive_file_id, drive_filename) VALUES (?,?,?,?,?,?,?,?)')
       .run(callId, interactionId, localFilename, direction === 'out' ? null : phone, direction === 'out' ? phone : null, durationSeconds, file.id, file.name)
 
-    enqueueTranscription(callId, localPath).catch(console.error)
+    enqueueTranscription(callId, localPath, 'drive-import').catch(console.error)
     imported++
   }
   return imported

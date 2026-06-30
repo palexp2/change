@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { getCentralControllers } from '../utils/centralController.js';
 import { CC_PERMISSION_SELECT, CC_PERMISSIONS_JOIN } from '../utils/ccPermissions.js';
 import { emitCompany } from '../services/realtimeEmitters.js';
+import { findCompanyDuplicates } from '../utils/duplicateMatch.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -15,6 +16,15 @@ router.get('/lookup', (req, res) => {
     "SELECT id, name FROM companies WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE"
   ).all()
   res.json(rows)
+})
+
+// GET /api/companies/duplicates — correspondances potentielles (nom/courriel/
+// téléphone) avant de créer une entreprise. Non bloquant : juste un avertissement.
+// Doit rester AVANT la route GET /:id pour ne pas être capturé par celle-ci.
+router.get('/duplicates', (req, res) => {
+  const { name, email, phone, exclude_id } = req.query;
+  const matches = findCompanyDuplicates(db, { name, email, phone, excludeId: exclude_id });
+  res.json({ matches });
 })
 
 // GET /api/companies
@@ -70,9 +80,9 @@ router.get('/', (req, res) => {
   const total = db.prepare(`SELECT COUNT(*) as c FROM companies c ${where}`).get(...params).c;
   const companies = db.prepare(
     `SELECT c.*,
-      (SELECT COUNT(*) FROM contacts ct WHERE ct.company_id = c.id) as contacts_count,
-      (SELECT COUNT(*) FROM projects p WHERE p.company_id = c.id) as projects_count,
-      (SELECT COUNT(*) FROM orders o WHERE o.company_id = c.id) as orders_count,
+      (SELECT COUNT(*) FROM contacts ct WHERE ct.company_id = c.id AND ct.deleted_at IS NULL) as contacts_count,
+      (SELECT COUNT(*) FROM projects p WHERE p.company_id = c.id AND p.deleted_at IS NULL) as projects_count,
+      (SELECT COUNT(*) FROM orders o WHERE o.company_id = c.id AND o.deleted_at IS NULL) as orders_count,
       ${CC_PERMISSION_SELECT}
      FROM companies c
      ${CC_PERMISSIONS_JOIN} ON ccp.company_id = c.id
@@ -100,14 +110,14 @@ router.get('/:id', (req, res) => {
      ORDER BY cc.is_primary DESC, ct.first_name COLLATE NOCASE`
   ).all(req.params.id);
   const projects = db.prepare(
-    'SELECT p.* FROM projects p WHERE p.company_id = ? ORDER BY p.created_at DESC'
+    'SELECT p.* FROM projects p WHERE p.company_id = ? AND p.deleted_at IS NULL ORDER BY p.created_at DESC'
   ).all(req.params.id);
   const orders = db.prepare(
     `SELECT o.*,
       (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) as items_count,
       u.name as assigned_name
      FROM orders o LEFT JOIN users u ON o.assigned_to = u.id
-     WHERE o.company_id = ? ORDER BY o.created_at DESC LIMIT 20`
+     WHERE o.company_id = ? AND o.deleted_at IS NULL ORDER BY o.created_at DESC LIMIT 20`
   ).all(req.params.id);
   const tickets = db.prepare(
     'SELECT t.*, u.name as assigned_name FROM tickets t LEFT JOIN users u ON t.assigned_to = u.id WHERE t.company_id = ? ORDER BY t.created_at DESC LIMIT 20'

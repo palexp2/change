@@ -103,4 +103,57 @@ router.get('/me', requireAuth, (req, res) => {
   res.json(user);
 });
 
+function readNavHidden(userId) {
+  const row = db.prepare('SELECT nav_hidden FROM users WHERE id = ?').get(userId);
+  let navHidden = [];
+  try { navHidden = JSON.parse(row?.nav_hidden || '[]'); } catch { navHidden = []; }
+  return Array.isArray(navHidden) ? navHidden : [];
+}
+
+function readDecimalPreferences(userId) {
+  const row = db.prepare('SELECT decimal_preferences FROM users WHERE id = ?').get(userId);
+  let prefs = {};
+  try { prefs = JSON.parse(row?.decimal_preferences || '{}'); } catch { prefs = {}; }
+  return prefs && typeof prefs === 'object' && !Array.isArray(prefs) ? prefs : {};
+}
+
+// Valide un objet { "<table>::<field>": <0-5> }. Les entrées invalides sont
+// rejetées (réponse 400) plutôt que silencieusement ignorées.
+function validDecimalPreferences(obj) {
+  if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  return Object.entries(obj).every(([k, v]) => (
+    typeof k === 'string' && k.length > 0 && k.length <= 120
+    && Number.isInteger(v) && v >= 0 && v <= 5
+  ));
+}
+
+// GET /api/auth/preferences — préférences UI de l'utilisateur courant
+router.get('/preferences', requireAuth, (req, res) => {
+  res.json({
+    nav_hidden: readNavHidden(req.user.id),
+    decimal_preferences: readDecimalPreferences(req.user.id),
+  });
+});
+
+// PATCH /api/auth/preferences — maj des préférences UI (menu de gauche, décimales, etc.)
+router.patch('/preferences', requireAuth, (req, res) => {
+  const { nav_hidden, decimal_preferences } = req.body || {};
+  if (nav_hidden !== undefined) {
+    if (!Array.isArray(nav_hidden) || !nav_hidden.every((k) => typeof k === 'string')) {
+      return res.status(400).json({ error: 'nav_hidden doit être un tableau de chaînes' });
+    }
+    db.prepare('UPDATE users SET nav_hidden = ? WHERE id = ?').run(JSON.stringify(nav_hidden), req.user.id);
+  }
+  if (decimal_preferences !== undefined) {
+    if (!validDecimalPreferences(decimal_preferences)) {
+      return res.status(400).json({ error: 'decimal_preferences doit être un objet { "table::field": entier 0-5 }' });
+    }
+    db.prepare('UPDATE users SET decimal_preferences = ? WHERE id = ?').run(JSON.stringify(decimal_preferences), req.user.id);
+  }
+  res.json({
+    nav_hidden: readNavHidden(req.user.id),
+    decimal_preferences: readDecimalPreferences(req.user.id),
+  });
+});
+
 export default router;

@@ -9,6 +9,7 @@ import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
 
 // Stripe stocke les montants en cents — on convertit en dollars pour l'affichage.
 function fmtMoney(cents, currency) {
@@ -23,6 +24,7 @@ function fmtMoney(cents, currency) {
 }
 
 export default function ItemsVendus() {
+  const { addToast } = useToast()
   const [savingId, setSavingId] = useState(null)
 
   const itemsRaw = useTable('stripe_invoice_items')
@@ -50,11 +52,11 @@ export default function ItemsVendus() {
       await api.stripeInvoiceItems.update(itemId, { product_id: productId || null })
       await syncStore()
     } catch (err) {
-      alert('Échec de la mise à jour : ' + (err.message || 'erreur inconnue'))
+      addToast({ message: 'Échec de la mise à jour : ' + (err.message || 'erreur inconnue'), type: 'error' })
     } finally {
       setSavingId(null)
     }
-  }, [])
+  }, [addToast])
 
   const COLUMNS = useMemo(() => {
     const RENDERS = {

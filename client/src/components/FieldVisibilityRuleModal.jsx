@@ -1,7 +1,8 @@
-import { useState } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Plus, Trash2, Save, FolderPlus } from 'lucide-react'
 import { Modal } from './Modal.jsx'
 import { FieldSelect } from './FilterRow.jsx'
+import { useConfirm } from './ConfirmProvider.jsx'
 import api from '../lib/api.js'
 import { patchCachedRules } from '../lib/useFieldVisibilityRules.js'
 import { evaluateConditions } from '../lib/fieldVisibility.js'
@@ -168,13 +169,20 @@ function GroupEditor({ node, onChange, onRemove, depth = 0, fieldsForPicker }) {
 
 // Éditeur d'une règle (un arbre racine). Affiche un aperçu d'évaluation
 // contre le record courant pour aider l'utilisateur à vérifier.
-function RuleEditor({ rule, onChange, onSave, onDelete, fieldsForPicker, record, saving }) {
+//
+// Règle existante (rule.id présent) → autosave (pas de bouton Enregistrer,
+// cf. règle « autosave partout » du CLAUDE.md). On affiche juste un indicateur
+// d'état (Enregistrement… / Enregistré / Échec).
+// Règle nouvelle (sans id) → création explicite via bouton « Créer la règle »
+// (exception autosave : pas encore d'id en DB).
+function RuleEditor({ rule, onChange, onCreate, onDelete, fieldsForPicker, record, status, busy }) {
   let evalResult = null
   try {
     evalResult = evaluateConditions(rule.conditions, record)
   } catch (e) {
     evalResult = null
   }
+  const isNew = !rule.id
   return (
     <div className="rounded-lg border border-slate-200 p-3 bg-white">
       <GroupEditor
@@ -196,24 +204,35 @@ function RuleEditor({ rule, onChange, onSave, onDelete, fieldsForPicker, record,
           )}
         </div>
         <div className="flex items-center gap-2">
+          {!isNew && status === 'saving' && (
+            <span data-testid="rule-autosave-status" className="text-xs text-slate-400">Enregistrement…</span>
+          )}
+          {!isNew && status === 'saved' && (
+            <span data-testid="rule-autosave-status" className="text-xs text-emerald-600">Enregistré ✓</span>
+          )}
+          {!isNew && status === 'error' && (
+            <span data-testid="rule-autosave-status" className="text-xs text-red-600">Échec — réessayez</span>
+          )}
           {rule.id && (
             <button
               type="button"
               onClick={onDelete}
-              disabled={saving}
+              disabled={busy}
               className="inline-flex items-center gap-1 text-xs px-2 py-1 text-red-600 hover:bg-red-50 rounded disabled:opacity-50"
             >
               <Trash2 size={12} /> Supprimer
             </button>
           )}
-          <button
-            type="button"
-            onClick={onSave}
-            disabled={saving || !rule._dirty}
-            className="inline-flex items-center gap-1 text-xs px-2.5 py-1 bg-brand-600 text-white rounded hover:bg-brand-700 disabled:opacity-50"
-          >
-            <Save size={12} /> {rule.id ? 'Enregistrer' : 'Créer la règle'}
-          </button>
+          {isNew && (
+            <button
+              type="button"
+              onClick={onCreate}
+              disabled={busy || !rule._dirty}
+              className="inline-flex items-center gap-1 text-xs px-2.5 py-1 bg-brand-600 text-white rounded hover:bg-brand-700 disabled:opacity-50"
+            >
+              <Save size={12} /> Créer la règle
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -235,8 +254,23 @@ export default function FieldVisibilityRuleModal({
   const [rules, setRules] = useState(() =>
     existingRules.map(r => ({ ...r, _dirty: false }))
   )
-  const [saving, setSaving] = useState(false)
+  // État de création d'une nouvelle règle (bouton explicite).
+  const [creating, setCreating] = useState(false)
+  // État d'autosave par règle existante : id → 'editing' | 'saving' | 'saved' | 'error'.
+  const [statusById, setStatusById] = useState({})
   const [error, setError] = useState(null)
+  const confirm = useConfirm()
+
+  // Miroir des règles pour que les autosaves différés lisent toujours la valeur
+  // courante (et non une closure périmée).
+  const rulesRef = useRef(rules)
+  useEffect(() => { rulesRef.current = rules }, [rules])
+  // Timers de debounce par id de règle.
+  const timersRef = useRef({})
+  // Nettoie les timers en suspens au démontage.
+  useEffect(() => () => {
+    Object.values(timersRef.current).forEach(t => t && clearTimeout(t))
+  }, [])
 
   // Construit la liste de champs disponibles pour les pickers. Si `fields`
   // n'a pas été fourni, on tombe sur les clés du record. On enrichit avec les
@@ -246,52 +280,98 @@ export default function FieldVisibilityRuleModal({
     : (record ? Object.keys(record).map(k => ({ id: k, field: k, label: k })) : [])
 
   function setRule(idx, next) {
-    setRules(rules.map((r, i) => i === idx ? next : r))
+    setRules(prev => prev.map((r, i) => i === idx ? next : r))
   }
   function addRule() {
     // Pré-remplit avec le fieldId du champ qu'on cherche le plus souvent à
     // tester (ex. quand on configure « Envoyée » on veut probablement tester
     // « subscription_id »). On ne devine pas — on laisse l'utilisateur choisir.
-    setRules([...rules, emptyRule()])
+    setRules(prev => [...prev, emptyRule()])
   }
   function removeLocalRule(idx) {
-    setRules(rules.filter((_, i) => i !== idx))
+    setRules(prev => prev.filter((_, i) => i !== idx))
   }
 
-  async function saveRule(idx) {
-    const r = rules[idx]
-    setSaving(true)
+  // Édition d'une règle. Pour une règle existante (id en DB), on débounce un
+  // autosave ; pour une nouvelle règle, on attend le clic « Créer la règle ».
+  function handleRuleChange(idx, next) {
+    setRule(idx, next)
+    if (next.id) {
+      setStatusById(s => ({ ...s, [next.id]: 'editing' }))
+      scheduleAutosave(next.id)
+    }
+  }
+
+  function scheduleAutosave(ruleId) {
+    if (timersRef.current[ruleId]) clearTimeout(timersRef.current[ruleId])
+    timersRef.current[ruleId] = setTimeout(() => {
+      timersRef.current[ruleId] = null
+      autosaveRule(ruleId)
+    }, 500)
+  }
+
+  async function autosaveRule(ruleId) {
+    const r = rulesRef.current.find(x => x.id === ruleId)
+    if (!r || !r._dirty) return
+    const savedConditions = r.conditions
+    setStatusById(s => ({ ...s, [ruleId]: 'saving' }))
     setError(null)
     try {
-      if (r.id) {
-        const updated = await api.fieldVisibilityRules.update(r.id, { conditions: r.conditions })
-        setRule(idx, { ...updated, _dirty: false })
-        patchCachedRules(context, list => list.map(x => x.id === updated.id ? updated : x))
-      } else {
-        const created = await api.fieldVisibilityRules.create({
-          context,
-          field_id: fieldId,
-          conditions: r.conditions,
-        })
-        setRule(idx, { ...created, _dirty: false })
-        patchCachedRules(context, list => [...list, created])
-      }
+      const updated = await api.fieldVisibilityRules.update(ruleId, { conditions: savedConditions })
+      // Si l'utilisateur a continué d'éditer pendant la requête, on garde ses
+      // conditions courantes (un nouvel autosave est déjà planifié) et on ne
+      // touche pas au flag _dirty.
+      setRules(prev => prev.map(x => {
+        if (x.id !== ruleId) return x
+        const stillDirty = JSON.stringify(x.conditions) !== JSON.stringify(savedConditions)
+        return stillDirty ? x : { ...updated, _dirty: false }
+      }))
+      patchCachedRules(context, list => list.map(x => x.id === updated.id ? updated : x))
+      setStatusById(s => ({ ...s, [ruleId]: 'saved' }))
+      onChanged?.()
+    } catch (e) {
+      setError(e?.message || 'Erreur à la sauvegarde')
+      setStatusById(s => ({ ...s, [ruleId]: 'error' }))
+    }
+  }
+
+  async function createRule(idx) {
+    const r = rulesRef.current[idx]
+    if (!r || r.id) return
+    setCreating(true)
+    setError(null)
+    try {
+      const created = await api.fieldVisibilityRules.create({
+        context,
+        field_id: fieldId,
+        conditions: r.conditions,
+      })
+      setRule(idx, { ...created, _dirty: false })
+      patchCachedRules(context, list => [...list, created])
       onChanged?.()
     } catch (e) {
       setError(e?.message || 'Erreur à la sauvegarde')
     } finally {
-      setSaving(false)
+      setCreating(false)
     }
   }
 
   async function deleteRule(idx) {
-    const r = rules[idx]
+    const r = rulesRef.current[idx]
     if (!r.id) {
       removeLocalRule(idx)
       return
     }
-    if (!confirm('Supprimer cette règle ?')) return
-    setSaving(true)
+    const ok = await confirm({
+      title: 'Supprimer cette règle ?',
+      message: 'Cette règle de visibilité sera supprimée définitivement.',
+      confirmLabel: 'Supprimer',
+      danger: true,
+    })
+    if (!ok) return
+    // Annule un autosave en attente pour cette règle.
+    if (timersRef.current[r.id]) { clearTimeout(timersRef.current[r.id]); timersRef.current[r.id] = null }
+    setStatusById(s => ({ ...s, [r.id]: 'saving' }))
     setError(null)
     try {
       await api.fieldVisibilityRules.delete(r.id)
@@ -300,13 +380,28 @@ export default function FieldVisibilityRuleModal({
       onChanged?.()
     } catch (e) {
       setError(e?.message || 'Erreur à la suppression')
-    } finally {
-      setSaving(false)
+      setStatusById(s => ({ ...s, [r.id]: 'error' }))
     }
   }
 
+  // À la fermeture : flush des autosaves en attente pour ne perdre aucune édition.
+  async function flushPending() {
+    Object.entries(timersRef.current).forEach(([id, t]) => {
+      if (t) { clearTimeout(t); timersRef.current[id] = null }
+    })
+    const dirty = rulesRef.current.filter(r => r.id && r._dirty)
+    for (const r of dirty) {
+      await autosaveRule(r.id)
+    }
+  }
+
+  async function handleClose() {
+    await flushPending()
+    onClose()
+  }
+
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={`Visibilité du champ « ${fieldLabel} »`} size="lg">
+    <Modal isOpen={isOpen} onClose={handleClose} title={`Visibilité du champ « ${fieldLabel} »`} size="lg">
       <p className="text-sm text-slate-600 mb-1">
         Le champ sera masqué dès qu'<strong>au moins une règle</strong> évalue à vrai.
       </p>
@@ -330,12 +425,13 @@ export default function FieldVisibilityRuleModal({
           <RuleEditor
             key={r.id || `new-${i}`}
             rule={r}
-            onChange={next => setRule(i, next)}
-            onSave={() => saveRule(i)}
+            onChange={next => handleRuleChange(i, next)}
+            onCreate={() => createRule(i)}
             onDelete={() => deleteRule(i)}
             fieldsForPicker={fieldsForPicker}
             record={record}
-            saving={saving}
+            status={r.id ? (statusById[r.id] || 'idle') : 'idle'}
+            busy={r.id ? statusById[r.id] === 'saving' : creating}
           />
         ))}
       </div>
@@ -350,7 +446,7 @@ export default function FieldVisibilityRuleModal({
         </button>
         <button
           type="button"
-          onClick={onClose}
+          onClick={handleClose}
           className="btn-secondary text-sm"
         >
           Fermer

@@ -3,10 +3,12 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, ExternalLink, CheckCircle2, AlertCircle, Eye, Send, X } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { ConfirmModal } from '../components/Modal.jsx'
 import { FactureQuickViewModal } from '../components/FactureQuickViewModal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 function fmtMoney(n, currency = 'CAD') {
   if (n == null) return '—'
@@ -196,14 +198,15 @@ export default function StripePayoutDetail() {
     }
   }
 
-  if (loading) return <Layout><div className="p-6 text-slate-500">Chargement…</div></Layout>
-  if (error || !payout) return (
+  if (loading) return <Layout><Spinner center label="Chargement…" /></Layout>
+  if (error && !payout) return <Layout><DetailLoadError message={error} onRetry={load} retrying={loading} /></Layout>
+  if (!payout) return (
     <Layout>
       <div className="p-6">
         <button onClick={() => navigate('/stripe-payouts')} className="flex items-center gap-2 text-slate-600 hover:text-slate-900 mb-4">
           <ArrowLeft size={16} /> Retour
         </button>
-        <div className="text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm">{error || 'Payout introuvable'}</div>
+        <div className="text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm">Payout introuvable</div>
       </div>
     </Layout>
   )

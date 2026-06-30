@@ -139,8 +139,10 @@ export async function recordEvent(args) {
 
   // Détection auto "rachat" sur les churns : on n'attend pas le retour pour
   // garder la latence de Stripe webhook minimale, mais on essaie best-effort.
+  // safeDetectRachatForChurn() log + met en file de retry tout échec au lieu de
+  // l'avaler (sinon un réabonnement réel resterait marqué churné sans retry).
   if (category === 'churn') {
-    try { detectRachatForChurn(id) } catch {}
+    safeDetectRachatForChurn(id, 'churn-webhook')
   }
   return { inserted: true, id }
 }
@@ -237,6 +239,114 @@ export function detectRachatForChurn(eventId) {
   return { eventId, rachat_order_id: bestOrderId }
 }
 
+// ── File de retry de la détection "rachat" ───────────────────────────────────
+//
+// detectRachatForChurn() est invoquée en fire-and-forget (webhook, rescan à la
+// création d'une commande, backfill). Un échec (DB verrouillée, FX indispo,
+// exception inattendue) doit être loggé ET persisté pour reprise, plutôt
+// qu'avalé dans un catch {} muet — sans ça un client réabonné resterait marqué
+// churné indéfiniment. Pattern calqué sur hubspot_push_failures.
+
+// Sentinel retourné par safeDetectRachatForChurn() quand la détection a levé
+// (distinct d'un null "rien à faire" / "aucun candidat"), pour que le backfill
+// puisse compter séparément les échecs.
+export const RACHAT_DETECT_FAILED = Symbol('rachat-detect-failed')
+
+// Backoff exponentiel borné. `attempts` est le compteur APRÈS l'échec courant
+// (1 = premier échec). 1er retry ≈ 1 min, plafonné à 1 h.
+const RACHAT_RETRY_BASE_MS = 60 * 1000
+const RACHAT_RETRY_MAX_MS = 60 * 60 * 1000
+export function computeRachatRetryDelayMs(attempts) {
+  const n = Math.max(1, attempts)
+  return Math.min(RACHAT_RETRY_BASE_MS * 2 ** (n - 1), RACHAT_RETRY_MAX_MS)
+}
+
+// Enregistre/incrémente un échec. `first_failed_at` n'est jamais écrasé (omis
+// du DO UPDATE) pour conserver l'ancienneté réelle de la divergence.
+export function recordRachatFailure(eventId, errorMessage) {
+  const now = Date.now()
+  const nowIso = new Date(now).toISOString()
+  const prev = db.prepare('SELECT attempts FROM rachat_detect_failures WHERE event_id=?').get(eventId)
+  const attempts = (prev?.attempts || 0) + 1
+  const nextRetry = new Date(now + computeRachatRetryDelayMs(attempts)).toISOString()
+  db.prepare(`
+    INSERT INTO rachat_detect_failures
+      (event_id, attempts, last_error, first_failed_at, last_attempt_at, next_retry_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(event_id) DO UPDATE SET
+      attempts        = excluded.attempts,
+      last_error      = excluded.last_error,
+      last_attempt_at = excluded.last_attempt_at,
+      next_retry_at   = excluded.next_retry_at
+  `).run(eventId, attempts, String(errorMessage || '').slice(0, 2000), nowIso, nowIso, nextRetry)
+  return { attempts, nextRetry }
+}
+
+export function clearRachatFailure(eventId) {
+  db.prepare('DELETE FROM rachat_detect_failures WHERE event_id=?').run(eventId)
+}
+
+export function getRachatFailureStatus() {
+  const row = db.prepare(`
+    SELECT COUNT(*) AS count, MIN(first_failed_at) AS oldest, MAX(attempts) AS max_attempts
+    FROM rachat_detect_failures
+  `).get()
+  return {
+    count: row?.count || 0,
+    oldest: row?.oldest || null,
+    max_attempts: row?.max_attempts || 0,
+  }
+}
+
+// Wrapper sûr autour de detectRachatForChurn : succès → purge la ligne d'échec
+// éventuelle ; échec → log + (re)mise en file avec backoff. Tous les appelants
+// fire-and-forget passent par ici (plus aucun catch {} muet). `trigger` n'est
+// qu'un libellé pour le log.
+export function safeDetectRachatForChurn(eventId, trigger = 'inline') {
+  try {
+    const result = detectRachatForChurn(eventId)
+    clearRachatFailure(eventId)
+    return result
+  } catch (e) {
+    try {
+      const { attempts, nextRetry } = recordRachatFailure(eventId, e.message)
+      console.error(`Détection rachat event ${eventId} (${trigger}, tentative ${attempts}, retry ${nextRetry}):`, e.message)
+    } catch (persistErr) {
+      console.error(`Détection rachat event ${eventId} (échec persistance file):`, persistErr.message, "— erreur d'origine:", e.message)
+    }
+    return RACHAT_DETECT_FAILED
+  }
+}
+
+// Rejoue les détections échues dont next_retry_at est échu. Borné par `limit`.
+// safeDetectRachatForChurn() reclasse chaque event : succès → ligne supprimée,
+// nouvel échec → next_retry_at repoussé (backoff). Le JOIN sur
+// subscription_events ignore les events disparus (ligne file nettoyée par
+// ON DELETE CASCADE). Émet l'update realtime si le statut rachat a changé.
+export function drainRachatRetryQueue({ limit = 50 } = {}) {
+  const nowIso = new Date().toISOString()
+  const due = db.prepare(`
+    SELECT f.event_id FROM rachat_detect_failures f
+    JOIN subscription_events e ON e.id = f.event_id
+    WHERE f.next_retry_at IS NULL OR f.next_retry_at <= ?
+    ORDER BY f.next_retry_at ASC
+    LIMIT ?
+  `).all(nowIso, limit)
+  let recovered = 0, stillFailing = 0
+  for (const { event_id } of due) {
+    const before = db.prepare('SELECT rachat_status, rachat_order_id FROM subscription_events WHERE id=?').get(event_id)
+    safeDetectRachatForChurn(event_id, 'retry')
+    const still = db.prepare('SELECT 1 FROM rachat_detect_failures WHERE event_id=?').get(event_id)
+    if (still) { stillFailing++; continue }
+    recovered++
+    const after = db.prepare('SELECT rachat_status, rachat_order_id, subscription_id FROM subscription_events WHERE id=?').get(event_id)
+    if (after && (after.rachat_status !== before?.rachat_status || after.rachat_order_id !== before?.rachat_order_id)) {
+      emitSubscriptionEvent('updated', event_id, after.subscription_id, null)
+    }
+  }
+  return { attempted: due.length, recovered, stillFailing }
+}
+
 // Re-scanne tous les churns récents d'une entreprise dont rachat_status est
 // NULL (ou 'probable' avec ancienne détection). Utilisé quand une nouvelle
 // commande est créée — il est probable qu'elle soit le rachat d'un churn
@@ -252,14 +362,14 @@ export function rescanRachatForCompany(companyId) {
       AND event_date >= date('now', '-${RACHAT_WINDOW_MONTHS} months')
   `).all(companyId)
   for (const r of rows) {
-    try {
-      const before = db.prepare('SELECT rachat_status, rachat_order_id FROM subscription_events WHERE id=?').get(r.id)
-      detectRachatForChurn(r.id)
-      const after = db.prepare('SELECT rachat_status, rachat_order_id, subscription_id FROM subscription_events WHERE id=?').get(r.id)
-      if (after && (after.rachat_status !== before.rachat_status || after.rachat_order_id !== before.rachat_order_id)) {
-        emitSubscriptionEvent('updated', r.id, after.subscription_id, null)
-      }
-    } catch {}
+    const before = db.prepare('SELECT rachat_status, rachat_order_id FROM subscription_events WHERE id=?').get(r.id)
+    // safeDetectRachatForChurn gère lui-même l'échec (log + file de retry) ;
+    // plus de catch {} muet ici.
+    safeDetectRachatForChurn(r.id, 'order-rescan')
+    const after = db.prepare('SELECT rachat_status, rachat_order_id, subscription_id FROM subscription_events WHERE id=?').get(r.id)
+    if (after && (after.rachat_status !== before.rachat_status || after.rachat_order_id !== before.rachat_order_id)) {
+      emitSubscriptionEvent('updated', r.id, after.subscription_id, null)
+    }
   }
   return rows.length
 }
@@ -275,12 +385,12 @@ export function backfillRachatDetection() {
   `).all()
   let withCandidate = 0
   let processed = 0
+  let failed = 0
   for (const r of rows) {
-    try {
-      const result = detectRachatForChurn(r.id)
-      processed++
-      if (result?.rachat_order_id) withCandidate++
-    } catch {}
+    const result = safeDetectRachatForChurn(r.id, 'backfill')
+    if (result === RACHAT_DETECT_FAILED) { failed++; continue }
+    processed++
+    if (result?.rachat_order_id) withCandidate++
   }
-  return { processed, withCandidate }
+  return { processed, withCandidate, failed }
 }

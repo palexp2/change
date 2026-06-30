@@ -1,10 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { Layout } from '../components/Layout.jsx'
-import { ArrowLeft, Play, ChevronDown, Lock, FlaskConical, Mail, Zap, RotateCcw, X, Eye, RefreshCw } from 'lucide-react'
+import { ArrowLeft, Play, ChevronDown, Lock, FlaskConical, Mail, Zap, RotateCcw, X, Eye, RefreshCw, AlertTriangle, Gauge } from 'lucide-react'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { api } from '../lib/api.js'
+import { fmtDateTime } from '../lib/formatDate.js'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { WebhookEditor } from '../components/WebhookEditor.jsx'
 
 // Mirrors MANUAL_RUNNERS in server/src/services/systemAutomations.js. Keep in sync.
 const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup'])
@@ -13,19 +16,37 @@ const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup'])
 // automations whose `from` address is overridable via the picker.
 const SYSTEM_EMAIL_AUTOMATIONS = new Set(['sys_installation_followup', 'sys_shipment_tracking_email'])
 
+// System automation whose Airtable webhook retry queue is surfaced in the detail page.
+// Mirrors the id gate in server/src/routes/automations.js (/:id/retry-queue).
+const WEBHOOK_RETRY_AUTOMATION_ID = 'sys_airtable_webhook_router'
+
 const OP_LABELS = {
   eq: 'est égal à',
   ne: 'est différent de',
+  gt: 'est supérieur à (>)',
+  gte: 'est supérieur ou égal à (≥)',
+  lt: 'est inférieur à (<)',
+  lte: 'est inférieur ou égal à (≤)',
   in: 'fait partie de (liste)',
   not_null: 'est renseigné',
+  date_offset: 'date relative à aujourd\'hui (J±N jours)',
 }
 
-const ACTION_TYPE_LABELS = { slack: 'Slack', email: 'Email', task: 'Tâche' }
+// Operators valides pour une condition secondaire d'une règle de date (tous sauf date_offset).
+const FILTER_OP_LABELS = Object.fromEntries(
+  Object.entries(OP_LABELS).filter(([k]) => k !== 'date_offset')
+)
+
+// Operators that compare numerically — the value input becomes a number field.
+const NUMERIC_OPS = new Set(['gt', 'gte', 'lt', 'lte'])
+
+const ACTION_TYPE_LABELS = { slack: 'Slack', email: 'Email', task: 'Tâche', script: 'Script' }
 
 const DEFAULT_ACTION_CONFIG = {
   slack: { webhookEnv: '', text: '' },
   email: { toEnv: '', subject: '', bodyHtml: '', bodyText: '' },
   task: { title: '', description: '', priority: 'Normal', due_in_days: null },
+  script: { script: '', allow_trigger_write: false },
 }
 
 export default function AutomationDetail() {
@@ -54,8 +75,11 @@ export default function AutomationDetail() {
   const [testSending, setTestSending] = useState(false)
   const [testResultMsg, setTestResultMsg] = useState(null)
 
+  // Webhook state
+  const [webhookToken, setWebhookToken] = useState(null)
+
   // Field-rule state
-  const [kind, setKind] = useState(null)           // null | 'field_rule'
+  const [kind, setKind] = useState(null)           // null | 'field_rule' | 'webhook'
   const [actionType, setActionType] = useState('slack')
   const [actionConfig, setActionConfig] = useState(DEFAULT_ACTION_CONFIG.slack)
   // System-email override state (sys_installation_followup, sys_shipment_tracking_email)
@@ -63,10 +87,21 @@ export default function AutomationDetail() {
   const [postmarkInfo, setPostmarkInfo] = useState(null)
   const [showTestModal, setShowTestModal] = useState(false)
   const [fires, setFires] = useState([])
+  const [runningDateRule, setRunningDateRule] = useState(false)
+  // Field-rule backpressure queue (automation_deferred_candidates)
+  const [deferredQueue, setDeferredQueue] = useState(null) // null = not yet loaded
+  const [deferredLoading, setDeferredLoading] = useState(false)
+  const [draining, setDraining] = useState(false)
+  // Airtable webhook retry queue (sys_airtable_webhook_router only)
+  const [retryQueue, setRetryQueue] = useState(null) // null = not yet loaded
+  const [retryMaxAttempts, setRetryMaxAttempts] = useState(5)
+  const [retryLoading, setRetryLoading] = useState(false)
+  const [retryingId, setRetryingId] = useState(null)
   const saveTimerRef = useRef(null)
   const skipAutosaveRef = useRef(true)
 
   const isFieldRule = kind === 'field_rule'
+  const isWebhook = kind === 'webhook'
   const isEmailAutomation =
     (kind === 'field_rule' && actionType === 'email') ||
     (isSystem && SYSTEM_EMAIL_AUTOMATIONS.has(id))
@@ -79,6 +114,10 @@ export default function AutomationDetail() {
         setTriggerConfig({ erp_table: 'tickets', column: '', op: 'eq', value: '', fire_on: 'per_record_once' })
         setActionType('slack')
         setActionConfig(DEFAULT_ACTION_CONFIG.slack)
+      } else if (searchParams.get('kind') === 'webhook') {
+        setKind('webhook')
+        setTriggerType('webhook')
+        setActionConfig({ mode: 'declarative', steps: [], response_rules: [], default_response: { status: 200, body: { ok: true } } })
       }
       return
     }
@@ -94,6 +133,9 @@ export default function AutomationDetail() {
       setKind(auto.kind || null)
       if (auto.kind === 'field_rule') {
         setActionType(auto.action_type || 'slack')
+        try { setActionConfig(JSON.parse(auto.action_config || '{}')) } catch { setActionConfig({}) }
+      } else if (auto.kind === 'webhook') {
+        setWebhookToken(auto.webhook_token || null)
         try { setActionConfig(JSON.parse(auto.action_config || '{}')) } catch { setActionConfig({}) }
       } else if (auto.system && SYSTEM_EMAIL_AUTOMATIONS.has(auto.id)) {
         try {
@@ -111,6 +153,38 @@ export default function AutomationDetail() {
       api.automations.fires(id, 50).then(setFires).catch(() => {})
     }
   }, [id, isFieldRule, isNew])
+
+  const loadDeferredQueue = useCallback(async () => {
+    setDeferredLoading(true)
+    try {
+      setDeferredQueue(await api.automations.deferredQueue(id))
+    } catch {
+      setDeferredQueue({ depth: 0, items: [] })
+    } finally {
+      setDeferredLoading(false)
+    }
+  }, [id])
+
+  useEffect(() => {
+    if (!isNew && isFieldRule) loadDeferredQueue()
+  }, [id, isFieldRule, isNew, loadDeferredQueue])
+
+  const loadRetryQueue = useCallback(async () => {
+    setRetryLoading(true)
+    try {
+      const data = await api.automations.retryQueue(WEBHOOK_RETRY_AUTOMATION_ID)
+      setRetryQueue(data.items || [])
+      if (data.max_attempts != null) setRetryMaxAttempts(data.max_attempts)
+    } catch {
+      setRetryQueue([])
+    } finally {
+      setRetryLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isNew && id === WEBHOOK_RETRY_AUTOMATION_ID) loadRetryQueue()
+  }, [id, isNew, loadRetryQueue])
 
   useEffect(() => {
     if (isSystem && SYSTEM_EMAIL_AUTOMATIONS.has(id)) {
@@ -142,6 +216,14 @@ export default function AutomationDetail() {
       }
       if (!isSystem) { body.name = name.trim(); body.description = description }
       return body
+    }
+    if (isWebhook) {
+      return {
+        name: name.trim(), description, active: active ? 1 : 0,
+        kind: 'webhook', trigger_type: 'webhook',
+        action_config: JSON.stringify(actionConfig),
+        script,
+      }
     }
     return {
       name: name.trim(), description, active: active ? 1 : 0,
@@ -185,6 +267,47 @@ export default function AutomationDetail() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name, description, active, triggerType, triggerConfig, script, actionType, actionConfig, kind, systemFrom])
 
+  async function handleRunDateRule() {
+    if (!(await confirm({
+      title: 'Lancer la règle de date',
+      message: 'Évaluer la règle « comme aujourd\'hui » et déclencher les actions sur les enregistrements correspondants ? Cela peut envoyer de vrais emails / créer des tâches.',
+      confirmLabel: 'Lancer',
+      danger: true,
+    }))) return
+    setRunningDateRule(true)
+    try {
+      const res = await api.automations.runDateRule(id)
+      addToast({ message: `${res.fired || 0} déclenchement(s) sur ${res.candidates || 0} candidat(s)`, type: 'success' })
+      api.automations.fires(id, 50).then(setFires).catch(() => {})
+      loadLogs()
+    } catch (e) {
+      addToast({ message: e.message || 'Erreur', type: 'error' })
+    }
+    setRunningDateRule(false)
+  }
+
+  async function handleDrainDeferred() {
+    // Side effect: dispatches real actions (Slack/email/task/script) for up to one
+    // batch of parked candidates.
+    if (!(await confirm({
+      title: 'Drainer la file',
+      message: 'Traiter immédiatement un lot de candidats différés ? Cela déclenche les vraies actions (emails, tâches, scripts) sur les enregistrements concernés.',
+      confirmLabel: 'Drainer',
+      danger: true,
+    }))) return
+    setDraining(true)
+    try {
+      const res = await api.automations.drainDeferred(id)
+      addToast({ message: `${res.fired || 0} déclenchement(s) — ${res.depth || 0} en file`, type: 'success' })
+      await loadDeferredQueue()
+      api.automations.fires(id, 50).then(setFires).catch(() => {})
+      loadLogs()
+    } catch (e) {
+      addToast({ message: e.message || 'Erreur', type: 'error' })
+    }
+    setDraining(false)
+  }
+
   async function handleResetFires() {
     if (!(await confirm('Supprimer l\'historique des déclenchements ? La règle pourra re-tirer sur tous les records correspondants.'))) return
     try {
@@ -194,6 +317,26 @@ export default function AutomationDetail() {
     } catch (e) {
       addToast({ message: e.message || 'Erreur', type: 'error' })
     }
+  }
+
+  async function handleRetryNow(retryId, moduleName) {
+    // Side effect: forces an immediate re-sync against Airtable for this module.
+    if (!(await confirm({
+      title: 'Retenter maintenant',
+      message: `Forcer immédiatement une nouvelle tentative de synchronisation du module « ${moduleName} » ? La file de retry due sera ré-exécutée.`,
+      confirmLabel: 'Retenter',
+      danger: false,
+    }))) return
+    setRetryingId(retryId)
+    try {
+      const data = await api.automations.retryNow(WEBHOOK_RETRY_AUTOMATION_ID, retryId)
+      setRetryQueue(data.items || [])
+      if (data.max_attempts != null) setRetryMaxAttempts(data.max_attempts)
+      addToast({ message: 'Nouvelle tentative déclenchée', type: 'success' })
+    } catch (e) {
+      addToast({ message: e.message || 'Erreur lors du retry', type: 'error' })
+    }
+    setRetryingId(null)
   }
 
   function handleActionTypeChange(newType) {
@@ -218,6 +361,13 @@ export default function AutomationDetail() {
     if (!testTo || !/@/.test(testTo)) {
       setTestResultMsg({ type: 'error', text: 'Adresse email invalide' }); return
     }
+    const langLabel = testLang === 'English' ? 'anglais' : 'français'
+    if (!(await confirm({
+      title: 'Envoyer un email de test',
+      message: `Un email de test (${langLabel}) sera envoyé à ${testTo}. Il contient une bannière « TEST » et utilise un faux client — aucune tâche ni donnée réelle n'est créée.`,
+      confirmLabel: 'Envoyer',
+      danger: false,
+    }))) return
     setTestSending(true)
     setTestResultMsg(null)
     try {
@@ -245,7 +395,12 @@ export default function AutomationDetail() {
 
   async function handleDelete() {
     if (!(await confirm(`Supprimer l'automation "${name}" ?`))) return
-    await api.automations.delete(id).catch(() => {})
+    try {
+      await api.automations.delete(id)
+    } catch (e) {
+      addToast({ message: e.message || 'Échec de la suppression de l\'automation', type: 'error' })
+      return
+    }
     addToast({ message: 'Automation supprimée', type: 'success' })
     navigate('/automations')
   }
@@ -323,7 +478,8 @@ export default function AutomationDetail() {
           </div>
         </div>
 
-        {/* Trigger */}
+        {/* Trigger — masqué pour les webhooks (le déclencheur est l'appel HTTP) */}
+        {!isWebhook && (
         <div className="bg-white rounded-lg border p-5">
           <h2 className="text-sm font-semibold mb-4 flex items-center gap-2">
             Déclencheur
@@ -350,6 +506,31 @@ export default function AutomationDetail() {
             />
           )}
         </div>
+        )}
+
+        {isWebhook && (
+          <WebhookEditor
+            value={actionConfig}
+            onChange={setActionConfig}
+            script={script}
+            onScriptChange={setScript}
+            token={webhookToken}
+            isNew={isNew}
+            automationId={id}
+          />
+        )}
+
+        {/* Retry queue — Airtable webhook router system automation */}
+        {!isNew && id === WEBHOOK_RETRY_AUTOMATION_ID && (
+          <RetryQueuePanel
+            items={retryQueue}
+            maxAttempts={retryMaxAttempts}
+            loading={retryLoading}
+            retryingId={retryingId}
+            onRefresh={loadRetryQueue}
+            onRetry={handleRetryNow}
+          />
+        )}
 
         {/* Sender override — system email automations */}
         {isSystem && SYSTEM_EMAIL_AUTOMATIONS.has(id) && (
@@ -361,14 +542,22 @@ export default function AutomationDetail() {
               Adresse utilisée comme <code className="bg-gray-100 px-1 rounded">From</code> lors des envois de cette automation.
               Vide = défaut global Postmark{postmarkInfo?.default_from ? ` (${postmarkInfo.default_from})` : ''}.
             </p>
-            <select value={systemFrom}
-              onChange={e => setSystemFrom(e.target.value)}
-              className="w-full max-w-md border rounded-lg px-3 py-2 text-sm bg-white">
-              <option value="">— Défaut global —</option>
-              {(postmarkInfo?.addresses || []).map(a => (
-                <option key={a} value={a}>{a}</option>
-              ))}
-            </select>
+            <div className="max-w-md">
+              <SearchableSelect
+                testId="system-from-select"
+                className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+                size="sm"
+                value={systemFrom}
+                options={postmarkInfo?.addresses || []}
+                getOptionValue={a => a}
+                getOptionLabel={a => a}
+                getOptionKey={a => a}
+                onChange={setSystemFrom}
+                emptyOption="— Défaut global —"
+                placeholder="— Défaut global —"
+                searchPlaceholder="Rechercher une adresse…"
+              />
+            </div>
           </div>
         )}
 
@@ -378,7 +567,7 @@ export default function AutomationDetail() {
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold">Action</h2>
               <div className="flex gap-1">
-                {['slack', 'email', 'task'].map(t => (
+                {['slack', 'email', 'task', 'script'].map(t => (
                   <button key={t} onClick={() => handleActionTypeChange(t)} disabled={false}
                     className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${
                       actionType === t
@@ -405,6 +594,17 @@ export default function AutomationDetail() {
           <EmailPreview automationId={id} actionConfig={actionConfig} isSystem={isSystem} />
         )}
 
+        {/* Backpressure queue (field-rule only) */}
+        {isFieldRule && !isNew && (
+          <DeferredQueuePanel
+            data={deferredQueue}
+            loading={deferredLoading}
+            draining={draining}
+            onRefresh={loadDeferredQueue}
+            onDrain={handleDrainDeferred}
+          />
+        )}
+
         {/* Test + Fires (field-rule only) */}
         {isFieldRule && !isNew && (
           <div className="bg-white rounded-lg border p-5">
@@ -420,8 +620,17 @@ export default function AutomationDetail() {
                   className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 flex items-center gap-1.5">
                   <RotateCcw size={13} /> Réinitialiser
                 </button>
+                {triggerConfig?.op === 'date_offset' && (
+                  <button onClick={handleRunDateRule} disabled={runningDateRule}
+                    className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5"
+                    data-testid="run-date-rule-btn">
+                    {runningDateRule
+                      ? <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Exécution…</>
+                      : <><Play size={13} /> Lancer maintenant</>}
+                  </button>
+                )}
                 <button onClick={() => setShowTestModal(true)}
-                  className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 flex items-center gap-1.5">
+                  className="px-3 py-1.5 text-sm border border-brand-300 text-brand-700 rounded-lg hover:bg-brand-50 flex items-center gap-1.5">
                   <FlaskConical size={13} /> Tester
                 </button>
               </div>
@@ -495,8 +704,8 @@ export default function AutomationDetail() {
           </div>
         )}
 
-        {/* Script — hidden for system automations and field-rules */}
-        {!isSystem && !isFieldRule && (
+        {/* Script — hidden for system automations, field-rules and webhooks */}
+        {!isSystem && !isFieldRule && !isWebhook && (
           <div className="bg-white rounded-lg border p-5">
             <h2 className="text-sm font-semibold mb-2">Script</h2>
             <p className="text-xs text-gray-500 mb-3">
@@ -515,8 +724,8 @@ export default function AutomationDetail() {
           </div>
         )}
 
-        {/* Test + Résultat — hidden for system automations and field-rules */}
-        {!isNew && !isSystem && !isFieldRule && (
+        {/* Test + Résultat — hidden for system automations, field-rules and webhooks */}
+        {!isNew && !isSystem && !isFieldRule && !isWebhook && (
           <div className="bg-white rounded-lg border p-5">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold">Tester</h2>
@@ -580,36 +789,72 @@ function FieldRuleTriggerEditor({ triggerConfig, onChange, readOnly }) {
   const cols = fieldDefs.columns || []
   const selectedCol = cols.find(c => c.column_name === triggerConfig?.column)
 
+  // Date-relative trigger state. offset_days signé : négatif = avant, positif = après.
+  const offsetDays = Number.isInteger(triggerConfig?.offset_days) ? triggerConfig.offset_days : -3
+  const direction = offsetDays >= 0 ? 'after' : 'before'
+  const magnitude = Math.abs(offsetDays)
+  const filter = triggerConfig?.filter || null
+
+  function handleOpChange(newOp) {
+    const tc = { ...triggerConfig, op: newOp }
+    if (newOp === 'date_offset') {
+      if (!Number.isInteger(tc.offset_days)) tc.offset_days = -3
+      delete tc.value
+    } else {
+      delete tc.offset_days
+      delete tc.filter
+    }
+    onChange(tc)
+  }
+  function setOffset(mag, dir) {
+    const m = Math.max(0, parseInt(mag, 10) || 0)
+    onChange({ ...triggerConfig, offset_days: dir === 'before' ? -m : m })
+  }
+  function toggleFilter(on) {
+    if (on) onChange({ ...triggerConfig, filter: { column: '', op: 'eq', value: '' } })
+    else { const tc = { ...triggerConfig }; delete tc.filter; onChange(tc) }
+  }
+  function setFilter(patch) {
+    onChange({ ...triggerConfig, filter: { ...(filter || {}), ...patch } })
+  }
+  const fop = filter?.op || 'eq'
+
   return (
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Table ERP</label>
-          <select
+          <SearchableSelect
             value={triggerConfig?.erp_table || ''}
-            onChange={e => onChange({ ...triggerConfig, erp_table: e.target.value, column: '' })}
+            options={tables}
+            getOptionValue={t => t}
+            getOptionLabel={t => t}
+            getOptionKey={t => t}
+            emptyOption="— choisir —"
+            onChange={v => onChange({ ...triggerConfig, erp_table: v, column: '' })}
             disabled={readOnly}
+            placeholder="— choisir —"
+            size="sm"
             className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50"
-          >
-            <option value="">— choisir —</option>
-            {tables.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
+            testId="automation-erp-table"
+          />
         </div>
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">Colonne</label>
-          <select
+          <SearchableSelect
             value={triggerConfig?.column || ''}
-            onChange={e => onChange({ ...triggerConfig, column: e.target.value })}
+            options={cols}
+            getOptionValue={c => c.column_name}
+            getOptionLabel={c => c.airtable_field_name ? `${c.airtable_field_name} (${c.column_name})` : c.column_name}
+            getOptionKey={c => c.column_name}
+            emptyOption="— choisir —"
+            onChange={v => onChange({ ...triggerConfig, column: v })}
             disabled={readOnly || !triggerConfig?.erp_table}
+            placeholder="— choisir —"
+            size="sm"
             className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50"
-          >
-            <option value="">— choisir —</option>
-            {cols.map(c => (
-              <option key={c.column_name} value={c.column_name}>
-                {c.airtable_field_name ? `${c.airtable_field_name} (${c.column_name})` : c.column_name}
-              </option>
-            ))}
-          </select>
+            testId="automation-column"
+          />
         </div>
       </div>
       <div className="grid grid-cols-[180px_1fr] gap-3">
@@ -617,20 +862,22 @@ function FieldRuleTriggerEditor({ triggerConfig, onChange, readOnly }) {
           <label className="block text-xs font-medium text-gray-600 mb-1">Opérateur</label>
           <select
             value={op}
-            onChange={e => onChange({ ...triggerConfig, op: e.target.value })}
+            onChange={e => handleOpChange(e.target.value)}
             disabled={readOnly}
             className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50"
+            data-testid="automation-op"
           >
             {Object.entries(OP_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>
         </div>
-        {op !== 'not_null' && (
+        {op !== 'not_null' && op !== 'date_offset' && (
           <div>
             <label className="block text-xs font-medium text-gray-600 mb-1">
               Valeur{op === 'in' ? ' (virgules)' : ''}
             </label>
             <input
-              type="text"
+              type={NUMERIC_OPS.has(op) ? 'number' : 'text'}
+              step="any"
               value={op === 'in'
                 ? (Array.isArray(triggerConfig?.value) ? triggerConfig.value.join(',') : (triggerConfig?.value || ''))
                 : (triggerConfig?.value ?? '')}
@@ -641,11 +888,102 @@ function FieldRuleTriggerEditor({ triggerConfig, onChange, readOnly }) {
               }}
               disabled={readOnly}
               className="w-full border rounded-lg px-3 py-2 text-sm disabled:bg-gray-50"
-              placeholder={op === 'in' ? 'Hardware,Software' : 'Hardware'}
+              placeholder={op === 'in' ? 'Hardware,Software' : (NUMERIC_OPS.has(op) ? '1' : 'Hardware')}
             />
           </div>
         )}
       </div>
+
+      {/* Déclencheur de date relative — « N jours avant/après un champ date » */}
+      {op === 'date_offset' && (
+        <div className="rounded-lg border border-brand-200 bg-brand-50/40 p-3 space-y-3" data-testid="date-offset-panel">
+          <div className="flex items-end gap-2 flex-wrap">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Nombre de jours</label>
+              <input
+                type="number" min="0" step="1"
+                value={magnitude}
+                onChange={e => setOffset(e.target.value, direction)}
+                disabled={readOnly}
+                className="w-24 border rounded-lg px-3 py-2 text-sm disabled:bg-gray-50"
+                data-testid="date-offset-magnitude"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">Sens</label>
+              <select
+                value={direction}
+                onChange={e => setOffset(magnitude, e.target.value)}
+                disabled={readOnly}
+                className="border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50"
+                data-testid="date-offset-direction"
+              >
+                <option value="before">jours AVANT la date</option>
+                <option value="after">jours APRÈS la date</option>
+              </select>
+            </div>
+          </div>
+          <p className="text-xs text-gray-600">
+            Se déclenche chaque jour où <code className="bg-white border px-1 rounded">{triggerConfig?.column || 'la date'}</code>
+            {' '}vaut <strong>aujourd'hui {direction === 'before' ? `+ ${magnitude}` : `− ${magnitude}`} jour{magnitude > 1 ? 's' : ''}</strong>
+            {' '}(ex. « rappel {magnitude} jour{magnitude > 1 ? 's' : ''} {direction === 'before' ? 'avant' : 'après'} »). Évalué une fois par jour ; chaque enregistrement ne déclenche qu'une seule fois.
+          </p>
+
+          {/* Condition secondaire optionnelle (ET) */}
+          {!filter ? (
+            <button type="button" onClick={() => toggleFilter(true)} disabled={readOnly}
+              className="text-xs text-brand-700 hover:underline disabled:opacity-50" data-testid="date-offset-add-filter">
+              + Ajouter une condition (ET)
+            </button>
+          ) : (
+            <div className="rounded-lg border bg-white p-3 space-y-2" data-testid="date-offset-filter">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-gray-600">Condition supplémentaire (ET)</span>
+                <button type="button" onClick={() => toggleFilter(false)} disabled={readOnly}
+                  className="text-xs text-red-600 hover:underline disabled:opacity-50">Retirer</button>
+              </div>
+              <div className="grid grid-cols-[1fr_160px] gap-2">
+                <SearchableSelect
+                  value={filter.column || ''}
+                  options={cols}
+                  getOptionValue={c => c.column_name}
+                  getOptionLabel={c => c.airtable_field_name ? `${c.airtable_field_name} (${c.column_name})` : c.column_name}
+                  getOptionKey={c => c.column_name}
+                  emptyOption="— colonne —"
+                  onChange={v => setFilter({ column: v })}
+                  disabled={readOnly}
+                  placeholder="— colonne —"
+                  size="sm"
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50"
+                  testId="date-offset-filter-column"
+                />
+                <select value={fop} onChange={e => setFilter({ op: e.target.value })} disabled={readOnly}
+                  className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50">
+                  {Object.entries(FILTER_OP_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+              </div>
+              {fop !== 'not_null' && (
+                <input
+                  type={NUMERIC_OPS.has(fop) ? 'number' : 'text'}
+                  step="any"
+                  value={fop === 'in'
+                    ? (Array.isArray(filter.value) ? filter.value.join(',') : (filter.value || ''))
+                    : (filter.value ?? '')}
+                  onChange={e => {
+                    const raw = e.target.value
+                    setFilter({ value: fop === 'in' ? raw.split(',').map(s => s.trim()).filter(Boolean) : raw })
+                  }}
+                  disabled={readOnly}
+                  className="w-full border rounded-lg px-3 py-2 text-sm disabled:bg-gray-50"
+                  placeholder={fop === 'in' ? 'Impayée,En retard' : 'Impayée'}
+                  data-testid="date-offset-filter-value"
+                />
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {selectedCol?.field_type && (
         <p className="text-xs text-gray-500">Type détecté : <code className="bg-gray-100 px-1 rounded">{selectedCol.field_type}</code></p>
       )}
@@ -696,14 +1034,21 @@ function FieldRuleActionEditor({ actionType, actionConfig, onChange, erpTable, r
       {actionType === 'email' && (
         <>
           <Field label="Expéditeur" hint={postmark?.default_from ? `Vide = défaut global (${postmark.default_from})` : 'Vide = défaut global Postmark'}>
-            <select value={actionConfig.from || ''}
-              onChange={e => onChange({ ...actionConfig, from: e.target.value || undefined })} disabled={readOnly}
-              className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50">
-              <option value="">— Défaut global —</option>
-              {(postmark?.addresses || []).map(a => (
-                <option key={a} value={a}>{a}</option>
-              ))}
-            </select>
+            <SearchableSelect
+              testId="action-from-select"
+              className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50"
+              size="sm"
+              value={actionConfig.from || ''}
+              options={postmark?.addresses || []}
+              getOptionValue={a => a}
+              getOptionLabel={a => a}
+              getOptionKey={a => a}
+              onChange={v => onChange({ ...actionConfig, from: v || undefined })}
+              emptyOption="— Défaut global —"
+              placeholder="— Défaut global —"
+              searchPlaceholder="Rechercher une adresse…"
+              disabled={readOnly}
+            />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Destinataire (env var)" hint="POSTMARK_TO_OPS, ou laisser vide et utiliser le champ direct ci-dessous">
@@ -776,8 +1121,32 @@ function FieldRuleActionEditor({ actionType, actionConfig, onChange, erpTable, r
         </>
       )}
 
+      {actionType === 'script' && (
+        <>
+          <Field
+            label="Script (JavaScript)"
+            hint="Exécuté dans un bac à sable. Disponibles : row (l'enregistrement déclencheur), update(table, id, patch), query(sql) (SELECT only), fetch(url), sendEmail(to, sujet, html), log(...). Timeout 10s.">
+            <textarea rows={10} value={actionConfig.script || ''}
+              onChange={e => onChange({ ...actionConfig, script: e.target.value })} readOnly={readOnly}
+              className="w-full border rounded-lg px-3 py-2 text-xs font-mono disabled:bg-gray-50"
+              placeholder={"// row = l'enregistrement qui a déclenché la règle\nlog('Commande', row.id, '→ items', row.nombre_d_items)\n\n// Écriture whitelistée (tables: factures, products, orders, shipments, companies, contacts, serial_numbers)\nupdate('orders', row.id, { statut: 'À traiter' })"} />
+          </Field>
+          <label className="flex items-start gap-2 text-xs text-gray-600">
+            <input type="checkbox" checked={!!actionConfig.allow_trigger_write}
+              onChange={e => onChange({ ...actionConfig, allow_trigger_write: e.target.checked })}
+              disabled={readOnly} className="mt-0.5" />
+            <span>
+              Autoriser l'écriture d'une colonne-déclencheur
+              <span className="block text-[11px] text-gray-400">
+                Par défaut, le script ne peut pas écrire une colonne utilisée comme déclencheur d'une règle active (garde anti-cycle). À cocher en connaissance de cause.
+              </span>
+            </span>
+          </label>
+        </>
+      )}
+
       {/* Variables chips */}
-      {allVars.length > 0 && (
+      {actionType !== 'script' && allVars.length > 0 && (
         <div className="pt-3 border-t">
           <p className="text-xs text-gray-500 mb-2">Variables disponibles (cliquer pour copier) :</p>
           <div className="flex flex-wrap gap-1.5">
@@ -819,6 +1188,150 @@ function FiresList({ fires }) {
           <span className="font-mono text-gray-700 break-all">{f.record_id}</span>
         </div>
       ))}
+    </div>
+  )
+}
+
+function RetryQueuePanel({ items, maxAttempts, loading, retryingId, onRefresh, onRetry }) {
+  const list = items || []
+  return (
+    <div className="bg-white rounded-lg border p-5" data-testid="retry-queue-panel">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <AlertTriangle size={14} className={list.length ? 'text-amber-500' : 'text-gray-400'} />
+            File de retry des webhooks
+            {list.length > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">
+                {list.length}
+              </span>
+            )}
+          </h2>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Modules dont la synchronisation Airtable a échoué et qui seront re-tentés automatiquement.
+            « Retenter maintenant » force un traitement immédiat.
+          </p>
+        </div>
+        <button onClick={onRefresh} disabled={loading}
+          className="px-2.5 py-1 text-xs border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 flex items-center gap-1.5">
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Actualiser
+        </button>
+      </div>
+
+      {items == null ? (
+        <p className="text-xs text-gray-400 italic">Chargement…</p>
+      ) : list.length === 0 ? (
+        <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2"
+          data-testid="retry-queue-empty">
+          ✓ Aucun module en échec — la file de retry est vide.
+        </p>
+      ) : (
+        <div className="border rounded-lg divide-y overflow-hidden">
+          {list.map(item => (
+            <div key={item.id} className="px-3 py-2.5 text-xs" data-testid="retry-queue-item">
+              <div className="flex items-center gap-3 mb-1">
+                <span className="font-mono font-medium text-gray-800">{item.module}</span>
+                <span className={`px-1.5 py-0.5 rounded-full font-medium ${
+                  item.attempts >= maxAttempts ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'
+                }`}>
+                  {item.attempts}/{maxAttempts} tentative{item.attempts > 1 ? 's' : ''}
+                </span>
+                <button onClick={() => onRetry(item.id, item.module)} disabled={retryingId === item.id}
+                  className="ml-auto px-2.5 py-1 text-xs bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5"
+                  data-testid="retry-now-btn">
+                  {retryingId === item.id
+                    ? <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Retry…</>
+                    : <><RefreshCw size={12} /> Retenter maintenant</>}
+                </button>
+              </div>
+              <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-gray-500">
+                <span>Ajouté : <span className="font-mono text-gray-600">{formatLocal(item.created_at)}</span></span>
+                <span>Prochain retry : <span className="font-mono text-gray-600">{formatLocal(item.next_retry_at)}</span></span>
+              </div>
+              {item.last_error && (
+                <pre className="mt-1.5 text-red-600 whitespace-pre-wrap break-all bg-red-50 border border-red-200 rounded p-2 max-h-32 overflow-y-auto">{item.last_error}</pre>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DeferredQueuePanel({ data, loading, draining, onRefresh, onDrain }) {
+  const depth = data?.depth ?? null
+  const items = data?.items || []
+  const batchSize = data?.batch_size || 50
+  const hasBacklog = depth > 0
+
+  return (
+    <div className="bg-white rounded-lg border p-5" data-testid="deferred-queue-panel">
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <h2 className="text-sm font-semibold flex items-center gap-2">
+            <Gauge size={14} className={hasBacklog ? 'text-amber-500' : 'text-gray-400'} />
+            File d'attente (backpressure)
+            {hasBacklog && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium"
+                data-testid="deferred-depth-badge">
+                {depth}
+              </span>
+            )}
+          </h2>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Candidats en excédent du lot de {batchSize} par évaluation. Un job de fond
+            les draine automatiquement (~2 min) ; « Drainer maintenant » force un lot.
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={onRefresh} disabled={loading}
+            className="px-2.5 py-1 text-xs border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 flex items-center gap-1.5"
+            data-testid="deferred-refresh-btn">
+            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Actualiser
+          </button>
+          {hasBacklog && (
+            <button onClick={onDrain} disabled={draining}
+              className="px-2.5 py-1 text-xs bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5"
+              data-testid="deferred-drain-btn">
+              {draining
+                ? <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Drain…</>
+                : <><Play size={12} /> Drainer maintenant</>}
+            </button>
+          )}
+        </div>
+      </div>
+
+      {data == null ? (
+        <p className="text-xs text-gray-400 italic">Chargement…</p>
+      ) : !hasBacklog ? (
+        <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2"
+          data-testid="deferred-queue-empty">
+          ✓ Aucun candidat différé — la règle est à jour.
+        </p>
+      ) : (
+        <>
+          {data.oldest_enqueued_at && (
+            <p className="text-xs text-gray-500 mb-2">
+              Plus ancien en file : <span className="font-mono text-gray-600">{formatLocal(data.oldest_enqueued_at)}</span>
+            </p>
+          )}
+          <div className="border rounded-lg divide-y max-h-64 overflow-y-auto bg-gray-50">
+            {items.map(it => (
+              <div key={`${it.record_table}-${it.record_id}`} className="px-3 py-1.5 text-xs flex items-center gap-3"
+                data-testid="deferred-queue-item">
+                <span className="font-mono text-gray-500 w-36 shrink-0">{formatLocal(it.enqueued_at)}</span>
+                <span className="font-mono text-gray-700">{it.record_table}</span>
+                <span className="text-gray-400">·</span>
+                <span className="font-mono text-gray-700 break-all">{it.record_id}</span>
+              </div>
+            ))}
+          </div>
+          {depth > items.length && (
+            <p className="text-[11px] text-gray-400 mt-1.5">+{depth - items.length} autre(s) non affiché(s)</p>
+          )}
+        </>
+      )}
     </div>
   )
 }
@@ -948,7 +1461,7 @@ function formatLocal(dateStr) {
   const iso = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}$/.test(dateStr)
     ? dateStr.replace(' ', 'T') + 'Z'
     : dateStr
-  return new Date(iso).toLocaleString('fr-CA')
+  return fmtDateTime(iso)
 }
 
 function LinkifiedText({ text }) {
@@ -1025,7 +1538,14 @@ function ManualRunResult({ result }) {
               }`}>
                 {d.action}
               </span>
-              <span className="font-medium">{d.company_name || d.company_id}</span>
+              {d.company_id ? (
+                <Link to={`/companies/${d.company_id}`} className="font-medium text-brand-700 hover:underline"
+                  onClick={e => e.stopPropagation()}>
+                  {d.company_name || d.company_id}
+                </Link>
+              ) : (
+                <span className="font-medium">{d.company_name || '—'}</span>
+              )}
               <span className="text-gray-500">→</span>
               <span className="text-gray-700 font-mono">{d.to || '—'}</span>
               {d.language && <span className="text-gray-400">({d.language})</span>}
@@ -1073,13 +1593,18 @@ function EmailPreview({ automationId, actionConfig, isSystem }) {
   const [error, setError] = useState(null)
   const [language, setLanguage] = useState('French')
   const [showText, setShowText] = useState(false)
+  // null = let the server pick the first candidate; otherwise a chosen record id.
+  const [selectedRecordId, setSelectedRecordId] = useState(null)
+  // Sticky candidate list so the picker doesn't flicker/empty while reloading.
+  const [candidates, setCandidates] = useState([])
 
-  const load = useCallback(async (lang) => {
+  const load = useCallback(async (lang, recordId) => {
     setLoading(true)
     setError(null)
     try {
-      const data = await api.automations.emailPreview(automationId, lang || language)
+      const data = await api.automations.emailPreview(automationId, lang || language, recordId)
       setPreview(data)
+      if (Array.isArray(data.candidates)) setCandidates(data.candidates)
     } catch (e) {
       setError(e.message || 'Erreur de chargement')
     } finally {
@@ -1088,15 +1613,15 @@ function EmailPreview({ automationId, actionConfig, isSystem }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [automationId, language])
 
-  // Initial load + reload on language change
-  useEffect(() => { load(language) }, [language, load])
+  // Initial load + reload on language / selected-record change
+  useEffect(() => { load(language, selectedRecordId) }, [language, selectedRecordId, load])
 
   // For field-rule emails: reload preview ~800ms after the user stops editing
   // (action_config is autosaved server-side every 500ms, so we wait a bit longer).
   const actionKey = JSON.stringify(actionConfig || {})
   useEffect(() => {
     if (isSystem) return
-    const t = setTimeout(() => load(language), 800)
+    const t = setTimeout(() => load(language, selectedRecordId), 800)
     return () => clearTimeout(t)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actionKey, isSystem])
@@ -1123,7 +1648,7 @@ function EmailPreview({ automationId, actionConfig, isSystem }) {
               {preview.languages.map(l => <option key={l} value={l}>{l === 'French' ? 'Français' : 'English'}</option>)}
             </select>
           )}
-          <button onClick={() => load(language)} disabled={loading}
+          <button onClick={() => load(language, selectedRecordId)} disabled={loading}
             className="px-2.5 py-1 text-xs border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 flex items-center gap-1.5">
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
             Actualiser
@@ -1131,13 +1656,54 @@ function EmailPreview({ automationId, actionConfig, isSystem }) {
         </div>
       </div>
 
+      {/* Record picker — choisir le record d'exemple à rendre avant d'activer la règle */}
+      {candidates.length > 0 && (
+        <div className="mb-3 flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-medium text-gray-600">Record d'exemple</span>
+          <div className="min-w-[260px]">
+            <SearchableSelect
+              testId="email-preview-record-select"
+              className="w-full border rounded-lg px-3 py-1.5 text-xs bg-white"
+              size="sm"
+              value={selectedRecordId || (preview?.sample_record?.id ?? '')}
+              options={candidates}
+              getOptionValue={c => c.id}
+              getOptionLabel={c => `${c.label || c.id}${c.already_fired ? ' • déjà déclenché' : ''}`}
+              getOptionKey={c => c.id}
+              onChange={v => setSelectedRecordId(v || null)}
+              placeholder="— premier candidat —"
+              searchPlaceholder="Rechercher un record…"
+            />
+          </div>
+          <span className="text-[11px] text-gray-400">
+            {preview?.candidates_total != null
+              ? `${preview.candidates_total} candidat${preview.candidates_total > 1 ? 's' : ''}`
+              : `${candidates.length} record${candidates.length > 1 ? 's' : ''}`}
+          </span>
+        </div>
+      )}
+
       {error && <p className="text-sm text-red-600">{error}</p>}
 
       {preview && preview.available === false && (
-        <p className="text-sm text-gray-500 italic">{preview.reason || 'Aperçu non disponible.'}</p>
+        <p className="text-sm text-gray-500 italic">{preview.reason || preview.error || 'Aperçu non disponible.'}</p>
       )}
 
-      {preview && preview.available && (
+      {preview && preview.available && preview.matches_trigger === false && (
+        <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 flex items-start gap-1.5">
+          <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+          Ce record ne correspond pas (encore) au déclencheur de la règle — il ne recevrait pas le courriel en l'état. L'aperçu reste utile pour valider le rendu du template.
+        </div>
+      )}
+
+      {preview && preview.available && preview.render_error && (
+        <div className="mb-3 text-xs px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 flex items-start gap-1.5">
+          <AlertTriangle size={13} className="shrink-0 mt-0.5" />
+          Erreur de rendu du template : {preview.render_error}
+        </div>
+      )}
+
+      {preview && preview.available && !preview.render_error && (
         <div className="space-y-3">
           <div className="border border-gray-200 rounded-lg overflow-hidden">
             <div className="px-3 py-2 bg-gray-50 border-b border-gray-200 text-xs">

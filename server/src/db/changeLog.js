@@ -133,6 +133,10 @@ function buildColumnsCache() {
       idColumn: t.idColumn,
       columns: allowed,
       selectClause: allowed.map(c => `"${c}"`).join(', '),
+      // Le cache client représente l'état *vivant*. Les tables à soft-delete
+      // (deleted_at) doivent donc exclure les records supprimés du snapshot et
+      // les émettre comme tombstones (delete) dans le delta — voir bootstrap.js.
+      hasSoftDelete: cols.includes('deleted_at'),
     }
   }
   columnsCache = cache

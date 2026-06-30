@@ -1,16 +1,20 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, FileText, ExternalLink, Download, RefreshCw } from 'lucide-react'
+import { ArrowLeft, FileText, ExternalLink, Download, RefreshCw, Hammer, AlertTriangle, CheckCircle2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.jsx'
 import { VendorSelect } from '../components/VendorSelect.jsx'
 import { PurchaseOrderModal } from '../components/PurchaseOrderModal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDateTime } from '../lib/formatDate.js'
+import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 
 const PROCUREMENT_TYPES = ['Acheté', 'Fabriqué', 'Drop ship']
@@ -61,6 +65,18 @@ const BOM_RENDERS = {
   ),
   component_sku: row => <span className="text-xs text-slate-500 font-mono">{row.component_sku || '—'}</span>,
   qty_required: row => <span className="font-bold text-slate-900">{row.qty_required ?? '—'}</span>,
+  component_stock_qty: row => {
+    // Composant sans fiche liée (texte libre) → pas de suivi de stock.
+    if (row.component_id == null || row.component_stock_qty == null) return <span className="text-slate-300">—</span>
+    const req = row.qty_required > 0 ? row.qty_required : 1
+    const insufficient = row.component_stock_qty < req
+    return <span className={`font-medium ${insufficient ? 'text-red-600' : 'text-slate-700'}`}>{row.component_stock_qty}</span>
+  },
+  buildable: row => {
+    const b = row.buildable
+    if (b == null) return <span className="text-slate-300">—</span>
+    return <span className={`font-bold ${b === 0 ? 'text-red-600' : 'text-slate-900'}`}>{b}</span>
+  },
   ref_des: row => <span className="text-slate-500 text-xs">{row.ref_des || '—'}</span>,
   product_name: row => (
     row.product_id ? (
@@ -72,6 +88,98 @@ const BOM_RENDERS = {
   product_sku: row => <span className="text-xs text-slate-500 font-mono">{row.product_sku || '—'}</span>,
 }
 const BOM_COLUMNS = TABLE_COLUMN_META.bom_items.map(meta => ({ ...meta, render: BOM_RENDERS[meta.id] }))
+
+// Croise le stock courant de chaque composant avec sa quantité requise pour
+// déterminer combien d'unités du produit fini sont assemblables maintenant.
+// Le composant le plus contraignant fixe la limite (« goulot »).
+function computeBuildable(bom) {
+  // Annote chaque ligne d'un `buildable` = unités que ce seul composant permet.
+  const rows = bom.map(r => {
+    if (r.component_id == null || r.component_stock_qty == null) return { ...r, buildable: null }
+    const req = r.qty_required > 0 ? r.qty_required : 1
+    return { ...r, buildable: Math.floor((r.component_stock_qty || 0) / req) }
+  })
+  const tracked = rows.filter(r => r.buildable != null)
+  const untrackedCount = rows.length - tracked.length
+  // Pas de composant suivi → on ne peut rien calculer.
+  const units = tracked.length > 0 ? Math.min(...tracked.map(r => r.buildable)) : null
+  // Composants « goulot » (ceux qui fixent la limite) et manquants (0 assemblable).
+  const bottlenecks = units != null ? tracked.filter(r => r.buildable === units) : []
+  const missing = tracked.filter(r => r.buildable === 0)
+  return { rows, units, bottlenecks, missing, untrackedCount, trackedCount: tracked.length }
+}
+
+// Bannière « Assemblable N unités » + alertes composants manquants / goulots.
+function BomBuildableBanner({ summary }) {
+  const { units, bottlenecks, missing, untrackedCount, trackedCount } = summary
+  if (trackedCount === 0) {
+    return (
+      <div data-testid="bom-buildable-banner" className="mb-4 flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
+        <Hammer size={18} className="shrink-0 mt-0.5 text-slate-400" />
+        <span>Aucun composant de cette nomenclature n'a de fiche produit liée — impossible de calculer la capacité d'assemblage à partir du stock.</span>
+      </div>
+    )
+  }
+  const zero = units === 0
+  const tone = zero
+    ? 'border-red-200 bg-red-50'
+    : units < 5
+      ? 'border-amber-200 bg-amber-50'
+      : 'border-emerald-200 bg-emerald-50'
+  const Icon = zero ? AlertTriangle : CheckCircle2
+  const iconTone = zero ? 'text-red-600' : units < 5 ? 'text-amber-600' : 'text-emerald-600'
+  const numTone = zero ? 'text-red-700' : units < 5 ? 'text-amber-700' : 'text-emerald-700'
+  return (
+    <div data-testid="bom-buildable-banner" className={`mb-4 rounded-xl border px-4 py-3 ${tone}`}>
+      <div className="flex items-center gap-3">
+        <Icon size={22} className={`shrink-0 ${iconTone}`} />
+        <div className="flex items-baseline gap-2">
+          <span data-testid="bom-buildable-count" className={`text-3xl font-extrabold leading-none ${numTone}`}>{units}</span>
+          <span className="text-sm font-medium text-slate-600">
+            {units > 1 ? 'unités assemblables' : 'unité assemblable'} avec le stock actuel
+          </span>
+        </div>
+      </div>
+      {zero && missing.length > 0 && (
+        <div data-testid="bom-missing" className="mt-2 text-sm text-red-700">
+          <span className="font-semibold">Composant{missing.length > 1 ? 's' : ''} en rupture : </span>
+          {missing.map(r => r.component_name || r.component_sku || '?').join(', ')}
+        </div>
+      )}
+      {!zero && bottlenecks.length > 0 && (
+        <div data-testid="bom-bottleneck" className="mt-2 text-sm text-slate-600">
+          <span className="font-semibold">Goulot : </span>
+          {bottlenecks.map(r => r.component_name || r.component_sku || '?').join(', ')}
+          <span className="text-slate-400"> — limite la production à {units}.</span>
+        </div>
+      )}
+      {untrackedCount > 0 && (
+        <div className="mt-1.5 text-xs text-slate-400">
+          {untrackedCount} composant{untrackedCount > 1 ? 's' : ''} sans fiche/stock liée — non pris en compte.
+        </div>
+      )}
+    </div>
+  )
+}
+
+const money = n => n == null
+  ? <span className="text-slate-300">—</span>
+  : new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 2 }).format(n)
+
+const MOVEMENT_RENDERS = {
+  created_at:     m => <span className="text-slate-500 text-xs">{fmtDateTime(m.created_at)}</span>,
+  type:           m => <Badge color={movTypeColor[m.type] || 'gray'}>{movTypeLabel[m.type] || m.type}</Badge>,
+  qty:            m => (
+    <span className={`font-bold ${m.type === 'in' ? 'text-green-600' : m.type === 'out' ? 'text-red-600' : 'text-blue-600'}`}>
+      {m.type === 'in' ? '+' : m.type === 'out' ? '-' : '='}{m.qty}
+    </span>
+  ),
+  reason:         m => <span className="text-slate-600">{m.reason || '—'}</span>,
+  user_name:      m => <span className="text-slate-500 text-xs">{m.user_name || '—'}</span>,
+  unit_cost:      m => money(m.unit_cost),
+  movement_value: m => money(m.movement_value),
+}
+const MOVEMENT_COLUMNS = TABLE_COLUMN_META.product_movements.map(meta => ({ ...meta, render: MOVEMENT_RENDERS[meta.id] }))
 
 function Field({ label, children, span2 = false }) {
   return (
@@ -88,6 +196,7 @@ export default function ProductDetail() {
   const { user: _user } = useAuth()
   const [product, setProduct] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [tab, setTab] = useState('info')
   const [form, setForm] = useState({})
   const [bom, setBom] = useState([])
@@ -96,10 +205,13 @@ export default function ProductDetail() {
   const [refreshingDocs, setRefreshingDocs] = useState(false)
   const [refreshDocsResult, setRefreshDocsResult] = useState(null)
   const saveTimer = useRef(null)
+  const { status: saveState, save } = useSaveStatus()
   const visibleFields = PRODUCT_FIELDS.filter(f => f.defaultVisible !== false)
+  const bomSummary = useMemo(() => computeBuildable(bom), [bom])
 
   async function load() {
     setLoading(true)
+    setLoadError(null)
     try {
       const data = await api.products.get(id)
       setProduct(data)
@@ -128,6 +240,8 @@ export default function ProductDetail() {
         notes: data.notes || '',
         active: data.active === 1,
       })
+    } catch (e) {
+      setLoadError(e?.message || 'Erreur de chargement')
     } finally {
       setLoading(false)
     }
@@ -152,7 +266,7 @@ export default function ProductDetail() {
     setForm(next)
     clearTimeout(saveTimer.current)
     saveTimer.current = setTimeout(() => {
-      api.products.update(id, next).catch(console.error)
+      save(() => api.products.update(id, next))
     }, 300)
   }
 
@@ -172,7 +286,8 @@ export default function ProductDetail() {
 
   const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
-  if (loading) return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
+  if (loading) return <Layout><Spinner center /></Layout>
+  if (loadError && !product) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
   if (!product) return <Layout><div className="p-6 text-slate-500">Produit introuvable.</div></Layout>
 
   return (
@@ -193,6 +308,7 @@ export default function ProductDetail() {
               <Badge color={stockStatusColor(product)} size="md">{stockStatusLabel(product)}</Badge>
               {!form.active && <Badge color="red">Inactif</Badge>}
               {form.is_sellable && <Badge color="indigo">Vendable</Badge>}
+              <SaveStatus status={saveState} />
             </div>
             <div className="text-sm text-slate-500 mt-1 flex gap-3">
               {form.sku && <span className="font-mono bg-slate-100 px-2 py-0.5 rounded">{form.sku}</span>}
@@ -275,7 +391,7 @@ export default function ProductDetail() {
                           setForm(next)
                           clearTimeout(saveTimer.current)
                           saveTimer.current = setTimeout(() => {
-                            api.products.update(id, next).catch(console.error)
+                            save(() => api.products.update(id, next))
                           }, 300)
                         }}
                       />
@@ -283,12 +399,26 @@ export default function ProductDetail() {
                   )
                 }
                 if (field.type === 'select') {
+                  // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
                   return (
                     <Field key={field.key} label={field.label} span2={field.span2}>
-                      <select className={inp} value={form[field.key] || ''} onChange={e => change(field.key, e.target.value)}>
-                        <option value="">—</option>
-                        {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
-                      </select>
+                      {(field.options || []).length > 10 ? (
+                        <SearchableSelect
+                          value={form[field.key] || ''}
+                          options={(field.options || []).map(o => ({ value: o, label: o }))}
+                          emptyOption="—"
+                          placeholder="—"
+                          onChange={v => change(field.key, v)}
+                          className={inp}
+                          size="sm"
+                          testId={`product-field-${field.key}`}
+                        />
+                      ) : (
+                        <select className={inp} value={form[field.key] || ''} onChange={e => change(field.key, e.target.value)}>
+                          <option value="">—</option>
+                          {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
+                        </select>
+                      )}
                     </Field>
                   )
                 }
@@ -318,46 +448,26 @@ export default function ProductDetail() {
         )}
 
         {tab === 'mouvements' && (
-          <div className="card overflow-hidden">
-            {!product.movements?.length ? (
-              <p className="text-center py-10 text-slate-400">Aucun mouvement de stock</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Date</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Type</th>
-                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Qté</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Raison</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Utilisateur</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {product.movements.map(m => (
-                    <tr key={m.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                      <td className="px-4 py-3 text-slate-500 text-xs">{fmtDateTime(m.created_at)}</td>
-                      <td className="px-4 py-3"><Badge color={movTypeColor[m.type]}>{movTypeLabel[m.type]}</Badge></td>
-                      <td className={`px-4 py-3 text-right font-bold ${m.type === 'in' ? 'text-green-600' : m.type === 'out' ? 'text-red-600' : 'text-blue-600'}`}>
-                        {m.type === 'in' ? '+' : m.type === 'out' ? '-' : '='}{m.qty}
-                      </td>
-                      <td className="px-4 py-3 text-slate-600">{m.reason || '—'}</td>
-                      <td className="px-4 py-3 hidden md:table-cell text-slate-500 text-xs">{m.user_name || '—'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <DataTable
+            table="product_movements"
+            columns={MOVEMENT_COLUMNS}
+            data={product.movements || []}
+            searchFields={['type', 'reason', 'user_name', 'reference_id']}
+            height="calc(100vh - 360px)"
+          />
         )}
 
         {tab === 'bom' && (
-          <DataTable
-            table="bom_items"
-            columns={BOM_COLUMNS}
-            data={bom}
-            searchFields={['component_name', 'component_sku', 'ref_des']}
-            height="calc(100vh - 360px)"
-          />
+          <div>
+            {bom.length > 0 && <BomBuildableBanner summary={bomSummary} />}
+            <DataTable
+              table="bom_items"
+              columns={BOM_COLUMNS}
+              data={bomSummary.rows}
+              searchFields={['component_name', 'component_sku', 'ref_des']}
+              height="calc(100vh - 420px)"
+            />
+          </div>
         )}
 
         {tab === 'docs' && (() => {

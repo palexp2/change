@@ -101,6 +101,43 @@ publicFilesRouter.post('/upload', upload.single('file'), (req, res) => {
   res.status(201).json(hydrate(row))
 })
 
+// Remplace le CONTENU d'un fichier existant en conservant id + token (donc le
+// lien public /erp/p/<token> reste identique). L'ancien fichier disque est supprimé.
+publicFilesRouter.post('/:id/replace', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Aucun fichier reçu' })
+
+  const row = db.prepare('SELECT * FROM public_files WHERE id=?').get(req.params.id)
+  if (!row) {
+    try { unlinkSync(join(uploadsDir, req.file.filename)) } catch {}
+    return res.status(404).json({ error: 'Not found' })
+  }
+
+  // Supprime l'ancien blob disque (sauf collision improbable de nom).
+  if (row.stored_name && row.stored_name !== req.file.filename) {
+    try { unlinkSync(join(uploadsDir, row.stored_name)) } catch {}
+  }
+
+  db.prepare(`
+    UPDATE public_files
+    SET stored_name = ?, original_name = ?, mime_type = ?, size = ?,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = ?
+  `).run(
+    req.file.filename,
+    req.file.originalname,
+    req.file.mimetype || null,
+    req.file.size || null,
+    req.params.id
+  )
+
+  const updated = db.prepare(`
+    SELECT pf.*, u.name AS uploaded_by_name
+    FROM public_files pf LEFT JOIN users u ON u.id = pf.uploaded_by
+    WHERE pf.id = ?
+  `).get(req.params.id)
+  res.json(hydrate(updated))
+})
+
 publicFilesRouter.patch('/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM public_files WHERE id=?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })

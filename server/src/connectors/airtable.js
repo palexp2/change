@@ -121,11 +121,48 @@ export async function airtablePost(path, accessToken, body) {
   return resp.json()
 }
 
-export async function airtableFetch(path, accessToken, retries = 3) {
+// (airtablePost ci-dessus est aussi utilisé par le create ERP→Airtable.)
+// PATCH d'un ou plusieurs records. Utilisé par le write-back ERP→Airtable.
+// `body` suit la forme attendue par l'API Airtable, ex:
+//   { fields: {...} }                              (PATCH /{baseId}/{tableId}/{recordId})
+//   { records: [{ id, fields }], typecast: true }  (PATCH /{baseId}/{tableId})
+export async function airtablePatch(path, accessToken, body) {
+  const resp = await fetch(`https://api.airtable.com/v0${path}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+  if (!resp.ok) throw new Error(`Airtable PATCH ${path} ${resp.status}: ${await resp.text()}`)
+  return resp.json()
+}
+
+// Timeout par défaut sur chaque requête HTTP Airtable. Sans ça, si Airtable ou
+// le DNS pend, fetch() ne résout jamais et la boucle de pagination du webhook
+// router (airtableWebhooks.js) bloque tous les autres pings indéfiniment. Un
+// AbortController transforme le hang en échec traçable et retryable.
+const AIRTABLE_FETCH_TIMEOUT_MS = 20000
+
+export async function airtableFetch(path, accessToken, retries = 3, timeoutMs = AIRTABLE_FETCH_TIMEOUT_MS) {
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const resp = await fetch(`https://api.airtable.com/v0${path}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    })
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    let resp
+    try {
+      resp = await fetch(`https://api.airtable.com/v0${path}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        signal: controller.signal,
+      })
+    } catch (err) {
+      if (err?.name === 'AbortError') {
+        throw new Error(`Airtable fetch timeout après ${timeoutMs}ms: ${path}`)
+      }
+      throw err
+    } finally {
+      clearTimeout(timer)
+    }
     if (resp.status === 429) {
       await new Promise(r => setTimeout(r, (attempt + 1) * 2000))
       continue

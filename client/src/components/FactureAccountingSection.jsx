@@ -4,13 +4,22 @@ import {
   Hourglass, FileText, CreditCard, Landmark, Package, Undo2, Link2, Pencil,
 } from 'lucide-react'
 import api from '../lib/api.js'
-import { fmtDate } from '../lib/formatDate.js'
+import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { Modal } from './Modal.jsx'
 import { useAuth } from '../lib/auth.jsx'
 
 function fmtMoney(n, currency = 'CAD') {
   if (n == null) return '—'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(n)
+}
+
+// Doit refléter QB_FACTURE_DATE_CUTOFF côté serveur (server/src/services/quickbooks.js).
+// Toute écriture QB pour une facture dont document_date est antérieur est bloquée,
+// sauf override explicite (bypassCutoff). Comparaison lexicographique sûre — les
+// document_date sont stockés en 'YYYY-MM-DD'.
+const QB_FACTURE_DATE_CUTOFF = '2026-05-01'
+function isFacturerePreCutoff(facture) {
+  return !!(facture?.document_date && facture.document_date < QB_FACTURE_DATE_CUTOFF)
 }
 
 // Numéro de compte AR selon la devise (plan comptable Orisha) :
@@ -37,26 +46,18 @@ function payoutCreditAccount(facture) {
   return '40000'
 }
 
-const MONTHS_FR_SHORT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juill.', 'août', 'sept.', 'oct.', 'nov.', 'déc.']
 function fmtCompactDateTime(iso) {
   if (!iso) return ''
   const s = String(iso)
-  // Date-only (YYYY-MM-DD) : pas de conversion de fuseau, sinon une date comme
-  // « 2026-05-25 » devient « 2026-05-24 20:00 » en EDT et s'affiche « 24 mai ».
-  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
-  if (dateOnly) {
-    const [, , mm, dd] = dateOnly
-    return `${Number(dd)} ${MONTHS_FR_SHORT[Number(mm) - 1]}`
-  }
+  // Date-only (YYYY-MM-DD) : pas de conversion de fuseau, rendue telle quelle.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
   const d = new Date(s)
-  const date = d.toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' })
+  if (isNaN(d)) return ''
   const hasTime = /T\d{2}:\d{2}/.test(s)
-  if (!hasTime) return date
   // Convention : un timestamp posé via <input type="date"> est stocké à minuit
-  // local — heure non significative, on l'omet (sinon on affiche « 00 h 00 »).
-  if (d.getHours() === 0 && d.getMinutes() === 0) return date
-  const time = d.toLocaleTimeString('fr-CA', { hour: '2-digit', minute: '2-digit', hour12: false })
-  return `${date} · ${time}`
+  // local — heure non significative, on l'omet (sinon on affiche « 00:00 »).
+  if (!hasTime || (d.getHours() === 0 && d.getMinutes() === 0)) return fmtDate(s)
+  return fmtDateTime(s)
 }
 
 function shortId(id) {
@@ -195,12 +196,12 @@ export default function FactureAccountingSection({ facture, onChanged }) {
     }
   }
 
-  async function confirmRecognize() {
+  async function confirmRecognize(bypassCutoff) {
     setShowRecognizeModal(false)
     setRecognizeError(null)
     setRecognizing(true)
     try {
-      await api.factures.recognizeRevenue(facture.id, { bypassShipmentCheck: true })
+      await api.factures.recognizeRevenue(facture.id, { bypassShipmentCheck: true, bypassCutoff: bypassCutoff === true })
       if (onChanged) await onChanged()
     } catch (e) {
       setRecognizeError(e.message || 'Erreur lors de la constatation')
@@ -286,7 +287,7 @@ export default function FactureAccountingSection({ facture, onChanged }) {
                 event={ev}
                 onAnomalyClick={kind => setConfirm({ kind })}
                 canEdit={isAdmin && !!ev.editSource}
-                onEditClick={() => setEditEvent({ event: ev, value: toLocalInputValue(ev.date), saving: false, error: null })}
+                onEditClick={() => { const v = toLocalInputValue(ev.date); setEditEvent({ event: ev, value: v, savedValue: v, saving: false, error: null, justSaved: false }) }}
               />
             ))}
           </ol>
@@ -294,7 +295,7 @@ export default function FactureAccountingSection({ facture, onChanged }) {
 
         {checkedAt && (
           <div className="text-xs text-slate-400 mt-3 pt-2 border-t border-slate-100">
-            Vérifié dans QuickBooks le {fmtDate(checkedAt)} à {new Date(checkedAt).toLocaleTimeString('fr-CA')}
+            Vérifié dans QuickBooks le {fmtDateTime(checkedAt)}
           </div>
         )}
       </div>
@@ -327,24 +328,28 @@ export default function FactureAccountingSection({ facture, onChanged }) {
       <EditEventDateModal
         state={editEvent}
         onChange={patch => setEditEvent(s => s ? { ...s, ...patch } : s)}
-        onCancel={() => setEditEvent(null)}
-        onSubmit={async () => {
+        onClose={() => setEditEvent(null)}
+        onCommit={async (value) => {
           if (!editEvent) return
-          const { event, value } = editEvent
+          const { event, savedValue } = editEvent
           const src = event.editSource
           if (!src) return
+          // Autosave on blur : ne rien faire si la valeur n'a pas changé.
+          if (value === savedValue) return
           // Empty input = clear (NULL). Sinon convertir le datetime-local
           // (heure locale du navigateur) en ISO UTC pour respecter la
           // convention DB (CLAUDE.md).
           const payload = value ? new Date(value).toISOString() : null
-          setEditEvent(s => ({ ...s, saving: true, error: null }))
+          setEditEvent(s => s ? { ...s, saving: true, error: null, justSaved: false } : s)
           try {
             if (src.kind === 'facture') {
               await api.admin.factureRawUpdate(facture.id, { [src.column]: payload })
             } else if (src.kind === 'payment') {
               await api.admin.paymentRawUpdate(src.id, { [src.column]: payload })
             }
-            setEditEvent(null)
+            // La modale reste ouverte (autosave) ; on mémorise la valeur sauvée
+            // et on affiche un indicateur « Enregistré ».
+            setEditEvent(s => s ? { ...s, saving: false, savedValue: value, justSaved: true, error: null } : s)
             if (onChanged) await onChanged()
           } catch (e) {
             setEditEvent(s => s ? { ...s, saving: false, error: e?.message || 'Erreur lors de la sauvegarde' } : s)
@@ -366,11 +371,12 @@ function toLocalInputValue(iso) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-function EditEventDateModal({ state, onChange, onCancel, onSubmit }) {
+function EditEventDateModal({ state, onChange, onClose, onCommit }) {
   if (!state) return null
-  const { event, value, saving, error } = state
+  const { event, value, savedValue, saving, error, justSaved } = state
+  const dirty = value !== savedValue
   return (
-    <Modal isOpen={true} onClose={saving ? () => {} : onCancel} title={`Modifier la date — ${event.label}`} size="sm">
+    <Modal isOpen={true} onClose={saving ? () => {} : onClose} title={`Modifier la date — ${event.label}`} size="sm">
       <div className="space-y-3 text-sm text-slate-700">
         <p className="text-xs text-slate-500">
           Édition manuelle de la colonne <code className="font-mono">{event.editSource?.column}</code> sur la table <code className="font-mono">{event.editSource?.kind === 'payment' ? 'payments' : 'factures'}</code>.
@@ -382,29 +388,28 @@ function EditEventDateModal({ state, onChange, onCancel, onSubmit }) {
             type="datetime-local"
             value={value}
             onChange={e => onChange({ value: e.target.value })}
+            onBlur={() => onCommit(value)}
+            onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
             className="input w-full"
             data-testid="edit-event-date-input"
             disabled={saving}
           />
         </label>
         <p className="text-xs text-slate-400">
-          Laisser vide pour effacer la valeur (NULL).
+          Laisser vide pour effacer la valeur (NULL). Sauvegarde automatique.
         </p>
+        {/* Indicateur d'état de l'autosave — non bloquant (CLAUDE.md). */}
+        <div className="h-4 text-xs" data-testid="edit-event-date-status">
+          {saving && <span className="text-slate-500">Enregistrement…</span>}
+          {!saving && !error && justSaved && !dirty && <span className="text-emerald-600">Enregistré ✓</span>}
+        </div>
         {error && (
           <p className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded p-2">{error}</p>
         )}
       </div>
       <div className="flex justify-end gap-2 mt-5">
-        <button onClick={onCancel} disabled={saving} className="px-3 py-1.5 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg disabled:opacity-50">
-          Annuler
-        </button>
-        <button
-          onClick={onSubmit}
-          disabled={saving}
-          className="px-3 py-1.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50"
-          data-testid="edit-event-date-save"
-        >
-          {saving ? 'Enregistrement…' : 'Enregistrer'}
+        <button onClick={onClose} disabled={saving} className="px-3 py-1.5 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg disabled:opacity-50" data-testid="edit-event-date-close">
+          Fermer
         </button>
       </div>
     </Modal>
@@ -933,6 +938,12 @@ function EventRow({ event, onAnomalyClick, canEdit, onEditClick }) {
 }
 
 function RecognizeConfirmModal({ isOpen, facture, recognizing, onCancel, onConfirm }) {
+  const [bypassCutoff, setBypassCutoff] = useState(false)
+  // Réinitialise le consentement de bypass chaque ouverture — on ne veut jamais
+  // forcer un cutoff par inadvertance à cause d'un état laissé coché.
+  useEffect(() => {
+    if (isOpen) setBypassCutoff(false)
+  }, [isOpen])
   if (!isOpen || !facture) return null
   const isDeferred = !!facture.deferred_revenue_at
   const debitAccount = isDeferred
@@ -943,6 +954,10 @@ function RecognizeConfirmModal({ isOpen, facture, recognizing, onCancel, onConfi
     : facture.amount_before_tax_cad
   const currency = facture.currency || 'CAD'
   const hasShipment = !!facture.has_linked_shipment
+  const preCutoff = isFacturerePreCutoff(facture)
+  // Quand pré-cutoff, la confirmation est bloquée tant que l'opérateur n'a pas
+  // explicitement coché le bypass.
+  const blocked = preCutoff && !bypassCutoff
   return (
     <Modal isOpen={true} onClose={onCancel} title="Constater la vente sur QuickBooks" size="md">
       <div className="text-sm text-slate-700 space-y-3">
@@ -963,16 +978,34 @@ function RecognizeConfirmModal({ isOpen, facture, recognizing, onCancel, onConfi
             </li>
           )}
         </ul>
+        {preCutoff && (
+          <div className="text-xs bg-rose-50 border border-rose-200 rounded-lg p-3 space-y-2" data-testid="recognize-cutoff-warning">
+            <p className="text-rose-800">
+              ⚠ Cette facture est datée du <strong>{fmtDate(facture.document_date)}</strong>, soit <strong>avant le cutoff comptable du {fmtDate(QB_FACTURE_DATE_CUTOFF)}</strong>.
+              La compta historique est figée — toute écriture QB est normalement bloquée pour cette période.
+            </p>
+            <label className="flex items-start gap-2 cursor-pointer text-rose-900 font-medium">
+              <input
+                type="checkbox"
+                checked={bypassCutoff}
+                onChange={e => setBypassCutoff(e.target.checked)}
+                className="mt-0.5"
+                data-testid="recognize-bypass-cutoff"
+              />
+              <span>Forcer l'écriture malgré le cutoff du {fmtDate(QB_FACTURE_DATE_CUTOFF)} (j'assume l'impact sur la compta historique).</span>
+            </label>
+          </div>
+        )}
       </div>
       <div className="flex justify-end gap-3 mt-6">
         <button onClick={onCancel} className="btn-secondary" disabled={recognizing}>Annuler</button>
         <button
-          onClick={onConfirm}
-          disabled={recognizing}
+          onClick={() => onConfirm(bypassCutoff)}
+          disabled={recognizing || blocked}
           className="btn-primary"
           data-testid="accounting-recognize-confirm"
         >
-          {recognizing ? 'Publication…' : 'Constater sur QuickBooks'}
+          {recognizing ? 'Publication…' : (preCutoff ? 'Forcer la constatation' : 'Constater sur QuickBooks')}
         </button>
       </div>
     </Modal>

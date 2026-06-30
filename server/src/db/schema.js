@@ -709,11 +709,40 @@ export function initSchema() {
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
+
+    CREATE TABLE IF NOT EXISTS sale_receipt_events (
+      id TEXT PRIMARY KEY,
+      receipt_id TEXT NOT NULL,
+      user_id TEXT REFERENCES users(id),
+      action TEXT NOT NULL,
+      detail TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    -- Journal d'activité applicatif généralisé (qui / quoi / quand).
+    -- Écrit au niveau route via le point de passage central emitEntity/emitOrder/
+    -- emitCompany (services/realtimeEmitters.js) quand un acteur humain est connu.
+    -- Distinct de change_log (rétention 48h, sans utilisateur, dédié au cache
+    -- client) : persistant et axé sur l'attribution utilisateur, à l'image du
+    -- patron éprouvé sale_receipt_events mais transverse à toutes les entités.
+    CREATE TABLE IF NOT EXISTS activity_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id TEXT REFERENCES users(id),
+      entity_type TEXT NOT NULL,
+      entity_id TEXT,
+      action TEXT NOT NULL,
+      detail TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
   `);
 
   // Create indexes for performance
   const indexes = [
     'CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)',
+    'CREATE INDEX IF NOT EXISTS idx_sale_receipt_events_receipt ON sale_receipt_events(receipt_id, created_at)',
+    'CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_activity_log_entity ON activity_log(entity_type, entity_id)',
+    'CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id)',
     'CREATE INDEX IF NOT EXISTS idx_companies_phase ON companies(lifecycle_phase)',
     'CREATE INDEX IF NOT EXISTS idx_contacts_company ON contacts(company_id)',
     'CREATE INDEX IF NOT EXISTS idx_contacts_sort ON contacts(first_name, last_name)',
@@ -819,6 +848,37 @@ export function initSchema() {
     // que syncInvoiceLabel ne réimporte le même email à chaque tour, mais le fichier
     // disque est purgé et la ligne disparaît du UI (filtre `deleted_at IS NULL`).
     'ALTER TABLE sale_receipts ADD COLUMN deleted_at TEXT',
+    // Archive : sort le reçu du flux « À publier » sans le supprimer. NULL = actif.
+    'ALTER TABLE sale_receipts ADD COLUMN archived_at TEXT',
+    // Mémo : envoyé comme PrivateNote (« Memo ») à QB à la publication.
+    // Vide → on y met la description générale (general_description), pas la liste d'articles.
+    'ALTER TABLE sale_receipts ADD COLUMN memo TEXT',
+    // Description générale : résumé d'une ligne de l'objet principal de la facture
+    // (extrait par l'IA, éditable). Sert de mémo QB par défaut — on ne veut pas les
+    // 15 articles dans le mémo, seulement la description principale du document.
+    'ALTER TABLE sale_receipts ADD COLUMN general_description TEXT',
+    // Choix de comptabilisation retenus à la publication QB — conservés pour
+    // servir de modèle aux futurs reçus du même fournisseur (panneau "transactions
+    // passées" + bouton "Utiliser comme modèle"). Ids QuickBooks.
+    'ALTER TABLE sale_receipts ADD COLUMN expense_account_id TEXT',
+    'ALTER TABLE sale_receipts ADD COLUMN payment_account_id TEXT',
+    'ALTER TABLE sale_receipts ADD COLUMN tax_code_id TEXT',
+    'ALTER TABLE sale_receipts ADD COLUMN vendor_id TEXT',
+    // Connecteur Amazon Business : ID de facture Amazon (Reconciliation/Document API).
+    // Sert de clé de dédup — empêche la sync de réimporter la même facture à chaque tour.
+    'ALTER TABLE sale_receipts ADD COLUMN amazon_invoice_id TEXT',
+    'CREATE INDEX IF NOT EXISTS idx_sale_receipts_amazon_invoice ON sale_receipts(amazon_invoice_id) WHERE amazon_invoice_id IS NOT NULL',
+    // Vérification du statut fiscal (cf. services/fiscalStatus.js) : type de transaction
+    // confirmé à la publication QB — détermine le code de taxe attendu. NULL = pas encore
+    // classé. fiscal_force_reason : justification saisie quand on publie malgré un écart
+    // entre le code choisi et le code attendu (échappatoire tracée).
+    'ALTER TABLE sale_receipts ADD COLUMN transaction_type TEXT',
+    'ALTER TABLE sale_receipts ADD COLUMN fiscal_force_reason TEXT',
+    // Document multipage : pages additionnelles (2..N) accumulées à la capture/upload.
+    // La page 1 reste dans filename/file_type/original_name (compat routes existantes) ;
+    // extra_pages = JSON [{filename, file_type, original_name}] pour les pages suivantes.
+    // L'extraction IA et l'attachement QB parcourent l'ensemble (page 1 + extra_pages).
+    "ALTER TABLE sale_receipts ADD COLUMN extra_pages TEXT DEFAULT '[]'",
     // qualification_calls — colonnes additionnelles pour le module d'appel guidé
     'ALTER TABLE qualification_calls ADD COLUMN heard_about TEXT',
     'ALTER TABLE qualification_calls ADD COLUMN red_flags TEXT',
@@ -831,6 +891,9 @@ export function initSchema() {
     'ALTER TABLE qualification_calls ADD COLUMN quote_paid_at TEXT',
     'ALTER TABLE qualification_calls ADD COLUMN quote_paid_email TEXT',
     'ALTER TABLE qualification_calls ADD COLUMN quote_subscription_id TEXT',
+    // Notes System Builder — saisies pendant l'appel pour les serres qui débordent
+    // des 3 slots du formulaire Fillout (>3 serres vendues). Référence interne.
+    'ALTER TABLE qualification_calls ADD COLUMN system_builder_notes TEXT',
     // stock_movements — Airtable sync enhancements
     'ALTER TABLE stock_movements ADD COLUMN airtable_id TEXT',
     'ALTER TABLE stock_movements ADD COLUMN unit_cost REAL',
@@ -1092,6 +1155,13 @@ export function initSchema() {
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_companies_qb_vendor ON companies(quickbooks_vendor_id) WHERE quickbooks_vendor_id IS NOT NULL',
     // Champ abonnement sur les commandes
     'ALTER TABLE orders ADD COLUMN is_subscription INTEGER DEFAULT 0',
+    // Override manuel du revenu d'une commande (quick fix de la valeur réelle).
+    // NULL = utiliser le revenu calculé depuis les factures (cf. dashboard rentabilité).
+    'ALTER TABLE orders ADD COLUMN revenue_override_cad REAL',
+    // Traçabilité quote-to-cash : commande issue d'une soumission convertie.
+    // NULL = commande créée directement. Permet d'afficher « déjà convertie » côté
+    // soumission et d'éviter une double conversion accidentelle.
+    'ALTER TABLE orders ADD COLUMN soumission_id TEXT REFERENCES soumissions(id)',
     // Airtable webhooks — remplace le polling horaire
     `CREATE TABLE IF NOT EXISTS airtable_webhooks (
       id TEXT PRIMARY KEY,
@@ -1174,6 +1244,19 @@ export function initSchema() {
     )`,
     // Persist collapsed groups state per view
     "ALTER TABLE table_view_pills ADD COLUMN collapsed_groups TEXT DEFAULT '[]'",
+    // Verrouillage de vue (lecture seule) — empêche la dérive des vues
+    // partagées critiques (reporting de conformité). Togglable par admin ;
+    // une vue verrouillée refuse toute édition (filtres/tris/colonnes) et
+    // toute suppression côté serveur tant qu'elle n'est pas déverrouillée.
+    'ALTER TABLE table_view_pills ADD COLUMN locked INTEGER DEFAULT 0',
+    // Largeurs de colonnes persistées PAR VUE (et non globalement à la table).
+    // Avant : column_widths vivait sur table_view_configs → toutes les vues d'une
+    // même table partageaient la mise en page, et passer d'une vue « résumé » à
+    // une vue « détail » écrasait les largeurs. Désormais chaque pill garde les
+    // siennes ; le column_widths de table_view_configs reste comme fallback legacy
+    // (vue « Tous »/forceAllView et migration des vues sans largeurs propres).
+    // JSON { [colId]: pixels }, même format que table_view_configs.column_widths.
+    "ALTER TABLE table_view_pills ADD COLUMN column_widths TEXT DEFAULT '{}'",
     // Employees — add airtable_id for Airtable sync
     'ALTER TABLE employees ADD COLUMN airtable_id TEXT',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_airtable ON employees(airtable_id) WHERE airtable_id IS NOT NULL',
@@ -1196,6 +1279,9 @@ export function initSchema() {
     'ALTER TABLE employees ADD COLUMN banking_info TEXT',
     'ALTER TABLE employees ADD COLUMN issues TEXT',
     'ALTER TABLE employees ADD COLUMN peer_reviews TEXT',
+    // Droit annuel de vacances payées (en jours ouvrables). Sert au calcul du
+    // solde restant et à l'avertissement de dépassement sur la fiche employé.
+    'ALTER TABLE employees ADD COLUMN vacation_days_per_year REAL DEFAULT 0',
     // Clear stale field_map so the next sync re-derives the complete mapping
     "UPDATE airtable_module_config SET field_map=NULL WHERE module='employees'",
     // Seed Airtable module config for paies + paie_items (same base as employees)
@@ -1215,6 +1301,69 @@ export function initSchema() {
       PRIMARY KEY (automation_id, record_table, record_id)
     )`,
     'CREATE INDEX IF NOT EXISTS idx_rule_fires_table_record ON automation_rule_fires(record_table, record_id)',
+    // Backpressure queue for field rules: when a single evaluation matches more
+    // records than CANDIDATE_CAP can dispatch, the overflow is parked here instead
+    // of being silently dropped. A background drain job (automationScheduler) chews
+    // through it batch by batch, even if the trigger field never changes again, and
+    // the queue depth is surfaced in the UI as an observable backpressure gauge.
+    `CREATE TABLE IF NOT EXISTS automation_deferred_candidates (
+      automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+      record_table  TEXT NOT NULL,
+      record_id     TEXT NOT NULL,
+      enqueued_at   TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      PRIMARY KEY (automation_id, record_table, record_id)
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_deferred_candidates_auto ON automation_deferred_candidates(automation_id, enqueued_at)',
+    // Webhook automations (kind='webhook'): compact unguessable token = the inbound
+    // endpoint secret (POST|GET /api/hooks/:token). Partial unique index so only the
+    // tokenized rows are constrained, leaving every other automation's NULL token free.
+    'ALTER TABLE automations ADD COLUMN webhook_token TEXT',
+    'CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_webhook_token ON automations(webhook_token) WHERE webhook_token IS NOT NULL',
+    // Throttle for webhook failure emails : au plus un courriel par webhook par
+    // fenêtre (cf. webhookEngine). Une ligne par automation, last_sent_at mis à jour
+    // quand un courriel d'échec part réellement.
+    `CREATE TABLE IF NOT EXISTS webhook_failure_throttle (
+      automation_id TEXT PRIMARY KEY REFERENCES automations(id) ON DELETE CASCADE,
+      last_sent_at  TEXT
+    )`,
+    // Anti-spam send log for outgoing field-rule actions (email/slack). One row per
+    // SUCCESSFUL send, used to enforce per-recipient and per-automation frequency
+    // caps within a sliding window (cf. fieldRuleEngine.makeRateGuard). Generalises
+    // the webhook_failure_throttle pattern to every client-facing channel, and
+    // doubles as an audit trail of every external message a rule has sent.
+    `CREATE TABLE IF NOT EXISTS automation_send_log (
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+      channel       TEXT NOT NULL,
+      recipient     TEXT NOT NULL,
+      record_table  TEXT,
+      record_id     TEXT,
+      sent_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_send_log_window ON automation_send_log(automation_id, channel, recipient, sent_at)',
+    // Version history for automations : chaque édition sauvegardée capture un
+    // snapshot complet (script/action_config/trigger_config + qui/quand) → audit
+    // + rollback. Une ligne par révision distincte ; les éditions rapprochées du
+    // même auteur sont coalescées (cf. recordAutomationVersion dans la route).
+    `CREATE TABLE IF NOT EXISTS automation_versions (
+      id             TEXT PRIMARY KEY,
+      automation_id  TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+      version        INTEGER NOT NULL,
+      name           TEXT,
+      description    TEXT,
+      trigger_type   TEXT,
+      trigger_config TEXT,
+      action_type    TEXT,
+      action_config  TEXT,
+      script         TEXT,
+      active         INTEGER,
+      kind           TEXT,
+      edited_by      TEXT,
+      edited_by_name TEXT,
+      change_summary TEXT,
+      created_at     TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )`,
+    'CREATE INDEX IF NOT EXISTS idx_automation_versions_auto ON automation_versions(automation_id, version DESC)',
   ]
 
   // Backfill shipped_unit_cost from Airtable's "Coût total au moment de l'envoi" (total cost / qty)
@@ -1235,6 +1384,26 @@ export function initSchema() {
     `).run()
   } catch {}
 
+
+  // ── File d'attente du constat de vente (revenue recognition) ───────────────
+  // Persiste les échecs de reconnaissance de revenu (JE Dr 23900|AR / Cr 40000)
+  // pour les retenter avec backoff jusqu'au succès. Alimentée par le watcher
+  // revenueRecognitionWatcher : une ligne par facture en échec, supprimée dès
+  // que la facture est constatée (ou devient terminale : annulée, abonnement…).
+  // Garantit qu'un revenu non reconnu (QB down au moment de l'expédition) n'est
+  // jamais silencieusement perdu — voir services/revenueRecognitionWatcher.js.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS revenue_recognition_queue (
+      facture_id      TEXT PRIMARY KEY,
+      order_id        TEXT,
+      attempts        INTEGER NOT NULL DEFAULT 0,
+      last_error      TEXT,
+      last_attempt_at TEXT,
+      next_attempt_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_rev_rec_queue_next ON revenue_recognition_queue(next_attempt_at);
+  `)
 
   // ── Detail page field layout (admin-configurable) ──────────────────────────
   db.exec(`
@@ -1271,6 +1440,17 @@ export function initSchema() {
       frozen_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       frozen_by TEXT,
       PRIMARY KEY (erp_table, column_name)
+    );
+
+    -- Garde anti-boucle du write-back ERP→Airtable.
+    -- Quand l'ERP pousse une modif vers Airtable, on mémorise ici les valeurs
+    -- envoyées. Le webhook Airtable qui revient (echo de notre propre écriture)
+    -- est alors reconnu et ignoré par le sync entrant, évitant la boucle avec
+    -- sys_airtable_webhook_router. Les entrées sont consommées/expirées (TTL).
+    CREATE TABLE IF NOT EXISTS airtable_writeback_guard (
+      airtable_id TEXT PRIMARY KEY,
+      fields_json TEXT NOT NULL,
+      written_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
   `)
 
@@ -1310,6 +1490,19 @@ export function initSchema() {
       read INTEGER DEFAULT 0,
       link TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    -- Commentaires + @mentions par enregistrement (fil de discussion lié à une fiche)
+    CREATE TABLE IF NOT EXISTS record_comments (
+      id TEXT PRIMARY KEY,
+      record_type TEXT NOT NULL,
+      record_id TEXT NOT NULL,
+      author_id TEXT REFERENCES users(id),
+      body TEXT NOT NULL,
+      mentions TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
     );
 
     -- Subscription change history
@@ -1427,9 +1620,55 @@ export function initSchema() {
   try { db.exec("ALTER TABLE users ADD COLUMN hubspot_owner_id TEXT") } catch {}
   try { db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_hubspot_owner ON users(hubspot_owner_id) WHERE hubspot_owner_id IS NOT NULL") } catch {}
 
+  // File d'attente des push HubSpot échoués (ERP → HubSpot). Sans cette
+  // persistance, un push fire-and-forget qui échoue (5xx au create, 500
+  // récurrent sur tasks/search, etc.) était avalé dans un console.error : l'ERP
+  // se croyait synchronisé alors qu'il divergeait silencieusement de HubSpot.
+  // Chaque échec est enregistré ici avec un compteur de tentatives et un
+  // next_retry_at (backoff exponentiel) ; un worker périodique les rejoue
+  // jusqu'à succès, puis la ligne est supprimée.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS hubspot_push_failures (
+        task_id TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        first_failed_at TEXT,
+        last_attempt_at TEXT,
+        next_retry_at TEXT
+      )
+    `)
+  } catch {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_hubspot_push_failures_retry ON hubspot_push_failures(next_retry_at)") } catch {}
+
+  // ── File de retry — détection "rachat" après churn ───────────────────────
+  // detectRachatForChurn() est appelée en fire-and-forget à l'ingestion du
+  // webhook Stripe (recordEvent) et lors des rescans/backfills. Avant cette
+  // file, un échec (DB verrouillée, FX indispo, etc.) était avalé dans un
+  // catch {} muet : le webhook répondait 200 et un client réellement réabonné
+  // restait marqué churné, sans jamais être retenté — divergence silencieuse.
+  // Chaque échec est persisté ici avec un compteur de tentatives et un
+  // next_retry_at (backoff exponentiel) ; un worker périodique rejoue les
+  // events échus jusqu'au succès, puis la ligne est supprimée. Même pattern
+  // que hubspot_push_failures. Cf. services/subscriptionEvents.js.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS rachat_detect_failures (
+        event_id TEXT PRIMARY KEY REFERENCES subscription_events(id) ON DELETE CASCADE,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT,
+        first_failed_at TEXT,
+        last_attempt_at TEXT,
+        next_retry_at TEXT
+      )
+    `)
+  } catch {}
+  try { db.exec("CREATE INDEX IF NOT EXISTS idx_rachat_detect_failures_retry ON rachat_detect_failures(next_retry_at)") } catch {}
+
   // Indexes
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_automation_logs_auto ON automation_logs(automation_id, created_at)') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read, created_at)') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_record_comments_record ON record_comments(record_type, record_id, created_at)') } catch {}
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
   }
@@ -1492,6 +1731,13 @@ export function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_achats_qbid ON achats_fournisseurs(quickbooks_id);
   `)
 
+  // Modèle de comptabilisation mémorisé par fournisseur (comme sale_receipts) :
+  // pré-rempli depuis le dernier achat publié du même vendor, prioritaire sur la
+  // config QB globale au moment du push.
+  try { db.exec('ALTER TABLE achats_fournisseurs ADD COLUMN expense_account_id TEXT') } catch {}
+  try { db.exec('ALTER TABLE achats_fournisseurs ADD COLUMN payment_account_id TEXT') } catch {}
+  try { db.exec('ALTER TABLE achats_fournisseurs ADD COLUMN tax_code_id TEXT') } catch {}
+
   const achatsCount = db.prepare('SELECT COUNT(*) AS c FROM achats_fournisseurs').get().c
   const hasDepenses = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='depenses'").get()
   const hasFactFourn = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='factures_fournisseurs'").get()
@@ -1541,6 +1787,14 @@ export function initSchema() {
   try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_installation_en_local TEXT') } catch {}
   try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_remplacement_fr_local TEXT') } catch {}
   try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_remplacement_en_local TEXT') } catch {}
+  // Étape 5 « Priorité d'assemblage » — champs produits finis synchronisés depuis Airtable (one-way Airtable → ERP)
+  try { db.exec('ALTER TABLE products ADD COLUMN assembly_status REAL') } catch {}            // « Status d'assemblage » (%)
+  try { db.exec('ALTER TABLE products ADD COLUMN finished_min_stock INTEGER') } catch {}      // « Seuil min. produits fini »
+  try { db.exec('ALTER TABLE products ADD COLUMN projected_available_qty INTEGER') } catch {} // « Quantité sera disponible »
+  try { db.exec('ALTER TABLE products ADD COLUMN producible_qty INTEGER') } catch {}          // « nombre de produit possible »
+  // Étape 4 « Priorité d'assemblage »
+  try { db.exec('ALTER TABLE products ADD COLUMN supplier_link TEXT') } catch {}              // « Lien fournisseur » (sync Airtable, bouton externe)
+  try { db.exec('ALTER TABLE products ADD COLUMN purchase_snooze_until TEXT') } catch {}      // report étape 4 (ISO UTC Z, nullable)
   // Lien purchases.supplier (texte libre hérité d'Airtable) → companies
   try { db.exec('ALTER TABLE purchases ADD COLUMN supplier_company_id TEXT REFERENCES companies(id)') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_supplier_company ON purchases(supplier_company_id)') } catch {}
@@ -1813,6 +2067,121 @@ export function initSchema() {
   try { db.exec('ALTER TABLE custom_fields ADD COLUMN lookup_target_table TEXT') } catch {}
   try { db.exec('ALTER TABLE custom_fields ADD COLUMN lookup_target_column TEXT') } catch {}
   try { db.exec('ALTER TABLE custom_fields ADD COLUMN result_type TEXT') } catch {}
+  // kind = 'rollup' : agrège une colonne d'une table ENFANT qui référence la
+  //   table source via une FK inverse (ex: projects ← orders.project_id), exposé
+  //   via une sous-requête corrélée dans la VUE <table>_v.
+  //   rollup_target_table  : table enfant (ex: orders)
+  //   rollup_target_fk     : colonne de l'enfant pointant vers source.id (ex: project_id)
+  //   rollup_target_column : colonne à agréger (NULL pour COUNT)
+  //   rollup_agg           : SUM | COUNT | AVG | MIN | MAX
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN rollup_target_table TEXT') } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN rollup_target_fk TEXT') } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN rollup_target_column TEXT') } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN rollup_agg TEXT') } catch {}
+  // view_error : dernier message d'erreur de régénération de la VUE pour ce champ
+  // virtuel (formule/lookup/rollup référençant une colonne supprimée/renommée).
+  // NULL = sain. Renseigné par regenerateView() qui dégrade la colonne en NULL
+  // plutôt que de casser toute la vue, et lu côté client pour afficher #ERROR.
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN view_error TEXT') } catch {}
+
+  // type = 'single_select' : choix unique parmi une liste configurable.
+  // `options` (JSON) porte la config : { choices:[{id,label,color}], default_id, alphabetize }.
+  // La colonne physique cf_* stocke le LABEL choisi (valeur lisible partout :
+  // formules, recherche, exports). Le rendu mappe label→couleur via `options`.
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN options TEXT') } catch {}
+
+  // default_value : valeur par défaut posée à la création d'un record sur les
+  // champs kind='data' (text/number/currency/url). Stockée en TEXT ; pour
+  // number/currency la colonne cf_* (REAL) coerce le texte numérique. Les
+  // single_select utilisent options.default_id, pas cette colonne.
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN default_value TEXT') } catch {}
+
+  // kind = 'link' : champ de LIAISON bidirectionnel à la Airtable. Contrairement
+  // au 'lookup' (qui lit une colonne d'un record déjà lié via une FK existante),
+  // le 'link' matérialise une vraie relation entre deux tables, stockée dans la
+  // table de jonction `custom_field_links`. Créer un champ link engendre
+  // automatiquement le CHAMP INVERSE sur la table cible (les deux champs
+  // partagent `link_group_id`, donc toute modification d'un côté se reflète
+  // instantanément de l'autre — pas de désynchronisation possible).
+  //   link_target_table : table pointée par CE champ
+  //   link_group_id     : identifiant partagé entre le champ et son inverse
+  //   link_role         : 'source' | 'target' — quelle colonne de la jonction
+  //                       porte l'id de CE record (source_id ou target_id)
+  //   link_single       : 1 si ce côté est limité à un seul record lié
+  //                       (one_to_one : 1/1 ; one_to_many : source 0, cible 1 ;
+  //                        many_to_many : 0/0)
+  // Le champ est virtuel (exposé via la VUE <table>_v en tableau JSON d'ids+labels).
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN link_target_table TEXT') } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN link_group_id TEXT') } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN link_role TEXT') } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN link_single INTEGER DEFAULT 0') } catch {}
+
+  // Table de jonction des champs link. Une ligne = une relation entre un record
+  // source et un record cible, rattachée à un `link_group_id` (donc visible par
+  // les DEUX champs appariés). L'orientation source/target est fixée à la
+  // création (le champ créé en premier est la « source »). La contrainte UNIQUE
+  // empêche les doublons ; les index accélèrent la lecture par côté.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS custom_field_links (
+      id TEXT PRIMARY KEY,
+      link_group_id TEXT NOT NULL,
+      source_table TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      target_table TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      UNIQUE(link_group_id, source_id, target_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_cfl_group_source ON custom_field_links(link_group_id, source_id);
+    CREATE INDEX IF NOT EXISTS idx_cfl_group_target ON custom_field_links(link_group_id, target_id);
+  `)
+
+  // Le CHECK historique sur custom_fields.type ne listait que ('text','number'),
+  // ce qui rejetait currency/url (latent, jamais déclenché) et bloque maintenant
+  // single_select. SQLite ne sait pas ALTER une contrainte CHECK → rebuild guardé
+  // et idempotent : ne s'exécute que tant que l'ancien CHECK est présent. La
+  // validation des types se fait désormais dans la route (custom-fields.js).
+  const cfDef = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='custom_fields'").get()
+  if (cfDef && /CHECK\s*\(\s*type\s+IN\s*\(\s*'text'\s*,\s*'number'\s*\)\s*\)/i.test(cfDef.sql)) {
+    const cols = db.pragma('table_info(custom_fields)').map(c => c.name)
+    const colList = cols.join(', ')
+    const rebuild = db.transaction(() => {
+      db.exec('ALTER TABLE custom_fields RENAME TO custom_fields__old')
+      db.exec(`
+        CREATE TABLE custom_fields (
+          id TEXT PRIMARY KEY,
+          erp_table TEXT NOT NULL,
+          name TEXT NOT NULL,
+          column_name TEXT NOT NULL,
+          type TEXT NOT NULL,
+          decimals INTEGER,
+          sort_order INTEGER DEFAULT 0,
+          created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+          deleted_at TEXT,
+          kind TEXT NOT NULL DEFAULT 'data',
+          formula_expr TEXT,
+          lookup_fk TEXT,
+          lookup_target_table TEXT,
+          lookup_target_column TEXT,
+          result_type TEXT,
+          rollup_target_table TEXT,
+          rollup_target_fk TEXT,
+          rollup_target_column TEXT,
+          rollup_agg TEXT,
+          view_error TEXT,
+          options TEXT,
+          default_value TEXT,
+          UNIQUE(erp_table, column_name)
+        )
+      `)
+      db.exec(`INSERT INTO custom_fields (${colList}) SELECT ${colList} FROM custom_fields__old`)
+      db.exec('DROP TABLE custom_fields__old')
+      db.exec('CREATE INDEX IF NOT EXISTS idx_custom_fields_table ON custom_fields(erp_table) WHERE deleted_at IS NULL')
+    })
+    rebuild()
+    console.log('✅ custom_fields: contrainte CHECK(type) élargie (rebuild)')
+  }
 
   // Legacy tickets.slack_notified_hardware column — superseded by automation_rule_fires.
   // Drop it once the field_rule engine has taken over.
@@ -1965,6 +2334,10 @@ export function initSchema() {
   // Toggle admin — autoriser la suppression en lot pour une table (par défaut off)
   try { db.exec('ALTER TABLE table_view_configs ADD COLUMN bulk_delete_enabled INTEGER DEFAULT 0') } catch {}
 
+  // Barre de totaux en pied de DataTable — agrégation par colonne (sum/avg/count/min/max).
+  // JSON { [colId]: 'sum'|'avg'|'count'|'empty'|'min'|'max' }, comme column_widths.
+  try { db.exec("ALTER TABLE table_view_configs ADD COLUMN footer_aggregations TEXT DEFAULT '{}'") } catch {}
+
   // Tasks — champ Type (single select libre, ex. "Problème")
   try { db.exec('ALTER TABLE tasks ADD COLUMN type TEXT') } catch {}
 
@@ -1978,6 +2351,16 @@ export function initSchema() {
 
   // Préférence persistante du mode de feuille de temps par utilisateur
   try { db.exec("ALTER TABLE users ADD COLUMN timesheet_default_mode TEXT DEFAULT 'simple'") } catch {}
+
+  // Préférences UI par utilisateur — items/groupes du menu de gauche masqués.
+  // Liste JSON de clés cachées (blacklist) : item = route `to`, groupe = `group:<nom>`.
+  // Sémantique blacklist => tout nouvel item ajouté au code reste visible par défaut.
+  try { db.exec("ALTER TABLE users ADD COLUMN nav_hidden TEXT DEFAULT '[]'") } catch {}
+
+  // Préférences d'affichage des décimales par colonne numérique. Objet JSON
+  // { "<table>::<field>": <0-5> } : nombre de décimales à afficher dans DataTable
+  // pour la colonne `field` de la table `table`. Absent = rendu brut (legacy).
+  try { db.exec("ALTER TABLE users ADD COLUMN decimal_preferences TEXT DEFAULT '{}'") } catch {}
 
   // Feuilles de temps — un header par (user_id, date) avec mode + champs du mode simple.
   // Les entrées du mode "detailed" sont dans timesheet_entries (child).
@@ -1997,6 +2380,21 @@ export function initSchema() {
   `)
   try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_timesheet_days_user_date ON timesheet_days(user_id, date) WHERE deleted_at IS NULL') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_timesheet_days_date ON timesheet_days(date) WHERE deleted_at IS NULL') } catch {}
+
+  // Workflow d'approbation / verrouillage des feuilles de temps avant la paie.
+  // status : 'draft' (éditable par l'employé) → 'submitted' (verrouillée côté employé, en attente du
+  // gestionnaire) → 'approved' (verrouillée pour tous, signée par un gestionnaire). 'rejected' rouvre
+  // l'édition côté employé avec un motif. Les colonnes submitted/approved/rejected_by + *_at constituent
+  // la piste d'audit conservée jusqu'à la création de la paie.
+  try { db.exec("ALTER TABLE timesheet_days ADD COLUMN status TEXT NOT NULL DEFAULT 'draft'") } catch {}
+  try { db.exec('ALTER TABLE timesheet_days ADD COLUMN submitted_at TEXT') } catch {}
+  try { db.exec('ALTER TABLE timesheet_days ADD COLUMN submitted_by TEXT REFERENCES users(id)') } catch {}
+  try { db.exec('ALTER TABLE timesheet_days ADD COLUMN approved_at TEXT') } catch {}
+  try { db.exec('ALTER TABLE timesheet_days ADD COLUMN approved_by TEXT REFERENCES users(id)') } catch {}
+  try { db.exec('ALTER TABLE timesheet_days ADD COLUMN rejected_at TEXT') } catch {}
+  try { db.exec('ALTER TABLE timesheet_days ADD COLUMN rejected_by TEXT REFERENCES users(id)') } catch {}
+  try { db.exec('ALTER TABLE timesheet_days ADD COLUMN rejection_reason TEXT') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_timesheet_days_status ON timesheet_days(status) WHERE deleted_at IS NULL') } catch {}
 
   // Paies — période de 14 jours. period_start est optionnel en DB : si vide, on calcule à la volée
   // à partir de la paie précédente (period_end + 1 jour) ou via un fallback (period_end - 13j).
@@ -2034,6 +2432,7 @@ export function initSchema() {
       description TEXT,
       active INTEGER DEFAULT 1,
       payable INTEGER DEFAULT 1,
+      rsde_default INTEGER DEFAULT 0,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       deleted_at TEXT
@@ -2042,6 +2441,9 @@ export function initSchema() {
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_activity_codes_name ON activity_codes(name) WHERE deleted_at IS NULL') } catch {}
   // Migration pour devs qui ont créé la table sans la colonne payable
   try { db.exec('ALTER TABLE activity_codes ADD COLUMN payable INTEGER DEFAULT 1') } catch {}
+  // rsde_default = 1 : pré-coche automatiquement la case RSDE des entrées de feuille de
+  // temps qui utilisent ce code (l'employé peut toujours décocher au cas par cas).
+  try { db.exec('ALTER TABLE activity_codes ADD COLUMN rsde_default INTEGER DEFAULT 0') } catch {}
 
   // Visibilité des codes d'activité par utilisateur. Sémantique : un code sans aucune
   // ligne dans cette table est *public* (visible à tous, défaut). Dès qu'un user est
@@ -2245,6 +2647,13 @@ export function initSchema() {
   // pas distinguer "QB échoué à poster, retry possible" de "QB intentionnellement
   // skip" — le bouton Retry afficherait dans les deux cas.
   try { db.exec('ALTER TABLE payments ADD COLUMN qb_skipped INTEGER DEFAULT 0') } catch {}
+
+  // qb_skip_reason : motif énuméré obligatoire quand qb_skipped=1. Sans lui, un
+  // skip légitime (déjà comptabilisé via le payout / déjà saisi à la main dans
+  // QB / encaissement hors-bande) est indistinguable d'un paiement orphelin
+  // jamais arrivé en compta. Valeurs : 'deja_poste_payout', 'saisi_manuellement_qb',
+  // 'hors_bande', 'autre' (cf. VALID_QB_SKIP_REASONS dans routes/payments.js).
+  try { db.exec('ALTER TABLE payments ADD COLUMN qb_skip_reason TEXT') } catch {}
 
   // Compte crédité par l'écriture QB liée — capturé depuis QB au moment de la
   // liaison manuelle (suggestions: Deposit/JE/SR). Permet de tracer si l'argent
@@ -2491,6 +2900,25 @@ export function initSchema() {
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_adresses_company_date ON adresses(company_id, created_at)`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_tickets_created ON tickets(created_at)`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_serial_state_changes_date ON serial_state_changes(changed_at)`) } catch {}
+
+  // Pièces jointes polymorphes — un PDF/photo/doc attaché à n'importe quel
+  // enregistrement (entité = entity_type + entity_id). Remplace l'ancien modèle
+  // spécialisé (qb_attachments restait dédié aux achats fournisseurs / sync QB).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS attachments (
+      id TEXT PRIMARY KEY,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      content_type TEXT,
+      file_size INTEGER,
+      file_path TEXT NOT NULL,
+      uploaded_by TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_attachments_entity ON attachments(entity_type, entity_id, deleted_at)`) } catch {}
 
   console.log('Database schema initialized');
 }

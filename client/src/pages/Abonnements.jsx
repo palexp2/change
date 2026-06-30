@@ -12,11 +12,7 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-
-function fmtCad(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
+import { fmtCad } from '../utils/formatters.js'
 
 function fmtMonth(ym) {
   if (!ym || typeof ym !== 'string' || ym.length < 7) return '—'
@@ -194,6 +190,7 @@ export default function Abonnements() {
           loading={loading}
           searchFields={['company_name', 'rachat', 'amount_cad']}
           onRowClick={setSelected}
+          emptyState={{ icon: RefreshCw, title: 'Aucun abonnement', description: "Aucun abonnement Stripe actif ou passé. Les abonnements se synchronisent automatiquement depuis Stripe." }}
         />
       </div>
 

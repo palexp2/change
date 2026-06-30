@@ -16,11 +16,15 @@ function todayStr() { return localISODate() }
 function shiftDate(dateStr, days) {
   const d = new Date(dateStr + 'T00:00:00')
   d.setDate(d.getDate() + days)
-  return d.toISOString().slice(0, 10)
+  return localISODate(d)
 }
 function weekdayLabel(dateStr) {
   const d = new Date(dateStr + 'T00:00:00')
   return d.toLocaleDateString('fr-CA', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })
+}
+function weekdayShort(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00')
+  return d.toLocaleDateString('fr-CA', { weekday: 'short' })
 }
 function timeToMin(t) {
   if (!t || typeof t !== 'string') return null
@@ -36,11 +40,15 @@ function minToTime(min) {
 
 // ---- Reusable searchable picker for FK (company / activity code) ----
 // Rendered via portal so the popup isn't clipped by its scrolling ancestor (table wrapper).
-function RefPicker({ value, items, labelOf, placeholder, onChange, disabled, autoFocus }) {
+// `onCreate(name)` (optionnel) : appelé quand l'utilisateur veut créer un item à la
+// volée depuis le menu. Doit retourner (Promise) l'id du nouvel item, qui est alors
+// sélectionné automatiquement. `createLabel` personnalise le libellé du bouton.
+function RefPicker({ value, items, labelOf, placeholder, onChange, disabled, autoFocus, onCreate, createLabel }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [highlightIdx, setHighlightIdx] = useState(0)
   const [pos, setPos] = useState({ top: 0, left: 0, width: 0 })
+  const [creating, setCreating] = useState(false)
   const btnRef = useRef(null)
   const popupRef = useRef(null)
   const highlightRef = useRef(null)
@@ -93,6 +101,8 @@ function RefPicker({ value, items, labelOf, placeholder, onChange, disabled, aut
   const q = query.trim().toLowerCase()
   const filtered = (q ? items.filter(it => labelOf(it).toLowerCase().includes(q)) : items).slice(0, 100)
   const selected = items.find(it => it.id === value)
+  // Proposer la création seulement si un nom est saisi et qu'aucun item ne correspond exactement.
+  const canCreate = !!onCreate && q.length > 0 && !items.some(it => labelOf(it).trim().toLowerCase() === q)
 
   // Reset highlight quand la liste filtrée change
   useEffect(() => {
@@ -115,6 +125,20 @@ function RefPicker({ value, items, labelOf, placeholder, onChange, disabled, aut
     if (!it) return
     onChange(it.id)
     closeAndFocusBtn()
+  }
+  const doCreate = async () => {
+    const name = query.trim()
+    if (!name || !onCreate || creating) return
+    setCreating(true)
+    try {
+      const newId = await onCreate(name)
+      if (newId) {
+        onChange(newId)
+        closeAndFocusBtn()
+      }
+    } finally {
+      setCreating(false)
+    }
   }
 
   return (
@@ -172,7 +196,8 @@ function RefPicker({ value, items, labelOf, placeholder, onChange, disabled, aut
                   setHighlightIdx(i => Math.max(0, i - 1))
                 } else if (e.key === 'Enter') {
                   e.preventDefault()
-                  selectAt(highlightIdx)
+                  if (filtered.length === 0 && canCreate) doCreate()
+                  else selectAt(highlightIdx)
                 } else if (e.key === 'Escape') {
                   e.preventDefault()
                   closeAndFocusBtn()
@@ -185,7 +210,7 @@ function RefPicker({ value, items, labelOf, placeholder, onChange, disabled, aut
           </div>
           <div className="max-h-60 overflow-y-auto py-1">
             <button type="button" onClick={() => { onChange(null); closeAndFocusBtn() }} className="w-full text-left px-3 py-1.5 text-sm text-slate-400 hover:bg-slate-50 italic">— aucun —</button>
-            {filtered.length === 0
+            {filtered.length === 0 && !canCreate
               ? <div className="px-3 py-2 text-xs text-slate-500">Aucun résultat</div>
               : filtered.map((it, i) => {
                 const isHighlighted = i === highlightIdx
@@ -204,6 +229,18 @@ function RefPicker({ value, items, labelOf, placeholder, onChange, disabled, aut
                 )
               })
             }
+            {canCreate && (
+              <button
+                type="button"
+                onClick={doCreate}
+                disabled={creating}
+                className="w-full text-left px-3 py-1.5 text-sm text-brand-600 hover:bg-brand-50 border-t border-slate-100 flex items-center gap-1.5 disabled:opacity-50"
+                data-testid="refpicker-create"
+              >
+                <Plus size={13} className="flex-shrink-0" />
+                <span className="truncate">{creating ? 'Création…' : `${createLabel || 'Créer'} « ${query.trim()} »`}</span>
+              </button>
+            )}
           </div>
         </div>,
         document.body
@@ -479,6 +516,21 @@ export default function FeuilleDeTemps() {
     loadHistory()
   }
 
+  // Création d'un code d'activité à la volée depuis le picker de la feuille.
+  // Le nouveau code est public (visible à tous) et non pré-coché RSDE par défaut —
+  // ces réglages se font ensuite sur la page « Codes d'activité ».
+  // Renvoie l'id du code créé pour que le picker le sélectionne aussitôt.
+  async function createActivityCode(name) {
+    try {
+      const created = await api.activityCodes.create({ name })
+      setActivityCodes(cs => [...cs, created].sort((a, b) => (a.name || '').localeCompare(b.name || '', 'fr', { sensitivity: 'base' })))
+      return created.id
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+      return null
+    }
+  }
+
   // Raccourcis clavier de la page : Enter = nouvelle activité, a = aujourd'hui,
   // flèche gauche = jour précédent, flèche droite = jour suivant.
   useEffect(() => {
@@ -636,6 +688,7 @@ export default function FeuilleDeTemps() {
                 onPatchEntry={patchEntry}
                 onPatchDay={patchDay}
                 onDeleteEntry={deleteEntry}
+                onCreateCode={createActivityCode}
                 focusEntryId={focusEntryId}
                 onFocusConsumed={() => setFocusEntryId(null)}
               />
@@ -670,7 +723,16 @@ function SimpleDayForm({ day, date: _date, saving, onPatch }) {
   )
 }
 
-function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPatchEntry, onPatchDay, onDeleteEntry, focusEntryId, onFocusConsumed }) {
+function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPatchEntry, onPatchDay, onDeleteEntry, onCreateCode, focusEntryId, onFocusConsumed }) {
+  // Sélection d'un code : si le code est marqué « pré-coché RSDE », on coche
+  // automatiquement la case RSDE de l'entrée dans le même PATCH. L'employé peut
+  // toujours décocher ensuite — on ne force jamais le décochage.
+  const selectCode = (entry, codeId) => {
+    const code = activityCodes.find(a => a.id === codeId)
+    const patch = { activity_code_id: codeId }
+    if (code?.rsde_default && !entry.rsde) patch.rsde = 1
+    onPatchEntry(entry.id, patch)
+  }
   // Quand le parent demande à focuser une entrée précise, on consomme la
   // demande après mount du picker correspondant.
   useEffect(() => {
@@ -727,7 +789,7 @@ function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPa
                     )}
                   </td>
                   <td className="px-2 py-1.5">
-                    <RefPicker value={e.activity_code_id} items={activityCodes} labelOf={a => a.name || '(sans nom)'} placeholder="Code…" onChange={v => onPatchEntry(e.id, { activity_code_id: v })} disabled={saving[`entry-${e.id}-activity_code_id`]} autoFocus={focusEntryId === e.id} />
+                    <RefPicker value={e.activity_code_id} items={activityCodes} labelOf={a => a.name || '(sans nom)'} placeholder="Code…" onChange={v => selectCode(e, v)} onCreate={onCreateCode} createLabel="Créer le code" disabled={saving[`entry-${e.id}-activity_code_id`]} autoFocus={focusEntryId === e.id} />
                   </td>
                   <td className="px-2 py-1.5">
                     <EndTimeInput
@@ -739,7 +801,7 @@ function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPa
                   </td>
                   <td className="px-2 py-1.5"><TextCell value={e.description} onCommit={v => onPatchEntry(e.id, { description: v })} disabled={saving[`entry-${e.id}-description`]} placeholder="Tâche / activité" /></td>
                   <td className="px-2 py-1.5 text-right text-slate-500 tabular-nums">{formatMinutes(e.duration_minutes || 0)}</td>
-                  <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={!!e.rsde} onChange={ev => onPatchEntry(e.id, { rsde: ev.target.checked ? 1 : 0 })} className="rounded" /></td>
+                  <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={!!e.rsde} onChange={ev => onPatchEntry(e.id, { rsde: ev.target.checked ? 1 : 0 })} className="rounded" data-testid={`entry-rsde-${e.id}`} /></td>
                   <td className="px-1"><button onClick={() => onDeleteEntry(e.id)} className="p-1 text-slate-300 hover:text-red-500" title="Supprimer"><Trash2 size={14} /></button></td>
                 </tr>
               )
@@ -940,6 +1002,7 @@ function DayRow({ day, isActive, onJump }) {
       data-active={isActive ? 'true' : 'false'}
     >
       <td className={`pl-2.5 pr-2 py-1.5 tabular-nums ${isActive ? 'text-brand-700 font-semibold' : 'text-brand-600 font-medium'}`}>
+        <span className="capitalize text-slate-500 font-normal mr-1.5">{weekdayShort(date)}</span>
         {date}
         <span className="ml-1.5 text-[10px] text-slate-400 font-normal">{modeBadge}</span>
       </td>

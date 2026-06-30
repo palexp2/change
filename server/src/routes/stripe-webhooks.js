@@ -13,6 +13,7 @@ import {
 } from '../services/subscriptionItemsSnapshot.js'
 import { computeMonthlyNet } from '../services/subscriptionMonthly.js'
 import { recomputeFactureBalance } from '../services/factureBalance.js'
+import { logSync } from '../services/syncLog.js'
 
 const router = Router()
 
@@ -73,6 +74,13 @@ async function handleSubscriptionWebhook(event) {
         })
       } catch (e) {
         console.warn(`[stripe-webhook] retrieve sub ${sub.id} failed, falling back to payload:`, e.message)
+        // Trace l'écart potentiel : sans le retrieve expandé, computeMonthlyNet
+        // retombe sur "items × qty − rabais" et le MRR/montant peut diverger d'un
+        // montant taxé, sans aucune trace ailleurs. On le rend auditable dans sync_log.
+        logSync('stripe-webhook', 'subscription', {
+          status: 'warn',
+          error: `retrieve ${sub.id} failed (${event.type}), fallback to non-expanded payload: ${e.message}`,
+        })
       }
     }
   }
@@ -281,11 +289,19 @@ async function upsertFactureFromStripeInvoice(invoice) {
   }
 
   if (!pdfAlreadyDownloaded && invoice.invoice_pdf) {
+    const pdfT0 = Date.now()
     try {
       const relPath = await downloadStripeInvoicePdf(invoice, factureId)
       if (relPath) db.prepare('UPDATE factures SET airtable_pdf_path=? WHERE id=?').run(relPath, factureId)
     } catch (e) {
       console.error(`❌ Stripe PDF dl ${factureId}:`, e.message)
+      // Opération durable Stripe — tracée pour qu'un PDF jamais récupéré soit
+      // visible dans sync_log plutôt qu'enseveli dans les logs PM2 (CLAUDE.md).
+      logSync('stripe-invoice-pdf', 'webhook', {
+        status: 'error',
+        error: `facture ${factureId} (invoice ${invoice.id}): ${e.message}`,
+        durationMs: Date.now() - pdfT0,
+      })
     }
   }
 
@@ -300,36 +316,6 @@ async function upsertFactureFromStripeInvoice(invoice) {
 // (Plus de fonction recordStripeInvoicePayment ici : avec le pattern simple, le
 // revenu est constaté au payout via pushDepositFromPayout. Le webhook invoice.paid
 // se contente d'upsert la facture dans factures via upsertFactureFromStripeInvoice.)
-
-// Send a recovery email to the customer with a link back to the onboarding
-// wizard. Used after checkout.session.completed so they can complete the form
-// even if they close the tab.
-async function sendOnboardingRecoveryEmail(session) {
-  const recipient = session.customer_details?.email || null
-  if (!recipient) return
-  const baseUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
-  const wizardUrl = `${baseUrl}/erp/customer/post-payment?session_id=${session.id}`
-  const customerName = session.customer_details?.name || ''
-  const greeting = customerName ? `Bonjour ${customerName.split(' ')[0]},` : 'Bonjour,'
-  const html = `<!DOCTYPE html>
-<html><body style="font-family:Arial,sans-serif;color:#1f2937;line-height:1.5;">
-<p>${greeting}</p>
-<p>Merci pour votre achat chez Orisha. Pour finaliser votre installation, nous avons besoin de quelques informations techniques (adresse de la ferme, configuration du réseau, dimensions des serres, etc.).</p>
-<p><a href="${wizardUrl}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px;font-weight:600;">Compléter le formulaire</a></p>
-<p>Vous pouvez quitter le formulaire et y revenir avec ce même lien — vos réponses sont sauvegardées automatiquement.</p>
-<p>Merci,<br/>L'équipe Orisha</p>
-</body></html>`
-  // Try sending via the first connected Gmail account (system-level)
-  const { sendEmail } = await import('../services/gmail.js')
-  const sysAccount = db.prepare(
-    "SELECT account_email FROM connector_oauth WHERE connector='google' AND refresh_token IS NOT NULL ORDER BY updated_at DESC LIMIT 1"
-  ).get()
-  if (!sysAccount?.account_email) {
-    console.log('No Gmail account available — skipping recovery email')
-    return
-  }
-  await sendEmail(recipient, "Finalisation de votre installation Orisha", html, { accountEmail: sysAccount.account_email })
-}
 
 function findCompanyByStripeCustomerId(stripeCustomerId) {
   if (!stripeCustomerId) return null
@@ -431,16 +417,25 @@ async function handleChargeRefunded({ req: _req, res, event, secretKey: _secretK
         paymentId = randomUUID()
         const refundAmount = (refund.amount || 0) / 100
         const receivedAt = refund.created ? new Date(refund.created * 1000).toISOString() : new Date().toISOString()
-        db.prepare(`
-          INSERT INTO payments (
-            id, facture_id, direction, method, received_at, amount, currency,
-            stripe_refund_id, stripe_charge_id, notes
-          ) VALUES (?, ?, 'out', 'stripe', ?, ?, ?, ?, ?, ?)
-        `).run(
-          paymentId, origFacture.id, receivedAt, refundAmount, currency,
-          refund.id, charge.id,
-          `Remboursement Stripe ${refund.id} (charge ${charge.id})`
-        )
+        // Atomique : l'INSERT de la ligne payments (refund) et la réconciliation du
+        // solde de la facture (balance_due / status) sont une seule unité comptable.
+        // Sans transaction, un crash entre les deux laisserait le refund enregistré
+        // mais le solde de la facture faux jusqu'au prochain sync — incohérence
+        // visible en UI. db.transaction() garantit le tout-ou-rien (rollback complet
+        // si l'une des deux écritures échoue). Chemin distinct de la saisie manuelle.
+        db.transaction(() => {
+          db.prepare(`
+            INSERT INTO payments (
+              id, facture_id, direction, method, received_at, amount, currency,
+              stripe_refund_id, stripe_charge_id, notes
+            ) VALUES (?, ?, 'out', 'stripe', ?, ?, ?, ?, ?, ?)
+          `).run(
+            paymentId, origFacture.id, receivedAt, refundAmount, currency,
+            refund.id, charge.id,
+            `Remboursement Stripe ${refund.id} (charge ${charge.id})`
+          )
+          recomputeFactureBalance(origFacture.id)
+        })()
         createdCount++
       } else if (existing.qb_payment_id || existing.qb_journal_entry_id) {
         skippedCount++
@@ -527,32 +522,90 @@ async function handleWebhook(req, res) {
 
   // checkout.session.completed — a customer paid via the Checkout Session
   // generated from a pending_invoice. Mark pending as paid and link the new
-  // Stripe invoice (created via Checkout's invoice_creation). Then send the
-  // customer a recovery email with the wizard link, so they can come back
-  // even if they close the tab.
+  // Stripe invoice (created via Checkout's invoice_creation).
   if (event.type === 'checkout.session.completed') {
     const session = event.data.object
     const pendingId = session.metadata?.erp_pending_invoice_id || null
     const stripeInvoiceId = typeof session.invoice === 'string' ? session.invoice : session.invoice?.id || null
-    if (pendingId) {
+
+    // No pending_invoice attached → nothing to reconcile, just log success.
+    if (!pendingId) {
+      logSystemRun('sys_stripe_invoice_paid', {
+        status: 'success',
+        result: `checkout.session.completed (sans pending_invoice) → invoice=${stripeInvoiceId}`,
+        duration_ms: Date.now() - started,
+        triggerData: { stripe_event: event.type, session_id: session.id, pending_invoice_id: null, stripe_invoice_id: stripeInvoiceId },
+      })
+      return res.json({ received: true, pending_invoice_id: null, stripe_invoice_id: stripeInvoiceId })
+    }
+
+    // CRITICAL: the customer has paid. If we fail to mark the pending_invoice
+    // as paid, real money was collected but the ERP stays out of sync. We retry
+    // the write a few times (covers transient SQLITE_BUSY locks); on a true
+    // write failure we trace it loudly via system_runs + sync_log AND return a
+    // non-2xx so Stripe re-delivers the event later (its built-in retry).
+    let writeErr = null
+    let updated = 0
+    for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        db.prepare(`
+        const info = db.prepare(`
           UPDATE pending_invoices
           SET status='paid', paid_invoice_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
           WHERE id=? AND status != 'paid'
         `).run(stripeInvoiceId, pendingId)
-      } catch (e) { console.error('pending paid update error:', e.message) }
+        updated = info.changes
+        writeErr = null
+        break // write returned without throwing → stop retrying
+      } catch (e) {
+        writeErr = e
+        console.error(`pending paid update error (tentative ${attempt}/3):`, e.message)
+      }
     }
 
-    // Fire-and-forget recovery email (don't fail the webhook if Gmail is down)
-    sendOnboardingRecoveryEmail(session).catch(e => console.error('recovery email error:', e.message))
+    if (writeErr) {
+      const msg = `Échec écriture pending_invoice ${pendingId} → payée (paiement Stripe ENCAISSÉ, ERP non synchronisé): ${writeErr.message}`
+      console.error('[stripe-webhook] ' + msg)
+      logSystemRun('sys_stripe_invoice_paid', {
+        status: 'error',
+        error: msg,
+        duration_ms: Date.now() - started,
+        triggerData: { stripe_event: event.type, session_id: session.id, pending_invoice_id: pendingId, stripe_invoice_id: stripeInvoiceId },
+      })
+      logSync('stripe', 'webhook', { status: 'error', error: msg, durationMs: Date.now() - started })
+      // 500 → Stripe re-delivers the event so the write can be retried later.
+      return res.status(500).json({ error: 'pending_invoice update failed', pending_invoice_id: pendingId })
+    }
 
+    // Write succeeded. changes=0 means either an idempotent re-delivery (row
+    // already 'paid') or an unknown id — the latter is a data anomaly worth
+    // tracing as an error, but a Stripe re-delivery won't fix it, so we still
+    // return 200.
+    if (updated === 0) {
+      const row = db.prepare("SELECT status FROM pending_invoices WHERE id=?").get(pendingId)
+      if (!row) {
+        const msg = `pending_invoice ${pendingId} introuvable au checkout.session.completed (invoice=${stripeInvoiceId}) — rien marqué payé`
+        console.error('[stripe-webhook] ' + msg)
+        logSystemRun('sys_stripe_invoice_paid', {
+          status: 'error',
+          error: msg,
+          duration_ms: Date.now() - started,
+          triggerData: { stripe_event: event.type, session_id: session.id, pending_invoice_id: pendingId, stripe_invoice_id: stripeInvoiceId },
+        })
+        logSync('stripe', 'webhook', { status: 'error', error: msg, durationMs: Date.now() - started })
+        return res.json({ received: true, pending_invoice_id: pendingId, stripe_invoice_id: stripeInvoiceId, warning: 'pending_invoice introuvable' })
+      }
+    }
+
+    const result = updated === 0
+      ? `checkout.session.completed → pending=${pendingId} déjà payée (idempotent) → invoice=${stripeInvoiceId}`
+      : `checkout.session.completed → pending=${pendingId} marquée payée → invoice=${stripeInvoiceId}`
     logSystemRun('sys_stripe_invoice_paid', {
       status: 'success',
-      result: `checkout.session.completed → pending=${pendingId} → invoice=${stripeInvoiceId}`,
+      result,
       duration_ms: Date.now() - started,
-      triggerData: { stripe_event: event.type, session_id: session.id, pending_invoice_id: pendingId, stripe_invoice_id: stripeInvoiceId },
+      triggerData: { stripe_event: event.type, session_id: session.id, pending_invoice_id: pendingId, stripe_invoice_id: stripeInvoiceId, updated },
     })
+    logSync('stripe', 'webhook', { status: 'success', modified: updated, durationMs: Date.now() - started })
     return res.json({ received: true, pending_invoice_id: pendingId, stripe_invoice_id: stripeInvoiceId })
   }
 
@@ -611,8 +664,13 @@ async function handleWebhook(req, res) {
     if (existing) {
       // stripe_invoice_items.facture_id n'a pas d'ON DELETE CASCADE — nettoyer
       // manuellement avant le DELETE factures sinon FK constraint failed.
-      db.prepare('DELETE FROM stripe_invoice_items WHERE facture_id=?').run(existing.id)
-      db.prepare('DELETE FROM factures WHERE id=?').run(existing.id)
+      // Les deux DELETE doivent être atomiques : si le DELETE factures échoue
+      // (lock, contrainte), un rollback évite de perdre les line items tout en
+      // gardant la facture orpheline (incohérence comptable permanente).
+      db.transaction(() => {
+        db.prepare('DELETE FROM stripe_invoice_items WHERE facture_id=?').run(existing.id)
+        db.prepare('DELETE FROM factures WHERE id=?').run(existing.id)
+      })()
     }
     logSystemRun('sys_stripe_invoice_paid', {
       status: 'success',
@@ -651,6 +709,13 @@ async function handleWebhook(req, res) {
         }
       } catch (e) {
         console.error(`❌ upsertFromInvoiceLines ${invoice.id}:`, e.message)
+        // Line items incomplets = panel "Mouvements d'abonnements" tronqué.
+        // Tracé dans sync_log (CLAUDE.md) au lieu d'un simple console.error.
+        logSync('stripe-invoice-items', 'webhook', {
+          status: 'error',
+          error: `facture ${factureInfo.id} (invoice ${invoice.id}): ${e.message}`,
+          durationMs: Date.now() - started,
+        })
       }
     }
 

@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { Plus, X, Save, Trash2 } from 'lucide-react'
 import { api } from '../lib/api.js'
 import LinkedRecordField from './LinkedRecordField.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
+import { SaveStatus, useSaveStatus } from './SaveStatus.jsx'
 
 const STATUSES = ['À faire', 'En cours', 'Terminé', 'Annulé']
 const PRIORITIES = ['Basse', 'Normal', 'Haute', 'Urgente']
@@ -93,8 +94,27 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
+  // Édition d'une tâche existante → autosave (règle « autosave partout » du
+  // CLAUDE.md : pas de bouton « Enregistrer » sur un record qui a déjà un id).
+  // Création (`initial.id` absent) → exception légitime, bouton manuel conservé.
+  const isEdit = Boolean(initial.id)
+  const { status: saveStatus, save } = useSaveStatus()
+
+  // Miroir du form pour que les autosaves différés (blur) lisent toujours la
+  // dernière valeur sans dépendre du timing des setState.
+  const formRef = useRef(form)
+  useEffect(() => { formRef.current = form }, [form])
+
+  const autosave = useCallback((patch) => {
+    const next = { ...formRef.current, ...patch }
+    if (!next.title.trim()) { setError('Le titre est requis'); return }
+    setError('')
+    save(() => onSave(next))
+  }, [save, onSave])
+
   async function handleSubmit(e) {
     e.preventDefault()
+    if (isEdit) return // édition = autosave, pas de submit global (ni via Enter)
     if (!form.title.trim()) return setError('Le titre est requis')
     setError('')
     setSaving(true)
@@ -108,35 +128,47 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
     }
   }
 
+  // Champs texte : update live au change, autosave au blur (mode édition).
   const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }))
-  const setKey = (k) => (v) => setForm(p => ({ ...p, [k]: v }))
+  const fBlur = (k) => (e) => { if (isEdit) autosave({ [k]: e.target.value }) }
+  // Selects / date : update + autosave immédiat au change.
+  const fNow = (k) => (e) => {
+    const v = e.target.value
+    setForm(p => ({ ...p, [k]: v }))
+    if (isEdit) autosave({ [k]: v })
+  }
+  // Champs structurés (LinkedRecordField, KeywordPicker) : reçoivent la valeur.
+  const setKey = (k) => (v) => {
+    setForm(p => ({ ...p, [k]: v }))
+    if (isEdit) autosave({ [k]: v })
+  }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
         <label className="label">Titre *</label>
-        <input value={form.title} onChange={f('title')} className="input" placeholder="Titre de la tâche" autoFocus />
+        <input value={form.title} onChange={f('title')} onBlur={fBlur('title')} className="input" placeholder="Titre de la tâche" autoFocus />
       </div>
       <div>
         <label className="label">Description</label>
-        <textarea value={form.description} onChange={f('description')} className="input" rows={2} placeholder="Optionnel" />
+        <textarea value={form.description} onChange={f('description')} onBlur={fBlur('description')} className="input" rows={2} placeholder="Optionnel" />
       </div>
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="label">Statut</label>
-          <select value={form.status} onChange={f('status')} className="select">
+          <select value={form.status} onChange={fNow('status')} className="select">
             {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
         <div>
           <label className="label">Priorité</label>
-          <select value={form.priority} onChange={f('priority')} className="select">
+          <select value={form.priority} onChange={fNow('priority')} className="select">
             {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
         <div>
           <label className="label">Type</label>
-          <select value={form.type || ''} onChange={f('type')} className="select">
+          <select value={form.type || ''} onChange={fNow('type')} className="select">
             <option value="">—</option>
             {TYPES.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
@@ -144,7 +176,7 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
       </div>
       <div>
         <label className="label">Date d'échéance</label>
-        <input type="date" value={form.due_date || ''} onChange={f('due_date')} className="input" />
+        <input type="date" value={form.due_date || ''} onChange={fNow('due_date')} className="input" />
       </div>
       <div className="grid grid-cols-2 gap-4">
         <div>
@@ -198,12 +230,21 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
       <KeywordPicker value={form.keywords} onChange={(kw) => setForm(p => ({ ...p, keywords: kw }))} />
       <div>
         <label className="label">Notes</label>
-        <textarea value={form.notes || ''} onChange={f('notes')} className="input" rows={2} />
+        <textarea value={form.notes || ''} onChange={f('notes')} onBlur={fBlur('notes')} className="input" rows={2} />
       </div>
       {error && <p className="text-sm text-red-600">{error}</p>}
-      <div className="flex justify-end gap-3 pt-2">
-        <button type="button" onClick={onClose} className="btn-secondary"><X size={14} /> Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary"><Save size={14} /> {saving ? 'Enregistrement...' : 'Enregistrer'}</button>
+      <div className="flex justify-end items-center gap-3 pt-2">
+        {isEdit ? (
+          <>
+            <SaveStatus status={saveStatus} className="mr-auto" />
+            <button type="button" onClick={onClose} className="btn-secondary">Fermer</button>
+          </>
+        ) : (
+          <>
+            <button type="button" onClick={onClose} className="btn-secondary"><X size={14} /> Annuler</button>
+            <button type="submit" disabled={saving} className="btn-primary"><Save size={14} /> {saving ? 'Enregistrement...' : 'Enregistrer'}</button>
+          </>
+        )}
       </div>
     </form>
   )

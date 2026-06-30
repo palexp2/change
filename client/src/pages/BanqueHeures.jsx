@@ -1,7 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Wallet, Plus, Trash2, ChevronDown, ChevronRight } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Link } from 'react-router-dom'
+import { Wallet, Plus, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
@@ -22,7 +25,6 @@ export default function BanqueHeures() {
   const isHR = ['admin', 'rh'].includes(user?.role)
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
-  const [expanded, setExpanded] = useState({}) // employeeId → boolean
   const [details, setDetails] = useState({}) // employeeId → { entries, balance_hours }
   const [addFor, setAddFor] = useState(null) // employeeId being added
   const confirm = useConfirm()
@@ -40,107 +42,119 @@ export default function BanqueHeures() {
   // Aggregated balances — recharger sur tout changement d'entrée pour mettre à jour les soldes.
   useRealtimeChannel('hour_bank_entry:list', () => { load() })
 
-  async function toggleExpand(employeeId) {
-    const next = !expanded[employeeId]
-    setExpanded(s => ({ ...s, [employeeId]: next }))
-    if (next && !details[employeeId]) {
-      const d = await api.hourBank.forEmployee(employeeId)
-      setDetails(s => ({ ...s, [employeeId]: d }))
-    }
-  }
+  // Charge l'historique d'un employé à la demande (au dépliage de sa ligne).
+  const loadEmployee = useCallback(async (employeeId) => {
+    if (details[employeeId]) return
+    const d = await api.hourBank.forEmployee(employeeId)
+    setDetails(s => ({ ...s, [employeeId]: d }))
+  }, [details])
 
-  async function refreshEmployee(employeeId) {
+  const refreshEmployee = useCallback(async (employeeId) => {
     const d = await api.hourBank.forEmployee(employeeId)
     setDetails(s => ({ ...s, [employeeId]: d }))
     load() // update aggregated balance too
-  }
+  }, [load])
 
-  async function handleDelete(employeeId, entryId) {
+  const handleDelete = useCallback(async (employeeId, entryId) => {
     if (!(await confirm('Supprimer cet ajustement ?'))) return
     await api.hourBank.deleteEntry(entryId)
     refreshEmployee(employeeId)
-  }
+  }, [confirm, refreshEmployee])
 
-  async function handlePatch(employeeId, entryId, patch) {
+  const handlePatch = useCallback(async (employeeId, entryId, patch) => {
     await api.hourBank.updateEntry(entryId, patch)
     refreshEmployee(employeeId)
-  }
+  }, [refreshEmployee])
 
-  async function handleAdd(employeeId, form) {
+  const handleAdd = useCallback(async (employeeId, form) => {
     await api.hourBank.create({ ...form, employee_id: employeeId })
     setAddFor(null)
     refreshEmployee(employeeId)
-  }
+  }, [refreshEmployee])
+
+  // Ligne aplatie pour DataTable : nom complet + champs agrégés.
+  const data = useMemo(() => rows.map(r => ({
+    ...r,
+    employee_name: [r.first_name, r.last_name].filter(Boolean).join(' ') || '(sans nom)',
+  })), [rows])
+
+  const columns = useMemo(() => {
+    const renders = {
+      employee_name: row => {
+        const inner = (
+          <>
+            {row.employee_name}
+            {!row.active && <span className="ml-2 text-xs text-slate-400">(inactif)</span>}
+          </>
+        )
+        // FK → fiche employé (route hrOnly : lien seulement pour admin/rh).
+        return isHR
+          ? <Link to={`/employees/${row.employee_id}`} onClick={e => e.stopPropagation()} className="font-medium text-brand-600 hover:underline">{inner}</Link>
+          : <span className="font-medium text-slate-900">{inner}</span>
+      },
+      matricule: row => <span className="font-mono text-slate-500">{row.matricule || '—'}</span>,
+      entry_count: row => <span className="text-slate-500 tabular-nums">{row.entry_count}</span>,
+      balance_hours: row => (
+        <span className={`tabular-nums font-semibold ${row.balance_hours > 0 ? 'text-emerald-600' : row.balance_hours < 0 ? 'text-red-600' : 'text-slate-400'}`}>
+          {fmtHours(row.balance_hours)}
+        </span>
+      ),
+      vacation_remaining: row => {
+        const alw = Number(row.vacation_allowance) || 0
+        const rem = Number(row.vacation_remaining) || 0
+        // Sans droit annuel configuré, le solde n'a pas de sens → tiret.
+        if (alw <= 0 && rem === 0) return <span className="text-slate-300">—</span>
+        return (
+          <span className={`tabular-nums font-semibold ${rem < 0 ? 'text-red-600' : rem === 0 ? 'text-slate-400' : 'text-emerald-600'}`} title={`${row.vacation_used_days || 0} j pris sur ${alw} j`}>
+            {rem} j{rem < 0 ? ' ⚠' : ''}
+          </span>
+        )
+      },
+      last_entry_date: row => <span className="text-slate-500">{row.last_entry_date ? fmtDate(row.last_entry_date) : '—'}</span>,
+    }
+    return TABLE_COLUMN_META.hour_bank.map(meta => ({ ...meta, render: renders[meta.id] }))
+  }, [isHR])
+
+  const renderExpanded = useCallback((row) => (
+    <div className="px-4 py-3">
+      <EntryList
+        employeeId={row.employee_id}
+        details={details[row.employee_id]}
+        isAdding={addFor === row.employee_id}
+        onStartAdd={() => setAddFor(row.employee_id)}
+        onCancelAdd={() => setAddFor(null)}
+        onAdd={handleAdd}
+        onPatch={handlePatch}
+        onDelete={handleDelete}
+        canEdit={isHR}
+      />
+    </div>
+  ), [details, addFor, handleAdd, handlePatch, handleDelete, isHR])
+
+  const onToggleExpand = useCallback((row, willExpand) => {
+    if (willExpand) loadEmployee(row.employee_id)
+  }, [loadEmployee])
 
   return (
     <Layout>
-      <div className="p-6 max-w-5xl mx-auto">
+      <div className="p-6">
         <div className="flex items-center gap-3 mb-6">
           <Wallet size={20} className="text-slate-400" />
           <h1 className="text-2xl font-bold text-slate-900">Banque d'heures</h1>
           <span className="text-sm text-slate-400">— excédent / déficit par employé</span>
         </div>
 
-        <div className="card overflow-hidden">
-          {loading ? (
-            <div className="p-6 text-sm text-slate-400">Chargement…</div>
-          ) : rows.length === 0 ? (
-            <div className="p-6 text-sm text-slate-400 italic">Aucun employé.</div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-left text-xs text-slate-400 bg-slate-50 border-b border-slate-100">
-                  <th className="px-4 py-2 w-8"></th>
-                  <th className="px-4 py-2">Employé</th>
-                  <th className="px-4 py-2 w-24">Matricule</th>
-                  <th className="px-4 py-2 w-20 text-center">Ajust.</th>
-                  <th className="px-4 py-2 w-32 text-right">Solde</th>
-                  <th className="px-4 py-2 w-32">Dernier ajust.</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map(r => {
-                  const isOpen = !!expanded[r.employee_id]
-                  const d = details[r.employee_id]
-                  return (
-                    <>
-                      <tr key={r.employee_id} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer" onClick={() => toggleExpand(r.employee_id)}>
-                        <td className="px-4 py-2">{isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</td>
-                        <td className="px-4 py-2 font-medium text-slate-900">
-                          {[r.first_name, r.last_name].filter(Boolean).join(' ') || '(sans nom)'}
-                          {!r.active && <span className="ml-2 text-xs text-slate-400">(inactif)</span>}
-                        </td>
-                        <td className="px-4 py-2 text-slate-500 font-mono">{r.matricule || '—'}</td>
-                        <td className="px-4 py-2 text-center text-slate-500">{r.entry_count}</td>
-                        <td className={`px-4 py-2 text-right tabular-nums font-semibold ${r.balance_hours > 0 ? 'text-emerald-600' : r.balance_hours < 0 ? 'text-red-600' : 'text-slate-400'}`}>
-                          {fmtHours(r.balance_hours)}
-                        </td>
-                        <td className="px-4 py-2 text-slate-500">{r.last_entry_date ? fmtDate(r.last_entry_date) : '—'}</td>
-                      </tr>
-                      {isOpen && (
-                        <tr className="bg-slate-50/40">
-                          <td colSpan={6} className="px-4 py-3">
-                            <EntryList
-                              employeeId={r.employee_id}
-                              details={d}
-                              isAdding={addFor === r.employee_id}
-                              onStartAdd={() => setAddFor(r.employee_id)}
-                              onCancelAdd={() => setAddFor(null)}
-                              onAdd={handleAdd}
-                              onPatch={handlePatch}
-                              onDelete={handleDelete}
-                              canEdit={isHR}
-                            />
-                          </td>
-                        </tr>
-                      )}
-                    </>
-                  )
-                })}
-              </tbody>
-            </table>
-          )}
-        </div>
+        <DataTable
+          table="hour_bank"
+          columns={columns}
+          data={data}
+          loading={loading}
+          rowKey="employee_id"
+          renderExpanded={renderExpanded}
+          onToggleExpand={onToggleExpand}
+          searchFields={['employee_name', 'matricule']}
+          emptyState={{ icon: Wallet, title: 'Aucun employé', description: "Aucun solde d'heures à afficher." }}
+        />
       </div>
     </Layout>
   )

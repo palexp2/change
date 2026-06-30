@@ -31,6 +31,61 @@ export function formatMinutes(minutes) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`
 }
 
+// ── Durées en secondes (type de champ personnalisé « Duration ») ─────────────
+// Miroir de server/src/services/duration.js. Les champs custom de type
+// 'duration' stockent des SECONDES pour permettre un affichage hh:mm:ss.
+export const DURATION_FORMATS = ['h:mm', 'h:mm:ss']
+export function normalizeDurationFormat(fmt) {
+  return DURATION_FORMATS.includes(fmt) ? fmt : 'h:mm'
+}
+
+// Parse une saisie de durée en SECONDES (voir le serveur pour les formats).
+export function parseDurationToSeconds(input) {
+  if (input == null || input === '') return 0
+  if (typeof input === 'number' && Number.isFinite(input)) return Math.max(0, Math.round(input))
+  const raw = String(input).trim().toLowerCase()
+  if (!raw) return 0
+  let m = /^(\d+):(\d{1,2}):(\d{1,2})$/.exec(raw)
+  if (m) {
+    const min = parseInt(m[2], 10), sec = parseInt(m[3], 10)
+    if (min >= 60 || sec >= 60) return null
+    return parseInt(m[1], 10) * 3600 + min * 60 + sec
+  }
+  m = /^(\d+):(\d{1,2})$/.exec(raw)
+  if (m) {
+    const min = parseInt(m[2], 10)
+    if (min >= 60) return null
+    return parseInt(m[1], 10) * 3600 + min * 60
+  }
+  m = /^(\d+)h(\d{0,2})$/.exec(raw)
+  if (m) {
+    const min = m[2] ? parseInt(m[2], 10) : 0
+    if (min >= 60) return null
+    return parseInt(m[1], 10) * 3600 + min * 60
+  }
+  m = /^(\d+)m$/.exec(raw)
+  if (m) return parseInt(m[1], 10) * 60
+  m = /^(\d+)s$/.exec(raw)
+  if (m) return parseInt(m[1], 10)
+  if (/^\d+\.\d+$/.test(raw)) return Math.round(parseFloat(raw) * 3600)
+  if (/^\d+$/.test(raw)) return parseInt(raw, 10) * 60
+  return null
+}
+
+// Formate un nombre de secondes selon le format ('h:mm' ou 'h:mm:ss').
+export function formatDurationSeconds(totalSeconds, format = 'h:mm') {
+  const fmt = normalizeDurationFormat(format)
+  if (totalSeconds == null || !Number.isFinite(Number(totalSeconds))) {
+    return fmt === 'h:mm:ss' ? '0:00:00' : '0:00'
+  }
+  const total = Math.max(0, Math.round(Number(totalSeconds)))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  if (fmt === 'h:mm:ss') return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  return `${h}:${String(m).padStart(2, '0')}`
+}
+
 // Cumulate entries to compute an "end time" from 00:00. Returns H:MM strings.
 export function cumulativeEndTimes(entries) {
   let acc = 0

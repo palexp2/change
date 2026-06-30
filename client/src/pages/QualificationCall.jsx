@@ -261,6 +261,32 @@ function CallFrame({ company, callRecord, editableFarm, onBack }) {
               }, '*')
             }
           })
+      } else if (msg.type === 'send-system-builder-email' && typeof msg.id === 'number' && msg.body) {
+        // L'onglet System builder demande l'envoi de l'email (Postmark, info@orisha.io)
+        // contenant le lien Fillout. Side effect confirmé dans l'iframe avant d'arriver ici.
+        api.qualificationCalls.sendSystemBuilderEmail(callRecord.id, msg.body)
+          .then(result => {
+            const iframe = iframeRef.current
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                target: 'qualification-call',
+                type: 'send-system-builder-email-result',
+                id: msg.id,
+                result,
+              }, '*')
+            }
+          })
+          .catch(err => {
+            const iframe = iframeRef.current
+            if (iframe && iframe.contentWindow) {
+              iframe.contentWindow.postMessage({
+                target: 'qualification-call',
+                type: 'send-system-builder-email-result',
+                id: msg.id,
+                result: { error: err.message || 'Erreur inconnue' },
+              }, '*')
+            }
+          })
       } else if (msg.type === 'create-discovery-form' && typeof msg.id === 'number' && msg.body) {
         // Raccourci depuis l'écran « Payment confirmed » : crée un formulaire
         // de découverte technique pré-rempli (1 carte serre par Helper/Chief vendu)

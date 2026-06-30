@@ -7,6 +7,18 @@
  *
  * Templates in `text` are rendered upstream (fieldRuleEngine.renderActionConfig).
  */
+/**
+ * Stable recipient key for the anti-spam guard (fieldRuleEngine.makeRateGuard).
+ * A Slack rule targets a single webhook (channel), so the key is the env var name
+ * when configured via webhookEnv (avoids logging the secret URL), otherwise the
+ * URL itself. Returns null when nothing is configured.
+ */
+export function resolveSlackTarget({ rule }) {
+  const ac = rule.action_config || {}
+  if (ac.webhookEnv) return `env:${ac.webhookEnv}`
+  return ac.webhookUrl || null
+}
+
 export async function sendSlack({ rule, rendered }) {
   const ac = rule.action_config || {}
   const webhookUrl = ac.webhookEnv

@@ -191,14 +191,19 @@ router.post('/send/:qcId', async (req, res) => {
   const interactionId = randomUUID()
   const emailRowId = randomUUID()
   const ts = new Date().toISOString()
-  db.prepare(`
-    INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
-    VALUES (?, ?, ?, ?, 'email', 'out', ?)
-  `).run(interactionId, interactionContactId, qc.company_id, req.user.id || null, ts)
-  db.prepare(`
-    INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, gmail_message_id, gmail_thread_id, automated, open_count)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
-  `).run(emailRowId, interactionId, subject, htmlBody, sent.account_email, recipient, sent.message_id, sent.thread_id || null)
+  // Atomique : interaction + email écrits ensemble. Si le 2e INSERT échoue,
+  // on ne veut pas une interaction orpheline sans corps de courriel — sinon la
+  // relance est partie mais le suivi CRM est cassé. db.transaction() rollback tout.
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
+      VALUES (?, ?, ?, ?, 'email', 'out', ?)
+    `).run(interactionId, interactionContactId, qc.company_id, req.user.id || null, ts)
+    db.prepare(`
+      INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, gmail_message_id, gmail_thread_id, automated, open_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
+    `).run(emailRowId, interactionId, subject, htmlBody, sent.account_email, recipient, sent.message_id, sent.thread_id || null)
+  })()
 
   markDraftSent(qcId, {
     subject, body,

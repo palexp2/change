@@ -1,13 +1,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, AlertTriangle } from 'lucide-react'
 import api from '../lib/api.js'
 import { localISODate } from '../lib/formatDate.js'
+import { vacationBalance } from '../lib/vacationBalance.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useRealtimeChannel, useEntityListRealtime } from '../lib/useRealtimeChannel.js'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 const DEPARTMENTS = ['R&D', 'Opérations', 'Marketing']
 const GENDERS = ['Homme', 'Femme', 'Autre']
@@ -85,18 +89,20 @@ export default function EmployeeDetail() {
   const [employee, setEmployee] = useState(null)
   const [form, setForm] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [saving, setSaving] = useState(false)
   const saveTimer = useRef(null)
   const pendingRef = useRef({})
 
   async function load() {
     setLoading(true)
+    setLoadError(null)
     try {
       const data = await api.employees.get(id)
       setEmployee(data)
       setForm(normalize(data))
     } catch (err) {
-      addToast({ message: err.message, type: 'error' })
+      setLoadError(err?.message || 'Erreur de chargement')
     } finally {
       setLoading(false)
     }
@@ -148,8 +154,11 @@ export default function EmployeeDetail() {
     }
   }
 
+  if (loadError && !employee) {
+    return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
+  }
   if (loading || !form) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
+    return <Layout><Spinner center /></Layout>
   }
   if (!employee) {
     return <Layout><div className="p-6 text-slate-500">Employé introuvable.</div></Layout>
@@ -188,7 +197,11 @@ export default function EmployeeDetail() {
         </div>
 
         <div className="space-y-6">
-          <VacationsSection employeeId={id} />
+          <VacationsSection
+            employeeId={id}
+            allowance={form.vacation_days_per_year}
+            onAllowanceChange={v => change('vacation_days_per_year', v)}
+          />
 
           {SECTIONS.map(section => (
             <div key={section.title} className="card p-5">
@@ -218,13 +231,27 @@ export default function EmployeeDetail() {
                     )
                   }
                   if (field.type === 'select') {
+                    // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
                     return (
                       <div key={field.key} className={span}>
                         <label className="block text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">{field.label}</label>
-                        <select className={inp} value={val || ''} onChange={e => change(field.key, e.target.value)}>
-                          <option value="">—</option>
-                          {field.options.map(o => <option key={o} value={o}>{o}</option>)}
-                        </select>
+                        {(field.options || []).length > 10 ? (
+                          <SearchableSelect
+                            value={val || ''}
+                            options={(field.options || []).map(o => ({ value: o, label: o }))}
+                            emptyOption="—"
+                            placeholder="—"
+                            onChange={v => change(field.key, v)}
+                            className={inp}
+                            size="sm"
+                            testId={`employee-field-${field.key}`}
+                          />
+                        ) : (
+                          <select className={inp} value={val || ''} onChange={e => change(field.key, e.target.value)}>
+                            <option value="">—</option>
+                            {field.options.map(o => <option key={o} value={o}>{o}</option>)}
+                          </select>
+                        )}
                       </div>
                     )
                   }
@@ -261,7 +288,7 @@ export default function EmployeeDetail() {
   )
 }
 
-function VacationsSection({ employeeId }) {
+function VacationsSection({ employeeId, allowance, onAllowanceChange }) {
   const { addToast } = useToast()
   const confirm = useConfirm()
   const [rows, setRows] = useState([])
@@ -344,6 +371,9 @@ function VacationsSection({ employeeId }) {
     }
   }
 
+  const year = new Date().getFullYear()
+  const bal = vacationBalance(rows, allowance, year)
+
   return (
     <div className="card p-5">
       <div className="flex items-center justify-between mb-4">
@@ -355,6 +385,47 @@ function VacationsSection({ employeeId }) {
         >
           <Plus size={14} /> Ajouter
         </button>
+      </div>
+
+      {/* Solde de vacances payées — droit annuel, jours pris, restants, avertissement de dépassement. */}
+      <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3" data-testid="vacation-balance">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+          <label className="flex items-center gap-2 text-sm text-slate-600">
+            <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">Droit annuel</span>
+            <input
+              type="number"
+              step="0.5"
+              min="0"
+              className="w-20 border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white tabular-nums"
+              value={allowance ?? ''}
+              onChange={e => onAllowanceChange(e.target.value === '' ? null : parseFloat(e.target.value))}
+              placeholder="0"
+              data-testid="vacation-allowance"
+            />
+            <span className="text-xs text-slate-400">j / an</span>
+          </label>
+          <div className="flex items-center gap-4 text-sm tabular-nums">
+            <span className="text-slate-500">Pris <span className="font-semibold text-slate-900" data-testid="vacation-used">{bal.used_days}</span> j</span>
+            <span className="text-slate-300">·</span>
+            <span className="text-slate-500">
+              Restants{' '}
+              <span
+                className={`font-semibold ${bal.over_limit ? 'text-red-600' : bal.remaining === 0 ? 'text-slate-400' : 'text-emerald-600'}`}
+                data-testid="vacation-remaining"
+              >
+                {bal.remaining}
+              </span>{' '}
+              j
+            </span>
+            <span className="text-xs text-slate-400">({year})</span>
+          </div>
+        </div>
+        {bal.over_limit && (
+          <div className="mt-2 flex items-center gap-1.5 text-xs font-medium text-red-600" data-testid="vacation-overage">
+            <AlertTriangle size={13} />
+            Dépassement de {Math.abs(bal.remaining)} jour{Math.abs(bal.remaining) > 1 ? 's' : ''} sur le droit annuel.
+          </div>
+        )}
       </div>
 
       {loading ? (

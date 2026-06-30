@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useSearchParams, useParams } from 'react-router-dom'
+import Spinner from '../components/Spinner.jsx'
+import SearchableSelect from '../components/SearchableSelect.jsx'
 
 // Public page (no auth). Deux entrées :
 //   - /customer/post-payment?session_id=cs_xxx  → flow Stripe Checkout (legacy)
@@ -11,7 +13,22 @@ const inputCls = 'w-full border border-slate-300 rounded-lg px-3 py-2 text-sm fo
 const btnPrimary = 'inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50'
 const btnGhost = 'inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg'
 
-const PROVINCES = ['QC', 'ON', 'NB', 'NS', 'PE', 'NL', 'AB', 'BC', 'MB', 'SK', 'YT', 'NT', 'NU']
+// value = code à 2 lettres (sauvegardé), label = code + nom complet pour la recherche
+const PROVINCES = [
+  { value: 'QC', label: 'QC — Québec' },
+  { value: 'ON', label: 'ON — Ontario' },
+  { value: 'NB', label: 'NB — Nouveau-Brunswick' },
+  { value: 'NS', label: 'NS — Nouvelle-Écosse' },
+  { value: 'PE', label: 'PE — Île-du-Prince-Édouard' },
+  { value: 'NL', label: 'NL — Terre-Neuve-et-Labrador' },
+  { value: 'AB', label: 'AB — Alberta' },
+  { value: 'BC', label: 'BC — Colombie-Britannique' },
+  { value: 'MB', label: 'MB — Manitoba' },
+  { value: 'SK', label: 'SK — Saskatchewan' },
+  { value: 'YT', label: 'YT — Yukon' },
+  { value: 'NT', label: 'NT — Territoires du Nord-Ouest' },
+  { value: 'NU', label: 'NU — Nunavut' },
+]
 
 // Starter list — to refine with Pap later
 const FURNACE_BRANDS = [
@@ -81,7 +98,7 @@ export default function CustomerPostPayment() {
     }, 600)
   }, [baseUrl])
 
-  if (loading) return <div className="min-h-screen flex items-center justify-center text-slate-500">Chargement…</div>
+  if (loading) return <Spinner fullscreen label="Chargement…" />
   if (error) return (
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="max-w-md w-full bg-white rounded-xl shadow-sm border border-slate-200 p-6 text-center">
@@ -387,10 +404,17 @@ function AddressForm({ value, onChange }) {
         <input className={inputCls} value={value.city || ''} onChange={e => onChange({ city: e.target.value })} />
       </Field>
       <Field label="Province">
-        <select className={inputCls} value={value.province || ''} onChange={e => onChange({ province: e.target.value })}>
-          <option value="">—</option>
-          {PROVINCES.map(p => <option key={p}>{p}</option>)}
-        </select>
+        <SearchableSelect
+          value={value.province || ''}
+          options={PROVINCES}
+          onChange={v => onChange({ province: v })}
+          placeholder="—"
+          emptyOption="—"
+          searchPlaceholder="Rechercher une province…"
+          className={inputCls}
+          size="sm"
+          testId="province-select"
+        />
       </Field>
       <Field label="Code postal">
         <input className={inputCls} value={value.postal_code || ''} onChange={e => onChange({ postal_code: e.target.value })} placeholder="A1A 1A1" />

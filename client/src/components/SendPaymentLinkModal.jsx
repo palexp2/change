@@ -3,12 +3,16 @@ import { Send, Mail, ChevronDown } from 'lucide-react'
 import { Modal } from './Modal.jsx'
 import api from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useConfirm } from './ConfirmProvider.jsx'
+import { useUndoSend } from './UndoSendProvider.jsx'
 
 // Modale d'envoi du lien de paiement (pending_invoice).
 // Charge les défauts via /email-defaults, laisse l'utilisateur éditer
 // destinataire / sujet / message, puis appelle stripeInvoices.send.
 export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent }) {
   const { addToast } = useToast()
+  const confirm = useConfirm()
+  const scheduleSend = useUndoSend()
   const [loading, setLoading] = useState(false)
   const [defaults, setDefaults] = useState(null)
   const [to, setTo] = useState('')
@@ -66,21 +70,40 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
     const cleanTo = String(to || '').trim()
     if (!cleanTo) { setError('Adresse courriel requise'); return }
     if (!/.+@.+\..+/.test(cleanTo)) { setError('Adresse courriel invalide'); return }
+
+    // Confirmation explicite du side effect (envoi d'un courriel client-facing).
     setSending(true)
-    try {
-      const r = await api.stripeInvoices.send(pendingInvoiceId, {
-        to: cleanTo,
-        subject: subject?.trim() || undefined,
-        message: message?.trim() || undefined,
-      })
-      addToast({ message: `Courriel envoyé à ${r.email?.sent_to || cleanTo}`, type: 'success' })
-      onSent?.(r)
-      onClose?.()
-    } catch (e) {
-      setError(e.message || 'Erreur')
-    } finally {
-      setSending(false)
-    }
+    const ok = await confirm({
+      title: "Confirmer l'envoi du courriel",
+      message: (
+        <>Un courriel contenant le <strong>lien de paiement Stripe</strong> sera envoyé à <strong>{cleanTo}</strong>.</>
+      ),
+      confirmLabel: 'Envoyer',
+      danger: false,
+    })
+    if (!ok) { setSending(false); return }
+
+    const subj = subject?.trim() || undefined
+    const msg = message?.trim() || undefined
+    // On ferme la modale et on planifie l'envoi avec une fenêtre d'annulation de 10 s.
+    onClose?.()
+    scheduleSend({
+      message: `Envoi du lien de paiement à ${cleanTo}…`,
+      onRun: async () => {
+        try {
+          const r = await api.stripeInvoices.send(pendingInvoiceId, {
+            to: cleanTo,
+            subject: subj,
+            message: msg,
+          })
+          addToast({ message: `Courriel envoyé à ${r.email?.sent_to || cleanTo}`, type: 'success' })
+          onSent?.(r)
+        } catch (e) {
+          addToast({ message: e.message || "Erreur lors de l'envoi", type: 'error' })
+        }
+      },
+      onCancel: () => addToast({ message: 'Envoi annulé', type: 'info' }),
+    })
   }
 
   return (

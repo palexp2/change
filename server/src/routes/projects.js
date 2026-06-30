@@ -3,7 +3,9 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
-import { getActiveCustomColumns } from './custom-fields.js';
+import { validateNumericFields } from '../utils/validateNumbers.js';
+import { checkForeignKeys } from '../utils/fkExists.js';
+import { getActiveCustomColumns, applyCustomFieldDefaults } from './custom-fields.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
 
 const router = Router();
@@ -97,7 +99,7 @@ router.get('/', (req, res) => {
              )
            END AS vendeur_label,
            (SELECT json_group_array(json_object('id', o.id, 'order_number', o.order_number))
-              FROM orders o WHERE o.project_id = p.id) as orders_json
+              FROM orders o WHERE o.project_id = p.id AND o.deleted_at IS NULL) as orders_json
     FROM projects p
     LEFT JOIN companies c ON p.company_id = c.id
     LEFT JOIN contacts ct ON p.contact_id = ct.id
@@ -138,15 +140,32 @@ router.get('/:id', (req, res) => {
   ).get(req.params.id);
   if (!project) return res.status(404).json({ error: 'Project not found' });
   project.orders = db.prepare(
-    `SELECT id, order_number, status FROM orders WHERE project_id = ? ORDER BY order_number`
+    `SELECT id, order_number, status FROM orders WHERE project_id = ? AND deleted_at IS NULL ORDER BY order_number`
   ).all(req.params.id);
   res.json(project);
 });
 
 // POST /api/projects
 router.post('/', (req, res) => {
-  const { name, company_id, contact_id, type, status, probability, value_cad, monthly_cad, nb_greenhouses, close_date, notes } = req.body;
+  const { name, company_id, contact_id, type, status, close_date, notes } = req.body;
   if (!name) return res.status(400).json({ error: 'Name is required' });
+  const fkErr = checkForeignKeys({ company_id, contact_id });
+  if (fkErr) return res.status(400).json({ error: fkErr.message });
+
+  // Valide les champs monétaires/numériques avant l'INSERT : un `"abc"` ou un
+  // négatif doit produire un 400 explicite, pas un `0` silencieux qui corromprait
+  // le P&L et le forecast.
+  const { error: numError, values: nums } = validateNumericFields(req.body, [
+    { key: 'probability', min: 0, max: 100 },
+    { key: 'value_cad' },
+    { key: 'monthly_cad' },
+    { key: 'nb_greenhouses', int: true },
+  ]);
+  if (numError) return res.status(400).json({ error: numError });
+  const probability = nums.probability ?? 0;
+  const value_cad = nums.value_cad ?? 0;
+  const monthly_cad = nums.monthly_cad ?? 0;
+  const nb_greenhouses = nums.nb_greenhouses ?? 0;
 
   const id = uuidv4();
   // `creation` est le champ canonique de date de création (originellement importé d'Airtable).
@@ -158,8 +177,13 @@ router.post('/', (req, res) => {
     `INSERT INTO projects (id, name, company_id, contact_id, type, status, probability, value_cad, monthly_cad, nb_greenhouses, close_date, notes, creation)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(id, name, company_id || null, contact_id || null,
-    type || null, status || 'Ouvert', probability || 0, value_cad || 0, monthly_cad || 0,
-    nb_greenhouses || 0, close_date || null, notes || null, nowIso);
+    type || null, status || 'Ouvert', probability, value_cad, monthly_cad,
+    nb_greenhouses, close_date || null, notes || null, nowIso);
+
+  // Pré-remplit les champs custom ayant une valeur par défaut (single_select via
+  // default_id, ou text/number/currency/url via default_value) — colonnes cf_*
+  // absentes de l'INSERT natif ci-dessus.
+  applyCustomFieldDefaults('projects', id);
 
   const project = db.prepare(
     `SELECT p.*, c.name as company_name FROM projects p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?`
@@ -173,12 +197,30 @@ router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM projects WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Project not found' });
 
+  // Rejette NaN/négatifs/hors-bornes sur les champs numériques présents dans le
+  // patch avant de construire l'UPDATE (mêmes bornes qu'au POST).
+  const { error: numError } = validateNumericFields(req.body, [
+    { key: 'probability', min: 0, max: 100 },
+    { key: 'value_cad' },
+    { key: 'monthly_cad' },
+    { key: 'nb_greenhouses', int: true },
+  ]);
+  if (numError) return res.status(400).json({ error: numError });
+
   const customCols = getActiveCustomColumns('projects').map(c => c.column_name)
   const { setClause, values, error } = buildPartialUpdate(req.body, {
     allowed: ['name', 'company_id', 'contact_id', 'type', 'status', 'probability',
       'value_cad', 'monthly_cad', 'nb_greenhouses', 'close_date', 'refusal_reason', 'notes',
       'vendeur_ref', ...customCols],
     nonNullable: new Set(['name']),
+    // Stocke des nombres (et non la chaîne brute) ; la validation ci-dessus
+    // garantit déjà que ces conversions sont finies et bornées.
+    coerce: {
+      probability: v => (v === '' || v == null ? null : Number(v)),
+      value_cad: v => (v === '' || v == null ? null : Number(v)),
+      monthly_cad: v => (v === '' || v == null ? null : Number(v)),
+      nb_greenhouses: v => (v === '' || v == null ? null : Number(v)),
+    },
   });
   if (error) return res.status(400).json({ error });
   if (setClause) {

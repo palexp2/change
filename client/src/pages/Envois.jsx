@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, useSearchParams, Link } from 'react-router-dom'
-import { Plus, X } from 'lucide-react'
+import { Plus, X, Truck } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
@@ -44,6 +45,7 @@ function NewEnvoiModal({ orders, adresses, onSave, onClose }) {
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
+    if (!form.order_id) { setError('Veuillez sélectionner une commande.'); return }
     setSaving(true)
     try { await onSave(form); onClose() }
     catch (err) { setError(err.message) }
@@ -54,19 +56,18 @@ function NewEnvoiModal({ orders, adresses, onSave, onClose }) {
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
         <label className="label">Commande <span className="text-red-500">*</span></label>
-        <select
+        <SearchableSelect
+          testId="envoi-order-select"
+          className="select w-full"
+          size="sm"
           value={form.order_id}
-          onChange={e => setForm(f => ({ ...f, order_id: e.target.value }))}
-          className="select"
-          required
-        >
-          <option value="">— Sélectionner —</option>
-          {orders.map(o => (
-            <option key={o.id} value={o.id}>
-              #{o.order_number}{o.company_name ? ` — ${o.company_name}` : ''}
-            </option>
-          ))}
-        </select>
+          onChange={v => setForm(f => ({ ...f, order_id: v }))}
+          options={orders}
+          getOptionValue={o => o.id}
+          getOptionLabel={o => `#${o.order_number}${o.company_name ? ` — ${o.company_name}` : ''}`}
+          placeholder="— Sélectionner —"
+          searchPlaceholder="Rechercher une commande…"
+        />
       </div>
       <div>
         <label className="label">Transporteur</label>
@@ -100,16 +101,19 @@ function NewEnvoiModal({ orders, adresses, onSave, onClose }) {
       </div>
       <div>
         <label className="label">Adresse de livraison</label>
-        <select
+        <SearchableSelect
+          testId="envoi-address-select"
+          className="select w-full"
+          size="sm"
           value={form.address_id}
-          onChange={e => setForm(f => ({ ...f, address_id: e.target.value }))}
-          className="select"
-        >
-          <option value="">— Aucune —</option>
-          {adresses.map(a => (
-            <option key={a.id} value={a.id}>{fmtAdresse(a)}</option>
-          ))}
-        </select>
+          onChange={v => setForm(f => ({ ...f, address_id: v }))}
+          options={adresses}
+          getOptionValue={a => a.id}
+          getOptionLabel={a => fmtAdresse(a)}
+          placeholder="— Aucune —"
+          emptyOption="— Aucune —"
+          searchPlaceholder="Rechercher une adresse…"
+        />
       </div>
       <div>
         <label className="label">Notes</label>
@@ -221,6 +225,7 @@ export default function Envois() {
           loading={loading}
           onRowClick={row => navigate(`/envois/${row.id}`)}
           searchFields={['order_number', 'tracking_number', 'company_name', 'carrier', 'pays']}
+          emptyState={{ icon: Truck, title: 'Aucun envoi', description: "Aucune expédition n'a encore été créée. Crée un envoi pour générer une étiquette et suivre la livraison.", cta: { label: 'Nouvel envoi', icon: Plus, onClick: () => setShowModal(true) } }}
         />
       </div>
 

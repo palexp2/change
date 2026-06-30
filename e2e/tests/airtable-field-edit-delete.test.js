@@ -155,6 +155,29 @@ describe('Airtable field — clic-droit modifier/supprimer', () => {
       await header.click({ button: 'right' })
       await page.locator('text=Modifier le type').waitFor({ state: 'visible', timeout: 5000 })
       await page.locator('text=Supprimer').waitFor({ state: 'visible', timeout: 2000 })
+
+      // Ouvre la modale d'édition et vérifie l'autosave (plus de bouton Enregistrer).
+      await page.locator('text=Modifier le type').click()
+      await page.locator('text=Modifier la colonne').waitFor({ state: 'visible', timeout: 5000 })
+      const select = page.locator('[data-testid="airtable-field-type"]')
+      await select.waitFor({ state: 'visible', timeout: 3000 })
+      assert.equal(await page.locator('button:has-text("Enregistrer")').count(), 0,
+        'la modale ne doit plus avoir de bouton Enregistrer (autosave)')
+
+      // Changer le type doit persister immédiatement (autosave on change).
+      await select.selectOption('date')
+      const start = Date.now()
+      let savedType
+      while (Date.now() - start < 8000) {
+        savedType = db.prepare('SELECT field_type FROM airtable_field_defs WHERE id=?').get(defId)?.field_type
+        if (savedType === 'date') break
+        await new Promise(r => setTimeout(r, 150))
+      }
+      assert.equal(savedType, 'date', `field_type devait passer à 'date' par autosave, observé '${savedType}'`)
+
+      // Fermer la modale (action locale, pas de save).
+      await page.locator('button:has-text("Fermer")').click()
+      await page.locator('text=Modifier la colonne').waitFor({ state: 'detached', timeout: 5000 })
     } finally {
       // Restore les pills à leur état original
       await page.evaluate(async ({ tok, original }) => {

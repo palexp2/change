@@ -19,19 +19,47 @@ export function isHubSpotConfigured() {
 
 async function hsFetch(path, { method = 'GET', body, retries = 3 } = {}) {
   const token = getAccessToken()
+  let lastError = null
   for (let attempt = 0; attempt <= retries; attempt++) {
-    const resp = await fetch(`${BASE}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    })
+    let resp
+    try {
+      resp = await fetch(`${BASE}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      })
+    } catch (err) {
+      // Erreur réseau transitoire (DNS, reset, timeout) — backoff et retry
+      lastError = err
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, Math.min(2 ** attempt, 30) * 1000))
+        continue
+      }
+      throw new Error(`HubSpot ${method} ${path} échec réseau après ${retries + 1} tentatives: ${err.message}`)
+    }
     if (resp.status === 429) {
-      const wait = Number(resp.headers.get('Retry-After') || attempt + 1) * 1000
-      await new Promise(r => setTimeout(r, wait))
-      continue
+      // Rate limit — respecte Retry-After si présent, sinon backoff exponentiel
+      const retryAfter = Number(resp.headers.get('Retry-After'))
+      const wait = (Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : Math.min(2 ** attempt, 30)) * 1000
+      lastError = new Error(`HubSpot ${method} ${path} 429 rate limit`)
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, wait))
+        continue
+      }
+      throw new Error(`HubSpot rate limit persistant sur ${path} après ${retries + 1} tentatives`)
+    }
+    if (resp.status >= 500 && resp.status <= 599) {
+      // Erreur serveur transitoire (500/502/503/504) — backoff exponentiel et retry
+      const text = await resp.text()
+      lastError = new Error(`HubSpot ${method} ${path} ${resp.status}: ${text}`)
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, Math.min(2 ** attempt, 30) * 1000))
+        continue
+      }
+      throw new Error(`HubSpot ${method} ${path} ${resp.status} persistant après ${retries + 1} tentatives: ${text}`)
     }
     if (resp.status === 404 && method === 'GET') return null
     if (!resp.ok) {
@@ -41,7 +69,7 @@ async function hsFetch(path, { method = 'GET', body, retries = 3 } = {}) {
     if (resp.status === 204) return null
     return resp.json()
   }
-  throw new Error(`HubSpot rate limit persistant sur ${path}`)
+  throw lastError || new Error(`HubSpot ${method} ${path} : échec après ${retries + 1} tentatives`)
 }
 
 const TASK_PROPERTIES = [
@@ -147,32 +175,98 @@ export async function getPortalId() {
   return data?.portalId
 }
 
+// Largeur de la tranche temporelle pour les deltas. L'API search HubSpot
+// renvoie des 500 sur de très gros result sets (et plafonne la pagination
+// profonde à 10 000 résultats) ; borner chaque requête par une fenêtre
+// [from, to] garde le volume par appel petit même si le curseur est ancré
+// loin dans le passé.
+const TASK_SEARCH_WINDOW_MS = 7 * 24 * 3600 * 1000
+
 /**
- * Recherche les tâches modifiées après `sinceIso`. Pagine entièrement.
- * `sinceIso` peut être null pour un premier sync complet.
+ * Pagine entièrement une recherche de tâches pour un ensemble de filtres donné.
+ *
+ * Si une page échoue (typiquement un 500 persistant côté HubSpot après les
+ * retries de hsFetch), l'erreur est enrichie avec `hubspotSearch` : le curseur
+ * `after` au moment de l'échec et le nombre de résultats déjà récupérés dans
+ * cette fenêtre. Sans ce contexte, sync_log ne montrait qu'une erreur générique
+ * impossible à diagnostiquer ou reprendre.
  */
-export async function searchTasksModifiedSince(sinceIso) {
+async function searchTasksPaged(filters) {
   const out = []
   let after = null
-  // Backfill (no cursor) restricts to non-completed tasks; deltas pull everything
-  // modified since the cursor (including transitions to COMPLETED).
-  const filters = sinceIso
-    ? [{ propertyName: 'hs_lastmodifieddate', operator: 'GT', value: new Date(sinceIso).getTime() }]
-    : [{ propertyName: 'hs_task_status', operator: 'NEQ', value: 'COMPLETED' }]
-  const filterGroups = [{ filters }]
   for (;;) {
     const body = {
-      filterGroups,
+      filterGroups: [{ filters }],
       sorts: [{ propertyName: 'hs_lastmodifieddate', direction: 'ASCENDING' }],
       properties: TASK_PROPERTIES,
       limit: 100,
     }
     if (after) body.after = after
-    const data = await hsFetch('/crm/v3/objects/tasks/search', { method: 'POST', body })
+    let data
+    try {
+      data = await hsFetch('/crm/v3/objects/tasks/search', { method: 'POST', body })
+    } catch (e) {
+      e.hubspotSearch = {
+        ...(e.hubspotSearch || {}),
+        after: after || null,
+        fetchedInWindow: out.length,
+      }
+      throw e
+    }
     if (!data) break
     out.push(...(data.results || []))
     after = data.paging?.next?.after || null
     if (!after) break
+  }
+  return out
+}
+
+/**
+ * Recherche les tâches modifiées après `sinceIso`. Pagine entièrement.
+ * `sinceIso` peut être null pour un premier sync complet.
+ *
+ * Pour les deltas, la fenêtre [since, now] est découpée en tranches de
+ * `TASK_SEARCH_WINDOW_MS` afin de borner le volume de chaque requête search
+ * (évite les 500 d'HubSpot sur gros result sets et le plafond de pagination
+ * profonde à 10 000). Les bornes GT(from)/LTE(to) sont disjointes d'une
+ * tranche à l'autre : aucun doublon, aucun trou.
+ */
+export async function searchTasksModifiedSince(sinceIso, onWindow = null) {
+  // Backfill (no cursor) restricts to non-completed tasks; deltas pull everything
+  // modified since the cursor (including transitions to COMPLETED).
+  if (!sinceIso) {
+    const results = await searchTasksPaged([{ propertyName: 'hs_task_status', operator: 'NEQ', value: 'COMPLETED' }])
+    if (onWindow) { await onWindow(results, { from: null, to: null }); return undefined }
+    return results
+  }
+  const out = onWindow ? null : []
+  const now = Date.now()
+  let from = new Date(sinceIso).getTime()
+  while (from < now) {
+    const to = Math.min(from + TASK_SEARCH_WINDOW_MS, now)
+    const filters = [
+      { propertyName: 'hs_lastmodifieddate', operator: 'GT', value: from },
+      { propertyName: 'hs_lastmodifieddate', operator: 'LTE', value: to },
+    ]
+    let results
+    try {
+      results = await searchTasksPaged(filters)
+    } catch (e) {
+      // Précise la fenêtre temporelle demandée — combinée au curseur `after` déjà
+      // posé par searchTasksPaged, elle permet de localiser le batch fautif.
+      e.hubspotSearch = {
+        ...(e.hubspotSearch || {}),
+        windowFrom: new Date(from).toISOString(),
+        windowTo: new Date(to).toISOString(),
+      }
+      throw e
+    }
+    // Traitement incrémental fenêtre par fenêtre : ainsi un échec sur une fenêtre
+    // ultérieure ne perd pas le travail (ni la progression du curseur) des
+    // fenêtres déjà appliquées par l'appelant.
+    if (onWindow) await onWindow(results, { from, to })
+    else out.push(...results)
+    from = to
   }
   return out
 }

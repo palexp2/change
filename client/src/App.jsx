@@ -1,12 +1,17 @@
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { useEffect } from 'react'
 import { AuthProvider, useAuth } from './lib/auth.jsx'
+import { NavPrefsProvider } from './lib/navPrefs.jsx'
+import { DecimalPrefsProvider } from './lib/decimalPrefs.jsx'
 import { notifyNavigation } from './lib/pageLoadTracker.js'
+import { useTrackRecentVisit } from './lib/useRecentRecords.js'
 import { startDataSync, stopDataSync, isDataSyncStarted } from './lib/dataSync.js'
 import { inspectStore } from './lib/dataStore.js'
 import { ToastProvider } from './contexts/ToastContext.jsx'
 import { ConfirmProvider } from './components/ConfirmProvider.jsx'
+import { UndoSendProvider } from './components/UndoSendProvider.jsx'
 import ServerOfflineOverlay from './components/ServerOfflineOverlay.jsx'
+import ErrorBoundary from './components/ErrorBoundary.jsx'
 import { useFavicon } from './hooks/useFavicon.js'
 
 import Login from './pages/Login.jsx'
@@ -36,6 +41,7 @@ import ItemsVendus from './pages/ItemsVendus.jsx'
 import Abonnements from './pages/Abonnements.jsx'
 import AbonnementMouvements from './pages/AbonnementMouvements.jsx'
 import Assemblages from './pages/Assemblages.jsx'
+import PrioriteAssemblage from './pages/PrioriteAssemblage.jsx'
 import ProjectDetail from './pages/ProjectDetail.jsx'
 import SoumissionDetail from './pages/SoumissionDetail.jsx'
 import Envois from './pages/Envois.jsx'
@@ -66,6 +72,17 @@ import StripePayoutDetail from './pages/StripePayoutDetail.jsx'
 import CustomerPostPayment from './pages/CustomerPostPayment.jsx'
 import DiscoveryForms from './pages/DiscoveryForms.jsx'
 import PublicFiles from './pages/PublicFiles.jsx'
+import Settings from './pages/Settings.jsx'
+import ActivityFeed from './pages/ActivityFeed.jsx'
+import Changelog from './pages/Changelog.jsx'
+import Architecture from './pages/Architecture.jsx'
+
+// Route de diagnostic : lève volontairement une erreur de rendu pour vérifier
+// que l'ErrorBoundary global affiche bien son fallback (au lieu d'un écran
+// blanc). Inoffensive — protégée par auth admin et jamais liée dans le menu.
+function CrashTest() {
+  throw new Error('Crash test volontaire (route /__boom) — vérifie l\'ErrorBoundary')
+}
 
 function ProtectedRoute({ children, adminOnly = false, hrOnly = false }) {
   const { user } = useAuth()
@@ -79,6 +96,7 @@ function AppRoutes() {
   const { user } = useAuth()
   const location = useLocation()
   useFavicon()
+  useTrackRecentVisit()
 
   useEffect(() => {
     notifyNavigation(location.pathname + location.search)
@@ -95,18 +113,32 @@ function AppRoutes() {
     }
   }, [user])
 
+  // Page d'accueil par défaut, personnalisable par utilisateur.
+  // pap@orisha.io (id ci-dessous) atterrit sur /agent ; tout le monde sur /dashboard.
+  // On cible par id car le JWT ne porte pas l'email (payload = { id, role, name }).
+  const PAP_USER_ID = '5637ebf2-74e8-4245-9f1e-64d80b53b216'
+  const homePath = user?.id === PAP_USER_ID ? '/agent' : '/dashboard'
+
   return (
+    // key={location.pathname} : remonte le boundary à chaque navigation, ce qui
+    // efface automatiquement un état d'erreur quand l'utilisateur change de page.
+    <ErrorBoundary key={location.pathname}>
     <Routes>
-      <Route path="/" element={<Navigate to={user ? '/dashboard' : '/login'} replace />} />
-      <Route path="/login" element={user ? <Navigate to="/dashboard" replace /> : <Login />} />
+      <Route path="/" element={<Navigate to={user ? homePath : '/login'} replace />} />
+      <Route path="/login" element={user ? <Navigate to={homePath} replace /> : <Login />} />
       <Route path="/setup" element={<Setup />} />
       <Route path="/customer/post-payment" element={<CustomerPostPayment />} />
       {/* Lien public court vers le formulaire de découverte technique — accessible sans login. */}
       <Route path="/d/:token" element={<CustomerPostPayment />} />
 
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+      <Route path="/dashboard/:section" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/pipeline" element={<ProtectedRoute><Pipeline /></ProtectedRoute>} />
       <Route path="/projects/fields" element={<ProtectedRoute adminOnly><ProjectFields /></ProtectedRoute>} />
+      {/* Contrôle des champs Airtable généralisé à tous les modules synchronisés
+          (contacts, companies, pieces, orders, achats, envois…). Même page que
+          /projects/fields, paramétrée par :module. */}
+      <Route path="/airtable/fields/:module" element={<ProtectedRoute adminOnly><ProjectFields /></ProtectedRoute>} />
       <Route path="/orders" element={<ProtectedRoute><Orders /></ProtectedRoute>} />
       <Route path="/orders/:id" element={<ProtectedRoute><OrderDetail /></ProtectedRoute>} />
       <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
@@ -133,6 +165,7 @@ function AppRoutes() {
       <Route path="/abonnements" element={<ProtectedRoute><Abonnements /></ProtectedRoute>} />
       <Route path="/abonnements/mouvements" element={<ProtectedRoute><AbonnementMouvements /></ProtectedRoute>} />
       <Route path="/assemblages" element={<ProtectedRoute><Assemblages /></ProtectedRoute>} />
+      <Route path="/priorite-assemblage" element={<ProtectedRoute><PrioriteAssemblage /></ProtectedRoute>} />
       <Route path="/soumissions/:id" element={<ProtectedRoute><SoumissionDetail /></ProtectedRoute>} />
       <Route path="/envois" element={<ProtectedRoute><Envois /></ProtectedRoute>} />
       <Route path="/envois/:id" element={<ProtectedRoute><EnvoisDetail /></ProtectedRoute>} />
@@ -159,24 +192,37 @@ function AppRoutes() {
       <Route path="/admin/:tab" element={<ProtectedRoute adminOnly><Admin /></ProtectedRoute>} />
 
       <Route path="/public-files" element={<ProtectedRoute><PublicFiles /></ProtectedRoute>} />
+      <Route path="/activity" element={<ProtectedRoute><ActivityFeed /></ProtectedRoute>} />
+      <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+      <Route path="/changelog" element={<ProtectedRoute><Changelog /></ProtectedRoute>} />
+      <Route path="/architecture" element={<ProtectedRoute adminOnly><Architecture /></ProtectedRoute>} />
       <Route path="/automations" element={<ProtectedRoute><Automations /></ProtectedRoute>} />
       <Route path="/automations/:id" element={<ProtectedRoute><AutomationDetail /></ProtectedRoute>} />
       <Route path="/agent" element={<ProtectedRoute adminOnly><Agent /></ProtectedRoute>} />
 
+      <Route path="/__boom" element={<ProtectedRoute adminOnly><CrashTest /></ProtectedRoute>} />
+
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </ErrorBoundary>
   )
 }
 
 export default function App() {
   return (
     <AuthProvider>
-      <ToastProvider>
-        <ConfirmProvider>
-          <AppRoutes />
-          <ServerOfflineOverlay />
-        </ConfirmProvider>
-      </ToastProvider>
+      <NavPrefsProvider>
+        <DecimalPrefsProvider>
+          <ToastProvider>
+            <ConfirmProvider>
+              <UndoSendProvider>
+                <AppRoutes />
+                <ServerOfflineOverlay />
+              </UndoSendProvider>
+            </ConfirmProvider>
+          </ToastProvider>
+        </DecimalPrefsProvider>
+      </NavPrefsProvider>
     </AuthProvider>
   )
 }

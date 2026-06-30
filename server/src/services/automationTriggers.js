@@ -1,12 +1,20 @@
 import { runAutomation } from './automationEngine.js'
 import db from '../db/database.js'
+import { logSync } from './syncLog.js'
 
 /**
  * Vérifie et déclenche les automations pour un événement.
  * Exécution en arrière-plan (fire-and-forget).
+ *
+ * Le dispatch tourne dans un setImmediate : sans trace persistée, un échec de
+ * l'orchestration (lock DB sur le SELECT, trigger_config corrompu, throw du
+ * moteur) ne laisse qu'un console.error invisible et se répète silencieusement
+ * sur chaque record. On le journalise donc dans sync_log (DataTable diagnostics
+ * des connecteurs) via logSync.
  */
 export function checkAndRunAutomations(triggerType, triggerData) {
   setImmediate(async () => {
+    const startTime = Date.now()
     try {
       const automations = db.prepare(`
         SELECT * FROM automations
@@ -14,12 +22,29 @@ export function checkAndRunAutomations(triggerType, triggerData) {
       `).all(triggerType)
 
       for (const automation of automations) {
-        const config = JSON.parse(automation.trigger_config || '{}')
+        let config
+        try {
+          config = JSON.parse(automation.trigger_config || '{}')
+        } catch (parseErr) {
+          // trigger_config corrompu : on trace l'automation fautive sans
+          // interrompre le dispatch des autres.
+          logSync('automations', 'webhook', {
+            status: 'error',
+            error: `[${triggerType}] config invalide (automation ${automation.id}): ${parseErr.message}`,
+            durationMs: Date.now() - startTime,
+          })
+          continue
+        }
         if (!matchesTrigger(triggerType, config, triggerData)) continue
         await runAutomation(automation, triggerData)
       }
     } catch (err) {
       console.error('Automation trigger error:', err.message)
+      logSync('automations', 'webhook', {
+        status: 'error',
+        error: `[${triggerType}] dispatch échoué: ${err.message}`,
+        durationMs: Date.now() - startTime,
+      })
     }
   })
 }

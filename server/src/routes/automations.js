@@ -6,28 +6,121 @@ import { runAutomation } from '../services/automationEngine.js'
 import { scheduleAutomation, unscheduleAutomation } from '../services/automationScheduler.js'
 import { MANUAL_RUNNERS, logSystemRun } from '../services/systemAutomations.js'
 import { sendInstallationTestEmail, buildInstallationEmailHtml, selectEligibleCompanies } from '../services/installationFollowup.js'
-import { dryRunFieldRule } from '../services/fieldRuleEngine.js'
+import { dryRunFieldRule, runDateOffsetRuleNow, previewRuleForRecord, drainDeferredForAutomation, CANDIDATE_CAP } from '../services/fieldRuleEngine.js'
 import { getAutomationFrom, listFromAddresses } from '../services/postmarkConfig.js'
+import { processRetryQueue } from '../services/airtableWebhooks.js'
+import { generateShortToken } from '../utils/shortToken.js'
+import { runWebhook } from '../services/webhookEngine.js'
 
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/i
 const VALID_ACTION_TYPES = new Set(['slack', 'email', 'task', 'script'])
-const VALID_OPS = new Set(['eq', 'ne', 'in', 'not_null'])
+// Webhook automations (kind='webhook') — surface déclarative validée côté serveur.
+const WEBHOOK_TABLES = new Set(['tickets', 'projects', 'serial_numbers'])
+const VALID_STEP_TYPES = new Set(['update', 'upsert', 'create'])
+const VALID_VALUE_SOURCES = new Set(['literal', 'param', 'record'])
+
+// Génère un token de webhook compact et non devinable (ex: hookB4FEHK9JYD4S4B).
+function newWebhookToken() {
+  return 'hook' + generateShortToken(14)
+}
+
+// Valide la config d'un webhook. Lève sur la première erreur.
+function validateWebhook({ action_config, script }) {
+  const ac = typeof action_config === 'string' ? JSON.parse(action_config || '{}') : (action_config || {})
+  const mode = ac.mode === 'script' ? 'script' : 'declarative'
+  if (mode === 'script') {
+    if (!script || !String(script).trim()) throw new Error('script requis pour un webhook en mode script')
+  } else {
+    const steps = Array.isArray(ac.steps) ? ac.steps : []
+    steps.forEach((s, i) => {
+      const n = i + 1
+      const type = s.type || 'update'
+      if (!VALID_STEP_TYPES.has(type)) throw new Error(`Étape ${n}: type invalide (${type})`)
+      if (!WEBHOOK_TABLES.has(s.table)) throw new Error(`Étape ${n}: table non autorisée (${s.table})`)
+      if (type !== 'create') {
+        if (!IDENT_RE.test(s.match?.field || '')) throw new Error(`Étape ${n}: champ de recherche requis`)
+        if (!s.match?.param) throw new Error(`Étape ${n}: paramètre de recherche requis`)
+      }
+      for (const f of (s.fields || [])) {
+        if (!IDENT_RE.test(f.column || '')) throw new Error(`Étape ${n}: colonne invalide (${f.column})`)
+        if (f.source && !VALID_VALUE_SOURCES.has(f.source)) throw new Error(`Étape ${n}: source de valeur invalide (${f.source})`)
+      }
+    })
+  }
+  for (const r of (ac.response_rules || [])) {
+    if (!r.param) throw new Error('Règle de réponse : paramètre requis')
+  }
+  if (ac.failure_recipient) {
+    const allowed = listFromAddresses()
+    if (!allowed.includes(ac.failure_recipient)) {
+      throw new Error(`Destinataire d'échec « ${ac.failure_recipient} » non autorisé`)
+    }
+  }
+}
+// Comparison operators that require a finite numeric `value` and compare the
+// column numerically (CAST AS REAL). Kept in sync with fieldRuleEngine.js.
+const NUMERIC_OPS = new Set(['gt', 'gte', 'lt', 'lte'])
+// `date_offset` is a date-relative trigger (« N jours avant/après un champ date »).
+// It carries offset_days (signed int) + optional secondary filter instead of a value.
+const VALID_OPS = new Set(['eq', 'ne', 'in', 'not_null', 'date_offset', ...NUMERIC_OPS])
+// Operators allowed inside a date_offset secondary filter (everything except date_offset itself).
+const FILTER_OPS = new Set(['eq', 'ne', 'in', 'not_null', ...NUMERIC_OPS])
+
+// Validate a single { column, op, value } condition (used by multi-condition
+// rules and the date_offset secondary filter). `label` prefixes error messages.
+function validateCondition(cond, label) {
+  if (!cond || typeof cond !== 'object') throw new Error(`${label} invalide`)
+  if (!IDENT_RE.test(cond.column || '')) throw new Error(`${label}: colonne invalide`)
+  const cop = cond.op || 'eq'
+  if (!FILTER_OPS.has(cop)) throw new Error(`${label}: opérateur invalide (${cop})`)
+  if (cop !== 'not_null' && cond.value === undefined) throw new Error(`${label}: valeur requise`)
+  if (NUMERIC_OPS.has(cop) && !Number.isFinite(Number(cond.value))) {
+    throw new Error(`${label}: valeur numérique requise pour l'opérateur ${cop}`)
+  }
+}
 
 // Admin-facing field rule validation. Throws on first error.
 function validateFieldRule({ trigger_config, action_type, action_config }) {
   const tc = typeof trigger_config === 'string' ? JSON.parse(trigger_config) : trigger_config
   if (!tc || typeof tc !== 'object') throw new Error('trigger_config invalide')
   if (!IDENT_RE.test(tc.erp_table || '')) throw new Error('trigger_config.erp_table invalide')
-  if (!IDENT_RE.test(tc.column || '')) throw new Error('trigger_config.column invalide')
   const op = tc.op || 'eq'
   if (!VALID_OPS.has(op)) throw new Error(`trigger_config.op invalide: ${op}`)
-  if (op !== 'not_null' && tc.value === undefined) throw new Error('trigger_config.value requise')
+  if (op === 'date_offset') {
+    if (!IDENT_RE.test(tc.column || '')) throw new Error('trigger_config.column invalide')
+    if (!Number.isInteger(Number(tc.offset_days))) {
+      throw new Error('trigger_config.offset_days doit être un entier (négatif = avant, positif = après)')
+    }
+    if (tc.filter != null) {
+      validateCondition(tc.filter, 'trigger_config.filter')
+    }
+  } else if (tc.conditions != null) {
+    // Multi-condition AND/OR mode — { conjunction, rules: [{column, op, value}] }
+    if (typeof tc.conditions !== 'object') throw new Error('trigger_config.conditions invalide')
+    if (tc.conditions.conjunction !== 'AND' && tc.conditions.conjunction !== 'OR') {
+      throw new Error('trigger_config.conditions.conjunction doit être AND ou OR')
+    }
+    const rules = tc.conditions.rules
+    if (!Array.isArray(rules) || rules.length === 0) {
+      throw new Error('trigger_config.conditions.rules requis (au moins une condition)')
+    }
+    rules.forEach((r, i) => validateCondition(r, `Condition ${i + 1}`))
+  } else {
+    if (!IDENT_RE.test(tc.column || '')) throw new Error('trigger_config.column invalide')
+    if (op !== 'not_null' && tc.value === undefined) throw new Error('trigger_config.value requise')
+    if (NUMERIC_OPS.has(op) && !Number.isFinite(Number(tc.value))) {
+      throw new Error(`trigger_config.value doit être numérique pour l'opérateur ${op}`)
+    }
+  }
   const at = action_type || 'slack'
   if (!VALID_ACTION_TYPES.has(at)) throw new Error(`action_type invalide: ${at}`)
   const ac = typeof action_config === 'string' ? JSON.parse(action_config) : (action_config || {})
   // Anti-cycle: interdire une règle tâche qui écrirait dans la même table que le trigger
   if (at === 'task' && ac.link_company === false && tc.erp_table === 'tasks') {
     throw new Error('Garde anti-cycle: règle sur `tasks` avec action task interdite')
+  }
+  if (at === 'script' && (!ac.script || !String(ac.script).trim())) {
+    throw new Error('action_config.script requis pour une règle de type script')
   }
   return { tc, ac, at }
 }
@@ -45,16 +138,121 @@ const SYSTEM_EMAIL_AUTOMATIONS = new Set([
   'sys_shipment_tracking_email',
 ])
 
+// ── Historique de versions ────────────────────────────────────────────────
+// Chaque édition sauvegardée (POST create, PATCH update, restore) capture un
+// snapshot complet de l'automation + qui/quand → audit + rollback. Les éditions
+// rapprochées du même auteur (autosave debounce 500ms) sont coalescées dans la
+// même ligne de version pour éviter une révision par frappe.
+const VERSION_COALESCE_MS = 2 * 60 * 1000
+const VERSION_FIELDS = ['name', 'description', 'trigger_type', 'trigger_config', 'action_type', 'action_config', 'script', 'active', 'kind']
+const VERSION_FIELD_LABELS = {
+  name: 'nom', description: 'description', trigger_type: 'type de déclencheur',
+  trigger_config: 'déclencheur', action_type: 'type d\'action',
+  action_config: 'action', script: 'script', active: 'statut', kind: 'genre',
+}
+
+// Normalise une valeur pour comparaison (active → 0/1 ; null/undefined → '').
+function vnorm(field, val) {
+  if (field === 'active') return val ? 1 : 0
+  return val == null ? '' : String(val)
+}
+function sameVersionContent(a, b) {
+  return VERSION_FIELDS.every(f => vnorm(f, a[f]) === vnorm(f, b[f]))
+}
+// Liste lisible des champs qui diffèrent entre deux snapshots.
+function versionDiffSummary(prev, next) {
+  if (!prev) return 'Création'
+  const changed = VERSION_FIELDS.filter(f => vnorm(f, prev[f]) !== vnorm(f, next[f]))
+  if (!changed.length) return 'Aucun changement'
+  return changed.map(f => VERSION_FIELD_LABELS[f] || f).join(', ') + (changed.length > 1 ? ' modifiés' : ' modifié')
+}
+// Construit un snapshot versionnable depuis une ligne `automations`.
+function snapshotFromRow(row) {
+  return {
+    name: row.name, description: row.description, trigger_type: row.trigger_type,
+    trigger_config: row.trigger_config, action_type: row.action_type,
+    action_config: row.action_config, script: row.script,
+    active: row.active ? 1 : 0, kind: row.kind || null,
+  }
+}
+
+// Enregistre une révision. No-op si identique à la dernière (sauf summary forcé).
+// Coalesce les éditions rapprochées du même auteur (remplace la dernière ligne).
+// opts.coalesce=false force une nouvelle ligne ; opts.summary force le résumé.
+function recordAutomationVersion(automationId, snapshot, req, opts = {}) {
+  const latest = db.prepare(
+    'SELECT * FROM automation_versions WHERE automation_id = ? ORDER BY version DESC LIMIT 1'
+  ).get(automationId)
+  if (latest && sameVersionContent(latest, snapshot) && !opts.summary) return latest
+
+  const userId = req?.user?.id || null
+  const userName = req?.user?.name || null
+  const coalesce = opts.coalesce !== false && latest &&
+    userId != null && latest.edited_by === userId &&
+    (Date.now() - Date.parse(latest.created_at || 0)) < VERSION_COALESCE_MS
+  // Base du diff : la révision d'avant `latest` si on coalesce (on l'écrase), sinon `latest`.
+  const diffBase = coalesce
+    ? db.prepare('SELECT * FROM automation_versions WHERE automation_id = ? AND version < ? ORDER BY version DESC LIMIT 1').get(automationId, latest.version)
+    : latest
+  const summary = opts.summary || versionDiffSummary(diffBase, snapshot)
+
+  if (coalesce) {
+    db.prepare(`
+      UPDATE automation_versions SET
+        name=?, description=?, trigger_type=?, trigger_config=?, action_type=?,
+        action_config=?, script=?, active=?, kind=?, edited_by=?, edited_by_name=?,
+        change_summary=?, created_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id=?
+    `).run(snapshot.name, snapshot.description, snapshot.trigger_type, snapshot.trigger_config,
+      snapshot.action_type, snapshot.action_config, snapshot.script, snapshot.active ? 1 : 0,
+      snapshot.kind, userId, userName, summary, latest.id)
+    return db.prepare('SELECT * FROM automation_versions WHERE id = ?').get(latest.id)
+  }
+
+  const version = latest ? latest.version + 1 : 1
+  const id = newId('version')
+  db.prepare(`
+    INSERT INTO automation_versions
+      (id, automation_id, version, name, description, trigger_type, trigger_config,
+       action_type, action_config, script, active, kind, edited_by, edited_by_name, change_summary)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(id, automationId, version, snapshot.name, snapshot.description, snapshot.trigger_type,
+    snapshot.trigger_config, snapshot.action_type, snapshot.action_config, snapshot.script,
+    snapshot.active ? 1 : 0, snapshot.kind, userId, userName, summary)
+  return db.prepare('SELECT * FROM automation_versions WHERE id = ?').get(id)
+}
+
+// Garantit qu'une automation pré-existante a une révision « état initial » avant
+// d'enregistrer l'édition courante — sinon impossible de revenir à l'état d'avant
+// la première édition tracée.
+function ensureBaselineVersion(automationRow) {
+  const { c } = db.prepare('SELECT COUNT(*) c FROM automation_versions WHERE automation_id = ?').get(automationRow.id)
+  if (c > 0) return
+  const snap = snapshotFromRow(automationRow)
+  db.prepare(`
+    INSERT INTO automation_versions
+      (id, automation_id, version, name, description, trigger_type, trigger_config,
+       action_type, action_config, script, active, kind, edited_by, edited_by_name, change_summary)
+    VALUES (?,?,1,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(newId('version'), automationRow.id, snap.name, snap.description, snap.trigger_type,
+    snap.trigger_config, snap.action_type, snap.action_config, snap.script, snap.active ? 1 : 0,
+    snap.kind, null, null, 'État initial (avant suivi de versions)')
+}
+
 const router = Router()
 router.use(requireAuth)
 
 // GET /api/automations
 router.get('/', (req, res) => {
   const automations = db.prepare(`
-    SELECT a.*, COALESCE(r.runs_30d, 0) AS runs_30d
+    SELECT a.*,
+           COALESCE(r.runs_30d, 0) AS runs_30d,
+           COALESCE(r.errors_30d, 0) AS errors_30d
     FROM automations a
     LEFT JOIN (
-      SELECT automation_id, COUNT(*) AS runs_30d
+      SELECT automation_id,
+             COUNT(*) AS runs_30d,
+             SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors_30d
       FROM automation_logs
       WHERE created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days')
       GROUP BY automation_id
@@ -78,10 +276,12 @@ router.get('/:id', (req, res) => {
 router.post('/', (req, res) => {
   const { name, description, trigger_type, trigger_config, script, active, kind, action_type, action_config } = req.body
   if (!name?.trim()) return res.status(400).json({ error: 'Nom requis' })
-  if (!trigger_type && kind !== 'field_rule') return res.status(400).json({ error: 'trigger_type requis' })
+  if (!trigger_type && kind !== 'field_rule' && kind !== 'webhook') return res.status(400).json({ error: 'trigger_type requis' })
 
   const isFieldRule = kind === 'field_rule'
+  const isWebhook = kind === 'webhook'
   let at = 'script', acJson = '{}', tcJson = trigger_config || '{}', tt = trigger_type
+  let webhookToken = null
   if (isFieldRule) {
     try {
       validateFieldRule({ trigger_config, action_type, action_config })
@@ -90,17 +290,27 @@ router.post('/', (req, res) => {
     acJson = typeof action_config === 'string' ? action_config : JSON.stringify(action_config || {})
     tcJson = typeof trigger_config === 'string' ? trigger_config : JSON.stringify(trigger_config || {})
     tt = 'field_rule'
+  } else if (isWebhook) {
+    try {
+      validateWebhook({ action_config, script })
+    } catch (e) { return res.status(400).json({ error: e.message }) }
+    at = 'webhook'
+    tt = 'webhook'
+    acJson = typeof action_config === 'string' ? action_config : JSON.stringify(action_config || {})
+    tcJson = typeof trigger_config === 'string' ? trigger_config : JSON.stringify(trigger_config || {})
+    webhookToken = newWebhookToken()
   }
 
   const id = newId('auto')
   db.prepare(`
-    INSERT INTO automations (id, name, description, trigger_type, trigger_config, action_type, action_config, script, active, kind)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO automations (id, name, description, trigger_type, trigger_config, action_type, action_config, script, active, kind, webhook_token)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(id, name.trim(), description || null, tt,
     tcJson, at, acJson, isFieldRule ? '' : (script || ''),
-    active !== undefined ? active : 1, isFieldRule ? 'field_rule' : null)
+    active !== undefined ? active : 1, isFieldRule ? 'field_rule' : (isWebhook ? 'webhook' : null), webhookToken)
 
   const created = db.prepare('SELECT * FROM automations WHERE id = ?').get(id)
+  recordAutomationVersion(id, snapshotFromRow(created), req, { coalesce: false })
 
   if (created.trigger_type === 'schedule' && created.active) {
     scheduleAutomation(created)
@@ -152,6 +362,7 @@ router.patch('/:id', (req, res) => {
       }
       nextActionConfigJson = JSON.stringify(merged)
     }
+    ensureBaselineVersion(automation)
     db.prepare(`
       UPDATE automations SET
         active = COALESCE(?, active),
@@ -160,6 +371,7 @@ router.patch('/:id', (req, res) => {
       WHERE id = ?
     `).run(active ?? null, nextActionConfigJson, req.params.id)
     const updated = db.prepare('SELECT * FROM automations WHERE id = ?').get(req.params.id)
+    recordAutomationVersion(updated.id, snapshotFromRow(updated), req)
     return res.json(updated)
   }
 
@@ -175,6 +387,17 @@ router.patch('/:id', (req, res) => {
     } catch (e) { return res.status(400).json({ error: e.message }) }
   }
 
+  // Webhook edits: revalider la config déclarative / script si elle change.
+  if (automation.kind === 'webhook' && (action_config !== undefined || script !== undefined)) {
+    try {
+      validateWebhook({
+        action_config: action_config ?? automation.action_config,
+        script: script ?? automation.script,
+      })
+    } catch (e) { return res.status(400).json({ error: e.message }) }
+  }
+
+  ensureBaselineVersion(automation)
   db.prepare(`
     UPDATE automations SET
       name = COALESCE(?, name),
@@ -204,6 +427,7 @@ router.patch('/:id', (req, res) => {
   )
 
   const updated = db.prepare('SELECT * FROM automations WHERE id = ?').get(req.params.id)
+  recordAutomationVersion(updated.id, snapshotFromRow(updated), req)
 
   // Mettre à jour le scheduler
   if (updated.trigger_type === 'schedule') {
@@ -242,6 +466,77 @@ router.get('/:id/logs', (req, res) => {
     SELECT * FROM automation_logs WHERE automation_id = ? ORDER BY created_at DESC LIMIT 50
   `).all(req.params.id)
   res.json(logs)
+})
+
+// GET /api/automations/:id/versions
+// Historique des révisions (snapshot complet + qui/quand), plus récent d'abord.
+router.get('/:id/versions', (req, res) => {
+  const automation = db.prepare(
+    'SELECT id FROM automations WHERE id = ? AND deleted_at IS NULL'
+  ).get(req.params.id)
+  if (!automation) return res.status(404).json({ error: 'Introuvable' })
+  const versions = db.prepare(`
+    SELECT * FROM automation_versions WHERE automation_id = ? ORDER BY version DESC LIMIT 100
+  `).all(req.params.id)
+  res.json(versions)
+})
+
+// POST /api/automations/:id/versions/:versionId/restore
+// Restaure la configuration (déclencheur/action/script) d'une révision passée.
+// Le statut actif/inactif courant N'est PAS touché (éviter une réactivation
+// surprise d'une règle désactivée). Crée une nouvelle révision marqueur.
+router.post('/:id/versions/:versionId/restore', (req, res) => {
+  const automation = db.prepare(
+    'SELECT * FROM automations WHERE id = ? AND deleted_at IS NULL'
+  ).get(req.params.id)
+  if (!automation) return res.status(404).json({ error: 'Introuvable' })
+  if (automation.system) {
+    return res.status(403).json({ error: 'Automation système — restauration interdite' })
+  }
+  const version = db.prepare(
+    'SELECT * FROM automation_versions WHERE id = ? AND automation_id = ?'
+  ).get(req.params.versionId, req.params.id)
+  if (!version) return res.status(404).json({ error: 'Version introuvable' })
+
+  // Revalider la config restaurée selon le genre (une vieille version peut être
+  // invalide vis-à-vis de règles de validation ajoutées depuis).
+  if (automation.kind === 'field_rule') {
+    try {
+      validateFieldRule({
+        trigger_config: version.trigger_config,
+        action_type: version.action_type,
+        action_config: version.action_config,
+      })
+    } catch (e) { return res.status(400).json({ error: `Version invalide : ${e.message}` }) }
+  } else if (automation.kind === 'webhook') {
+    try {
+      validateWebhook({ action_config: version.action_config, script: version.script })
+    } catch (e) { return res.status(400).json({ error: `Version invalide : ${e.message}` }) }
+  }
+
+  ensureBaselineVersion(automation)
+  db.prepare(`
+    UPDATE automations SET
+      name = ?, description = ?, trigger_type = ?, trigger_config = ?,
+      action_type = ?, action_config = ?, script = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = ?
+  `).run(version.name, version.description, version.trigger_type, version.trigger_config,
+    version.action_type, version.action_config, version.script, req.params.id)
+
+  const updated = db.prepare('SELECT * FROM automations WHERE id = ?').get(req.params.id)
+  recordAutomationVersion(updated.id, snapshotFromRow(updated), req, {
+    coalesce: false, summary: `Restauration de la version ${version.version}`,
+  })
+
+  if (updated.trigger_type === 'schedule') {
+    if (updated.active) scheduleAutomation(updated)
+    else unscheduleAutomation(updated.id)
+  } else {
+    unscheduleAutomation(updated.id)
+  }
+
+  res.json(updated)
 })
 
 // POST /api/automations/:id/run
@@ -315,14 +610,72 @@ router.post('/:id/reset-fires', (req, res) => {
   res.json({ success: true, deleted: info.changes })
 })
 
-// POST /api/automations/:id/test — dry-run a field rule, no dispatch, no fires insertion
-router.post('/:id/test', (req, res) => {
+// GET /api/automations/:id/deferred-queue — backpressure depth gauge.
+// When an evaluation matches more rows than CANDIDATE_CAP can dispatch, the
+// overflow is parked in automation_deferred_candidates and drained batch by batch.
+// Exposes the current depth (+ oldest entry + a sample of pending ids) so a rule
+// quietly chewing through thousands of matches becomes observable.
+router.get('/:id/deferred-queue', (req, res) => {
+  const automation = db.prepare(
+    'SELECT id, kind FROM automations WHERE id = ? AND deleted_at IS NULL'
+  ).get(req.params.id)
+  if (!automation) return res.status(404).json({ error: 'Introuvable' })
+  const { depth, oldest } = db.prepare(`
+    SELECT COUNT(*) AS depth, MIN(enqueued_at) AS oldest
+    FROM automation_deferred_candidates WHERE automation_id = ?
+  `).get(req.params.id)
+  const items = db.prepare(`
+    SELECT record_table, record_id, enqueued_at
+    FROM automation_deferred_candidates
+    WHERE automation_id = ?
+    ORDER BY enqueued_at ASC
+    LIMIT 100
+  `).all(req.params.id)
+  res.json({ depth, oldest_enqueued_at: oldest, batch_size: CANDIDATE_CAP, items })
+})
+
+// POST /api/automations/:id/drain-deferred — force an immediate drain of one
+// batch (CANDIDATE_CAP) from this rule's deferred queue. Dispatches real actions.
+router.post('/:id/drain-deferred', async (req, res) => {
+  const automation = db.prepare(
+    'SELECT id, kind FROM automations WHERE id = ? AND deleted_at IS NULL'
+  ).get(req.params.id)
+  if (!automation) return res.status(404).json({ error: 'Introuvable' })
+  if (automation.kind !== 'field_rule') {
+    return res.status(400).json({ error: 'Disponible uniquement pour les règles de champ' })
+  }
+  try {
+    const out = await drainDeferredForAutomation(req.params.id)
+    res.json({ status: 'success', ...out })
+  } catch (e) {
+    res.status(400).json({ status: 'error', error: e.message })
+  }
+})
+
+// POST /api/automations/:id/test
+//  - field_rule : dry-run sans dispatch ni insertion de fires
+//  - webhook    : dry-run déclaratif (matches + réponse calculés, AUCUNE écriture)
+//                 avec les params fournis dans le body { params: {...} }
+router.post('/:id/test', async (req, res) => {
   const automation = db.prepare(
     'SELECT * FROM automations WHERE id = ? AND deleted_at IS NULL'
   ).get(req.params.id)
   if (!automation) return res.status(404).json({ error: 'Introuvable' })
+
+  if (automation.kind === 'webhook') {
+    try {
+      const params = (req.body?.params && typeof req.body.params === 'object') ? req.body.params : {}
+      const out = await runWebhook(automation, {
+        method: 'POST', query: {}, body: params, params, headers: {}, dryRun: true,
+      })
+      return res.json(out)
+    } catch (e) {
+      return res.status(400).json({ error: e.message })
+    }
+  }
+
   if (automation.kind !== 'field_rule') {
-    return res.status(400).json({ error: 'Test disponible uniquement pour les règles de champ' })
+    return res.status(400).json({ error: 'Test disponible uniquement pour les règles de champ et les webhooks' })
   }
   try {
     const rule = {
@@ -336,6 +689,92 @@ router.post('/:id/test', (req, res) => {
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
+})
+
+// POST /api/automations/:id/run-date-rule
+// Exécute immédiatement une règle de date relative (op date_offset) « comme
+// aujourd'hui » : dispatch réel des actions + enregistrement des fires (dedup).
+// Sert au bouton « Lancer maintenant » et permet de tester sans attendre le cron.
+router.post('/:id/run-date-rule', async (req, res) => {
+  const automation = db.prepare(
+    'SELECT id, kind FROM automations WHERE id = ? AND deleted_at IS NULL'
+  ).get(req.params.id)
+  if (!automation) return res.status(404).json({ error: 'Introuvable' })
+  if (automation.kind !== 'field_rule') {
+    return res.status(400).json({ error: 'Disponible uniquement pour les règles de champ' })
+  }
+  try {
+    const out = await runDateOffsetRuleNow(req.params.id)
+    res.json({ status: 'success', ...out })
+  } catch (e) {
+    res.status(400).json({ status: 'error', error: e.message })
+  }
+})
+
+// POST /api/automations/:id/rotate-token — régénère le token d'un webhook (révoque l'ancien)
+router.post('/:id/rotate-token', (req, res) => {
+  const automation = db.prepare(
+    'SELECT id, kind FROM automations WHERE id = ? AND deleted_at IS NULL'
+  ).get(req.params.id)
+  if (!automation) return res.status(404).json({ error: 'Introuvable' })
+  if (automation.kind !== 'webhook') {
+    return res.status(400).json({ error: 'Rotation disponible uniquement pour les webhooks' })
+  }
+  const token = newWebhookToken()
+  db.prepare(`
+    UPDATE automations SET webhook_token = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = ?
+  `).run(token, req.params.id)
+  res.json({ webhook_token: token })
+})
+
+// Max attempts before a webhook retry is abandoned — mirrors processRetryQueue()
+// in server/src/services/airtableWebhooks.js. Keep in sync.
+const WEBHOOK_RETRY_MAX_ATTEMPTS = 5
+
+// GET /api/automations/:id/retry-queue
+// Exposes the Airtable webhook retry queue (table webhook_sync_retry) so the
+// "1 module(s) en échec (retry queue)" log line becomes actionable: which
+// module, which error, how many attempts, and when the next retry fires.
+// Only meaningful for sys_airtable_webhook_router.
+router.get('/:id/retry-queue', (req, res) => {
+  if (req.params.id !== 'sys_airtable_webhook_router') {
+    return res.status(404).json({ error: 'File de retry indisponible pour cette automation' })
+  }
+  const rows = db.prepare(`
+    SELECT id, module, attempts, last_error, created_at, next_retry_at
+    FROM webhook_sync_retry
+    ORDER BY next_retry_at ASC
+  `).all()
+  res.json({ items: rows, max_attempts: WEBHOOK_RETRY_MAX_ATTEMPTS })
+})
+
+// POST /api/automations/:id/retry-queue/:retryId/retry
+// Force an immediate retry of one queued module: reset next_retry_at to now,
+// then drain the due queue. Returns the refreshed queue.
+router.post('/:id/retry-queue/:retryId/retry', async (req, res) => {
+  if (req.params.id !== 'sys_airtable_webhook_router') {
+    return res.status(404).json({ error: 'File de retry indisponible pour cette automation' })
+  }
+  const row = db.prepare('SELECT id FROM webhook_sync_retry WHERE id = ?').get(req.params.retryId)
+  if (!row) return res.status(404).json({ error: 'Entrée de retry introuvable' })
+
+  db.prepare(
+    "UPDATE webhook_sync_retry SET next_retry_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"
+  ).run(req.params.retryId)
+
+  try {
+    await processRetryQueue()
+  } catch (e) {
+    return res.status(500).json({ error: e.message })
+  }
+
+  const items = db.prepare(`
+    SELECT id, module, attempts, last_error, created_at, next_retry_at
+    FROM webhook_sync_retry
+    ORDER BY next_retry_at ASC
+  `).all()
+  res.json({ items, max_attempts: WEBHOOK_RETRY_MAX_ATTEMPTS })
 })
 
 // GET /api/automations/field-defs?erp_table=tickets
@@ -396,9 +835,20 @@ router.get('/:id/email-preview', (req, res) => {
       earliestShipment: '1970-01-01',
       includeAlreadySent: true,
     })
-    const candidate = eligibles.find(c =>
-      (language === 'French' ? (c.contact_language || c.company_language || '').toLowerCase().startsWith('fr') : true)
-    ) || eligibles[0] || null
+    const candidates = eligibles.slice(0, 50).map(c => ({
+      id: c.company_id, label: c.company_name,
+    }))
+
+    const requestedId = req.query.record_id ? String(req.query.record_id) : null
+    let candidate = null
+    if (requestedId) {
+      candidate = eligibles.find(c => c.company_id === requestedId) || null
+    }
+    if (!candidate) {
+      candidate = eligibles.find(c =>
+        (language === 'French' ? (c.contact_language || c.company_language || '').toLowerCase().startsWith('fr') : true)
+      ) || eligibles[0] || null
+    }
 
     const firstName = candidate?.contact_first_name || 'Alex'
     const companyId = candidate?.company_id || '00000000-0000-0000-0000-000000000000'
@@ -416,6 +866,7 @@ router.get('/:id/email-preview', (req, res) => {
       sample_record: candidate
         ? { id: candidate.company_id, label: candidate.company_name }
         : null,
+      candidates,
     })
   }
 
@@ -428,8 +879,19 @@ router.get('/:id/email-preview', (req, res) => {
 
   // Field-rule email automations — dry-run first candidate
   if (automation.kind === 'field_rule' && automation.action_type === 'email') {
-    let actionConfig = {}
-    try { actionConfig = JSON.parse(automation.action_config || '{}') } catch {}
+    // Ne pas avaler une config corrompue : un action_config JSON invalide
+    // ferait tourner l'aperçu (et l'exécution) avec {} — l'automation paraît
+    // marcher mais n'envoie rien. On remonte une erreur explicite.
+    let actionConfig
+    try {
+      actionConfig = JSON.parse(automation.action_config || '{}')
+    } catch (e) {
+      return res.status(400).json({
+        available: false,
+        invalid_config: true,
+        error: `Configuration de l'automation corrompue : action_config n'est pas du JSON valide (${e.message}). Corrigez-la avant d'utiliser cette automation.`,
+      })
+    }
     try {
       const rule = {
         id: automation.id,
@@ -437,18 +899,58 @@ router.get('/:id/email-preview', (req, res) => {
         action_type: 'email',
         action_config: actionConfig,
       }
-      const out = dryRunFieldRule(rule, { previewLimit: 1 })
-      const first = out.previews.find(p => !p.error && p.rendered)
-      if (first) {
+      // previewLimit 50 → the picker lists up to 50 matching records; rendering
+      // each is cheap and avoids a second query when one is selected.
+      const out = dryRunFieldRule(rule, { previewLimit: 50 })
+      const candidates = out.previews.map(p => ({
+        id: p.id, label: p.label, already_fired: !!p.already_fired,
+      }))
+
+      // Pick the record to render: the explicitly-requested one (if any), else
+      // the first candidate that renders cleanly.
+      const requestedId = req.query.record_id ? String(req.query.record_id) : null
+      let chosen = null
+      if (requestedId) {
+        chosen = out.previews.find(p => p.id === requestedId) || null
+        // Requested record is outside the candidate set (doesn't match the
+        // trigger, or beyond the 50-row window) — render it on demand so the
+        // user can still preview any record they pick.
+        if (!chosen) chosen = previewRuleForRecord(rule, requestedId)
+        if (!chosen) {
+          return res.status(404).json({
+            available: false,
+            error: `Record introuvable: ${requestedId}`,
+          })
+        }
+      } else {
+        chosen = out.previews.find(p => !p.error && p.rendered) || null
+      }
+
+      if (chosen && chosen.rendered) {
         return res.json({
           available: true, kind: 'field_rule', automation_id: automation.id,
-          subject: first.rendered.subject || '',
-          bodyHtml: first.rendered.bodyHtml || '',
-          bodyText: first.rendered.bodyText || '',
-          from: first.rendered.from || null,
-          to: first.rendered.to || null,
+          subject: chosen.rendered.subject || '',
+          bodyHtml: chosen.rendered.bodyHtml || '',
+          bodyText: chosen.rendered.bodyText || '',
+          from: chosen.rendered.from || null,
+          to: chosen.rendered.to || null,
           sample: true,
-          sample_record: { id: first.id, label: first.label },
+          sample_record: { id: chosen.id, label: chosen.label },
+          matches_trigger: chosen.matches_trigger !== false,
+          candidates,
+          candidates_total: out.candidates_total,
+        })
+      }
+      if (chosen && chosen.error) {
+        // The chosen record exists but its template failed to render.
+        return res.json({
+          available: true, kind: 'field_rule', automation_id: automation.id,
+          subject: '', bodyHtml: '', bodyText: '',
+          from: actionConfig.from || null, to: actionConfig.to || null,
+          sample: true,
+          sample_record: { id: chosen.id, label: chosen.label },
+          render_error: chosen.error,
+          candidates,
           candidates_total: out.candidates_total,
         })
       }
@@ -461,6 +963,7 @@ router.get('/:id/email-preview', (req, res) => {
         from: actionConfig.from || null,
         to: actionConfig.to || null,
         sample: false,
+        candidates,
         candidates_total: 0,
       })
     } catch (e) {

@@ -2,6 +2,7 @@ import db from '../db/database.js'
 import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
+import { logSync } from './syncLog.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const BASE_URL = 'https://api.novoxpress.ca/prod'
@@ -51,7 +52,18 @@ async function getToken() {
         tokenCache = { jwt_token: data.token || data.jwt_token, refresh_token: data.refresh_token, expires_at: Date.now() + 55 * 60 * 1000 }
         return tokenCache.jwt_token
       }
-    } catch { /* fall through to full auth */ }
+      // Refresh refusé par l'API (token expiré/révoqué) — on retombe sur une full auth,
+      // mais on trace le fallback pour détecter une dérive d'auth avant qu'une expédition échoue.
+      const text = await res.text().catch(() => '')
+      const reason = `refresh-token refusé (${res.status})${text ? `: ${text}` : ''}`
+      console.warn(`⚠️ Novoxpress: ${reason} — fallback sur full auth username/password`)
+      logSync('novoxpress', 'scheduled', { status: 'error', error: `${reason} — fallback full auth` })
+    } catch (e) {
+      // Erreur réseau pendant le refresh — même fallback, même trace.
+      const reason = `refresh-token échec réseau: ${e.message}`
+      console.warn(`⚠️ Novoxpress: ${reason} — fallback sur full auth username/password`)
+      logSync('novoxpress', 'scheduled', { status: 'error', error: `${reason} — fallback full auth` })
+    }
   }
 
   const { username, password } = getCredentials()
@@ -85,7 +97,7 @@ async function apiPost(endpoint, body) {
 }
 
 // Fixed sender — Automatisation Orisha Inc.
-const SENDER = {
+export const SENDER = {
   company_name: 'Automatisation Orisha Inc.',
   contact_name: 'Martin Audesse',
   email_address: 'martin@orisha.io',
@@ -172,7 +184,7 @@ function sanitizeXmlText(s) {
     .trim()
 }
 
-function buildRecipient(shipment) {
+export function buildRecipient(shipment) {
   // Préférence : contact rattaché à l'adresse > company (le contact est le
   // destinataire physique du colis, ses coordonnées sont les bonnes).
   const rawEmail = shipment.address_contact_email || shipment.company_email || ''
@@ -206,6 +218,12 @@ function buildRecipient(shipment) {
   const street = extractStreet(shipment.address_line1, shipment.address_city)
   const city = parsed?.city || shipment.address_city || ''
 
+  // Novoxpress rejette désormais `contact_name` dans `recipient` sur TOUS ses
+  // endpoints (rate-estimate ET create-shipment) avec « ... contact_name is not
+  // allowed ». Le champ était autrefois accepté (on l'envoyait pour éviter « NA »
+  // sur l'étiquette), mais leur schéma s'est durci. On ne l'envoie donc plus du
+  // tout — le destinataire reste lisible via `company_name`. Seul
+  // `sender.contact_name` est encore toléré (cf. SENDER).
   return {
     company_name: sanitizeXmlText(shipment.company_name || 'Client').slice(0, 30),
     email_address: rawEmail,
@@ -222,7 +240,7 @@ function buildRecipient(shipment) {
   }
 }
 
-function buildPayload(shipment, packaging_type, packages, declaredValue = '100') {
+export function buildPayload(shipment, packaging_type, packages, declaredValue = '100') {
   return {
     sender: SENDER,
     recipient: buildRecipient(shipment),
@@ -298,6 +316,84 @@ export async function schedulePickup(novoxpressShipmentId, { date, ready_at, rea
   return data
 }
 
+// Construit un message clair quand `/shipment/create-shipment` répond sans
+// `shipment_id`. L'absence de shipment_id signifie que Novoxpress n'a PAS réussi
+// à créer l'expédition chez Postes Canada — l'échec est *en amont*, pas dans nos
+// données. Le détail brut est souvent une erreur de validation XSD côté Postes
+// Canada sur le XML généré par Novoxpress (ex. « cvc-model-group … duplicate
+// element groupIdOrTransmitShipment »). On le dit explicitement pour éviter que
+// l'utilisateur croie à un champ manquant de l'envoi et parte déboguer la fiche.
+export function describeCreateLabelFailure(data) {
+  const desc = data?.error?.description || data?.error?.message || data?.message || JSON.stringify(data)
+  const isUpstreamSchema = /cvc-|model-group|groupIdOrTransmitShipment|shipment-v8/i.test(String(desc))
+  const message = isUpstreamSchema
+    ? `Étiquette refusée en amont par Novoxpress → Postes Canada : erreur de validation XML de leur côté (pas un problème des données de cet envoi). Réessayez plus tard ; si ça persiste, signalez-le au support Novoxpress. Détail : ${desc}`
+    : `Création d'étiquette échouée chez Novoxpress (aucun shipment_id retourné). Détail : ${desc}`
+  return { message, upstream: isUpstreamSchema }
+}
+
+// Extrait le numéro de suivi d'une réponse Novoxpress. Selon le transporteur
+// (Postes Canada → `tracking_pin`, autres → `tracking_id`/`tracking_number`) et
+// l'endpoint (`create-shipment` vs `print-label`), le champ varie et peut être
+// imbriqué (ex. `label.tracking_pin`). On cherche d'abord les clés connues à
+// plat, puis on descend dans les sous-objets. On exclut les valeurs ressemblant
+// à une URL (le PDF d'étiquette) pour ne pas les confondre avec un suivi.
+const TRACKING_KEYS = ['tracking_pin', 'tracking_number', 'tracking_id', 'trackingNumber', 'tracking_no', 'trackingPin']
+export function extractTrackingNumber(obj) {
+  if (!obj || typeof obj !== 'object') return null
+  for (const k of TRACKING_KEYS) {
+    const v = obj[k]
+    if (typeof v === 'string' && v.trim() && !/^https?:/i.test(v)) return v.trim()
+  }
+  for (const v of Object.values(obj)) {
+    if (v && typeof v === 'object') {
+      const found = extractTrackingNumber(v)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+// Récupère le PDF d'étiquette d'un shipment Novoxpress DÉJÀ créé (achat fait) et
+// l'enregistre sous uploads/labels/<erpShipmentId>.pdf. Séparé de createLabel
+// pour pouvoir réessayer le téléchargement après coup sans re-facturer.
+// Renvoie { filename, trackingNumber } ; lève une erreur si le PDF est
+// inaccessible (ex. 403 du CDN), SANS impacter l'achat déjà effectué.
+export async function fetchAndSaveLabelPdf(novoxShipmentId, erpShipmentId) {
+  const token = await getToken()
+  const labelRes = await fetch(`${BASE_URL}/shipment/print-label`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ shipment_id: novoxShipmentId, label_type: 'EightFiveByEleven' }).toString()
+  })
+  if (!labelRes.ok) {
+    const text = await labelRes.text()
+    throw new Error(`Novoxpress print-label (${labelRes.status}): ${text}`)
+  }
+
+  let trackingNumber = null
+  let pdfBuffer
+  const contentType = labelRes.headers.get('content-type') || ''
+  if (contentType.includes('application/json')) {
+    // API returns JSON with a URL to the actual PDF
+    const json = await labelRes.json()
+    trackingNumber = extractTrackingNumber(json)
+    const pdfUrl = json?.label?.shipping_label
+    if (!pdfUrl) throw new Error(`Novoxpress: pas d'URL d'étiquette dans la réponse — ${JSON.stringify(json)}`)
+    const pdfRes = await fetch(pdfUrl)
+    if (!pdfRes.ok) throw new Error(`Novoxpress: échec téléchargement étiquette (${pdfRes.status})`)
+    pdfBuffer = Buffer.from(await pdfRes.arrayBuffer())
+  } else {
+    pdfBuffer = Buffer.from(await labelRes.arrayBuffer())
+  }
+
+  const filename = `${erpShipmentId}.pdf`
+  fs.mkdirSync(LABELS_DIR, { recursive: true })
+  fs.writeFileSync(path.join(LABELS_DIR, filename), pdfBuffer)
+
+  return { filename, trackingNumber }
+}
+
 export async function createLabel(shipment, erpShipmentId, { request_id, service_id, packaging_type, packages, declared_value }) {
   const details = buildPayload(shipment, packaging_type, packages, declared_value || '100')
 
@@ -334,43 +430,32 @@ export async function createLabel(shipment, erpShipmentId, { request_id, service
   const data = await apiPost('/shipment/create-shipment', createPayload)
 
   const novoxShipmentId = data.shipment_id
+  // Le numéro de suivi peut venir de create-shipment OU de print-label selon
+  // le transporteur — on tente create-shipment ici, print-label plus bas.
+  let trackingNumber = extractTrackingNumber(data)
   if (!novoxShipmentId) {
-    const err = new Error(`Novoxpress: shipment_id manquant — ${data?.error?.description || JSON.stringify(data)}`)
+    const { message, upstream } = describeCreateLabelFailure(data)
+    const err = new Error(message)
     err.sentPayload = createPayload
     err.responseBody = JSON.stringify(data)
     err.status = 200
+    err.upstream = upstream
     throw err
   }
 
-  // Fetch label PDF
-  const token = await getToken()
-  const labelRes = await fetch(`${BASE_URL}/shipment/print-label`, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ shipment_id: novoxShipmentId, label_type: 'EightFiveByEleven' }).toString()
-  })
-  if (!labelRes.ok) {
-    const text = await labelRes.text()
-    throw new Error(`Novoxpress print-label (${labelRes.status}): ${text}`)
+  // À ce stade l'étiquette est ACHETÉE (shipment_id retourné → compte Novoxpress
+  // facturé). Un échec de téléchargement du PDF (ex. 403 du CDN) ne doit PAS
+  // faire perdre l'achat : on le capture comme erreur non-bloquante (labelError)
+  // et on laisse le PDF récupérable plus tard via fetchAndSaveLabelPdf.
+  let filename = null
+  let labelError = null
+  try {
+    const pdf = await fetchAndSaveLabelPdf(novoxShipmentId, erpShipmentId)
+    filename = pdf.filename
+    if (!trackingNumber) trackingNumber = pdf.trackingNumber
+  } catch (e) {
+    labelError = e.message
   }
 
-  let pdfBuffer
-  const contentType = labelRes.headers.get('content-type') || ''
-  if (contentType.includes('application/json')) {
-    // API returns JSON with a URL to the actual PDF
-    const json = await labelRes.json()
-    const pdfUrl = json?.label?.shipping_label
-    if (!pdfUrl) throw new Error(`Novoxpress: pas d'URL d'étiquette dans la réponse — ${JSON.stringify(json)}`)
-    const pdfRes = await fetch(pdfUrl)
-    if (!pdfRes.ok) throw new Error(`Novoxpress: échec téléchargement étiquette (${pdfRes.status})`)
-    pdfBuffer = Buffer.from(await pdfRes.arrayBuffer())
-  } else {
-    pdfBuffer = Buffer.from(await labelRes.arrayBuffer())
-  }
-
-  const filename = `${erpShipmentId}.pdf`
-  fs.mkdirSync(LABELS_DIR, { recursive: true })
-  fs.writeFileSync(path.join(LABELS_DIR, filename), pdfBuffer)
-
-  return { shipment_id: novoxShipmentId, tracking_id: data.tracking_id, status: data.status, filename }
+  return { shipment_id: novoxShipmentId, tracking_id: trackingNumber, status: data.status, filename, labelError }
 }

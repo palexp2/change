@@ -1,16 +1,20 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Pencil, Printer, CheckCircle, Download, Package, Mail, XCircle, FileText, X, Trash2 } from 'lucide-react'
+import { ArrowLeft, Pencil, Printer, Download, Package, Mail, XCircle, FileText, X, Trash2, RefreshCw, AlertTriangle } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { useUndoSend } from '../components/UndoSendProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
+import NovoxpressPickupModal from '../components/NovoxpressPickupModal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 
 function fmtCurrency(v) {
@@ -25,36 +29,44 @@ function SendTrackingModal({ envoi, onClose, onSent }) {
   const defaultEmail = envoi.address_contact_email || ''
   const [to, setTo] = useState(defaultEmail)
   const [sending, setSending] = useState(false)
-  const [sent, setSent] = useState(false)
   const [error, setError] = useState('')
+  const confirm = useConfirm()
+  const scheduleSend = useUndoSend()
+  const { addToast } = useToast()
 
   async function handleSend() {
-    if (!to || !to.includes('@')) { setError('Adresse courriel invalide'); return }
-    setSending(true)
+    const cleanTo = String(to || '').trim()
+    if (!cleanTo || !cleanTo.includes('@')) { setError('Adresse courriel invalide'); return }
     setError('')
-    try {
-      await api.shipments.sendTracking(envoi.id, to)
-      setSent(true)
-      onSent()
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setSending(false)
-    }
-  }
 
-  if (sent) return (
-    <div className="space-y-4 text-center">
-      <div className="flex flex-col items-center gap-3 py-4">
-        <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center">
-          <CheckCircle size={28} className="text-green-600" />
-        </div>
-        <h3 className="font-semibold text-slate-900 text-lg">Courriel envoyé !</h3>
-        <p className="text-sm text-slate-500">Le courriel de suivi a été envoyé à <span className="font-medium text-slate-700">{to}</span>.</p>
-      </div>
-      <button onClick={onClose} className="btn-secondary w-full">Fermer</button>
-    </div>
-  )
+    // Confirmation explicite du side effect (envoi d'un courriel client-facing).
+    setSending(true)
+    const ok = await confirm({
+      title: "Confirmer l'envoi du courriel",
+      message: (
+        <>Un courriel contenant le numéro de suivi <strong>{envoi.tracking_number}</strong> sera envoyé à <strong>{cleanTo}</strong>.</>
+      ),
+      confirmLabel: 'Envoyer',
+      danger: false,
+    })
+    if (!ok) { setSending(false); return }
+
+    // On ferme la modale et on planifie l'envoi avec une fenêtre d'annulation de 10 s.
+    onClose()
+    scheduleSend({
+      message: `Envoi du suivi à ${cleanTo}…`,
+      onRun: async () => {
+        try {
+          await api.shipments.sendTracking(envoi.id, cleanTo)
+          addToast({ message: `Courriel de suivi envoyé à ${cleanTo}`, type: 'success' })
+          onSent?.()
+        } catch (e) {
+          addToast({ message: e.message || "Erreur lors de l'envoi", type: 'error' })
+        }
+      },
+      onCancel: () => addToast({ message: 'Envoi annulé', type: 'info' }),
+    })
+  }
 
   const contactName = [envoi.address_contact_first_name, envoi.address_contact_last_name].filter(Boolean).join(' ')
 
@@ -220,13 +232,16 @@ export default function EnvoisDetail() {
   const [envoi, setEnvoi] = useState(null)
   const [adresses, setAdresses] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [showEdit, setShowEdit] = useState(false)
   const [showLabel, setShowLabel] = useState(false)
+  const [showPickup, setShowPickup] = useState(false)
   const [showSendTracking, setShowSendTracking] = useState(false)
   const [cancellingPickup, setCancellingPickup] = useState(false)
   const [novoxConfigured, setNovoxConfigured] = useState(false)
   const [generatingPdf, setGeneratingPdf] = useState(false)
   const [showPdf, setShowPdf] = useState(false)
+  const [retryingPdf, setRetryingPdf] = useState(false)
   const confirm = useConfirm()
   const { addToast } = useToast()
 
@@ -237,9 +252,10 @@ export default function EnvoisDetail() {
 
   function load() {
     setLoading(true)
+    setLoadError(null)
     api.shipments.get(id)
       .then(data => setEnvoi(data))
-      .catch(() => setEnvoi(null))
+      .catch((e) => { setEnvoi(null); setLoadError(e?.message || 'Erreur de chargement') })
       .finally(() => setLoading(false))
   }
 
@@ -283,6 +299,21 @@ export default function EnvoisDetail() {
     navigate('/envois')
   }
 
+  // Re-télécharge le PDF d'une étiquette déjà achetée (achat OK mais PDF non
+  // récupéré, ex. 403 du CDN). Ne re-facture pas — réutilise le shipment Novoxpress.
+  async function handleRetryLabelPdf() {
+    setRetryingPdf(true)
+    try {
+      await api.novoxpress.retryLabelPdf(id)
+      addToast({ message: 'Étiquette PDF récupérée', type: 'success' })
+      load()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally {
+      setRetryingPdf(false)
+    }
+  }
+
   async function handleGenerateBonLivraison() {
     setGeneratingPdf(true)
     try { await api.shipments.generateBonLivraison(id); await load() }
@@ -292,12 +323,11 @@ export default function EnvoisDetail() {
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" />
-        </div>
+        <Spinner center />
       </Layout>
     )
   }
+  if (loadError && !envoi) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
   if (!envoi) return <Layout><div className="p-6 text-slate-500">Envoi introuvable.</div></Layout>
 
   return (
@@ -327,10 +357,22 @@ export default function EnvoisDetail() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            {novoxConfigured && envoi.address_id && (
+            {/* Étiquette déjà achetée mais PDF non récupéré (ex. 403 du CDN) :
+                proposer la récupération du PDF, PAS un nouvel achat. */}
+            {novoxConfigured && envoi.novoxpress_shipment_id && !envoi.label_pdf_path ? (
+              <button onClick={handleRetryLabelPdf} disabled={retryingPdf} className="btn-primary flex items-center gap-1.5 text-sm">
+                <RefreshCw size={14} className={retryingPdf ? 'animate-spin' : ''} />
+                {retryingPdf ? 'Récupération…' : 'Récupérer le PDF'}
+              </button>
+            ) : novoxConfigured && envoi.address_id && (
               <button onClick={() => setShowLabel(true)} className="btn-primary flex items-center gap-1.5 text-sm">
                 <Printer size={14} />
                 {envoi.label_pdf_path ? 'Réimprimer' : 'Créer étiquette'}
+              </button>
+            )}
+            {novoxConfigured && envoi.novoxpress_shipment_id && !envoi.novoxpress_pickup_id && (
+              <button onClick={() => setShowPickup(true)} className="btn-secondary flex items-center gap-1.5 text-sm">
+                <Package size={14} /> Commander un ramassage
               </button>
             )}
             {envoi.tracking_number && (
@@ -404,7 +446,7 @@ export default function EnvoisDetail() {
                 <dd className="text-slate-700 whitespace-pre-wrap">{envoi.notes}</dd>
               </div>
             )}
-            {envoi.label_pdf_path && (
+            {envoi.label_pdf_path ? (
               <div>
                 <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Étiquette</dt>
                 <dd>
@@ -416,6 +458,17 @@ export default function EnvoisDetail() {
                   >
                     <Download size={13} /> Télécharger PDF
                   </a>
+                </dd>
+              </div>
+            ) : envoi.novoxpress_shipment_id && (
+              <div className="col-span-2 md:col-span-3">
+                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Étiquette</dt>
+                <dd className="inline-flex items-start gap-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  <AlertTriangle size={15} className="text-amber-600 mt-0.5 shrink-0" />
+                  <span>
+                    Étiquette <span className="font-medium">achetée</span> (Novoxpress {envoi.novoxpress_shipment_id}),
+                    mais le PDF n'a pas pu être téléchargé. Utilisez « Récupérer le PDF » — aucune nouvelle facturation.
+                  </span>
                 </dd>
               </div>
             )}
@@ -443,7 +496,7 @@ export default function EnvoisDetail() {
         <div className="card overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-200">
             <h2 className="font-semibold text-slate-900">
-              Articles de la commande ({envoi.order_items?.length || 0})
+              {envoi.items_fallback ? 'Articles de la commande' : "Articles de l'envoi"} ({envoi.order_items?.length || 0})
             </h2>
           </div>
           {!envoi.order_items?.length ? (
@@ -464,7 +517,11 @@ export default function EnvoisDetail() {
                   const lineWeight = (item.weight_lbs || 0) * (item.qty || 0)
                   return (
                     <tr key={item.id || i} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                      <td className="px-4 py-3 font-medium text-slate-900">{item.product_name || '—'}</td>
+                      <td className="px-4 py-3 font-medium text-slate-900">
+                        {item.product_id
+                          ? <Link to={`/products/${item.product_id}`} className="text-brand-600 hover:underline">{item.product_name || 'Produit'}</Link>
+                          : (item.product_name || '—')}
+                      </td>
                       <td className="px-4 py-3 font-mono text-xs text-slate-500">{item.sku || '—'}</td>
                       <td className="px-4 py-3 text-right text-slate-700">{item.qty ?? '—'}</td>
                       <td className="px-4 py-3 text-right text-slate-500 hidden sm:table-cell">{fmtCurrency(item.unit_cost)}</td>
@@ -541,6 +598,19 @@ export default function EnvoisDetail() {
               .reduce((sum, item) => sum + (item.weight_lbs || 0) * (item.qty || 0), 0)
           }
           onClose={() => { setShowLabel(false); load() }}
+          onDone={() => { load() }}
+        />
+      </Modal>
+
+      <Modal isOpen={showPickup} onClose={() => setShowPickup(false)} title="Commander un ramassage">
+        <NovoxpressPickupModal
+          envoi={envoi}
+          defaultWeight={
+            (envoi.order_items || [])
+              .filter(item => item.shipment_id === envoi.id)
+              .reduce((sum, item) => sum + (item.weight_lbs || 0) * (item.qty || 0), 0)
+          }
+          onClose={() => { setShowPickup(false); load() }}
           onDone={() => { load() }}
         />
       </Modal>

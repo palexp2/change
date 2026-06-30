@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { ShoppingCart } from 'lucide-react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
@@ -9,11 +10,7 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 const STATUS_COLORS = { 'Commandé': 'blue', 'Reçu partiellement': 'yellow', 'Reçu': 'green', 'Annulé': 'red' }
-
-function fmtCad(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
+import { fmtCad } from '../utils/formatters.js'
 
 
 const RENDERS = {
@@ -88,6 +85,7 @@ export default function Purchases() {
           loading={loading}
           onRowClick={row => navigate(`/purchases/${row.id}`)}
           searchFields={['product_name', 'supplier', 'supplier_company_name', 'reference']}
+          emptyState={{ icon: ShoppingCart, title: 'Aucun achat', description: "Aucune ligne d'achat n'est enregistrée. Les achats de produits apparaissent ici une fois saisis." }}
         />
       </div>
     </Layout>

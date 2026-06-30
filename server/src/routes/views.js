@@ -10,11 +10,14 @@ const ALLOWED_TABLES = new Set([
   'orders', 'tickets', 'purchases', 'serial_numbers', 'interactions', 'shipments',
   'abonnements', 'abonnement_events', 'retours', 'factures', 'assemblages',
   'achats_fournisseurs', 'tasks',
-  'employees', 'paies', 'paie_items', 'bom_items',
+  'employees', 'paies', 'paie_items', 'bom_items', 'hour_bank',
   'company_serials', 'sale_receipts',
   'automations', 'catalog', 'discovery_forms', 'journal_entries',
   'public_files', 'qualification_calls', 'soumissions', 'stock_movements',
+  'product_movements', 'sync_log',
   'stripe_invoice_items', 'stripe_payouts', 'users',
+  // Vues dérivées (pas de table DB) — règles comptables des numéros de série.
+  'serial_transitions', 'serial_accounting_rules', 'serial_missing_valuations',
 ])
 
 function validateTable(req, res) {
@@ -45,8 +48,10 @@ function parsePill(p) {
     visible_columns: JSON.parse(p.visible_columns || '[]'),
     sort: JSON.parse(p.sort || '[]'),
     collapsed_groups: JSON.parse(p.collapsed_groups || '[]'),
+    column_widths: JSON.parse(p.column_widths || '{}'),
     group_by: parseMaybeArray(p.group_by),
     group_order: parseMaybeArray(p.group_order),
+    locked: p.locked === 1,
   }
 }
 
@@ -56,11 +61,11 @@ router.get('/:table', requireAuth, (req, res) => {
   const { table } = req.params
 
   const config = db.prepare(
-    'SELECT visible_columns, default_sort, all_view_sort_order, column_widths, bulk_delete_enabled FROM table_view_configs WHERE table_name=?'
+    'SELECT visible_columns, default_sort, all_view_sort_order, column_widths, bulk_delete_enabled, footer_aggregations FROM table_view_configs WHERE table_name=?'
   ).get(table)
 
   const pills = db.prepare(
-    'SELECT id, label, color, filters, visible_columns, sort, group_by, group_order, collapsed_groups, sort_order FROM table_view_pills WHERE table_name=? ORDER BY sort_order, created_at'
+    'SELECT id, label, color, filters, visible_columns, sort, group_by, group_order, collapsed_groups, column_widths, sort_order, locked FROM table_view_pills WHERE table_name=? ORDER BY sort_order, created_at'
   ).all(table)
 
   // Dynamic fields from Airtable auto-sync (deduplicate by label, prefer non-native over native)
@@ -92,8 +97,8 @@ router.get('/:table', requireAuth, (req, res) => {
 
   res.json({
     config: config
-      ? { visible_columns: JSON.parse(config.visible_columns), default_sort: JSON.parse(config.default_sort), all_view_sort_order: config.all_view_sort_order ?? -1, column_widths: JSON.parse(config.column_widths || '{}'), bulk_delete_enabled: config.bulk_delete_enabled === 1 }
-      : { visible_columns: [], default_sort: [], all_view_sort_order: -1, column_widths: {}, bulk_delete_enabled: false },
+      ? { visible_columns: JSON.parse(config.visible_columns), default_sort: JSON.parse(config.default_sort), all_view_sort_order: config.all_view_sort_order ?? -1, column_widths: JSON.parse(config.column_widths || '{}'), bulk_delete_enabled: config.bulk_delete_enabled === 1, footer_aggregations: JSON.parse(config.footer_aggregations || '{}') }
+      : { visible_columns: [], default_sort: [], all_view_sort_order: -1, column_widths: {}, bulk_delete_enabled: false, footer_aggregations: {} },
     pills: pills.map(parsePill),
     dynamicFields,
   })
@@ -161,6 +166,27 @@ router.patch('/:table/column-widths', requireAuth, (req, res) => {
   res.json({ ok: true })
 })
 
+// PATCH /api/views/:table/footer-aggregations
+// Persiste la barre de totaux en pied de DataTable (agrégation par colonne).
+// requireAuth comme column-widths : c'est une préférence d'affichage par table,
+// modifiable par tout utilisateur authentifié.
+router.patch('/:table/footer-aggregations', requireAuth, (req, res) => {
+  if (!validateTable(req, res)) return
+  const { table } = req.params
+  const { footer_aggregations } = req.body
+  if (!footer_aggregations || typeof footer_aggregations !== 'object') return res.status(400).json({ error: 'footer_aggregations requis' })
+
+  const existing = db.prepare('SELECT id FROM table_view_configs WHERE table_name=?').get(table)
+  if (existing) {
+    db.prepare("UPDATE table_view_configs SET footer_aggregations=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE table_name=?")
+      .run(JSON.stringify(footer_aggregations), table)
+  } else {
+    db.prepare('INSERT INTO table_view_configs (id, table_name, visible_columns, default_sort, footer_aggregations) VALUES (?,?,?,?,?)')
+      .run(uuidv4(), table, '[]', '[]', JSON.stringify(footer_aggregations))
+  }
+  res.json({ ok: true })
+})
+
 // POST /api/views/:table/pills
 router.post('/:table/pills', requireAdmin, (req, res) => {
   if (!validateTable(req, res)) return
@@ -203,9 +229,16 @@ router.put('/:table/pills/:id', requireAuth, (req, res) => {
   const { table, id } = req.params
 
   const pill = db.prepare(
-    'SELECT id FROM table_view_pills WHERE id=? AND table_name=?'
+    'SELECT id, locked FROM table_view_pills WHERE id=? AND table_name=?'
   ).get(id, table)
   if (!pill) return res.status(404).json({ error: 'Vue introuvable' })
+
+  // Vue verrouillée (lecture seule) : aucune édition possible — ni autosave
+  // (filtres/tris/colonnes/groupage), ni renommage. Un admin doit d'abord la
+  // déverrouiller via PATCH /pills/:id/locked.
+  if (pill.locked === 1) {
+    return res.status(423).json({ error: 'Vue verrouillée — déverrouillez-la pour la modifier.' })
+  }
 
   const body = req.body
   const updates = []
@@ -240,8 +273,11 @@ router.put('/:table/pills/:id', requireAuth, (req, res) => {
   res.json(parsePill(updated))
 })
 
-// DELETE /api/views/:table/pills/:id
-router.delete('/:table/pills/:id', requireAdmin, (req, res) => {
+// PATCH /api/views/:table/pills/:id/locked
+// Verrouille/déverrouille une vue (admin only). Une vue verrouillée devient
+// lecture seule : ses filtres/tris/colonnes ne peuvent plus dériver et elle
+// ne peut pas être supprimée tant qu'elle n'est pas déverrouillée.
+router.patch('/:table/pills/:id/locked', requireAdmin, (req, res) => {
   if (!validateTable(req, res)) return
   const { table, id } = req.params
 
@@ -249,6 +285,49 @@ router.delete('/:table/pills/:id', requireAdmin, (req, res) => {
     'SELECT id FROM table_view_pills WHERE id=? AND table_name=?'
   ).get(id, table)
   if (!pill) return res.status(404).json({ error: 'Vue introuvable' })
+
+  const locked = req.body.locked ? 1 : 0
+  db.prepare('UPDATE table_view_pills SET locked=? WHERE id=?').run(locked, id)
+
+  const updated = db.prepare('SELECT * FROM table_view_pills WHERE id=?').get(id)
+  res.json(parsePill(updated))
+})
+
+// PATCH /api/views/:table/pills/:id/column-widths
+// Persiste les largeurs de colonnes AU NIVEAU DE LA VUE (et non de la table).
+// requireAuth comme l'ancienne route table-level : c'est une préférence
+// d'affichage, modifiable par tout utilisateur authentifié. Une vue verrouillée
+// reste figée (layout inclus) — cohérent avec PUT /pills/:id.
+router.patch('/:table/pills/:id/column-widths', requireAuth, (req, res) => {
+  if (!validateTable(req, res)) return
+  const { table, id } = req.params
+  const { column_widths } = req.body
+  if (!column_widths || typeof column_widths !== 'object') return res.status(400).json({ error: 'column_widths requis' })
+
+  const pill = db.prepare(
+    'SELECT id, locked FROM table_view_pills WHERE id=? AND table_name=?'
+  ).get(id, table)
+  if (!pill) return res.status(404).json({ error: 'Vue introuvable' })
+  if (pill.locked === 1) return res.status(423).json({ error: 'Vue verrouillée — déverrouillez-la pour la modifier.' })
+
+  db.prepare('UPDATE table_view_pills SET column_widths=? WHERE id=?').run(JSON.stringify(column_widths), id)
+  res.json({ ok: true })
+})
+
+// DELETE /api/views/:table/pills/:id
+router.delete('/:table/pills/:id', requireAdmin, (req, res) => {
+  if (!validateTable(req, res)) return
+  const { table, id } = req.params
+
+  const pill = db.prepare(
+    'SELECT id, locked FROM table_view_pills WHERE id=? AND table_name=?'
+  ).get(id, table)
+  if (!pill) return res.status(404).json({ error: 'Vue introuvable' })
+
+  // Vue verrouillée : protégée contre la suppression accidentelle.
+  if (pill.locked === 1) {
+    return res.status(423).json({ error: 'Vue verrouillée — déverrouillez-la pour la supprimer.' })
+  }
 
   // Garde-fou : on doit garder au moins une vue par table, sinon l'utilisateur
   // se retrouve sans onglet (la vue virtuelle « Tous » a été retirée).

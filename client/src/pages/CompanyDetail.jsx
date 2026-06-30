@@ -1,17 +1,20 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown } from 'lucide-react'
+import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, LifeBuoy, ShoppingCart, Undo2, Users, MapPin, Phone, ClipboardList } from 'lucide-react'
+import EmptyState from '../components/EmptyState.jsx'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import { CreateInvoiceModal } from '../components/CreateInvoiceModal.jsx'
 import api from '../lib/api.js'
 import { invalidate } from '../lib/prefetch.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge, phaseBadgeColor, orderStatusColor, ticketStatusColor, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
-import { SubscriptionHistory } from '../components/SubscriptionHistory.jsx'
+import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
+import Attachments from '../components/Attachments.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -19,9 +22,35 @@ import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
 
 const PHASES = ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore']
 const TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin', 'Agriculture urbaine', 'Cannabis', 'Particulier', 'Distributeur', 'Partenaire', 'Compétiteur', 'Consultant', 'Autre']
+
+// États US et provinces/territoires CA — libellés complets pour rendre la recherche utile,
+// valeur = code à 2 lettres (format stocké en DB).
+const US_STATES = [
+  ['AL', 'Alabama'], ['AK', 'Alaska'], ['AZ', 'Arizona'], ['AR', 'Arkansas'], ['CA', 'California'],
+  ['CO', 'Colorado'], ['CT', 'Connecticut'], ['DE', 'Delaware'], ['FL', 'Florida'], ['GA', 'Georgia'],
+  ['HI', 'Hawaii'], ['ID', 'Idaho'], ['IL', 'Illinois'], ['IN', 'Indiana'], ['IA', 'Iowa'],
+  ['KS', 'Kansas'], ['KY', 'Kentucky'], ['LA', 'Louisiana'], ['ME', 'Maine'], ['MD', 'Maryland'],
+  ['MA', 'Massachusetts'], ['MI', 'Michigan'], ['MN', 'Minnesota'], ['MS', 'Mississippi'], ['MO', 'Missouri'],
+  ['MT', 'Montana'], ['NE', 'Nebraska'], ['NV', 'Nevada'], ['NH', 'New Hampshire'], ['NJ', 'New Jersey'],
+  ['NM', 'New Mexico'], ['NY', 'New York'], ['NC', 'North Carolina'], ['ND', 'North Dakota'], ['OH', 'Ohio'],
+  ['OK', 'Oklahoma'], ['OR', 'Oregon'], ['PA', 'Pennsylvania'], ['RI', 'Rhode Island'], ['SC', 'South Carolina'],
+  ['SD', 'South Dakota'], ['TN', 'Tennessee'], ['TX', 'Texas'], ['UT', 'Utah'], ['VT', 'Vermont'],
+  ['VA', 'Virginia'], ['WA', 'Washington'], ['WV', 'West Virginia'], ['WI', 'Wisconsin'], ['WY', 'Wyoming'],
+].map(([value, name]) => ({ value, label: `${value} — ${name}` }))
+
+const CA_PROVINCES = [
+  ['AB', 'Alberta'], ['BC', 'Colombie-Britannique'], ['MB', 'Manitoba'], ['NB', 'Nouveau-Brunswick'],
+  ['NL', 'Terre-Neuve-et-Labrador'], ['NS', 'Nouvelle-Écosse'], ['NT', 'Territoires du Nord-Ouest'],
+  ['NU', 'Nunavut'], ['ON', 'Ontario'], ['PE', 'Île-du-Prince-Édouard'], ['QC', 'Québec'],
+  ['SK', 'Saskatchewan'], ['YT', 'Yukon'],
+].map(([value, name]) => ({ value, label: `${value} — ${name}` }))
 
 function fmtCad(n) {
   if (!n) return '$0'
@@ -103,10 +132,25 @@ function InlineField({ field, value, saving, onSave }) {
     <div className={field.span2 ? 'col-span-2' : ''}>
       <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">{field.label}</div>
       {field.type === 'select' ? (
-        <select value={local} onChange={e => { setLocal(e.target.value); commit(e.target.value) }} className={selectCls} disabled={saving}>
-          <option value="">—</option>
-          {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
-        </select>
+        // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
+        (field.options || []).length > 10 ? (
+          <SearchableSelect
+            value={local}
+            options={(field.options || []).map(o => ({ value: o, label: o }))}
+            emptyOption="—"
+            placeholder="—"
+            onChange={v => { setLocal(v); commit(v) }}
+            className={selectCls}
+            size="sm"
+            disabled={saving}
+            testId={`company-field-${field.key}`}
+          />
+        ) : (
+          <select value={local} onChange={e => { setLocal(e.target.value); commit(e.target.value) }} className={selectCls} disabled={saving}>
+            <option value="">—</option>
+            {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+        )
       ) : field.type === 'textarea' ? (
         <textarea value={local} onChange={e => setLocal(e.target.value)} onBlur={e => commit(e.target.value)} className={`${inputCls} resize-none`} rows={3} />
       ) : field.type === 'phone' ? (
@@ -184,7 +228,7 @@ function AdresseModalContent({ companyId, company, editingAdresse, adresseForm, 
   const anySaving = Object.values(fieldSaving).some(Boolean)
 
   const fields = (
-    <div className="grid grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <div className="col-span-2">
         <label className="label">Rue / Ligne 1</label>
         <input
@@ -205,18 +249,16 @@ function AdresseModalContent({ companyId, company, editingAdresse, adresseForm, 
       </div>
       <div>
         <label className="label">Province / État</label>
-        <select
-          value={adresseForm.province}
-          onChange={e => isEdit ? saveField('province', e.target.value) : setAdresseForm(f => ({ ...f, province: e.target.value }))}
-          className="select"
-        >
-          <option value="">—</option>
-          {adresseForm.country === 'US' ? (
-            ['AL','AK','AZ','AR','CA','CO','CT','DE','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX','UT','VT','VA','WA','WV','WI','WY'].map(c => <option key={c} value={c}>{c}</option>)
-          ) : (
-            ['AB','BC','MB','NB','NL','NS','NT','NU','ON','PE','QC','SK','YT'].map(c => <option key={c} value={c}>{c}</option>)
-          )}
-        </select>
+        <SearchableSelect
+          value={adresseForm.province || ''}
+          options={adresseForm.country === 'US' ? US_STATES : CA_PROVINCES}
+          emptyOption="—"
+          placeholder="—"
+          onChange={v => isEdit ? saveField('province', v) : setAdresseForm(f => ({ ...f, province: v }))}
+          className="input"
+          size="sm"
+          testId="adresse-province-select"
+        />
       </div>
       <div>
         <label className="label">Code postal</label>
@@ -342,7 +384,7 @@ function CompanyTaskModal({ companyId, company, users, editingTask, taskForm, se
           className="input" required autoFocus
         />
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Statut</label>
           <select
@@ -373,7 +415,7 @@ function CompanyTaskModal({ companyId, company, users, editingTask, taskForm, se
           className="input"
         />
       </div>
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="label">Contact</label>
           <LinkedRecordField
@@ -454,7 +496,11 @@ function OnboardingResponsesPanel({ responses }) {
     })
   }
   if (!responses.length) {
-    return <div className="card p-10 text-center text-slate-400">Aucune réponse d'onboarding</div>
+    return (
+      <div className="card">
+        <EmptyState compact icon={ClipboardList} title="Aucune réponse d'onboarding" description="Aucun formulaire d'onboarding n'a encore été rempli pour cette entreprise." />
+      </div>
+    )
   }
   return (
     <div className="space-y-3">
@@ -575,7 +621,7 @@ function QualificationCallsPanel({ calls }) {
       return next
     })
   }
-  if (!calls.length) return <div className="card p-10 text-center text-slate-400">Aucun appel de qualification</div>
+  if (!calls.length) return <div className="card"><EmptyState compact icon={Phone} title="Aucun appel de qualification" description="Aucun appel de qualification n'a encore été enregistré pour cette entreprise." /></div>
 
   function parseList(v) {
     if (!v) return []
@@ -713,8 +759,10 @@ export default function CompanyDetail() {
   const confirm = useConfirm()
   const [company, setCompany] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [tab, setTab] = useState('info')
   const [fieldSaving, setFieldSaving] = useState(null)
+  const { status: saveState, save } = useSaveStatus()
   const [showContactModal, setShowContactModal] = useState(false)
   const [contactForm, setContactForm] = useState({ first_name: '', last_name: '', email: '', phone: '', mobile: '', language: '' })
   const [contactMode, setContactMode] = useState('new') // 'new' | 'link'
@@ -737,8 +785,6 @@ export default function CompanyDetail() {
   const [abonnementsTotal, setAbonnementsTotal] = useState(0)
   const [abonnements, setAbonnements] = useState([])
   const [selectedAbonnement, setSelectedAbonnement] = useState(null)
-  const [abonnementDetails, setAbonnementDetails] = useState(null)
-  const [loadingAbDetails, setLoadingAbDetails] = useState(false)
   const [tasks, setTasks] = useState([])
   const [users, setUsers] = useState([])
   const [showTaskModal, setShowTaskModal] = useState(false)
@@ -757,9 +803,12 @@ export default function CompanyDetail() {
   const [qualificationCalls, setQualificationCalls] = useState([])
   async function load() {
     setLoading(true)
+    setLoadError(null)
     try {
       const data = await api.companies.get(id)
       setCompany(data)
+    } catch (e) {
+      setLoadError(e?.message || 'Erreur de chargement')
     } finally {
       setLoading(false)
     }
@@ -796,6 +845,150 @@ export default function CompanyDetail() {
   }, [id])
 
   const visibleFields = useMemo(() => COMPANY_FIELDS.filter(f => f.defaultVisible !== false), [])
+
+  // ── Colonnes DataTable des sous-tableaux liés ────────────────────────────
+  // Dérivées des metas company_* de tableDefs.js, enrichies ici des render()
+  // (qui ont besoin de navigate / des setters de modale). Setters useState et
+  // navigate sont stables → deps vides (cf. ProjectDetail).
+  const contactColumns = useMemo(() => {
+    const RENDERS = {
+      name: row => (
+        <span className="inline-flex items-center gap-1.5 font-medium text-brand-600">
+          {row.first_name} {row.last_name}
+          {row.link_is_primary === 0 && (
+            <Badge color="gray" size="sm" title="Entreprise secondaire pour ce contact">Secondaire</Badge>
+          )}
+        </span>
+      ),
+      email: row => row.email || <span className="text-slate-400">—</span>,
+      phone: row => <span className="font-mono text-sm text-slate-500">{fmtPhone(row.phone || row.mobile) || '—'}</span>,
+      language: row => row.language
+        ? <Badge color={row.language === 'French' ? 'blue' : 'green'}>{row.language}</Badge>
+        : <span className="text-slate-400">—</span>,
+    }
+    return TABLE_COLUMN_META.company_contacts.map(m => ({ ...m, render: RENDERS[m.id] }))
+  }, [])
+
+  const orderColumns = useMemo(() => {
+    const RENDERS = {
+      order_number: row => <span className="font-medium">#{row.order_number}</span>,
+      status: row => <Badge color={orderStatusColor(row.status)}>{row.status}</Badge>,
+      items_count: row => <span className="text-slate-500">{row.items_count}</span>,
+      created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
+    }
+    return TABLE_COLUMN_META.company_orders.map(m => ({ ...m, render: RENDERS[m.id] }))
+  }, [])
+
+  const ticketColumns = useMemo(() => {
+    const RENDERS = {
+      title: row => <span className="font-medium">{row.title}</span>,
+      type: row => row.type ? <Badge color="blue">{row.type}</Badge> : <span className="text-slate-400">—</span>,
+      status: row => <Badge color={ticketStatusColor(row.status)}>{row.status}</Badge>,
+      created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
+    }
+    return TABLE_COLUMN_META.company_tickets.map(m => ({ ...m, render: RENDERS[m.id] }))
+  }, [])
+
+  const factureColumns = useMemo(() => {
+    const RENDERS = {
+      document_number: row => <span className="font-mono font-medium text-slate-900">{row.document_number || '—'}</span>,
+      status: row => <span className="text-slate-600">{row.status || '—'}</span>,
+      document_date: row => <span className="text-slate-500">{fmtDate(row.document_date)}</span>,
+      amount_before_tax_cad: row => <span className="font-medium text-slate-700">{fmtMoney(row.amount_before_tax_cad, row.currency)}</span>,
+      currency: row => <span className="font-mono text-xs text-slate-600">{(row.currency || 'CAD').toUpperCase()}</span>,
+    }
+    return TABLE_COLUMN_META.company_factures.map(m => ({ ...m, render: RENDERS[m.id] }))
+  }, [])
+
+  const abonnementColumns = useMemo(() => {
+    const RENDERS = {
+      product_name: row => row.product_id
+        ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.product_name || '—'}</Link>
+        : <span className="text-slate-900">{row.product_name || '—'}</span>,
+      type: row => <span className="text-slate-600">{row.type || '—'}</span>,
+      status: row => (
+        <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${row.status === 'active' ? 'bg-green-100 text-green-700' : row.status === 'canceled' ? 'bg-red-100 text-red-700' : row.status === 'past_due' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
+          {row.status === 'active' ? 'Actif' : row.status === 'canceled' ? 'Annulé' : row.status === 'past_due' ? 'En retard' : row.status === 'trialing' ? 'Essai' : row.status}
+        </span>
+      ),
+      amount_cad: row => <span className="font-medium text-slate-700">{fmtCad(row.amount_cad)}</span>,
+      start_date: row => <span className="text-slate-500">{fmtDate(row.start_date)}</span>,
+      end_date: row => <span className="text-slate-500">{fmtDate(row.end_date)}</span>,
+    }
+    return TABLE_COLUMN_META.company_abonnements.map(m => ({ ...m, render: RENDERS[m.id] }))
+  }, [])
+
+  const envoiColumns = useMemo(() => {
+    const RENDERS = {
+      tracking_number: row => row.tracking_number
+        ? <span className="font-mono text-slate-900">{row.tracking_number}</span>
+        : <span className="text-slate-400">—</span>,
+      status: row => <Badge color={row.status === 'Envoyé' ? 'green' : 'yellow'}>{row.status}</Badge>,
+      carrier: row => <span className="text-slate-500">{row.carrier || '—'}</span>,
+      order_number: row => <span className="text-slate-500">{row.order_number ? `#${row.order_number}` : '—'}</span>,
+      shipped_at: row => <span className="text-slate-500">{fmtDate(row.shipped_at)}</span>,
+    }
+    return TABLE_COLUMN_META.company_envois.map(m => ({ ...m, render: RENDERS[m.id] }))
+  }, [])
+
+  const taskColumns = useMemo(() => {
+    const RENDERS = {
+      title: row => <span className="font-medium text-slate-900">{row.title}</span>,
+      status: row => (
+        <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${row.status === 'Terminé' ? 'bg-green-100 text-green-700' : row.status === 'En cours' ? 'bg-blue-100 text-blue-700' : row.status === 'Annulé' ? 'bg-slate-100 text-slate-500' : 'bg-amber-100 text-amber-700'}`}>{row.status}</span>
+      ),
+      priority: row => <span className="text-slate-500">{row.priority}</span>,
+      due_date: row => {
+        if (!row.due_date) return <span className="text-slate-400">—</span>
+        const overdue = row.status !== 'Terminé' && new Date(row.due_date) < new Date()
+        return <span className={overdue ? 'text-red-600 font-medium' : 'text-slate-500'}>{fmtDate(row.due_date)}</span>
+      },
+    }
+    return TABLE_COLUMN_META.company_tasks.map(m => ({ ...m, render: RENDERS[m.id] }))
+  }, [])
+
+  const achatColumns = useMemo(() => {
+    const RENDERS = {
+      type: row => (
+        <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${row.type === 'bill' ? 'bg-brand-100 text-brand-700' : 'bg-slate-100 text-slate-600'}`}>
+          {row.type === 'bill' ? 'Facture' : 'Dépense'}
+        </span>
+      ),
+      reference: row => {
+        const ref = row.bill_number || row.vendor_invoice_number || row.reference || row.description || '—'
+        return <span className="font-mono text-slate-900 truncate">{ref}</span>
+      },
+      status: row => <span className="text-slate-500">{row.status}</span>,
+      date_achat: row => <span className="text-slate-500">{fmtDate(row.date_achat)}</span>,
+      due_date: row => {
+        if (!row.due_date) return <span className="text-slate-400">—</span>
+        const overdue = row.status !== 'Payée' && row.status !== 'Annulée' && new Date(row.due_date) < new Date()
+        return <span className={overdue ? 'text-red-600 font-medium' : 'text-slate-500'}>{fmtDate(row.due_date)}</span>
+      },
+      total_cad: row => <span className="font-medium text-slate-700">{fmtCad(row.total_cad)}</span>,
+      balance_due_cad: row => {
+        if (row.type !== 'bill') return <span className="text-slate-400">—</span>
+        const balance = row.balance_due_cad ?? (row.total_cad - row.amount_paid_cad)
+        return <span className={balance > 0 ? 'text-red-600 font-medium' : 'text-green-600 font-medium'}>{fmtCad(balance)}</span>
+      },
+    }
+    return TABLE_COLUMN_META.company_achats.map(m => ({ ...m, render: RENDERS[m.id] }))
+  }, [])
+
+  const retourColumns = useMemo(() => {
+    const RENDERS = {
+      return_number: row => <span className="font-mono font-medium text-slate-900">{row.return_number || '—'}</span>,
+      status: row => (
+        <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${row.status === 'Fermé' ? 'bg-slate-100 text-slate-500' : row.status === 'Ouvert' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>{row.status || '—'}</span>
+      ),
+      processing_status: row => <span className="text-slate-500">{row.processing_status || '—'}</span>,
+      contact_name: row => <span className="text-slate-500">{row.contact_first_name ? `${row.contact_first_name} ${row.contact_last_name || ''}`.trim() : '—'}</span>,
+      order_number: row => <span className="text-slate-500">{row.order_number ? `#${row.order_number}` : '—'}</span>,
+      items_count: row => <span className="text-slate-700">{row.items_count ?? 0}</span>,
+      created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
+    }
+    return TABLE_COLUMN_META.company_retours.map(m => ({ ...m, render: RENDERS[m.id] }))
+  }, [])
 
   useEffect(() => {
     if (tab === 'interactions') {
@@ -848,8 +1041,11 @@ export default function CompanyDetail() {
   async function saveField(key, value) {
     setFieldSaving(key)
     try {
-      await api.companies.update(id, { [key]: value })
-      setCompany(c => ({ ...c, [key]: value }))
+      const ok = await save(async () => {
+        await api.companies.update(id, { [key]: value })
+        setCompany(c => ({ ...c, [key]: value }))
+      })
+      return ok
     } finally {
       setFieldSaving(null)
     }
@@ -891,7 +1087,10 @@ export default function CompanyDetail() {
   }, [linkQuery, contactMode, id])
 
   if (loading) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
+    return <Layout><Spinner center /></Layout>
+  }
+  if (loadError && !company) {
+    return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
   }
   if (!company) {
     return <Layout><div className="p-6 text-slate-500">Entreprise introuvable.</div></Layout>
@@ -913,6 +1112,7 @@ export default function CompanyDetail() {
               {company.lifecycle_phase && (
                 <Badge color={phaseBadgeColor(company.lifecycle_phase)} size="md">{company.lifecycle_phase}</Badge>
               )}
+              <SaveStatus status={saveState} />
             </div>
             <div className="flex items-center gap-3 mt-1 text-sm text-slate-500 flex-wrap">
               {company.type && <span>{company.type}</span>}
@@ -1043,7 +1243,7 @@ export default function CompanyDetail() {
         {/* Info Tab */}
         {tab === 'info' && (
           <div className="card p-6">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {visibleFields.map(field => {
                 if (field.key === 'name') return null
                 const value = company[field.key] ?? ''
@@ -1070,7 +1270,13 @@ export default function CompanyDetail() {
               <button onClick={() => { setEditingAdresse(null); setAdresseForm({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' }); setShowAdresseModal(true) }} className="btn-secondary btn-sm"><Plus size={13} /> Ajouter</button>
             </div>
             {adresses.length === 0 ? (
-              <p className="text-sm text-slate-400">Aucune adresse</p>
+              <EmptyState
+                compact
+                icon={MapPin}
+                title="Aucune adresse"
+                description="Ajoutez une adresse de ferme, de facturation ou de livraison."
+                cta={{ label: 'Ajouter', icon: Plus, onClick: () => { setEditingAdresse(null); setAdresseForm({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' }); setShowAdresseModal(true) } }}
+              />
             ) : (
               <div className="divide-y divide-slate-100">
                 {adresses.map(a => (
@@ -1097,45 +1303,28 @@ export default function CompanyDetail() {
           </div>
         )}
 
+        {/* Pièces jointes (toujours sous Adresses dans l'onglet info) */}
+        {tab === 'info' && (
+          <div className="mt-4">
+            <Attachments entityType="companies" entityId={company.id} />
+          </div>
+        )}
+
         {/* Contacts Tab */}
         {tab === 'contacts' && (
           <div>
             <div className="flex justify-end mb-3">
               <button onClick={() => setShowContactModal(true)} className="btn-primary btn-sm"><Plus size={14} /> Ajouter</button>
             </div>
-            <div className="card overflow-hidden">
-              {company.contacts?.length === 0 ? (
-                <p className="text-center py-10 text-slate-400">Aucun contact</p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead><tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Nom</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Courriel</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Téléphone</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Langue</th>
-                  </tr></thead>
-                  <tbody>
-                    {company.contacts.map(c => (
-                      <tr key={c.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer" onClick={() => navigate(`/contacts/${c.id}`)}>
-                        <td className="px-4 py-3 font-medium text-brand-600">
-                          <span className="inline-flex items-center gap-1.5">
-                            {c.first_name} {c.last_name}
-                            {c.link_is_primary === 0 && (
-                              <Badge color="gray" size="sm" title="Entreprise secondaire pour ce contact">Secondaire</Badge>
-                            )}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{c.email || '—'}</td>
-                        <td className="px-4 py-3 hidden md:table-cell text-slate-500 font-mono text-sm">{fmtPhone(c.phone || c.mobile) || '—'}</td>
-                        <td className="px-4 py-3">
-                          {c.language && <Badge color={c.language === 'French' ? 'blue' : 'green'}>{c.language}</Badge>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
+            <DataTable
+              table="company_contacts"
+              columns={contactColumns}
+              data={company.contacts || []}
+              searchFields={['first_name', 'last_name', 'email', 'phone', 'mobile']}
+              onRowClick={row => navigate(`/contacts/${row.id}`)}
+              height="calc(100vh - 360px)"
+              emptyState={{ icon: Users, title: 'Aucun contact', description: "Aucune personne n'est encore rattachée à cette entreprise.", cta: { label: 'Ajouter', icon: Plus, onClick: () => setShowContactModal(true) } }}
+            />
           </div>
         )}
 
@@ -1158,7 +1347,15 @@ export default function CompanyDetail() {
             </div>
             <div className="space-y-3">
               {company.projects?.length === 0 ? (
-                <div className="card p-10 text-center text-slate-400">Aucun projet</div>
+                <div className="card">
+                  <EmptyState
+                    compact
+                    icon={FolderKanban}
+                    title="Aucun projet"
+                    description="Cette entreprise n'a encore aucun projet au pipeline."
+                    cta={{ label: 'Nouveau projet', icon: Plus, to: `/pipeline?company_id=${id}` }}
+                  />
+                </div>
               ) : company.projects.map(p => (
                 <div key={p.id} className="card p-4">
                   <div className="flex items-start justify-between gap-2">
@@ -1181,62 +1378,28 @@ export default function CompanyDetail() {
 
         {/* Orders Tab */}
         {tab === 'commandes' && (
-          <div className="card overflow-hidden">
-            {company.orders?.length === 0 ? (
-              <p className="text-center py-10 text-slate-400">Aucune commande</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead><tr className="border-b border-slate-200 bg-slate-50">
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Commande</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Articles</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Date</th>
-                </tr></thead>
-                <tbody>
-                  {company.orders.map(o => (
-                    <tr key={o.id} onClick={() => navigate(`/orders/${o.id}`)} className="table-row-hover border-b border-slate-100 last:border-0">
-                      <td className="px-4 py-3 font-medium">#{o.order_number}</td>
-                      <td className="px-4 py-3"><Badge color={orderStatusColor(o.status)}>{o.status}</Badge></td>
-                      <td className="px-4 py-3 hidden md:table-cell text-slate-500">{o.items_count}</td>
-                      <td className="px-4 py-3 text-slate-500">{fmtDate(o.created_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <DataTable
+            table="company_orders"
+            columns={orderColumns}
+            data={company.orders || []}
+            searchFields={['order_number', 'status']}
+            onRowClick={row => navigate(`/orders/${row.id}`)}
+            height="calc(100vh - 360px)"
+            emptyState={{ icon: Package, title: 'Aucune commande', description: "Aucune commande n'est encore associée à cette entreprise." }}
+          />
         )}
 
         {/* Support Tab */}
         {tab === 'support' && (
-          <div className="card overflow-hidden">
-            {company.tickets?.length === 0 ? (
-              <p className="text-center py-10 text-slate-400">Aucun ticket</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead><tr className="border-b border-slate-200 bg-slate-50">
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Titre</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Type</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Date</th>
-                </tr></thead>
-                <tbody>
-                  {company.tickets.map(t => (
-                    <tr
-                      key={t.id}
-                      onClick={() => navigate(`/tickets/${t.id}`)}
-                      className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer"
-                    >
-                      <td className="px-4 py-3 font-medium">{t.title}</td>
-                      <td className="px-4 py-3"><Badge color="blue">{t.type}</Badge></td>
-                      <td className="px-4 py-3"><Badge color={ticketStatusColor(t.status)}>{t.status}</Badge></td>
-                      <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(t.created_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <DataTable
+            table="company_tickets"
+            columns={ticketColumns}
+            data={company.tickets || []}
+            searchFields={['title', 'type', 'status']}
+            onRowClick={row => navigate(`/tickets/${row.id}`)}
+            height="calc(100vh - 360px)"
+            emptyState={{ icon: LifeBuoy, title: 'Aucun ticket', description: "Aucune demande de support n'a été ouverte pour cette entreprise." }}
+          />
         )}
 
         {/* Numéros de série Tab */}
@@ -1253,220 +1416,50 @@ export default function CompanyDetail() {
 
         {/* Factures Tab */}
         {tab === 'factures' && (
-          <div className="card overflow-hidden">
-            {!factures.length ? (
-              <p className="text-center py-10 text-slate-400">Aucune facture</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">N° document</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Date</th>
-                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Total HT</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Devise</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {factures.map(f => (
-                    <tr
-                      key={f.id}
-                      className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer"
-                      onClick={() => navigate(`/factures/${f.id}`)}
-                    >
-                      <td className="px-4 py-3 font-mono font-medium text-slate-900">{f.document_number || '—'}</td>
-                      <td className="px-4 py-3 text-slate-600">{f.status || '—'}</td>
-                      <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{fmtDate(f.document_date)}</td>
-                      <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtMoney(f.amount_before_tax_cad, f.currency)}</td>
-                      <td className="px-4 py-3 font-mono text-xs text-slate-600">{(f.currency || 'CAD').toUpperCase()}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <DataTable
+            table="company_factures"
+            columns={factureColumns}
+            data={factures}
+            searchFields={['document_number', 'status', 'currency']}
+            onRowClick={row => navigate(`/factures/${row.id}`)}
+            height="calc(100vh - 360px)"
+            emptyState={{ icon: FileText, title: 'Aucune facture', description: "Aucune facture n'a encore été émise pour cette entreprise." }}
+          />
         )}
 
         {/* Abonnements Tab */}
         {tab === 'abonnements' && (
           <div>
-            <div className="card overflow-hidden">
-              {!abonnements.length ? (
-                <p className="text-center py-10 text-slate-400">Aucun abonnement</p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50">
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Produit</th>
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Type</th>
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
-                      <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Montant</th>
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Début</th>
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Fin</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {abonnements.map(a => (
-                      <tr key={a.id} className={`border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer ${selectedAbonnement?.id === a.id ? 'bg-brand-50' : ''}`}
-                        onClick={() => {
-                          if (selectedAbonnement?.id === a.id) { setSelectedAbonnement(null); setAbonnementDetails(null); return }
-                          setSelectedAbonnement(a)
-                          setAbonnementDetails(null)
-                          setLoadingAbDetails(true)
-                          api.abonnements.stripeDetails(a.id).then(setAbonnementDetails).catch(() => setAbonnementDetails(null)).finally(() => setLoadingAbDetails(false))
-                        }}>
-                        <td className="px-4 py-3 text-slate-900">{a.product_name || '—'}</td>
-                        <td className="px-4 py-3 text-slate-600">{a.type || '—'}</td>
-                        <td className="px-4 py-3 text-slate-600">
-                          <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${a.status === 'active' ? 'bg-green-100 text-green-700' : a.status === 'canceled' ? 'bg-red-100 text-red-700' : a.status === 'past_due' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
-                            {a.status === 'active' ? 'Actif' : a.status === 'canceled' ? 'Annulé' : a.status === 'past_due' ? 'En retard' : a.status === 'trialing' ? 'Essai' : a.status}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(a.amount_cad)}</td>
-                        <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{fmtDate(a.start_date)}</td>
-                        <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(a.end_date)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
+            <DataTable
+              table="company_abonnements"
+              columns={abonnementColumns}
+              data={abonnements}
+              searchFields={['product_name', 'type', 'status']}
+              onRowClick={row => setSelectedAbonnement(row)}
+              height="calc(100vh - 360px)"
+              emptyState={{ icon: RefreshCw, title: 'Aucun abonnement', description: "Cette entreprise n'a aucun abonnement Stripe actif ou passé." }}
+            />
 
-            {/* Détail abonnement */}
-            {selectedAbonnement && (
-              <div className="mt-4 card p-5 space-y-5">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-base font-semibold text-slate-900">Détails de l'abonnement</h3>
-                  <div className="flex items-center gap-2">
-                    {selectedAbonnement.stripe_url && (
-                      <a href={selectedAbonnement.stripe_url} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-600 hover:underline">Voir sur Stripe</a>
-                    )}
-                    <button onClick={() => { setSelectedAbonnement(null); setAbonnementDetails(null) }} className="text-slate-400 hover:text-slate-600">
-                      <X size={16} />
-                    </button>
-                  </div>
-                </div>
+            <AbonnementDetailModal
+              abonnement={selectedAbonnement}
+              onClose={() => setSelectedAbonnement(null)}
+              onChange={() => api.abonnements.list({ company_id: id, limit: 'all' }).then(r => setAbonnements(r.data)).catch(() => {})}
+            />
 
-                {loadingAbDetails ? (
-                  <div className="flex justify-center py-8"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-brand-600" /></div>
-                ) : !abonnementDetails ? (
-                  <p className="text-center py-6 text-slate-400 text-sm">Impossible de charger les détails Stripe</p>
-                ) : (
-                  <>
-                    {/* Produits / Line items */}
-                    <div>
-                      <h4 className="text-sm font-semibold text-slate-700 mb-2">Produits</h4>
-                      <div className="border border-slate-200 rounded-lg overflow-hidden">
-                        <table className="w-full text-sm">
-                          <thead>
-                            <tr className="bg-slate-50 border-b border-slate-200">
-                              <th className="text-left px-4 py-2 text-xs font-semibold text-slate-500">Produit</th>
-                              <th className="text-right px-4 py-2 text-xs font-semibold text-slate-500">Prix unitaire</th>
-                              <th className="text-right px-4 py-2 text-xs font-semibold text-slate-500">Qté</th>
-                              <th className="text-right px-4 py-2 text-xs font-semibold text-slate-500">Total</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {abonnementDetails.items.map(item => (
-                              <tr key={item.id} className="border-b border-slate-100 last:border-0">
-                                <td className="px-4 py-2.5">
-                                  <div className="font-medium text-slate-800">{item.product_name}</div>
-                                  {item.description && <div className="text-xs text-slate-400 mt-0.5">{item.description}</div>}
-                                  {item.interval && <div className="text-xs text-slate-400">/ {item.interval_count > 1 ? `${item.interval_count} ` : ''}{item.interval === 'month' ? 'mois' : item.interval === 'year' ? 'an' : item.interval}</div>}
-                                </td>
-                                <td className="px-4 py-2.5 text-right text-slate-600">{item.unit_amount != null ? `${item.unit_amount.toFixed(2)} ${item.currency}` : '—'}</td>
-                                <td className="px-4 py-2.5 text-right text-slate-600">{item.quantity}</td>
-                                <td className="px-4 py-2.5 text-right font-medium text-slate-800">{item.total != null ? `${item.total.toFixed(2)} ${item.currency}` : '—'}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      {abonnementDetails.discount && (
-                        <div className="mt-2 text-xs text-brand-600">
-                          Rabais: {abonnementDetails.discount.name}
-                          {abonnementDetails.discount.percent_off && ` (${abonnementDetails.discount.percent_off}%)`}
-                          {abonnementDetails.discount.amount_off && ` (${abonnementDetails.discount.amount_off} $)`}
-                        </div>
-                      )}
-                    </div>
-
-                    <SubscriptionHistory
-                      subscriptionId={selectedAbonnement.id}
-                      history={abonnementDetails.history}
-                      onChanged={() => api.abonnements.stripeDetails(selectedAbonnement.id).then(setAbonnementDetails).catch(() => {})}
-                    />
-
-                    {/* Factures récentes */}
-                    {abonnementDetails.invoices.length > 0 && (
-                      <div>
-                        <h4 className="text-sm font-semibold text-slate-700 mb-2">Factures ({abonnementDetails.invoices.length})</h4>
-                        <div className="border border-slate-200 rounded-lg overflow-hidden divide-y divide-slate-100">
-                          {abonnementDetails.invoices.map((inv, i) => (
-                            <div key={i} className="px-4 py-2.5">
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-3">
-                                  <span className="text-xs text-slate-700 font-mono">{inv.number || '—'}</span>
-                                  <span className="text-xs text-slate-400">{fmtDate(inv.date)}</span>
-                                  <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-medium ${inv.status === 'paid' ? 'bg-green-100 text-green-700' : inv.status === 'open' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
-                                    {inv.status === 'paid' ? 'Payée' : inv.status === 'open' ? 'Ouverte' : inv.status === 'draft' ? 'Brouillon' : inv.status}
-                                  </span>
-                                </div>
-                                <div className="flex items-center gap-3">
-                                  <span className="font-medium text-slate-700 text-sm">{inv.amount.toFixed(2)} $</span>
-                                  {inv.pdf && <a href={inv.pdf} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:underline text-xs">PDF</a>}
-                                </div>
-                              </div>
-                              {inv.lines && inv.lines.length > 0 && (
-                                <div className="mt-1.5 space-y-0.5">
-                                  {inv.lines.map((li, j) => (
-                                    <div key={j} className={`flex items-center justify-between text-xs ${li.proration ? 'text-amber-600' : 'text-slate-400'}`}>
-                                      <span className="truncate mr-4">{li.proration ? '↕ ' : ''}{li.description}</span>
-                                      <span className="flex-shrink-0 font-mono">{li.amount >= 0 ? '' : '-'}{Math.abs(li.amount).toFixed(2)} $</span>
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
           </div>
         )}
 
         {/* Envois Tab */}
         {tab === 'envois' && (
-          <div className="card overflow-hidden">
-            {!envois.length ? (
-              <p className="text-center py-10 text-slate-400">Aucun envoi</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead><tr className="border-b border-slate-200 bg-slate-50">
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">N° de suivi</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Transporteur</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Commande</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Envoyé le</th>
-                </tr></thead>
-                <tbody>
-                  {envois.map(e => (
-                    <tr key={e.id} onClick={() => navigate(`/envois/${e.id}`)} className="table-row-hover border-b border-slate-100 last:border-0 cursor-pointer">
-                      <td className="px-4 py-3 font-mono text-slate-900">{e.tracking_number || <span className="text-slate-400">—</span>}</td>
-                      <td className="px-4 py-3"><Badge color={e.status === 'Envoyé' ? 'green' : 'yellow'}>{e.status}</Badge></td>
-                      <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{e.carrier || '—'}</td>
-                      <td className="px-4 py-3 hidden md:table-cell text-slate-500">{e.order_number ? `#${e.order_number}` : '—'}</td>
-                      <td className="px-4 py-3 text-slate-500">{fmtDate(e.shipped_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <DataTable
+            table="company_envois"
+            columns={envoiColumns}
+            data={envois}
+            searchFields={['tracking_number', 'carrier', 'order_number', 'status']}
+            onRowClick={row => navigate(`/envois/${row.id}`)}
+            height="calc(100vh - 360px)"
+            emptyState={{ icon: Truck, title: 'Aucun envoi', description: "Aucune expédition n'a encore été créée pour cette entreprise." }}
+          />
         )}
 
         {/* Tâches Tab */}
@@ -1475,90 +1468,27 @@ export default function CompanyDetail() {
             <div className="flex justify-end mb-3">
               <button onClick={() => { setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' }); setEditingTask(null); setShowTaskModal(true) }} className="btn-primary btn-sm"><Plus size={14} /> Ajouter</button>
             </div>
-            <div className="card overflow-hidden">
-              {tasks.length === 0 ? (
-                <p className="text-center py-10 text-slate-400">Aucune tâche</p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead><tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Tâche</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Priorité</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Échéance</th>
-                  </tr></thead>
-                  <tbody>
-                    {tasks.map(t => {
-                      const overdue = t.due_date && t.status !== 'Terminé' && new Date(t.due_date) < new Date()
-                      return (
-                        <tr key={t.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer" onClick={() => { setEditingTask(t); setTaskForm({ title: t.title, status: t.status, priority: t.priority, due_date: t.due_date || '', contact_id: t.contact_id || '', assigned_to: t.assigned_to || '', notes: t.notes || '' }); setShowTaskModal(true) }}>
-                          <td className="px-4 py-3 font-medium text-slate-900">{t.title}</td>
-                          <td className="px-4 py-3">
-                            <span className={`inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${t.status === 'Terminé' ? 'bg-green-100 text-green-700' : t.status === 'En cours' ? 'bg-blue-100 text-blue-700' : t.status === 'Annulé' ? 'bg-slate-100 text-slate-500' : 'bg-amber-100 text-amber-700'}`}>{t.status}</span>
-                          </td>
-                          <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{t.priority}</td>
-                          <td className="px-4 py-3 hidden md:table-cell">
-                            {t.due_date ? <span className={overdue ? 'text-red-600 font-medium' : 'text-slate-500'}>{fmtDate(t.due_date)}</span> : <span className="text-slate-400">—</span>}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
+            <DataTable
+              table="company_tasks"
+              columns={taskColumns}
+              data={tasks}
+              searchFields={['title', 'status', 'priority']}
+              onRowClick={row => { setEditingTask(row); setTaskForm({ title: row.title, status: row.status, priority: row.priority, due_date: row.due_date || '', contact_id: row.contact_id || '', assigned_to: row.assigned_to || '', notes: row.notes || '' }); setShowTaskModal(true) }}
+              height="calc(100vh - 360px)"
+              emptyState={{ icon: CheckSquare, title: 'Aucune tâche', description: "Aucune tâche n'est associée à cette entreprise pour l'instant.", cta: { label: 'Ajouter', icon: Plus, onClick: () => { setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' }); setEditingTask(null); setShowTaskModal(true) } } }}
+            />
           </div>
         )}
         {/* Achats fournisseurs Tab */}
         {tab === 'achats' && (
-          <div className="card overflow-hidden">
-            {!achats.length ? (
-              <p className="text-center py-10 text-slate-400">Aucun achat fournisseur</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Type</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Référence</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Date</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Échéance</th>
-                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Total</th>
-                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Solde dû</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {achats.map(a => {
-                    const balance = a.balance_due_cad ?? (a.total_cad - a.amount_paid_cad)
-                    const overdue = a.status !== 'Payée' && a.status !== 'Annulée' && a.due_date && new Date(a.due_date) < new Date()
-                    const ref = a.bill_number || a.vendor_invoice_number || a.reference || a.description || '—'
-                    return (
-                      <tr key={a.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                        <td className="px-4 py-3">
-                          <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${a.type === 'bill' ? 'bg-brand-100 text-brand-700' : 'bg-slate-100 text-slate-600'}`}>
-                            {a.type === 'bill' ? 'Facture' : 'Dépense'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3 font-mono text-slate-900 truncate max-w-xs">{ref}</td>
-                        <td className="px-4 py-3 text-slate-500">{a.status}</td>
-                        <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{fmtDate(a.date_achat)}</td>
-                        <td className="px-4 py-3 hidden md:table-cell">
-                          {a.due_date
-                            ? <span className={overdue ? 'text-red-600 font-medium' : 'text-slate-500'}>{fmtDate(a.due_date)}</span>
-                            : <span className="text-slate-400">—</span>}
-                        </td>
-                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(a.total_cad)}</td>
-                        <td className="px-4 py-3 text-right font-medium">
-                          {a.type === 'bill'
-                            ? <span className={balance > 0 ? 'text-red-600' : 'text-green-600'}>{fmtCad(balance)}</span>
-                            : <span className="text-slate-400">—</span>}
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <DataTable
+            table="company_achats"
+            columns={achatColumns}
+            data={achats}
+            searchFields={['reference', 'bill_number', 'vendor_invoice_number', 'description', 'status']}
+            height="calc(100vh - 360px)"
+            emptyState={{ icon: ShoppingCart, title: 'Aucun achat fournisseur', description: "Aucune facture ou dépense fournisseur n'est rattachée à cette entreprise." }}
+          />
         )}
 
         {/* Retours (RMA) Tab */}
@@ -1571,48 +1501,15 @@ export default function CompanyDetail() {
         )}
 
         {tab === 'retours' && (
-          <div className="card overflow-hidden">
-            {!retours.length ? (
-              <p className="text-center py-10 text-slate-400">Aucun retour</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">N° RMA</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Traitement</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Contact</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Commande</th>
-                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Articles</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Date</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {retours.map(r => (
-                    <tr key={r.id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                      <td className="px-4 py-3 font-mono font-medium text-slate-900">{r.return_number || '—'}</td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${
-                          r.status === 'Fermé' ? 'bg-slate-100 text-slate-500' :
-                          r.status === 'Ouvert' ? 'bg-blue-100 text-blue-700' :
-                          'bg-amber-100 text-amber-700'
-                        }`}>{r.status || '—'}</span>
-                      </td>
-                      <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{r.processing_status || '—'}</td>
-                      <td className="px-4 py-3 hidden md:table-cell text-slate-500">
-                        {r.contact_first_name ? `${r.contact_first_name} ${r.contact_last_name || ''}`.trim() : '—'}
-                      </td>
-                      <td className="px-4 py-3 hidden md:table-cell text-slate-500">
-                        {r.order_number ? `#${r.order_number}` : '—'}
-                      </td>
-                      <td className="px-4 py-3 text-right text-slate-700">{r.items_count ?? 0}</td>
-                      <td className="px-4 py-3 text-slate-500">{fmtDate(r.created_at)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <DataTable
+            table="company_retours"
+            columns={retourColumns}
+            data={retours}
+            searchFields={['return_number', 'status', 'processing_status', 'contact_first_name', 'contact_last_name', 'order_number']}
+            onRowClick={row => navigate(`/retours/${row.id}`)}
+            height="calc(100vh - 360px)"
+            emptyState={{ icon: Undo2, title: 'Aucun retour', description: "Aucune demande de retour (RMA) n'a été enregistrée pour cette entreprise." }}
+          />
         )}
 
 
@@ -1666,7 +1563,7 @@ export default function CompanyDetail() {
         </div>
         <form onSubmit={handleAddContact} className="space-y-4">
           {contactMode === 'new' ? (
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="label">Prénom *</label>
                 <input value={contactForm.first_name} onChange={e => setContactForm(f => ({ ...f, first_name: e.target.value }))} className="input" required />
@@ -1694,6 +1591,9 @@ export default function CompanyDetail() {
                   <option value="French">Français</option>
                   <option value="English">Anglais</option>
                 </select>
+              </div>
+              <div className="sm:col-span-2">
+                <DuplicateWarning kind="contact" values={contactForm} />
               </div>
             </div>
           ) : (

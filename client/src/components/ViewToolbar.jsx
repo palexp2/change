@@ -1,16 +1,21 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
-import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, ChevronsDownUp, ChevronsUpDown, AlertTriangle } from 'lucide-react'
+import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, ChevronsDownUp, ChevronsUpDown, AlertTriangle, Lock } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { FilterRow, FieldSelect, defaultOpForType } from './FilterRow.jsx'
+import { countFilterRules } from '../lib/tableFilters.js'
 import api from '../lib/api.js'
 
-function ToolbarBtn({ icon, label, active, badge, onClick, dataPanelBtn }) {
+function ToolbarBtn({ icon, label, active, badge, onClick, dataPanelBtn, disabled }) {
   return (
     <button
-      onClick={(e) => onClick(e)}
+      onClick={(e) => { if (!disabled) onClick(e) }}
+      disabled={disabled}
       data-panel-btn={dataPanelBtn}
+      title={disabled ? 'Vue verrouillée — déverrouillez-la pour la modifier' : undefined}
       className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-colors ${
-        active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-100'
+        disabled
+          ? 'text-slate-300 cursor-not-allowed'
+          : active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-100'
       }`}
     >
       {icon}
@@ -112,52 +117,76 @@ function FieldsPanel({ columns, visibleCols, onChange, left }) {
   )
 }
 
-function FilterPanel({ columns, filters, onChange, data, left, disabledColumns }) {
-  const filterableCols = columns.filter(c => c.filterable !== false && c.field)
+// Profondeur d'imbrication max des groupes de filtres. Le moteur SQL serveur
+// (buildGroupSQL) plafonne à 3 ; on reste sous cette limite côté UI. depth 0 =
+// groupe racine, donc on autorise « Ajouter un groupe » tant que depth < 2
+// (→ deux niveaux de parenthèses imbriquées, largement suffisant et sûr).
+const MAX_FILTER_GROUP_DEPTH = 2
+
+function isGroupNode(node) {
+  return !!(node && node.conjunction && Array.isArray(node.rules))
+}
+
+function emptyRule(filterableCols) {
+  const first = filterableCols[0]
+  const type = first?.type || 'text'
+  return { field: first?.field ?? '', op: defaultOpForType(type), value: '' }
+}
+
+// Bascule ET / OU compacte appliquée aux enfants directs d'un groupe.
+function ConjunctionToggle({ value, onChange }) {
+  return (
+    <div className="flex items-center gap-0.5 bg-slate-100 rounded p-0.5">
+      <button onClick={() => onChange('AND')}
+        className={`text-xs px-2.5 py-1 rounded transition-colors font-medium ${value === 'AND' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+        ET
+      </button>
+      <button onClick={() => onChange('OR')}
+        className={`text-xs px-2.5 py-1 rounded transition-colors font-medium ${value === 'OR' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
+        OU
+      </button>
+    </div>
+  )
+}
+
+// Éditeur récursif d'un groupe de filtres : ses enfants sont soit des règles
+// feuilles (FilterRow), soit des sous-groupes (parenthèses) eux-mêmes rendus
+// par ce composant. La conjonction (ET/OU) s'applique aux enfants directs.
+function FilterGroupEditor({ group, onChange, onRemove, columns, filterableCols, data, disabledColumns, depth }) {
+  const conjunction = group.conjunction === 'OR' ? 'OR' : 'AND'
+  const rules = group.rules || []
   const isDisabledField = (fieldName) => !!(disabledColumns && fieldName && disabledColumns.has(fieldName))
 
-  // Normalize to {conjunction, rules} format
-  const normalized = Array.isArray(filters)
-    ? { conjunction: 'AND', rules: filters }
-    : (filters?.rules ? filters : { conjunction: 'AND', rules: [] })
-  const { conjunction, rules } = normalized
-
-  function add() {
-    const first = filterableCols[0]
-    const type = first?.type || 'text'
-    onChange({ ...normalized, rules: [...rules, { field: first?.field ?? '', op: defaultOpForType(type), value: '' }] })
-  }
-  function update(i, newFilter) {
-    onChange({ ...normalized, rules: rules.map((item, idx) => idx === i ? newFilter : item) })
-  }
-  function remove(i) {
-    onChange({ ...normalized, rules: rules.filter((_, idx) => idx !== i) })
+  function setConjunction(c) { onChange({ ...group, conjunction: c }) }
+  function updateChild(i, child) { onChange({ ...group, rules: rules.map((r, idx) => idx === i ? child : r) }) }
+  function removeChild(i) { onChange({ ...group, rules: rules.filter((_, idx) => idx !== i) }) }
+  function addRule() { onChange({ ...group, rules: [...rules, emptyRule(filterableCols)] }) }
+  function addGroup() {
+    onChange({ ...group, rules: [...rules, { conjunction: 'AND', rules: [emptyRule(filterableCols)] }] })
   }
 
+  const nested = depth > 0
   return (
-    <Panel className="w-[540px]" left={left}>
-      <div className="flex items-center justify-between mb-3">
-        <PanelTitle className="mb-0">Filtres</PanelTitle>
-        {rules.length > 1 && (
-          <div className="flex items-center gap-0.5 bg-slate-100 rounded p-0.5">
-            <button onClick={() => onChange({ ...normalized, conjunction: 'AND' })}
-              className={`text-xs px-2.5 py-1 rounded transition-colors font-medium ${conjunction === 'AND' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
-              ET
-            </button>
-            <button onClick={() => onChange({ ...normalized, conjunction: 'OR' })}
-              className={`text-xs px-2.5 py-1 rounded transition-colors font-medium ${conjunction === 'OR' ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>
-              OU
-            </button>
-          </div>
+    <div data-filter-group={depth} className={nested ? 'rounded-lg border border-slate-200 bg-slate-50/70 p-2' : ''}>
+      <div className="flex items-center justify-between mb-2">
+        {rules.length > 1
+          ? <ConjunctionToggle value={conjunction} onChange={setConjunction} />
+          : <span className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{nested ? 'Groupe' : ''}</span>}
+        {nested && (
+          <button onClick={onRemove} className="text-slate-300 hover:text-red-500 flex-shrink-0" title="Retirer ce groupe">
+            <X size={14} />
+          </button>
         )}
       </div>
-      <div className="space-y-1 max-h-64 overflow-y-auto">
+
+      <div className="space-y-1">
         {rules.length === 0 && (
           <p className="text-sm text-slate-400 py-1">Aucun filtre actif</p>
         )}
-        {rules.map((f, i) => {
-          const fieldName = f.field_key || f.field
-          const broken = isDisabledField(fieldName)
+        {rules.map((child, i) => {
+          const childIsGroup = isGroupNode(child)
+          const fieldName = childIsGroup ? null : (child.field_key || child.field)
+          const broken = fieldName ? isDisabledField(fieldName) : false
           return (
             <div key={i}>
               {i > 0 && (
@@ -167,27 +196,77 @@ function FilterPanel({ columns, filters, onChange, data, left, disabledColumns }
                   <div className="flex-1 h-px bg-slate-100" />
                 </div>
               )}
-              <FilterRow
-                columns={columns}
-                filter={f}
-                onChange={updated => update(i, updated)}
-                onRemove={() => remove(i)}
-                size="xs"
-                data={data}
-              />
-              {broken && (
-                <div className="flex items-start gap-1 mt-0.5 ml-1 text-[11px] text-amber-700">
-                  <AlertTriangle size={11} className="mt-0.5 flex-shrink-0" />
-                  <span>Le champ <code className="font-mono">{fieldName}</code> a été désactivé dans la sync Airtable. Ce filtre ne renverra plus rien — supprime-le ou change le champ.</span>
-                </div>
+              {childIsGroup ? (
+                <FilterGroupEditor
+                  group={child}
+                  onChange={c => updateChild(i, c)}
+                  onRemove={() => removeChild(i)}
+                  columns={columns}
+                  filterableCols={filterableCols}
+                  data={data}
+                  disabledColumns={disabledColumns}
+                  depth={depth + 1}
+                />
+              ) : (
+                <>
+                  <FilterRow
+                    columns={columns}
+                    filter={child}
+                    onChange={updated => updateChild(i, updated)}
+                    onRemove={() => removeChild(i)}
+                    size="xs"
+                    data={data}
+                  />
+                  {broken && (
+                    <div className="flex items-start gap-1 mt-0.5 ml-1 text-[11px] text-amber-700">
+                      <AlertTriangle size={11} className="mt-0.5 flex-shrink-0" />
+                      <span>Le champ <code className="font-mono">{fieldName}</code> a été désactivé dans la sync Airtable. Ce filtre ne renverra plus rien — supprime-le ou change le champ.</span>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )
         })}
       </div>
-      <button onClick={add} className="mt-3 flex items-center gap-1.5 text-xs text-brand-600 hover:text-brand-800 font-medium">
-        <Plus size={13} /> Ajouter un filtre
-      </button>
+
+      <div className="mt-3 flex items-center gap-4">
+        <button onClick={addRule} className="flex items-center gap-1.5 text-xs text-brand-600 hover:text-brand-800 font-medium">
+          <Plus size={13} /> Ajouter un filtre
+        </button>
+        {depth < MAX_FILTER_GROUP_DEPTH && (
+          <button onClick={addGroup} className="flex items-center gap-1.5 text-xs text-brand-600 hover:text-brand-800 font-medium" title="Regrouper des conditions entre parenthèses">
+            <Plus size={13} /> Ajouter un groupe
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function FilterPanel({ columns, filters, onChange, data, left, disabledColumns }) {
+  const filterableCols = columns.filter(c => c.filterable !== false && c.field)
+
+  // Normalize to {conjunction, rules} format (le format plat array reste accepté
+  // en lecture pour les vues legacy ; toute édition repasse en format imbriqué).
+  const normalized = Array.isArray(filters)
+    ? { conjunction: 'AND', rules: filters }
+    : (filters?.rules ? filters : { conjunction: 'AND', rules: [] })
+
+  return (
+    <Panel className="w-[560px]" left={left}>
+      <PanelTitle>Filtres</PanelTitle>
+      <div className="max-h-[60vh] overflow-y-auto">
+        <FilterGroupEditor
+          group={normalized}
+          onChange={onChange}
+          columns={columns}
+          filterableCols={filterableCols}
+          data={data}
+          disabledColumns={disabledColumns}
+          depth={0}
+        />
+      </div>
     </Panel>
   )
 }
@@ -459,6 +538,14 @@ export function ViewToolbar({
   }
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
+
+  // Vue verrouillée (lecture seule) : ses filtres/tris/colonnes ne peuvent pas
+  // dériver. On désactive les panneaux de config et on bloque l'autosave.
+  // Un ref garde la valeur fraîche pour les closures d'autosave (flushSave).
+  const activeViewLocked = !!views.find(v => v.id === activeViewId)?.locked
+  const lockedRef = useRef(activeViewLocked)
+  lockedRef.current = activeViewLocked
+
   const [draggingId, _setDraggingId] = useState(null)
   const draggingIdRef = useRef(null)
   function setDraggingId(v) { draggingIdRef.current = v; _setDraggingId(v) }
@@ -510,6 +597,8 @@ export function ViewToolbar({
   const flushSaveRef = useRef(null)
 
   function flushSave() {
+    // Vue verrouillée : on n'écrit jamais (le serveur refuserait en 423).
+    if (lockedRef.current) { pendingSaveRef.current = null; return }
     const p = pendingSaveRef.current
     if (!p) return
     pendingSaveRef.current = null
@@ -549,6 +638,7 @@ export function ViewToolbar({
   useEffect(() => {
     if (!table) return
     if (activeViewId) {
+      if (lockedRef.current) return // vue verrouillée : pas d'autosave
       pendingSaveRef.current = { table, viewId: activeViewId, sorts, filters, visibleCols, groupBy, groupOrder }
       clearTimeout(autoSaveRef.current)
       autoSaveRef.current = setTimeout(() => flushSaveRef.current(), 600)
@@ -567,10 +657,16 @@ export function ViewToolbar({
   }, [])
 
 
+  // Vue verrouillée : fermer tout panneau de config ouvert (ex. ouvert avant
+  // le verrouillage, ou via le clic-droit d'un header DataTable).
+  useEffect(() => {
+    if (activeViewLocked) setOpenPanel(null)
+  }, [activeViewLocked])
+
   useEffect(() => {
     if (!openPanel) return
     function handler(e) {
-      if (toolbarRef.current && !toolbarRef.current.contains(e.target) && !document.getElementById('field-select-portal')?.contains(e.target)) setOpenPanel(null)
+      if (toolbarRef.current && !toolbarRef.current.contains(e.target) && !document.getElementById('field-select-portal')?.contains(e.target) && !document.getElementById('value-select-portal')?.contains(e.target)) setOpenPanel(null)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
@@ -656,7 +752,10 @@ export function ViewToolbar({
                 } : undefined}
                 style={canDrag ? { cursor: isDragging ? 'grabbing' : 'grab' } : undefined}
               >
-                {v.label}
+                <span className="inline-flex items-center gap-1">
+                  {v.locked && <Lock size={11} className="text-amber-600 flex-shrink-0" title="Vue verrouillée (lecture seule)" />}
+                  {v.label}
+                </span>
               </button>
             )
           })}
@@ -686,18 +785,18 @@ export function ViewToolbar({
 
           {visibleCols && setVisibleCols && (
             <ToolbarBtn icon={<Eye size={14} />} label="Champs" active={openPanel === 'fields'}
-              dataPanelBtn="fields"
+              dataPanelBtn="fields" disabled={activeViewLocked}
               onClick={(e) => togglePanel('fields', e)} />
           )}
 
           <ToolbarBtn icon={<Filter size={14} />} label="Filtrer" active={openPanel === 'filter'}
-            badge={Array.isArray(filters) ? filters.length : (filters?.rules?.length || 0)}
-            dataPanelBtn="filter"
+            badge={countFilterRules(filters)}
+            dataPanelBtn="filter" disabled={activeViewLocked}
             onClick={(e) => togglePanel('filter', e)} />
 
           <ToolbarBtn icon={<ArrowUpDown size={14} />} label="Trier" active={openPanel === 'sort'}
             badge={sorts.length}
-            dataPanelBtn="sort"
+            dataPanelBtn="sort" disabled={activeViewLocked}
             onClick={(e) => togglePanel('sort', e)} />
 
           {setGroupBy && (
@@ -706,8 +805,17 @@ export function ViewToolbar({
               label="Grouper"
               active={openPanel === 'group' || (Array.isArray(groupBy) ? groupBy.length > 0 : !!groupBy)}
               badge={Array.isArray(groupBy) && groupBy.length > 1 ? groupBy.length : 0}
-              dataPanelBtn="group"
+              dataPanelBtn="group" disabled={activeViewLocked}
               onClick={(e) => togglePanel('group', e)} />
+          )}
+
+          {activeViewLocked && (
+            <span
+              className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-amber-700 bg-amber-50 rounded"
+              title="Vue verrouillée en lecture seule (modifiable par un admin via le menu des vues)"
+            >
+              <Lock size={12} /> Lecture seule
+            </span>
           )}
 
 

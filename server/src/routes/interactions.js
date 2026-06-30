@@ -3,6 +3,7 @@ import { v4 as uuid } from 'uuid'
 import { requireAuth } from '../middleware/auth.js'
 import db from '../db/database.js'
 import { normalizeToUtcIso } from '../utils/datetime.js'
+import { checkForeignKeys } from '../utils/fkExists.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 
 // Reuse the LIST query shape (lightweight, without heavy fields) so the
@@ -154,16 +155,25 @@ router.get('/:id/email-body', requireAuth, (req, res) => {
 router.post('/', requireAuth, (req, res) => {
   const { contact_id, company_id, type, direction, timestamp, notes, title, url, duration_minutes, attendees } = req.body
   if (!type) return res.status(400).json({ error: 'type required' })
+  const fkErr = checkForeignKeys({ company_id, contact_id })
+  if (fkErr) return res.status(400).json({ error: fkErr.message })
 
   const id = uuid()
   const ts = normalizeToUtcIso(timestamp) || new Date().toISOString()
-  db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
-    .run(id, contact_id || null, company_id || null, req.user.id, type, direction || null, ts)
 
-  if (type === 'meeting' || type === 'note') {
-    db.prepare('INSERT INTO meetings (id, interaction_id, title, url, duration_minutes, notes, attendees) VALUES (?,?,?,?,?,?,?)')
-      .run(uuid(), id, title || (type === 'note' ? 'Note' : null), url || null, duration_minutes || null, notes || null, attendees || null)
-  }
+  // Tout-ou-rien : la ligne interactions et sa ligne de détail meetings doivent
+  // être insérées ensemble, sinon un échec du 2e INSERT laisserait une
+  // interaction orpheline sans détail. db.transaction() garantit le rollback complet.
+  const insertInteraction = db.transaction(() => {
+    db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
+      .run(id, contact_id || null, company_id || null, req.user.id, type, direction || null, ts)
+
+    if (type === 'meeting' || type === 'note') {
+      db.prepare('INSERT INTO meetings (id, interaction_id, title, url, duration_minutes, notes, attendees) VALUES (?,?,?,?,?,?,?)')
+        .run(uuid(), id, title || (type === 'note' ? 'Note' : null), url || null, duration_minutes || null, notes || null, attendees || null)
+    }
+  })
+  insertInteraction()
 
   const created = db.prepare(INTERACTION_LIST_SELECT).get(id)
   if (created) emitEntity('interaction', 'created', id, created, req.user?.id)

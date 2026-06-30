@@ -2,7 +2,7 @@
 
 ## But de l'application
 
-App **single-tenant** dédiée aux opérations d'Orisha, entreprise d'IoT & automatisation qui conçoit, fabrique et vend directement aux clients des produits de contrôle climatique pour serres. L'ERP couvre marketing, ventes, logistique, assemblage, comptabilité, RH et dashboards. Il remplace progressivement un empilement HubSpot + Airtable + QuickBooks + Stripe — l'objectif à terme est de n'utiliser que cette app + Stripe. Les intégrations existantes sont donc des étapes transitoires, pas des dépendances permanentes.
+App **single-tenant** dédiée aux opérations d'Orisha, entreprise d'IoT & automatisation qui conçoit, fabrique et vend directement aux clients des produits de contrôle climatique pour serres. L'ERP couvre marketing, ventes, logistique, assemblage, comptabilité, RH et dashboards.
 
 ## Stack
 - **Frontend** : React + Vite, dans `client/`
@@ -133,16 +133,9 @@ Middleware `requireAuth` (`server/src/middleware/auth.js`) accepte :
 
 Pour admin-only : `requireAdmin`.
 
-### Pagination list — `limit=all`
-Toutes les routes list supportent `?limit=all` pour tout charger en une requête. Côté client, utiliser `loadProgressive(loadFn, setData, setLoading)` de `client/src/lib/loadAll.js` — ne pas réimplémenter de pagination manuelle.
-
-### OAuth connectors — refresh lock + chiffrement
-- `connectors/airtable.js` et `connectors/quickbooks.js` utilisent un `refreshLock` (Promise-mutex) pour éviter les refreshes concurrents. Toute nouvelle intégration OAuth doit suivre ce pattern.
-- Les tokens OAuth en DB sont chiffrés via `server/src/utils/encryption.js` avec `CONNECTOR_ENCRYPTION_KEY`. **Ne jamais changer cette clé en prod** — toutes les connexions seraient à refaire.
-
 ### Datetime — toujours ISO UTC avec suffixe Z
 
-**Toutes les colonnes datetime en DB sont stockées en ISO 8601 UTC avec suffixe Z** (ex: `2026-04-23T18:47:10.533Z`). Convention uniforme après la migration `src/scripts/migrate-datetimes-to-utc.js`.
+**Toutes les colonnes datetime en DB sont stockées en ISO 8601 UTC avec suffixe Z** (ex: `2026-04-23T18:47:10.533Z`).
 
 - **En SQL** : utiliser `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` (pas `datetime('now')` qui produit l'ancien format espace-séparé). Les DEFAULTs des tables existantes ont été mis à jour. Les modificateurs classiques marchent : `strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days')`.
 - **En Node** : utiliser `new Date().toISOString()` — jamais `.toLocaleString()`, `.replace('T', ' ')` ni autres transformations qui retirent le Z.
@@ -152,7 +145,7 @@ Toutes les routes list supportent `?limit=all` pour tout charger en une requête
 **Pourquoi** : mélanger du naïf local (sans Z) et du UTC (avec Z) cassait les comparaisons de chaînes (tris, filtres, bornes `WHERE col >= date`) puisque V8 parse les naïfs selon le fuseau du navigateur alors que SQLite les compare lexicographiquement.
 
 ### Logging des syncs
-Opérations durables (Airtable, Stripe, HubSpot, Gmail…) doivent être tracées :
+Tous les sync doivent être tracées :
 - `logSync(module, trigger, { status, modified, error, durationMs })` → table `sync_log`
 - `logSystemRun(...)` → table `system_runs` (macros système)
 
@@ -162,52 +155,46 @@ Voir `server/src/services/syncLog.js` et `syncState.js`.
 Pas de Zod/Joi — chaque route valide manuellement. Réponses d'erreur uniformes : `res.status(4xx).json({ error: 'message' })`. Toujours valider côté serveur, ne pas dépendre du front.
 
 ### Soft deletes
-Certaines tables (notamment `tasks`) utilisent `deleted_at` — dans ce cas, filtrer `WHERE deleted_at IS NULL` et faire `UPDATE ... SET deleted_at = datetime('now')` plutôt qu'un `DELETE`. Vérifier la table dans `server/src/db/schema.js` avant.
+Toutes les tables doivent utiliser `deleted_at`, filtrer `WHERE deleted_at IS NULL` et faire `UPDATE ... SET deleted_at = datetime('now')` plutôt qu'un `DELETE`.
 
 ## Patterns frontend
 
-### DataTable — métadonnées centralisées
-Les tables utilisent `TABLE_COLUMN_META` dans `client/src/lib/tableDefs.js` (labels, types, filtrage, tri, groupage, visibilité). Ajouter une colonne =
-1. La retourner côté serveur
-2. L'ajouter à `TABLE_COLUMN_META` dans `tableDefs.js`
-3. (Optionnel) render custom dans `DataTable`
-
-Le composant `DataTable` gère automatiquement filtrage/tri/groupage.
-
 ### Règle de design — dropdowns avec recherche
-Tout dropdown / menu de sélection susceptible d'offrir **plus de 10 options** doit inclure une zone de recherche (input avec filtrage live des options). S'applique aux `<select>` remplacés par des composants custom, aux listes de filtres, de champs, de colonnes, d'utilisateurs, de produits, etc. Voir `FieldSelect` dans `client/src/components/FilterRow.jsx` ou `FieldsPanel` / `GroupPanel` dans `ViewToolbar.jsx` pour le pattern de référence.
-
-### Règle de design — tableaux via `DataTable`
-Toute page qui affiche des données sous forme de tableau **doit** utiliser le composant `DataTable` (`client/src/components/DataTable.jsx`) afin d'hériter automatiquement de : vues réordonnables, recherche, filtres, tri, groupage, visibilité/largeur/ordre des colonnes, persistance par utilisateur. Pas de tableau HTML brut ni de réimplémentation locale de ces fonctionnalités. Pages de référence : `Orders.jsx`, `Retours.jsx`, `Factures.jsx`, `Tasks.jsx`. Pour ajouter une nouvelle page tableau : déclarer les colonnes dans `TABLE_COLUMN_META` (`tableDefs.js`), charger les données avec `loadProgressive`, et rendre via `<DataTable table="..." columns={...} data={...} searchFields={[...]} />`.
+Tout dropdown / menu de sélection susceptible d'offrir **plus de 10 options** doit inclure une zone de recherche (input avec filtrage live des options). Voir `FieldSelect` dans `client/src/components/FilterRow.jsx` ou `FieldsPanel` / `GroupPanel` dans `ViewToolbar.jsx` pour le pattern de référence. 
 
 ### Règle de design — autosave partout
 Tout champ éditable doit sauvegarder automatiquement (on blur ou debounce ~500ms) via un `PATCH` sur la route concernée. **Pas de bouton "Enregistrer"** dans les formulaires de détail (pages `*Detail.jsx`, panneaux d'édition, modales d'édition de ligne existante). L'état de sauvegarde doit être visible (ex. spinner discret, toast d'erreur en cas d'échec réseau) mais ne doit pas bloquer l'utilisateur. Exceptions admises uniquement quand l'autosave serait impraticable : création d'un nouvel enregistrement (formulaire "Nouveau X" qui n'a pas encore d'`id`), actions destructrices/transactionnelles (envoi de facture, soumission de paie, paiement Stripe), formulaires multi-étapes où les champs s'influencent mutuellement. Dans ces cas, documenter la raison en commentaire à côté du bouton.
 
 ### Règle de design — champs référence (FK)
-Tout champ qui référence un record d'une autre table (ex. `company_id`, `contact_id`, `product_id`, `assigned_to`…) doit offrir **deux affordances** côté UI :
+Tout champ qui référence un record dans une fiche détaillée (pas dans un tableau) d'une autre table (ex. `company_id`, `contact_id`, `product_id`, `assigned_to`…) doit offrir **deux affordances** côté UI :
 1. **Sélection** via un picker recherchable (liste des records de la table cible, avec recherche — voir règle "dropdowns avec recherche" si >10 options).
 2. **Navigation** : le record sélectionné s'affiche comme lien cliquable qui ouvre la fiche détail correspondante (`/companies/:id`, `/contacts/:id`, `/products/:id`, etc.). Pas de simple label texte.
 
 S'applique aux formulaires, aux fiches détail, et aux colonnes de `DataTable` affichant des noms de records liés (`company_name`, `contact_name`, `product_name`…). Pour ces colonnes, utiliser un `render` custom qui produit un `<Link>` vers la fiche cible.
 
-### Règle de design — confirmation des side effects
-Toute action utilisateur qui déclenche un **side effect** (au-delà de la simple persistance de l'enregistrement édité) doit afficher une **modale de confirmation** listant explicitement chaque side effect avant exécution. L'utilisateur doit pouvoir lire le détail de ce qui va se passer, puis confirmer ou annuler.
+### Règle de design — interface la plus smooth possible avec une grande attention aux détails. Prendre exemple sur l'interface d'Airtable.
 
-Sont considérés comme side effects, entre autres :
-- Envoi d'un email, SMS ou notification (interne ou externe)
-- Création/mise à jour d'un enregistrement dans un système tiers (Stripe, QuickBooks, HubSpot, Airtable, Gmail…)
-- Génération et envoi d'un document (facture, soumission, bon de livraison, reçu)
-- Encaissement, remboursement, ou tout mouvement monétaire
-- Création d'enregistrements liés en cascade (ex. création d'une commande qui génère une facture, une tâche, ou déclenche une expédition)
-- Toute action irréversible ou difficilement réversible
+### Règle de design - Codebase clean et minimaliste réutilisant le plus possible de composantes.
 
-Exemple : si la création d'une commande envoie un email de confirmation au client et crée une facture dans Stripe, la modale doit lister ces deux side effects (« Un email de confirmation sera envoyé à `client@example.com` », « Une facture Stripe de 1234,56 $ sera créée ») avant que l'utilisateur ne valide.
+### Règle de design - La visibilité sur les actions effectuées en side effect est primordiale ; il doit y avoir un endroit où l'utilisateur peut visualiser l'historique des déclenchements de side effect, activer / désactiver les side effect et modifier le code des side effect manuellement directement dans l'interface. Ex.: de side effect: lorsqu'une commande liée à une facture est liée à un envoi, publier une écriture de journal sur QB. L'utilisateur doit aussi pouvoir modifier les triggers de ces side effects basés sur des valeurs de la base de données. Autre exemple: envoyer une notification sur un canal Slack lorsqu'un projet est fermé et gagné. Pas besoin de code d'idempotance, l'utilisateur pourra le coder au besoin à l'aide d'un champ personnalisé.
 
-À l'inverse, les actions purement locales (édition d'un champ autosauvegardé, changement de vue, filtrage) n'ont pas de side effect externe et ne nécessitent pas de modale.
+### Règle de design - Champs personnalisés
 
-## Agent tasks (système interne)
-
-Les tâches de l'agent ERP sont persistées dans `agent-tasks.json` à la racine du projet (écriture atomique `.tmp` + rename). Un sous-process agent peut créer des sous-tâches via `POST /api/agent/tasks/internal` avec header `X-Agent-Secret: $AGENT_INTERNAL_SECRET` — cet endpoint **n'est pas protégé par JWT**.
+L'utilisateur doit pouvoir créer des champs personnalisés de différents types dans chaque table. Les types sont les suivants: 
+- Number avec choix du nombre de décimales affiché de 0 à 5
+- Text
+- Currency
+- Link to another table avec le choix one to one ou one to many
+- URL (devient cliquable lorsque lien valide)
+- Created by
+- Last modified by
+- Created time
+- Single select (configurable avec ajout, retrait, renommer et choix de couleur pour chacun des choix + possibilité d'ajouter un choix par défaut et d'alphabésifier les choix).
+- Last modified by
+- Lookup d'un champ dans une table liée
+- Rollup d'un champ dans une table liée
+- Formule avec les fonctions suivantes: 
+ABS, AND, ARRAYCOMPACT, ARRAYFLATTEN, ARRAYJOIN, ARRAYUNIQUE, AVERAGE, BLANK, CEILING, CONCATENATE, COUNT, COUNTA, COUNTALL, CREATED_TIME, DATEADD, DATEDIFF, DATETIME_DIFF, DATETIME_FORMAT, DATETIME_PARSE, DAY, EVEN, EXP, FIND, FLOOR, FROMUNIXTIMESTAMP, HOUR, IF, IS_BEFORE, IS_SAME, ISAFTER, LAST_MODIFIED_TIME, LEFT, LEN, LOG, LOWER, MAX, MID, MIN, MINUTE, MOD, MONTH, NOT, NOW, ODD, OR, PI, POWER, RECORD_ID, REPLACE, RIGHT, ROUND, ROUNDDOWN, ROUNDUP, SEARCH, SECOND, SQRT, SUBSTITUTE, SUM, SWITCH, T, TIMESTAMPTOTEXT, TODAY, TRIM, TRUE, UPPER, VALUE, WEEKDAY, WEEKNUM, YEAR
 
 ## Variables d'environnement critiques
 
@@ -277,10 +264,6 @@ Le code mixe français et anglais. Correspondances utiles :
 | Dépense | Expense |
 | Reçu de vente | Sale receipt |
 | Bon de livraison | Delivery slip |
-
-## Convention commits
-
-Format libre descriptif (pas de conventional commits). Tag `[agent]` en préfixe pour les changements liés au système d'agent autonome. FR ou EN selon le contexte. Garder les messages informatifs sur le *pourquoi*.
 
 ## Limites auto-imposées
 

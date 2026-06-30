@@ -80,7 +80,7 @@ describe('Realtime — onglet Contacts d\'une entreprise', () => {
     assert.equal(r.status, 201, JSON.stringify(r.data))
 
     // A doit voir apparaître la ligne sans recharger
-    const row = pageA.locator(`tr:has-text("E2E Realtime")`).first()
+    const row = pageA.locator('[data-row-id]', { hasText: 'E2E Realtime' }).first()
     await row.waitFor({ state: 'visible', timeout: 8000 })
   })
 
@@ -93,7 +93,7 @@ describe('Realtime — onglet Contacts d\'une entreprise', () => {
     await apiB('DELETE', `/contacts/${contactId}/companies/${linkB.link_id}`)
 
     // La ligne doit disparaître chez A
-    const row = pageA.locator(`tr:has-text("E2E Realtime")`).first()
+    const row = pageA.locator('[data-row-id]', { hasText: 'E2E Realtime' }).first()
     await row.waitFor({ state: 'detached', timeout: 3000 })
   })
 })

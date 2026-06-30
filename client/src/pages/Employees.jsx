@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, RefreshCw, Database, ChevronDown, ChevronRight } from 'lucide-react'
+import { Plus, RefreshCw, Database, ChevronDown, ChevronRight, Users } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -180,17 +181,36 @@ function SyncPanel({ onSynced }) {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="label text-xs">Base Airtable</label>
-                  <select className="input text-sm" value={baseId} onChange={e => { setBaseId(e.target.value); setTableId('') }}>
-                    <option value="">— Sélectionner —</option>
-                    {bases.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
-                  </select>
+                  <SearchableSelect
+                    testId="employees-base-select"
+                    className="input"
+                    size="sm"
+                    value={baseId}
+                    options={bases}
+                    getOptionValue={o => o.id}
+                    getOptionLabel={o => o.name}
+                    onChange={v => { setBaseId(v); setTableId('') }}
+                    emptyOption="—"
+                    placeholder="Choisir une base…"
+                    searchPlaceholder="Rechercher une base…"
+                  />
                 </div>
                 <div>
                   <label className="label text-xs">Table</label>
-                  <select className="input text-sm" value={tableId} onChange={e => setTableId(e.target.value)} disabled={!baseId}>
-                    <option value="">— Sélectionner —</option>
-                    {tables.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
-                  </select>
+                  <SearchableSelect
+                    testId="employees-table-select"
+                    className="input"
+                    size="sm"
+                    value={tableId}
+                    options={tables}
+                    getOptionValue={o => o.id}
+                    getOptionLabel={o => o.name}
+                    onChange={v => setTableId(v)}
+                    emptyOption="—"
+                    placeholder="Choisir une table…"
+                    searchPlaceholder="Rechercher une table…"
+                    disabled={!baseId}
+                  />
                 </div>
               </div>
               <p className="text-xs text-slate-500">
@@ -261,6 +281,7 @@ export default function Employees() {
           loading={loading}
           onRowClick={row => navigate(`/employees/${row.id}`)}
           searchFields={['first_name', 'last_name', 'matricule', 'email_work', 'email_personal']}
+          emptyState={{ icon: Users, title: 'Aucun employé', description: "Aucun employé n'est encore enregistré. Ajoute un employé pour gérer la paie et les feuilles de temps.", cta: { label: 'Nouvel employé', icon: Plus, onClick: () => setShowNew(true) } }}
         />
       </div>
 

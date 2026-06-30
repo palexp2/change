@@ -106,3 +106,33 @@
 .animate-slide-in-right {
   animation: slide-in-right 0.2s ease-out;
 }
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.animate-fade-in {
+  animation: fade-in 0.15s ease-out;
+}
+
+/* DataTable — indicateur live « modifié par un autre utilisateur ».
+   Halo vert sur la cellule changée + badge éditeur, qui s'estompent.
+   Durée alignée sur FLASH_MS dans DataTable.jsx (3.6s). */
+@keyframes dtCellFlash {
+  0%   { background-color: rgba(16, 185, 129, 0.30); box-shadow: inset 0 0 0 2px rgba(16, 185, 129, 0.70); }
+  70%  { background-color: rgba(16, 185, 129, 0.12); box-shadow: inset 0 0 0 2px rgba(16, 185, 129, 0.30); }
+  100% { background-color: transparent;             box-shadow: inset 0 0 0 2px transparent; }
+}
+.dt-cell-flash {
+  animation: dtCellFlash 3.6s ease-out forwards;
+  border-radius: 4px;
+}
+@keyframes dtEditorBadge {
+  0%   { opacity: 0; transform: translateY(-50%) translateX(6px); }
+  12%  { opacity: 1; transform: translateY(-50%) translateX(0); }
+  75%  { opacity: 1; transform: translateY(-50%) translateX(0); }
+  100% { opacity: 0; transform: translateY(-50%) translateX(0); }
+}
+.dt-editor-badge {
+  animation: dtEditorBadge 3.6s ease-out forwards;
+}

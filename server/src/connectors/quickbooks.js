@@ -1,4 +1,6 @@
 import db from '../db/database.js'
+import { logSync } from '../services/syncLog.js'
+import { getCurrentUser } from '../utils/requestContext.js'
 
 const APP_URL = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
 const CALLBACK_URL = `${APP_URL}/erp/api/connectors/quickbooks/callback`
@@ -42,14 +44,43 @@ export async function exchangeCode(code) {
   return resp.json()
 }
 
-// Mutex pour éviter les refreshs concurrents
-let refreshLock = null
+// Clé de connexion par défaut (compte « entreprise »). Sert de repli pour toutes
+// les écritures automatiques (webhooks Stripe, syncs planifiées) qui ne sont
+// déclenchées par aucun utilisateur. Les connexions par utilisateur sont stockées
+// sous account_key = <userId> et permettent à QuickBooks d'attribuer l'écriture à
+// la bonne personne dans son « Historique de vérification ».
+export const QB_DEFAULT_ACCOUNT_KEY = 'default'
 
-export async function getAccessToken() {
-  const row = db.prepare(`
-    SELECT * FROM connector_oauth WHERE connector='quickbooks'
-    ORDER BY updated_at DESC LIMIT 1
-  `).get()
+// Détermine quelle connexion QB utiliser. Si accountKey est passé explicitement,
+// on l'honore. Sinon on lit l'utilisateur courant du contexte de requête : s'il a
+// sa propre connexion QB, on l'utilise ; à défaut on retombe sur 'default'.
+function resolveQbRow(accountKey) {
+  if (accountKey) {
+    const row = db.prepare(
+      "SELECT * FROM connector_oauth WHERE connector='quickbooks' AND account_key=?"
+    ).get(accountKey)
+    if (row) return row
+  } else {
+    const user = getCurrentUser()
+    if (user?.id) {
+      const own = db.prepare(
+        "SELECT * FROM connector_oauth WHERE connector='quickbooks' AND account_key=?"
+      ).get(user.id)
+      if (own) return own
+    }
+  }
+  return db.prepare(
+    "SELECT * FROM connector_oauth WHERE connector='quickbooks' AND account_key=?"
+  ).get(QB_DEFAULT_ACCOUNT_KEY)
+}
+
+// Mutex de refresh par connexion (account_key) pour éviter les refreshs concurrents
+// d'un même jeton, tout en laissant deux connexions distinctes se rafraîchir en
+// parallèle.
+const refreshLocks = new Map()
+
+export async function getAccessToken(accountKey) {
+  const row = resolveQbRow(accountKey)
   if (!row) throw new Error('QuickBooks non connecté')
 
   const meta = JSON.parse(row.metadata || '{}')
@@ -58,14 +89,14 @@ export async function getAccessToken() {
     return { accessToken: row.access_token, realmId: meta.realm_id }
   }
 
-  if (refreshLock) return refreshLock
+  const lockKey = row.account_key
+  if (refreshLocks.has(lockKey)) return refreshLocks.get(lockKey)
 
   const refreshPromise = (async () => {
     try {
-      const fresh = db.prepare(`
-        SELECT * FROM connector_oauth WHERE connector='quickbooks'
-        ORDER BY updated_at DESC LIMIT 1
-      `).get()
+      const fresh = db.prepare(
+        "SELECT * FROM connector_oauth WHERE connector='quickbooks' AND account_key=?"
+      ).get(lockKey)
       if (fresh && (!fresh.expiry_date || Date.now() <= fresh.expiry_date - 60_000)) {
         return { accessToken: fresh.access_token, realmId: JSON.parse(fresh.metadata || '{}').realm_id }
       }
@@ -92,11 +123,11 @@ export async function getAccessToken() {
       `).run(t.access_token, t.refresh_token || null, t.expires_in ? Date.now() + t.expires_in * 1000 : null, fresh.id)
       return { accessToken: t.access_token, realmId: JSON.parse(fresh.metadata || '{}').realm_id }
     } finally {
-      refreshLock = null
+      refreshLocks.delete(lockKey)
     }
   })()
 
-  refreshLock = refreshPromise
+  refreshLocks.set(lockKey, refreshPromise)
   return refreshPromise
 }
 
@@ -123,7 +154,22 @@ export async function qbRequest(method, path, body) {
     throw new Error(`QB API ${method} ${path} ${resp.status}: ${text}`)
   }
   if (method !== 'GET') {
-    for (const fn of qbMutationListeners) { try { fn({ method, path }) } catch {} }
+    for (const fn of qbMutationListeners) {
+      try {
+        fn({ method, path })
+      } catch (e) {
+        // Un listener qui échoue (ex. invalidation de cache de rapport, mise à
+        // jour d'état local après une JE/Deposit poussé) ne doit pas être avalé :
+        // sans trace, l'état ERP↔QB diverge silencieusement et devient impossible
+        // à diagnostiquer après coup.
+        const listenerName = fn.name || 'anonymous'
+        console.error(`qbMutationListener "${listenerName}" failed for ${method} ${path}:`, e)
+        logSync('quickbooks', 'webhook', {
+          status: 'error',
+          error: `mutation listener "${listenerName}" failed for ${method} ${path}: ${e.message}`,
+        })
+      }
+    }
   }
   return resp.json()
 }

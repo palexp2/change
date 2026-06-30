@@ -9,13 +9,32 @@ import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
 import { emitOrder, emitOrderItem } from '../services/realtimeEmitters.js';
+import { notifyAssignment } from '../services/notifications.js';
 import { getCentralControllers } from '../utils/centralController.js';
 import { rescanRachatForCompany } from '../services/subscriptionEvents.js';
+import { logSync } from '../services/syncLog.js';
+import { parsePositiveInt, parseNonNegativeInt, parseNonNegativeNumber, validateNumericFields } from '../utils/validateNumbers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const router = Router();
 router.use(requireAuth);
+
+// Re-scan best-effort des churns récents d'un client à la création/modif d'une
+// commande (détection "rachat"). rescanRachatForCompany route déjà chaque event
+// par safeDetectRachatForChurn (log + file de retry), mais un échec de la passe
+// elle-même (SELECT, emits) ne doit pas être avalé silencieusement : on le trace
+// dans sync_log au lieu d'un catch {} muet.
+function rescanRachatLogged(companyId, trigger) {
+  if (!companyId) return;
+  try {
+    const scanned = rescanRachatForCompany(companyId);
+    logSync('rachat-rescan', 'manual', { status: 'success', modified: scanned });
+  } catch (e) {
+    logSync('rachat-rescan', 'manual', { status: 'error', error: `${trigger}: ${e.message}` });
+    console.error(`rescanRachatForCompany (${trigger}, company ${companyId}):`, e.message);
+  }
+}
 
 // GET /api/orders/lookup — minimal list for dropdowns
 router.get('/lookup', (req, res) => {
@@ -82,7 +101,7 @@ router.get('/:id', (req, res) => {
      LEFT JOIN users u ON o.assigned_to = u.id
      LEFT JOIN projects p ON o.project_id = p.id
      LEFT JOIN adresses a ON o.address_id = a.id
-     WHERE o.id = ?`
+     WHERE o.id = ? AND o.deleted_at IS NULL`
   ).get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
@@ -118,12 +137,58 @@ router.get('/:id', (req, res) => {
 
   const central_controllers = getCentralControllers(order.company_id);
 
-  res.json({ ...order, items: itemsWithSerials, shipments, factures, central_controllers });
+  // ── Rentabilité ────────────────────────────────────────────────────────────
+  // Revenu et coûts calculés EXACTEMENT comme le tableau Rentabilité du dashboard
+  // (server/src/routes/dashboard.js). Garder les deux alignés.
+  //   Revenu : abonnement → 1re facture HT × 38 ; achat → SUM des factures HT,
+  //            liées directement (order_id) ou via le projet (project_id).
+  //   Coûts (COGS) : SUM(COALESCE(shipped_unit_cost, unit_cost) × qty) pour les
+  //            items 'Facturable' uniquement.
+  // L'override (revenue_override_cad) prime sur le revenu calculé quand il est posé.
+  const revenueComputed = order.is_subscription
+    ? (db.prepare(
+        `SELECT f.amount_before_tax_cad * 38 AS rev FROM factures f
+         WHERE (f.order_id = ? OR (? IS NOT NULL AND f.project_id = ?))
+         ORDER BY COALESCE(f.document_date, f.created_at) ASC LIMIT 1`
+      ).get(req.params.id, order.project_id, order.project_id)?.rev || 0)
+    : (db.prepare(
+        `SELECT COALESCE(SUM(f.amount_before_tax_cad), 0) AS rev FROM factures f
+         WHERE (f.order_id = ? OR (? IS NOT NULL AND f.project_id = ?))`
+      ).get(req.params.id, order.project_id, order.project_id)?.rev || 0);
+  const cogs = db.prepare(
+    `SELECT COALESCE(SUM(COALESCE(oi.shipped_unit_cost, oi.unit_cost) * oi.qty), 0) AS cogs
+     FROM order_items oi WHERE oi.order_id = ? AND oi.item_type = 'Facturable'`
+  ).get(req.params.id)?.cogs || 0;
+  const override = order.revenue_override_cad;
+  const revenueEffective = (override != null) ? override : revenueComputed;
+  const profitability = {
+    revenue_computed: revenueComputed,
+    revenue_override_cad: override != null ? override : null,
+    revenue_effective: revenueEffective,
+    cogs,
+    profit: revenueEffective - cogs,
+    margin_pct: revenueEffective ? ((revenueEffective - cogs) / revenueEffective) * 100 : null,
+  };
+
+  res.json({ ...order, items: itemsWithSerials, shipments, factures, central_controllers, profitability });
 });
 
 // POST /api/orders
 router.post('/', (req, res) => {
   const { company_id, project_id, assigned_to, status, priority, notes, date_commande, items = [] } = req.body;
+
+  if (!Array.isArray(items)) return res.status(400).json({ error: 'items must be an array' });
+  // Valide qty/unit_cost de chaque ligne avant d'ouvrir la transaction : aucune
+  // quantité NaN/décimale/négative ni coût négatif ne doit entrer en DB.
+  for (const item of items) {
+    if (item.qty !== undefined && item.qty !== null && parsePositiveInt(item.qty) === null) {
+      return res.status(400).json({ error: 'item qty must be a positive integer' });
+    }
+    if (item.unit_cost !== undefined && item.unit_cost !== null && item.unit_cost !== '' &&
+        parseNonNegativeNumber(item.unit_cost) === null) {
+      return res.status(400).json({ error: 'item unit_cost must be a number >= 0' });
+    }
+  }
 
   const id = uuidv4();
 
@@ -163,22 +228,41 @@ router.post('/', (req, res) => {
   ).all(id);
 
   emitOrder('created', id, req.user?.id);
+  notifyAssignment({
+    assignedTo: assigned_to,
+    actorUserId: req.user?.id,
+    type: 'order:assigned',
+    title: `Commande #${orderNumber} assignée à vous`,
+    link: `/orders/${id}`,
+  });
   // Une nouvelle commande peut être le rachat d'un churn récent du même
   // client — re-scanne les churns sans rachat des 12 derniers mois.
-  if (order?.company_id) { try { rescanRachatForCompany(order.company_id) } catch {} }
+  rescanRachatLogged(order?.company_id, 'order-create');
   res.status(201).json({ ...order, items: orderItems });
 });
 
 // PUT /api/orders/:id — partial update
 router.put('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
+  const existing = db.prepare('SELECT id, assigned_to, order_number FROM orders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Order not found' });
+
+  // L'override de revenu alimente directement le P&L : un `"abc"` ou un négatif
+  // doit être rejeté (400), pas stocké tel quel (NaN) ni coercé silencieusement.
+  // '' / null restent permis (efface l'override → retour au revenu calculé).
+  const { error: numError } = validateNumericFields(req.body, [
+    { key: 'revenue_override_cad' },
+  ]);
+  if (numError) return res.status(400).json({ error: numError });
 
   const { setClause, values, error } = buildPartialUpdate(req.body, {
     allowed: ['company_id', 'project_id', 'assigned_to', 'status', 'priority',
-      'notes', 'address_id', 'date_commande', 'is_subscription'],
+      'notes', 'address_id', 'date_commande', 'is_subscription', 'revenue_override_cad'],
     nonNullable: new Set(['status']),
-    coerce: { is_subscription: v => v ? 1 : 0 },
+    coerce: {
+      is_subscription: v => v ? 1 : 0,
+      // '' / null effacent l'override → on retombe sur le revenu calculé.
+      revenue_override_cad: v => (v === '' || v == null ? null : Number(v)),
+    },
   });
   if (error) return res.status(400).json({ error });
   if (setClause) {
@@ -187,10 +271,20 @@ router.put('/:id', (req, res) => {
   }
 
   emitOrder('updated', req.params.id, req.user?.id);
+  if ('assigned_to' in req.body) {
+    notifyAssignment({
+      assignedTo: req.body.assigned_to,
+      prevAssignedTo: existing.assigned_to,
+      actorUserId: req.user?.id,
+      type: 'order:assigned',
+      title: `Commande #${existing.order_number} assignée à vous`,
+      link: `/orders/${req.params.id}`,
+    });
+  }
   const updated = db.prepare('SELECT o.*, c.name as company_name, p.name as project_name FROM orders o LEFT JOIN companies c ON o.company_id = c.id LEFT JOIN projects p ON o.project_id = p.id WHERE o.id = ?').get(req.params.id);
   // Une modif de commande (date, company, ou items en cascade) peut affecter
   // l'éligibilité comme rachat — re-scan best-effort.
-  if (updated?.company_id) { try { rescanRachatForCompany(updated.company_id) } catch {} }
+  rescanRachatLogged(updated?.company_id, 'order-update');
   res.json(updated);
 });
 
@@ -276,6 +370,13 @@ router.post('/:id/items', (req, res) => {
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
   const { product_id, qty, unit_cost, item_type, notes } = req.body;
+  if (qty !== undefined && qty !== null && parsePositiveInt(qty) === null) {
+    return res.status(400).json({ error: 'qty must be a positive integer' });
+  }
+  if (unit_cost !== undefined && unit_cost !== null && unit_cost !== '' &&
+      parseNonNegativeNumber(unit_cost) === null) {
+    return res.status(400).json({ error: 'unit_cost must be a number >= 0' });
+  }
   let cost = unit_cost;
   if (!cost && product_id) {
     const product = db.prepare('SELECT unit_cost FROM products WHERE id = ?').get(product_id);
@@ -309,6 +410,19 @@ router.patch('/:id/items/reorder', (req, res) => {
 router.patch('/:id/items/:itemId', (req, res) => {
   const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
+  // Refuse les états impossibles avant l'UPDATE : qty entier positif, unit_cost
+  // nombre >= 0, fulfilled_qty entier >= 0.
+  if ('qty' in req.body && parsePositiveInt(req.body.qty) === null) {
+    return res.status(400).json({ error: 'qty must be a positive integer' });
+  }
+  if ('unit_cost' in req.body && req.body.unit_cost !== null && req.body.unit_cost !== '' &&
+      parseNonNegativeNumber(req.body.unit_cost) === null) {
+    return res.status(400).json({ error: 'unit_cost must be a number >= 0' });
+  }
+  if ('fulfilled_qty' in req.body && req.body.fulfilled_qty !== null &&
+      parseNonNegativeInt(req.body.fulfilled_qty) === null) {
+    return res.status(400).json({ error: 'fulfilled_qty must be an integer >= 0' });
+  }
   const allowed = ['product_id', 'qty', 'unit_cost', 'item_type', 'notes', 'replaced_serial', 'fulfillment_status', 'fulfilled_qty', 'shipment_id'];
   const updates = [];
   const values = [];
@@ -558,6 +672,30 @@ router.post('/:id/generate-installation-docs', async (req, res) => {
 router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Order not found' });
+
+  // ?hard=true → suppression DÉFINITIVE (admin only). Supprime aussi les
+  // order_items (FK ON). Réservé au nettoyage de commandes jetables (résidus de
+  // tests E2E, junk). Émet 'deleted' + le trigger change_log pose un tombstone
+  // → les clients retirent la commande de leur cache. Le défaut reste le
+  // soft-delete (deleted_at) pour les vraies commandes.
+  const hard = req.query.hard === 'true' || req.query.hard === '1';
+  if (hard) {
+    if (req.user?.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required for permanent delete' });
+    }
+    try {
+      db.transaction(() => {
+        db.prepare('DELETE FROM order_items WHERE order_id = ?').run(req.params.id);
+        db.prepare('DELETE FROM orders WHERE id = ?').run(req.params.id);
+      })();
+    } catch (e) {
+      // FK (serials, factures…) → on refuse plutôt que de corrompre.
+      return res.status(409).json({ error: 'Permanent delete blocked by dependencies: ' + e.message });
+    }
+    emitOrder('deleted', req.params.id, req.user?.id);
+    return res.json({ message: 'Deleted permanently' });
+  }
+
   db.prepare("UPDATE orders SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);
   emitOrder('deleted', req.params.id, req.user?.id);
   res.json({ message: 'Deleted' });
@@ -573,7 +711,7 @@ router.post('/:id/bon-livraison', async (req, res) => {
      FROM orders o
      LEFT JOIN companies c ON o.company_id = c.id
      LEFT JOIN adresses a ON o.address_id = a.id
-     WHERE o.id = ?`
+     WHERE o.id = ? AND o.deleted_at IS NULL`
   ).get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
 

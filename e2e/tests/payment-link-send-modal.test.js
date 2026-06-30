@@ -10,9 +10,14 @@ const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 const DB_PATH = process.env.ERP_DB_PATH || '/home/ec2-user/erp/server/data/erp.db'
 
-// Vérifie que le bouton "Envoyer par email" sur une facture pending ouvre la
-// nouvelle modale d'édition (To / Sujet / Message) pré-remplie depuis
-// /email-defaults, et que la requête de send envoie bien les champs custom.
+// Vérifie le flux d'envoi du lien de paiement :
+//  1. Le bouton "Envoyer par email" ouvre la modale d'édition (To / Sujet / Message)
+//     pré-remplie depuis /email-defaults.
+//  2. Le clic "Envoyer" ouvre une modale de CONFIRMATION du side effect listant
+//     explicitement l'adresse destinataire.
+//  3. Après confirmation, un toast d'annulation (barre 10 s) apparaît et l'envoi
+//     réel n'est déclenché qu'à la fin du compte à rebours (avec les overrides).
+//  4. Le bouton "Annuler" du toast empêche tout appel /send.
 describe('FactureDetail — modale d\'envoi du lien de paiement', () => {
   let browser, ctx, page, db
   let companyId
@@ -58,40 +63,42 @@ describe('FactureDetail — modale d\'envoi du lien de paiement', () => {
     await browser?.close()
   })
 
-  test('clic sur Envoyer ouvre la modale, champs pré-remplis et send envoie les overrides', async () => {
+  // Ouvre la modale d'envoi et renvoie le locator du champ "to".
+  async function openSendModal() {
     await page.goto(`${URL}/factures/${pendingId}`, { waitUntil: 'domcontentloaded' })
     await page.waitForLoadState('networkidle')
-
     const sendBtn = page.locator('button:has-text("Envoyer par email")').first()
     await sendBtn.waitFor({ state: 'visible', timeout: 5000 })
     await sendBtn.click()
-
-    // Modale visible + pré-remplie
     await page.waitForSelector('text=Envoyer le lien de paiement', { timeout: 5000 })
     const toInput = page.locator('input[type="email"]').first()
     await toInput.waitFor({ state: 'visible', timeout: 5000 })
-    const toValue = await toInput.inputValue()
-    assert.equal(toValue, 'client-e2e@orisha.test', `Devrait pré-remplir avec l'email de la company, vu : "${toValue}"`)
+    return toInput
+  }
 
-    const subjectInput = page.locator('input[type="text"]').first()
-    const subjectVal = await subjectInput.inputValue()
-    assert.match(subjectVal, /Facture Orisha/, `Sujet par défaut attendu, vu : "${subjectVal}"`)
+  test('Envoyer → confirmation → toast 10 s → envoi des overrides à la fin du compte à rebours', async () => {
+    const toInput = await openSendModal()
 
-    const messageArea = page.locator('textarea')
-    const messageVal = await messageArea.inputValue()
-    assert.match(messageVal, /Bonjour/, `Le message doit commencer par "Bonjour", vu : "${messageVal.slice(0, 80)}"`)
+    // Pré-remplissage — on scope les champs à la modale (la page a d'autres
+    // <textarea>/<input> par ailleurs).
+    const dialog = page.locator('[role="dialog"]')
+    assert.equal(await toInput.inputValue(), 'client-e2e@orisha.test')
+    const subjectInput = dialog.locator('input[type="text"]').first()
+    assert.match(await subjectInput.inputValue(), /Facture Orisha/)
+    const messageArea = dialog.locator('textarea').first()
+    assert.match(await messageArea.inputValue(), /Bonjour/)
 
     // Modifie les champs
     await toInput.fill('autre@orisha.test')
     await subjectInput.fill('Sujet personnalisé E2E')
     await messageArea.fill('Message custom E2E.\n\nDeuxième paragraphe.')
 
-    // Intercepte la requête /send pour vérifier le body
+    // Intercepte /send (réponse simulée pour ne pas dépendre de Gmail).
     let sentBody = null
+    let sendCount = 0
     await page.route('**/api/stripe-invoices/*/send', async route => {
-      const req = route.request()
-      try { sentBody = JSON.parse(req.postData() || '{}') } catch { sentBody = {} }
-      // Répond succès simulé pour ne pas dépendre de Gmail
+      sendCount++
+      try { sentBody = JSON.parse(route.request().postData() || '{}') } catch { sentBody = {} }
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -103,13 +110,61 @@ describe('FactureDetail — modale d\'envoi du lien de paiement', () => {
       })
     })
 
+    // Clic "Envoyer" de la modale → la modale de CONFIRMATION doit apparaître.
     await page.locator('button:has-text("Envoyer")').last().click()
-    await page.waitForFunction(() => !document.querySelector('h2')?.textContent?.includes('Envoyer le lien de paiement'), null, { timeout: 5000 })
+    await page.waitForSelector('text=Confirmer l\'envoi du courriel', { timeout: 5000 })
+    // La confirmation doit lister explicitement l'adresse destinataire.
+    assert.ok(
+      await page.locator('text=autre@orisha.test').count() > 0,
+      'la modale de confirmation doit afficher l\'adresse destinataire',
+    )
+    // Aucun envoi tant qu'on n'a pas confirmé.
+    assert.equal(sendCount, 0, 'aucun /send avant confirmation')
 
-    assert.ok(sentBody, 'La requête /send devrait avoir été interceptée')
+    // Confirme l'envoi (bouton "Envoyer" de la modale de confirmation).
+    await page.locator('button:has-text("Envoyer")').last().click()
+
+    // Le toast d'annulation (barre 10 s) doit apparaître, et /send ne doit PAS
+    // encore avoir été appelé.
+    await page.locator('[data-testid="undo-send-toast"]').waitFor({ state: 'visible', timeout: 5000 })
+    assert.equal(sendCount, 0, '/send ne doit pas partir avant la fin du compte à rebours')
+
+    // À la fin du compte à rebours, l'envoi part : on attend le toast de succès
+    // (émis seulement après l'appel API terminé).
+    await page.locator('text=Courriel envoyé à autre@orisha.test').first().waitFor({ state: 'visible', timeout: 14000 })
+    assert.equal(sendCount, 1)
     assert.equal(sentBody.to, 'autre@orisha.test')
     assert.equal(sentBody.subject, 'Sujet personnalisé E2E')
     assert.match(sentBody.message, /Message custom E2E\./)
     assert.match(sentBody.message, /Deuxième paragraphe\./)
+  })
+
+  test('Annuler dans le toast empêche tout appel /send', async () => {
+    const toInput = await openSendModal()
+    await toInput.fill('annule@orisha.test')
+
+    let sendCount = 0
+    await page.route('**/api/stripe-invoices/*/send', async route => {
+      sendCount++
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) })
+    })
+
+    // Envoyer → confirmer.
+    await page.locator('button:has-text("Envoyer")').last().click()
+    await page.waitForSelector('text=Confirmer l\'envoi du courriel', { timeout: 5000 })
+    await page.locator('button:has-text("Envoyer")').last().click()
+
+    // Toast visible → on clique "Annuler".
+    const toast = page.locator('[data-testid="undo-send-toast"]')
+    await toast.waitFor({ state: 'visible', timeout: 5000 })
+    await page.locator('[data-testid="undo-send-cancel"]').click()
+
+    // Toast disparaît + message "Envoi annulé".
+    await toast.waitFor({ state: 'hidden', timeout: 5000 })
+    await page.locator('text=Envoi annulé').first().waitFor({ state: 'visible', timeout: 5000 })
+
+    // Au-delà du compte à rebours (10 s), aucun /send ne doit avoir été émis.
+    await page.waitForTimeout(11000)
+    assert.equal(sendCount, 0, 'aucun /send après annulation')
   })
 })

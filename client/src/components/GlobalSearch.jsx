@@ -1,7 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, Building2, Users, TrendingUp, ShoppingCart, Package, LifeBuoy, MessageSquare, X, Barcode, FileText, Receipt } from 'lucide-react'
+import { Search, Building2, Users, TrendingUp, ShoppingCart, Package, LifeBuoy, MessageSquare, X, Barcode, FileText, Receipt, CornerDownLeft, Clock, Truck, RotateCcw, Boxes, UserRound } from 'lucide-react'
 import api from '../lib/api.js'
+import { defaultNavItems } from '../lib/navItems.js'
+import { useRecentRecords, clearRecentRecords } from '../lib/useRecentRecords.js'
 
 const TYPE_ICON = {
   company: Building2,
@@ -14,6 +16,13 @@ const TYPE_ICON = {
   interaction: MessageSquare,
   bill: FileText,
   expense: Receipt,
+  // Types additionnels pour le fil « Récemment consultés ».
+  facture: FileText,
+  purchase: Boxes,
+  return: RotateCcw,
+  shipment: Truck,
+  sale_receipt: Receipt,
+  employee: UserRound,
 }
 
 const TYPE_LABEL = {
@@ -27,6 +36,44 @@ const TYPE_LABEL = {
   interaction: 'Interaction',
   bill: 'Facture fourn.',
   expense: 'Dépense',
+  facture: 'Facture',
+  purchase: 'Achat',
+  return: 'Retour',
+  shipment: 'Envoi',
+  sale_receipt: 'Reçu de vente',
+  employee: 'Employé',
+}
+
+// Liste à plat de toutes les pages navigables, dérivée de la même définition de
+// nav que la sidebar (navItems.js). Construite une seule fois au chargement du
+// module. Les liens externes (`external`) sont exclus — la palette ne fait que
+// du routage interne.
+const PAGE_ITEMS = (() => {
+  const pages = []
+  for (const item of defaultNavItems) {
+    if (item.external) continue
+    if (item.group) {
+      for (const sub of item.items) {
+        pages.push({ to: sub.to, label: sub.label, icon: sub.icon, group: item.group })
+      }
+    } else if (item.to) {
+      pages.push({ to: item.to, label: item.label, icon: item.icon, group: null })
+    }
+  }
+  return pages
+})()
+
+// Normalisation insensible à la casse et aux accents pour le filtrage des pages.
+const norm = (s) => (s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+
+const MAX_PAGE_MATCHES = 12
+
+function matchPages(query) {
+  const q = norm(query.trim())
+  if (!q) return PAGE_ITEMS // requête vide → palette de lancement : toutes les pages
+  return PAGE_ITEMS
+    .filter(p => norm(p.label).includes(q) || (p.group && norm(p.group).includes(q)))
+    .slice(0, MAX_PAGE_MATCHES)
 }
 
 export function GlobalSearch({ open, onClose }) {
@@ -37,6 +84,7 @@ export function GlobalSearch({ open, onClose }) {
   const inputRef = useRef(null)
   const navigate = useNavigate()
   const timerRef = useRef(null)
+  const recent = useRecentRecords()
 
   useEffect(() => {
     if (open) {
@@ -53,7 +101,6 @@ export function GlobalSearch({ open, onClose }) {
     try {
       const { results: res } = await api.search.query(q)
       setResults(res || [])
-      setSelected(0)
     } finally {
       setLoading(false)
     }
@@ -62,20 +109,32 @@ export function GlobalSearch({ open, onClose }) {
   function handleChange(e) {
     const q = e.target.value
     setQuery(q)
+    setSelected(0)
     clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => search(q), 220)
   }
 
-  function go(result) {
-    navigate(result.url)
+  // Liste combinée récents + pages + records, dans l'ordre d'affichage, pour la
+  // navigation clavier (un seul index `selected` couvre toutes les sections).
+  // Le fil « Récemment consultés » n'apparaît que lorsque la requête est vide.
+  const queryEmpty = query.trim() === ''
+  const recentItems = queryEmpty ? recent.map(r => ({ ...r, kind: 'record' })) : []
+  const pageMatches = matchPages(query)
+  const pageItems = pageMatches.map(p => ({ ...p, kind: 'page' }))
+  const recordItems = results.map(r => ({ ...r, kind: 'record' }))
+  const allItems = [...recentItems, ...pageItems, ...recordItems]
+
+  function go(item) {
+    if (!item) return
+    navigate(item.kind === 'page' ? item.to : item.url)
     onClose()
   }
 
   function handleKeyDown(e) {
     if (e.key === 'Escape') { onClose(); return }
-    if (e.key === 'ArrowDown') { e.preventDefault(); setSelected(s => Math.min(s + 1, results.length - 1)) }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSelected(s => Math.min(s + 1, allItems.length - 1)) }
     if (e.key === 'ArrowUp') { e.preventDefault(); setSelected(s => Math.max(s - 1, 0)) }
-    if (e.key === 'Enter' && results[selected]) go(results[selected])
+    if (e.key === 'Enter') { e.preventDefault(); go(allItems[selected]) }
   }
 
   if (!open) return null
@@ -89,17 +148,18 @@ export function GlobalSearch({ open, onClose }) {
           <Search size={18} className="text-slate-400 flex-shrink-0" />
           <input
             ref={inputRef}
+            data-testid="global-search-input"
             value={query}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder="Rechercher entreprises, contacts, projets…"
+            placeholder="Rechercher ou aller à une page…"
             className="flex-1 text-sm outline-none text-slate-900 placeholder-slate-400"
           />
           {loading && (
             <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
           )}
           {!loading && query && (
-            <button onClick={() => { setQuery(''); setResults([]) }} className="text-slate-400 hover:text-slate-600">
+            <button onClick={() => { setQuery(''); setResults([]); setSelected(0) }} className="text-slate-400 hover:text-slate-600">
               <X size={14} />
             </button>
           )}
@@ -107,16 +167,87 @@ export function GlobalSearch({ open, onClose }) {
         </div>
 
         {/* Results */}
-        {results.length > 0 && (
+        {allItems.length > 0 && (
           <ul className="max-h-80 overflow-y-auto py-1">
-            {results.map((r, i) => {
+            {recentItems.length > 0 && (
+              <li className="flex items-center justify-between px-4 pt-2 pb-1 select-none">
+                <span className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                  <Clock size={12} /> Récemment consultés
+                </span>
+                <button
+                  data-testid="global-search-clear-recent"
+                  className="text-[11px] font-medium text-slate-400 hover:text-slate-600 normal-case tracking-normal"
+                  onClick={(e) => { e.stopPropagation(); clearRecentRecords() }}
+                >
+                  Effacer
+                </button>
+              </li>
+            )}
+            {recentItems.map((r, i) => {
+              const Icon = TYPE_ICON[r.type] || Clock
+              const idx = i
+              return (
+                <li key={`recent-${r.url}`}>
+                  <button
+                    data-testid={`global-search-recent-${r.url}`}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${idx === selected ? 'bg-brand-50' : 'hover:bg-slate-50'}`}
+                    onClick={() => go(r)}
+                    onMouseEnter={() => setSelected(idx)}
+                  >
+                    <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
+                      <Icon size={14} className="text-slate-500" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-slate-900 truncate">{r.label}</div>
+                      {r.sub && <div className="text-xs text-slate-400 truncate">{r.sub}</div>}
+                    </div>
+                    <span className="text-xs text-slate-400 flex-shrink-0">{TYPE_LABEL[r.type] || ''}</span>
+                  </button>
+                </li>
+              )
+            })}
+
+            {pageItems.length > 0 && (
+              <li className="px-4 pt-2 pb-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider select-none">Aller à</li>
+            )}
+            {pageItems.map((p, i) => {
+              const Icon = p.icon || Search
+              const idx = recentItems.length + i
+              return (
+                <li key={`page-${p.to}`}>
+                  <button
+                    data-testid={`global-search-page-${p.to}`}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${idx === selected ? 'bg-brand-50' : 'hover:bg-slate-50'}`}
+                    onClick={() => go(p)}
+                    onMouseEnter={() => setSelected(idx)}
+                  >
+                    <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
+                      <Icon size={14} className="text-slate-500" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-slate-900 truncate">{p.label}</div>
+                      {p.group && <div className="text-xs text-slate-400 truncate">{p.group}</div>}
+                    </div>
+                    {idx === selected
+                      ? <CornerDownLeft size={13} className="text-slate-400 flex-shrink-0" />
+                      : <span className="text-xs text-slate-400 flex-shrink-0">Page</span>}
+                  </button>
+                </li>
+              )
+            })}
+
+            {recordItems.length > 0 && (
+              <li className="px-4 pt-2 pb-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider select-none">Résultats</li>
+            )}
+            {recordItems.map((r, i) => {
               const Icon = TYPE_ICON[r.type] || Search
+              const idx = recentItems.length + pageItems.length + i
               return (
                 <li key={`${r.type}-${r.id}`}>
                   <button
-                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${i === selected ? 'bg-brand-50' : 'hover:bg-slate-50'}`}
+                    className={`w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors ${idx === selected ? 'bg-brand-50' : 'hover:bg-slate-50'}`}
                     onClick={() => go(r)}
-                    onMouseEnter={() => setSelected(i)}
+                    onMouseEnter={() => setSelected(idx)}
                   >
                     <div className="w-7 h-7 rounded-lg bg-slate-100 flex items-center justify-center flex-shrink-0">
                       <Icon size={14} className="text-slate-500" />
@@ -133,12 +264,8 @@ export function GlobalSearch({ open, onClose }) {
           </ul>
         )}
 
-        {query.length >= 2 && !loading && results.length === 0 && (
+        {query.length >= 2 && !loading && allItems.length === 0 && (
           <div className="py-10 text-center text-slate-400 text-sm">Aucun résultat pour « {query} »</div>
-        )}
-
-        {query.length === 0 && (
-          <div className="py-6 text-center text-slate-400 text-xs">Tapez au moins 2 caractères pour rechercher</div>
         )}
       </div>
     </div>

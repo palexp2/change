@@ -70,11 +70,11 @@ describe('CompanyDetail — onglet Factures : remboursements affichent HT pré-t
     await page.goto(`${URL}/companies/${companyId}`, { waitUntil: 'domcontentloaded' })
     await page.waitForLoadState('networkidle')
     await page.click('button:has-text("factures")')
-    await page.locator('th:has-text("N° document")').waitFor({ state: 'visible', timeout: 5000 })
+    await page.waitForSelector('text=/\\d+\\s+lignes?/', { timeout: 10000 })
 
-    const refundRow = page.locator('table tbody tr', { hasText: refund.document_number })
+    const refundRow = page.locator('[data-row-id]', { hasText: refund.document_number })
     await refundRow.first().waitFor({ state: 'visible', timeout: 5000 })
-    const cells = await refundRow.first().locator('td').allTextContents()
+    const cells = await refundRow.first().locator('> div').allTextContents()
     // Ordre : N° document, Statut, Date, Total HT, Devise
     const totalHtCell = cells[3]
     const numeric = parseFloat(totalHtCell.replace(/[^\d.,-]/g, '').replace(/\s/g, '').replace(',', '.'))

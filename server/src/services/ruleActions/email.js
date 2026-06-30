@@ -39,6 +39,25 @@ function resolveRecipients(ac) {
   return ac.to || null
 }
 
+/**
+ * Stable recipient key for the anti-spam guard (fieldRuleEngine.makeRateGuard).
+ * Resolves the same destination the adapter would send to, then normalizes it
+ * (lowercased addresses, deduped, sorted, comma-joined) so the same set of people
+ * maps to one key regardless of ordering/casing. Returns null when no recipient is
+ * configured. Throws are caught upstream — the guard simply doesn't throttle and
+ * lets the adapter surface the real error.
+ */
+export function resolveEmailTarget({ rule }) {
+  const to = resolveRecipients(rule.action_config || {})
+  if (!to) return null
+  const addrs = String(to)
+    .split(',')
+    .map(a => a.trim().toLowerCase())
+    .filter(Boolean)
+  if (!addrs.length) return null
+  return [...new Set(addrs)].sort().join(',')
+}
+
 export async function sendEmail({ rule, rendered }) {
   const ac = rule.action_config || {}
   const to = resolveRecipients(ac)

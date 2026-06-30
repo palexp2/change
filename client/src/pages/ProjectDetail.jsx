@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
 import { ArrowLeft, ExternalLink, Plus, FileDown, Trash2, ChevronUp, ChevronDown, X, FileText } from 'lucide-react'
 import { api } from '../lib/api.js'
@@ -12,8 +12,12 @@ function pdfUrl(id, download = false) {
   return `/erp/api/documents/soumissions/${id}/pdf${qs ? `?${qs}` : ''}`
 }
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge, projectStatusColor } from '../components/Badge.jsx'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useDisabledColumns } from '../lib/useDisabledColumns.js'
@@ -114,15 +118,24 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
   const save = async () => {
     setSaving(true)
     try {
+      // Trim des champs texte au submit pour éviter des records pollués par des espaces seuls.
       const result = await api.documents.soumissions.create({
         ...form,
+        notes: (form.notes || '').trim(),
         project_id: project.id,
         company_id: project.company_id || null,
-        items: items.filter(it => it.description_fr || it.description_en || it.catalog_product_id).map(it => ({
-          catalog_product_id: it.catalog_product_id || null,
-          qty: it.qty, unit_price_cad: it.unit_price_cad,
-          description_fr: it.description_fr, description_en: it.description_en,
-        })),
+        items: items
+          .map(it => ({
+            ...it,
+            description_fr: (it.description_fr || '').trim(),
+            description_en: (it.description_en || '').trim(),
+          }))
+          .filter(it => it.description_fr || it.description_en || it.catalog_product_id)
+          .map(it => ({
+            catalog_product_id: it.catalog_product_id || null,
+            qty: it.qty, unit_price_cad: it.unit_price_cad,
+            description_fr: it.description_fr, description_en: it.description_en,
+          })),
       })
       onCreated(result)
     } catch (e) {
@@ -298,6 +311,7 @@ export default function ProjectDetail() {
   const { addToast } = useToast()
   const [project, setProject] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [tab, setTab] = useState(location.state?.tab || 'info')
   const [soumissions, setSoumissions] = useState([])
   const [factures, setFactures] = useState([])
@@ -307,13 +321,16 @@ export default function ProjectDetail() {
   const [savingVendeur, setSavingVendeur] = useState(false)
   const disabledCols = useDisabledColumns('projects')
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true)
+    setLoadError(null)
     api.projects.get(id)
       .then(data => setProject(data))
-      .catch(() => setProject(null))
+      .catch((e) => { setProject(null); setLoadError(e?.message || 'Erreur de chargement') })
       .finally(() => setLoading(false))
   }, [id])
+
+  useEffect(() => { load() }, [load])
 
   useRealtimeChannel(id ? `project:${id}` : null, (msg) => {
     if (msg.type === 'project:updated') setProject(p => p ? { ...p, ...msg.payload } : p)
@@ -350,6 +367,74 @@ export default function ProjectDetail() {
       .catch(() => {})
   }
 
+  // Colonnes DataTable pour les soumissions liées. Construites ici (et non au
+  // niveau module) parce que le render des liens a besoin de setShowPdf.
+  const soumissionColumns = useMemo(() => {
+    const RENDERS = {
+      at_id: row => row.at_id
+        ? <span className="text-slate-500 text-xs font-mono">{row.at_id}</span>
+        : <span className="text-slate-300">—</span>,
+      status: row => row.status
+        ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{STATUS_LABELS[row.status] || row.status}</Badge>
+        : <span className="text-slate-400">—</span>,
+      created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
+      expiration_date: row => <span className="text-slate-500">{fmtDate(row.expiration_date)}</span>,
+      purchase_price: row => <span className="font-medium text-slate-700">{fmtCurrency(row.purchase_price, row.currency)}</span>,
+      subscription_price: row => <span className="font-medium text-slate-700">{fmtCurrency(row.subscription_price, row.currency)}</span>,
+      currency: row => (
+        <span className="text-slate-500 text-xs" title={row.shipping_country ? `Adresse de livraison : ${row.shipping_country}` : 'Devise par défaut'}>
+          {row.currency || 'CAD'}
+        </span>
+      ),
+      links: row => (
+        <div className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
+          {row.generated_pdf_path && (
+            <button
+              onClick={() => setShowPdf({ id: row.id, title: row.title })}
+              className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline px-2 py-1 bg-brand-50 rounded">
+              <FileText size={11} /> PDF
+            </button>
+          )}
+          {row.quote_url && (
+            <a href={row.quote_url} target="_blank" rel="noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline px-2 py-1 bg-brand-50 rounded">
+              <ExternalLink size={11} /> Soumission
+            </a>
+          )}
+          {row.pdf_url && (
+            <button
+              onClick={() => setShowPdf({ url: row.pdf_url, title: row.title, external: true })}
+              className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline px-2 py-1 bg-brand-50 rounded">
+              <FileText size={11} /> PDF Airtable
+            </button>
+          )}
+          {!row.generated_pdf_path && !row.quote_url && !row.pdf_url && <span className="text-slate-400">—</span>}
+        </div>
+      ),
+    }
+    return TABLE_COLUMN_META.project_soumissions.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
+  }, [])
+
+  const FACTURE_STATUS_COLORS = { 'Payée': 'green', 'Partielle': 'yellow', 'En retard': 'red', 'Envoyée': 'blue', 'Brouillon': 'gray', 'Annulée': 'red' }
+  const factureColumns = useMemo(() => {
+    const RENDERS = {
+      document_number: row => <span className="font-mono font-medium text-slate-900">{row.document_number || '—'}</span>,
+      status: row => row.status
+        ? <Badge color={FACTURE_STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
+        : <span className="text-slate-400">—</span>,
+      document_date: row => <span className="text-slate-500">{fmtDate(row.document_date)}</span>,
+      due_date: row => <span className="text-slate-500">{fmtDate(row.due_date)}</span>,
+      total_amount: row => <span className="font-medium text-slate-700">{fmtCad(row.total_amount)}</span>,
+      balance_due: row => (
+        <span className={row.balance_due > 0 ? 'font-semibold text-red-600' : 'text-green-600'}>
+          {fmtCad(row.balance_due)}
+        </span>
+      ),
+    }
+    return TABLE_COLUMN_META.project_factures.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   useEffect(() => {
     if (tab === 'soumissions') loadSoumissions()
     if (tab === 'factures') loadFactures()
@@ -359,12 +444,11 @@ export default function ProjectDetail() {
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" />
-        </div>
+        <Spinner center />
       </Layout>
     )
   }
+  if (loadError && !project) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
   if (!project) return <Layout><div className="p-6 text-slate-500">Projet introuvable.</div></Layout>
 
   const TABS = [
@@ -411,7 +495,7 @@ export default function ProjectDetail() {
         {/* Info Tab */}
         {tab === 'info' && (
           <div className="card p-6">
-            <dl className="grid grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-4 text-sm">
+            <dl className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-4 text-sm">
               <div>
                 <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Type</dt>
                 <dd className="text-slate-900">{project.type || '—'}</dd>
@@ -490,124 +574,27 @@ export default function ProjectDetail() {
               </button>
             </div>
 
-            <div className="card overflow-hidden">
-              {!soumissions.length ? (
-                <p className="text-center py-10 text-slate-400">Aucune soumission</p>
-              ) : (
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50">
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">ID</th>
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Date</th>
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Expiration</th>
-                      <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Prix achat</th>
-                      <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Prix abo</th>
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Devise</th>
-                      <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Liens</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {soumissions.map((s, i) => (
-                      <tr key={s.id || i}
-                        onClick={() => s.status !== 'legacy' && navigate(`/soumissions/${s.id}`)}
-                        className={`border-b border-slate-100 last:border-0 hover:bg-slate-50 ${s.status !== 'legacy' ? 'cursor-pointer' : ''}`}>
-                        <td className="px-4 py-3 text-slate-500 text-xs font-mono">
-                          {s.at_id || <span className="text-slate-300">—</span>}
-                        </td>
-                        <td className="px-4 py-3">
-                          {s.status
-                            ? <Badge color={STATUS_COLORS[s.status] || 'gray'}>{STATUS_LABELS[s.status] || s.status}</Badge>
-                            : <span className="text-slate-400">—</span>}
-                        </td>
-                        <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(s.created_at?.slice(0, 10))}</td>
-                        <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(s.expiration_date)}</td>
-                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCurrency(s.purchase_price, s.currency)}</td>
-                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCurrency(s.subscription_price, s.currency)}</td>
-                        <td className="px-4 py-3 text-slate-500 text-xs">
-                          <span title={s.shipping_country ? `Adresse de livraison : ${s.shipping_country}` : 'Devise par défaut'}>
-                            {s.currency || 'CAD'}
-                          </span>
-                        </td>
-                        <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
-                          <div className="flex items-center gap-2">
-                            {s.generated_pdf_path && (
-                              <button
-                                onClick={() => setShowPdf({ id: s.id, title: s.title })}
-                                className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline px-2 py-1 bg-brand-50 rounded">
-                                <FileText size={11} /> PDF
-                              </button>
-                            )}
-                            {s.quote_url && (
-                              <a href={s.quote_url} target="_blank" rel="noreferrer"
-                                className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline px-2 py-1 bg-brand-50 rounded">
-                                <ExternalLink size={11} /> Soumission
-                              </a>
-                            )}
-                            {s.pdf_url && (
-                              <button
-                                onClick={() => setShowPdf({ url: s.pdf_url, title: s.title, external: true })}
-                                className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline px-2 py-1 bg-brand-50 rounded">
-                                <FileText size={11} /> PDF Airtable
-                              </button>
-                            )}
-                            {!s.generated_pdf_path && !s.quote_url && !s.pdf_url && <span className="text-slate-400">—</span>}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-            </div>
+            <DataTable
+              table="project_soumissions"
+              columns={soumissionColumns}
+              data={soumissions}
+              searchFields={['at_id', 'title', 'status', 'currency']}
+              height="calc(100vh - 320px)"
+              onRowClick={row => { if (row.status !== 'legacy' && row.id) navigate(`/soumissions/${row.id}`) }}
+            />
           </div>
         )}
 
         {/* Factures Tab */}
         {tab === 'factures' && (
-          <div className="card overflow-hidden">
-            {!factures.length ? (
-              <p className="text-center py-10 text-slate-400">Aucune facture liée à ce projet</p>
-            ) : (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50">
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Numéro</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Date</th>
-                    <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">Échéance</th>
-                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Total</th>
-                    <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Solde dû</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {factures.map(f => {
-                    const STATUS_COLORS = { 'Payée': 'green', 'Partielle': 'yellow', 'En retard': 'red', 'Envoyée': 'blue', 'Brouillon': 'gray', 'Annulée': 'red' }
-                    return (
-                      <tr key={f.id}
-                        onClick={() => navigate(`/factures/${f.id}`)}
-                        className="border-b border-slate-100 last:border-0 hover:bg-slate-50 cursor-pointer">
-                        <td className="px-4 py-3 font-mono font-medium text-slate-900">{f.document_number || '—'}</td>
-                        <td className="px-4 py-3">
-                          {f.status
-                            ? <Badge color={STATUS_COLORS[f.status] || 'gray'}>{f.status}</Badge>
-                            : <span className="text-slate-400">—</span>}
-                        </td>
-                        <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(f.document_date)}</td>
-                        <td className="px-4 py-3 hidden md:table-cell text-slate-500">{fmtDate(f.due_date)}</td>
-                        <td className="px-4 py-3 text-right font-medium text-slate-700">{fmtCad(f.total_amount)}</td>
-                        <td className="px-4 py-3 text-right">
-                          <span className={f.balance_due > 0 ? 'font-semibold text-red-600' : 'text-green-600'}>
-                            {fmtCad(f.balance_due)}
-                          </span>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            )}
-          </div>
+          <DataTable
+            table="project_factures"
+            columns={factureColumns}
+            data={factures}
+            searchFields={['document_number', 'status', 'total_amount', 'balance_due']}
+            height="calc(100vh - 320px)"
+            onRowClick={row => { if (row.id) navigate(`/factures/${row.id}`) }}
+          />
         )}
       </div>
 

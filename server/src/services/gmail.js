@@ -5,11 +5,19 @@ import db from '../db/database.js'
 import { getGmailClient } from '../connectors/google.js'
 import { runExtractionAndUpdate } from './saleReceiptExtraction.js'
 import { emitEntity } from './realtimeEmitters.js'
+import { buildEmailBodyPdf, htmlToText, looksLikeInvoiceEmail, stripTrackingUrls } from '../utils/emailBodyPdf.js'
+import { logSync } from './syncLog.js'
 
 const DOMAIN = 'orisha.io'
 const INVOICE_LABEL_NAME = 'ERP/Factures'
 const RECEIPT_ATTACHMENT_EXTS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp']
 const RECEIPT_MIME_PREFIXES = ['application/pdf', 'image/']
+// Les images de signature courriel (logos sociaux, pixels de suivi) sont
+// avalées comme faux reçus. Une vraie capture/photo de reçu pèse plusieurs Ko ;
+// une icône 32×32 fait < ~2 Ko. On rejette donc les images trop petites — c'est
+// le seul critère : une photo de facture collée dans le corps du courriel arrive
+// inline (Content-ID) mais pèse plusieurs dizaines de Ko, il faut la conserver.
+const MIN_RECEIPT_IMAGE_BYTES = 20 * 1024
 
 const receiptsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')
 if (!existsSync(receiptsDir)) mkdirSync(receiptsDir, { recursive: true })
@@ -20,8 +28,25 @@ async function resolveLabelId(gmail, name) {
   return label?.id || null
 }
 
-function collectAttachments(payload) {
+// Distingue un vrai reçu d'une icône de signature / pixel de suivi.
+// Critère unique : la taille. Les logos sociaux, séparateurs et pixels de suivi
+// pèsent quelques Ko ; une vraie photo/capture de facture — même collée inline
+// dans le corps via un Content-ID — pèse plusieurs dizaines de Ko. On conserve
+// donc toute image ≥ 20 Ko, qu'elle soit en pièce jointe ou inline.
+function looksLikeSignatureAsset(part, mime) {
+  if (!mime.startsWith('image/')) return false  // ne filtre jamais les PDF
+  const size = part.body?.size || 0
+  if (size > 0 && size < MIN_RECEIPT_IMAGE_BYTES) return true
+  return false
+}
+
+export function collectAttachments(payload) {
   const found = []
+  // Une même image peut figurer deux fois dans le MIME : copie inline référencée
+  // par un Content-ID (rendu dans le corps) + copie en pièce jointe. Même nom et
+  // même taille = même fichier — on ne le garde qu'une fois pour ne pas créer un
+  // reçu en double. Deux vraies pièces distinctes ont des noms différents.
+  const seen = new Set()
   const walk = (part) => {
     if (!part) return
     const filename = part.filename || ''
@@ -31,7 +56,13 @@ function collectAttachments(payload) {
       RECEIPT_MIME_PREFIXES.some(p => mime.startsWith(p)) ||
       RECEIPT_ATTACHMENT_EXTS.includes(extname(filename).toLowerCase())
     )
-    if (isReceipt) found.push({ filename, mimeType: mime, attachmentId })
+    if (isReceipt && !looksLikeSignatureAsset(part, mime)) {
+      const key = `${filename}|${part.body?.size || 0}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        found.push({ filename, mimeType: mime, attachmentId })
+      }
+    }
     if (part.parts) part.parts.forEach(walk)
   }
   walk(payload)
@@ -80,11 +111,17 @@ function findOrCreateContact(emailAddress, displayName) {
   return { contactId: id, companyId: null }
 }
 
-async function syncAccount(oauthRow) {
+async function syncAccount(oauthRow, trigger = 'scheduled') {
   const { id: oauthId, account_email } = oauthRow
+  const module = `gmail:emails:${account_email}`
+  const t0 = Date.now()
   let gmail
   try { gmail = await getGmailClient(oauthId) }
-  catch (e) { console.error(`❌ Gmail client ${account_email}:`, e.message); return }
+  catch (e) {
+    console.error(`❌ Gmail client ${account_email}:`, e.message)
+    logSync(module, trigger, { status: 'error', error: `client: ${e.message}`, durationMs: Date.now() - t0 })
+    return { status: 'error', imported: 0, error: e.message }
+  }
 
   const ownerUser = db.prepare('SELECT id FROM users WHERE email=?').get(account_email)
   const userId = ownerUser?.id || null
@@ -96,6 +133,7 @@ async function syncAccount(oauthRow) {
 
   const state = db.prepare('SELECT * FROM gmail_sync_state WHERE connector_oauth_id=?').get(oauthId)
 
+  let imported = 0
   try {
     let messages = []
     let newHistoryId = state?.last_history_id
@@ -119,7 +157,6 @@ async function syncAccount(oauthRow) {
       messages = list.data.messages || []
     }
 
-    let imported = 0
     for (const msgRef of messages) {
       if (db.prepare('SELECT id FROM emails WHERE gmail_message_id=?').get(msgRef.id)) continue
 
@@ -178,8 +215,14 @@ async function syncAccount(oauthRow) {
     `).run(oauthId, newHistoryId)
 
     if (imported > 0) console.log(`📧 Gmail ${account_email}: ${imported} nouveaux courriels`)
+    logSync(module, trigger, { status: 'success', modified: imported, durationMs: Date.now() - t0 })
+    return { status: 'success', imported }
   } catch (e) {
     console.error(`❌ Gmail sync ${account_email}:`, e.message)
+    // imported peut être > 0 si l'erreur survient après quelques courriels — on
+    // garde le compte partiel pour ne pas perdre l'information.
+    logSync(module, trigger, { status: 'error', modified: imported, error: e.message, durationMs: Date.now() - t0 })
+    return { status: 'error', imported, error: e.message }
   }
 }
 
@@ -281,45 +324,116 @@ export async function sendEmail(to, subject, htmlBody, options = {}) {
   }
 }
 
-async function syncInvoiceLabel(oauthRow) {
+// Messages du label déjà examinés et jugés non-facture (pas de PJ, pas de
+// mots-clés facture). Évite de re-télécharger leur corps à chaque sync horaire.
+// En mémoire seulement : un restart les ré-examine une fois, c'est acceptable.
+const skippedInvoiceMessageIds = new Set()
+
+// Facture sans pièce jointe : le corps du courriel est la facture (ex. Manychat).
+// On le matérialise en PDF texte puis on suit le même chemin que les PJ.
+// Retourne true si un reçu a été créé.
+async function importInlineInvoice({ message, msgId, userId }) {
+  const headers = message.payload?.headers || []
+  const subject = getHeader(headers, 'Subject')
+  const { html, text } = extractBodies(message.payload)
+  const bodyText = stripTrackingUrls(text || htmlToText(html))
+
+  if (!bodyText || !looksLikeInvoiceEmail(subject, bodyText)) {
+    skippedInvoiceMessageIds.add(msgId)
+    return false
+  }
+
+  let buffer
+  try {
+    buffer = await buildEmailBodyPdf({
+      subject,
+      from: getHeader(headers, 'From'),
+      date: getHeader(headers, 'Date'),
+      text: bodyText,
+    })
+  } catch (e) {
+    console.error(`❌ Gmail inline invoice PDF ${msgId}:`, e.message)
+    return false
+  }
+
+  const id = uuid()
+  const storedName = `${id}.pdf`
+  const filePath = join(receiptsDir, storedName)
+  try { writeFileSync(filePath, buffer) }
+  catch (e) { console.error(`❌ Gmail inline invoice write ${msgId}:`, e.message); return false }
+
+  const originalName = `${(subject || 'courriel').replace(/[/\\]/g, '_').slice(0, 120)}.pdf`
+  db.prepare(`
+    INSERT INTO sale_receipts (id, filename, original_name, file_type, status, created_by, source, gmail_message_id)
+    VALUES (?, ?, ?, '.pdf', 'processing', ?, 'email', ?)
+  `).run(id, storedName, originalName, userId, msgId)
+
+  const created = db.prepare('SELECT * FROM sale_receipts WHERE id=?').get(id)
+  if (created) emitEntity('sale_receipt', 'created', id, { ...created, items: [] }, userId)
+
+  runExtractionAndUpdate({ saleReceiptId: id, filePath, fileExt: '.pdf', userId, trigger: 'scheduled' })
+  return true
+}
+
+async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
   const { id: oauthId, account_email } = oauthRow
+  const module = `gmail:factures:${account_email}`
+  const t0 = Date.now()
   let gmail
   try { gmail = await getGmailClient(oauthId) }
-  catch (e) { console.error(`❌ Gmail invoice client ${account_email}:`, e.message); return }
+  catch (e) {
+    console.error(`❌ Gmail invoice client ${account_email}:`, e.message)
+    logSync(module, trigger, { status: 'error', error: `client: ${e.message}`, durationMs: Date.now() - t0 })
+    return { status: 'error', imported: 0, error: e.message }
+  }
 
   const ownerUser = db.prepare('SELECT id FROM users WHERE email=?').get(account_email)
   const userId = ownerUser?.id || null
 
   let labelId
   try { labelId = await resolveLabelId(gmail, INVOICE_LABEL_NAME) }
-  catch (e) { console.error(`❌ Gmail labels.list ${account_email}:`, e.message); return }
-  if (!labelId) return  // Label inexistant sur ce compte — rien à faire
+  catch (e) {
+    console.error(`❌ Gmail labels.list ${account_email}:`, e.message)
+    logSync(module, trigger, { status: 'error', error: `labels.list: ${e.message}`, durationMs: Date.now() - t0 })
+    return { status: 'error', imported: 0, error: e.message }
+  }
+  if (!labelId) {
+    // Label inexistant sur ce compte — rien à faire, mais on trace pour visibilité.
+    logSync(module, trigger, { status: 'success', modified: 0, durationMs: Date.now() - t0 })
+    return { status: 'success', imported: 0 }
+  }
 
   let messages = []
   try {
+    // Pas de filtre has:attachment : certaines factures (ex. Manychat) arrivent
+    // sans pièce jointe, le corps HTML du courriel est la facture elle-même.
     const list = await gmail.users.messages.list({
       userId: 'me',
       labelIds: [labelId],
-      q: 'has:attachment',
       maxResults: 50,
     })
     messages = list.data.messages || []
   } catch (e) {
     console.error(`❌ Gmail invoice list ${account_email}:`, e.message)
-    return
+    logSync(module, trigger, { status: 'error', error: `list: ${e.message}`, durationMs: Date.now() - t0 })
+    return { status: 'error', imported: 0, error: e.message }
   }
 
   let imported = 0
   for (const msgRef of messages) {
     const already = db.prepare('SELECT 1 FROM sale_receipts WHERE gmail_message_id=?').get(msgRef.id)
     if (already) continue
+    if (skippedInvoiceMessageIds.has(msgRef.id)) continue
 
     let msg
     try { msg = await gmail.users.messages.get({ userId: 'me', id: msgRef.id, format: 'full' }) }
     catch { continue }
 
     const attachments = collectAttachments(msg.data.payload)
-    if (attachments.length === 0) continue
+    if (attachments.length === 0) {
+      if (await importInlineInvoice({ message: msg.data, msgId: msgRef.id, userId })) imported++
+      continue
+    }
 
     for (const att of attachments) {
       let ext = extname(att.filename).toLowerCase()
@@ -357,21 +471,38 @@ async function syncInvoiceLabel(oauthRow) {
       const created = db.prepare('SELECT * FROM sale_receipts WHERE id=?').get(id)
       if (created) emitEntity('sale_receipt', 'created', id, { ...created, items: [] }, userId)
 
-      runExtractionAndUpdate({ saleReceiptId: id, filePath, fileExt: ext, userId })
+      runExtractionAndUpdate({ saleReceiptId: id, filePath, fileExt: ext, userId, trigger: 'scheduled' })
       imported++
     }
   }
 
   if (imported > 0) console.log(`🧾 Gmail ${account_email}: ${imported} pièce(s) jointe(s) facture importée(s)`)
+  logSync(module, trigger, { status: 'success', modified: imported, durationMs: Date.now() - t0 })
+  return { status: 'success', imported }
 }
 
-export async function syncAllMailboxes() {
+/**
+ * Synchronise toutes les boîtes Gmail connectées. Chaque compte est tracé
+ * indépendamment dans sync_log via deux modules (`gmail:emails:<email>` et
+ * `gmail:factures:<email>`) — une boîte en échec (refresh_token expiré, rate
+ * limit, label manquant) reste donc visible même si les autres réussissent.
+ * Retourne un résumé agrégé pour le logSystemRun macro de l'appelant.
+ * @param {'scheduled'|'manual'} [trigger]
+ */
+export async function syncAllMailboxes(trigger = 'scheduled') {
   const accounts = db.prepare(`
     SELECT * FROM connector_oauth WHERE connector='google' AND refresh_token IS NOT NULL
   `).all()
 
+  const summary = { accounts: accounts.length, emailsImported: 0, invoicesImported: 0, errors: [] }
   for (const account of accounts) {
-    await syncAccount(account)
-    await syncInvoiceLabel(account)
+    const a = await syncAccount(account, trigger)
+    summary.emailsImported += a?.imported || 0
+    if (a?.status === 'error') summary.errors.push(`emails ${account.account_email}: ${a.error}`)
+
+    const b = await syncInvoiceLabel(account, trigger)
+    summary.invoicesImported += b?.imported || 0
+    if (b?.status === 'error') summary.errors.push(`factures ${account.account_email}: ${b.error}`)
   }
+  return summary
 }

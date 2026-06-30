@@ -21,6 +21,32 @@ export function useRealtimeChannel(channel, handler) {
   }, [channel])
 }
 
+// Champs méta qui changent à chaque mutation sans intérêt visuel — exclus du
+// diff pour ne pas faire clignoter des colonnes invisibles / techniques.
+const FLASH_IGNORED_FIELDS = new Set(['updated_at', 'created_at', 'synced_at', 'last_synced_at'])
+
+/**
+ * Compare deux versions d'un même record (prev = ce qui est affiché, next =
+ * payload realtime) et retourne la liste des `field` dont la valeur a changé.
+ * On ne considère que les clés déjà présentes dans `prev` (même shape que la
+ * ligne affichée) pour ignorer les champs joints absents côté liste, et on
+ * saute les champs méta (updated_at…). Sert à savoir quelle cellule surligner.
+ *
+ * @param {Record<string, any>|null|undefined} prev
+ * @param {Record<string, any>|null|undefined} next
+ * @returns {string[]} noms de champs modifiés
+ */
+export function diffFields(prev, next) {
+  if (!prev || !next) return []
+  const out = []
+  for (const k of Object.keys(next)) {
+    if (k === 'id' || FLASH_IGNORED_FIELDS.has(k)) continue
+    if (!(k in prev)) continue
+    if (prev[k] !== next[k]) out.push(k)
+  }
+  return out
+}
+
 /**
  * Wires a list-page state setter to `${entity}:list` events: created prepends,
  * updated merges by id, deleted filters out. Idempotent (skips if id is

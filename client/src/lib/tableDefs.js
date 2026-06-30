@@ -16,14 +16,29 @@ export const TABLE_LABELS = {
   serial_numbers: 'Numéros de série',
   retours:        'Retours',
   factures:       'Factures',
+  project_factures: 'Factures (projet)',
+  project_soumissions: 'Soumissions (projet)',
+  company_contacts: 'Contacts (entreprise)',
+  company_orders: 'Commandes (entreprise)',
+  company_tickets: 'Support (entreprise)',
+  company_factures: 'Factures (entreprise)',
+  company_abonnements: 'Abonnements (entreprise)',
+  company_envois: 'Envois (entreprise)',
+  company_tasks: 'Tâches (entreprise)',
+  company_achats: 'Achats (entreprise)',
+  company_retours: 'Retours (entreprise)',
+  contact_tasks: 'Tâches (contact)',
   abonnements:    'Abonnements',
   abonnement_events: "Mouvements d'abonnements",
   assemblages:    'Assemblages',
   shipments:      'Envois',
   employees:      'Employés',
+  hour_bank:      "Banque d'heures",
   paies:          'Paies',
   paie_items:     'Items de paie',
   stock_movements: "Mouvements d'inventaire",
+  product_movements: "Mouvements de stock (produit)",
+  sync_log: 'Journal de synchronisation',
   journal_entries: 'Écritures de journal',
   stripe_payouts: 'Stripe Payouts',
   stripe_invoice_items: 'Items vendus',
@@ -36,10 +51,16 @@ export const TABLE_LABELS = {
   discovery_forms: 'Formulaires de découverte',
   public_files: 'Fichiers publics',
   sale_receipts: 'Extraction de données',
+  activity_log: 'Feed des opérations',
+  activity_codes: "Codes d'activité",
 }
 
-// Chaque entrée : { id, label, field, type?, options?, sortable?, filterable?, groupable?, defaultVisible? }
+// Chaque entrée : { id, label, field, type?, options?, sortable?, filterable?, groupable?, defaultVisible?, description? }
 // type: 'text' (défaut) | 'number' | 'date' | 'boolean' | 'single_select'
+// description : texte court (provenance, unité ou calcul d'un champ). Affiché
+// via une infobulle « ? » dans l'en-tête de colonne (voir ColumnHelp dans
+// DataTable.jsx). À réserver aux colonnes dont le sens n'est pas évident :
+// champs dérivés/agrégés, unités implicites, valeurs calculées côté serveur.
 
 // Permissions dérivées des contrôleurs centraux de l'entreprise du record.
 // SUM agrégée sur les CC dont le status est "Opérationnel - Vendu/Loué".
@@ -47,7 +68,7 @@ export const TABLE_LABELS = {
 const CC_PERMISSION_COLUMNS = [
   // Flag global : true si on a au moins un CC actif avec permissions importées.
   // Permet de filtrer "Info permissions CC : Oui" pour exclure les inconnus.
-  { id: 'company_has_cc_permissions', label: 'Info permissions CC', field: 'company_has_cc_permissions', type: 'boolean', defaultVisible: false },
+  { id: 'company_has_cc_permissions', label: 'Info permissions CC', field: 'company_has_cc_permissions', type: 'boolean', defaultVisible: false, description: 'Vrai si l\'entreprise a au moins un contrôleur central (CC) actif dont les permissions ont été importées. Permet d\'exclure les entreprises au statut inconnu.' },
   ...[
     { id: 'company_max_circulation_fans',       label: 'Permissions — ventilateurs circulation' },
     { id: 'company_max_fans',                   label: 'Permissions — ventilateurs' },
@@ -65,10 +86,34 @@ const CC_PERMISSION_COLUMNS = [
     { id: 'company_max_gh_humidity_conservation', label: 'Permissions — serres conservation humidité' },
     { id: 'company_max_gh_irrigation',          label: 'Permissions — serres irrigation' },
     { id: 'company_max_gh_rollup_ventilation',  label: 'Permissions — serres ventilation rouleau' },
-  ].map(c => ({ ...c, field: c.id, type: 'number', defaultVisible: false })),
+  ].map(c => ({ ...c, field: c.id, type: 'number', defaultVisible: false, description: 'Somme des permissions dérivée des contrôleurs centraux de l\'entreprise dont le statut est « Opérationnel - Vendu/Loué ». Source : ccPermissions.js.' })),
 ]
 
 export const TABLE_COLUMN_META = {
+  // Feed des opérations — journal d'activité (qui / quoi / quand). Lecture seule.
+  // Les options single_select reflètent les valeurs brutes émises par
+  // emitEntity/emitOrder/emitCompany (server/src/services/realtimeEmitters.js) ;
+  // l'affichage FR est géré par les render() de ActivityFeed.jsx.
+  activity_log: [
+    { id: 'created_at',  label: 'Quand',        field: 'created_at',  type: 'date' },
+    { id: 'user_name',   label: 'Qui',          field: 'user_name',   type: 'user' },
+    { id: 'action',      label: 'Action',       field: 'action',      type: 'single_select', options: ['created', 'updated', 'deleted'] },
+    { id: 'entity_type', label: 'Type',         field: 'entity_type', type: 'single_select', options: ['order', 'company', 'contact', 'product', 'ticket', 'task', 'project', 'interaction', 'soumission', 'call', 'purchase', 'facture', 'sale_receipt', 'timesheet', 'employee', 'paie', 'hour_bank_entry', 'activity_code', 'shipment', 'adresse', 'vacation', 'achat_fournisseur'] },
+    { id: 'detail',      label: 'Enregistrement', field: 'detail' },
+  ],
+
+  // Codes d'activité — page de gestion (feuilles de temps). Édition inline via
+  // render() custom dans CodesActivite.jsx ; `shared_with` est un champ dérivé
+  // (noms des users assignés, ou « Tous les employés ») pour la recherche.
+  activity_codes: [
+    { id: 'name',         label: 'Nom',          field: 'name' },
+    { id: 'shared_with',  label: 'Partagé avec', field: 'shared_with', sortable: false, groupable: false, filterable: false },
+    { id: 'payable',      label: 'Payable',      field: 'payable',      type: 'boolean' },
+    { id: 'rsde_default', label: 'RSDE',         field: 'rsde_default', type: 'boolean' },
+    { id: 'active',       label: 'Actif',        field: 'active',       type: 'boolean' },
+    { id: 'created_at',   label: 'Créé le',      field: 'created_at',   type: 'date', defaultVisible: false },
+  ],
+
   tasks: [
     { id: 'title',         label: 'Titre',        field: 'title' },
     { id: 'type',          label: 'Type',         field: 'type',          type: 'single_select', options: ['Problème'] },
@@ -87,7 +132,7 @@ export const TABLE_COLUMN_META = {
     { id: 'type',            label: 'Type',         field: 'type',            type: 'single_select', options: ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin', 'Agriculture urbaine', 'Cannabis', 'Particulier', 'Distributeur', 'Partenaire', 'Compétiteur', 'Consultant', 'Autre'] },
     { id: 'phone',           label: 'Téléphone',    field: 'phone', type: 'phone' },
     { id: 'lifecycle_phase', label: 'Phase',        field: 'lifecycle_phase', type: 'single_select', options: ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore'] },
-    { id: 'contacts_count',  label: 'Contacts',     field: 'contacts_count',  type: 'number', groupable: false, sortable: false },
+    { id: 'contacts_count',  label: 'Contacts',     field: 'contacts_count',  type: 'number', groupable: false, sortable: false, description: 'Nombre de contacts actifs liés à cette entreprise (count des contacts non supprimés).' },
     ...CC_PERMISSION_COLUMNS,
   ],
 
@@ -107,11 +152,11 @@ export const TABLE_COLUMN_META = {
     { id: 'company_name',   label: 'Entreprise',        field: 'company_name' },
     { id: 'type',           label: 'Type',              field: 'type',        type: 'single_select', options: ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange'] },
     { id: 'status',         label: 'Statut',            field: 'status',      type: 'single_select', options: ['Ouvert', 'Gagné', 'Perdu'] },
-    { id: 'probability',    label: 'Probabilité',       field: 'probability', type: 'number', defaultVisible: false },
-    { id: 'value_cad',      label: 'Valeur (CAD)',      field: 'value_cad',   type: 'number' },
-    { id: 'monthly_cad',    label: 'Mensuel (CAD)',     field: 'monthly_cad', type: 'number', defaultVisible: false },
-    { id: 'nb_greenhouses', label: 'Nb serres',         field: 'nb_greenhouses', type: 'number', defaultVisible: false },
-    { id: 'orders',         label: 'Commandes',         field: 'orders',      groupable: false, sortable: false },
+    { id: 'probability',    label: 'Probabilité',       field: 'probability', type: 'number', defaultVisible: false, description: 'Probabilité de conclusion du projet, en pourcentage (0 à 100).' },
+    { id: 'value_cad',      label: 'Valeur (CAD)',      field: 'value_cad',   type: 'number', description: 'Valeur ponctuelle (achat) du projet en dollars canadiens. Exclut le mensuel récurrent.' },
+    { id: 'monthly_cad',    label: 'Mensuel (CAD)',     field: 'monthly_cad', type: 'number', defaultVisible: false, description: 'Revenu mensuel récurrent (abonnement) associé au projet, en CAD.' },
+    { id: 'nb_greenhouses', label: 'Nb serres',         field: 'nb_greenhouses', type: 'number', defaultVisible: false, description: 'Nombre de serres couvertes par ce projet.' },
+    { id: 'orders',         label: 'Commandes',         field: 'orders',      groupable: false, sortable: false, description: 'Commandes liées à ce projet (affichées comme liens cliquables vers chaque commande).' },
     { id: 'vendeur_label',  label: 'Vendeur',           field: 'vendeur_label' },
     { id: 'nom_du_vendeur', label: 'Vendeur AT',        field: 'nom_du_vendeur', defaultVisible: false },
     { id: 'close_date',     label: 'Date de clôture',  field: 'close_date',  type: 'date' },
@@ -129,7 +174,7 @@ export const TABLE_COLUMN_META = {
     { id: 'date_commande',  label: 'Date de commande',  field: 'date_commande', type: 'date' },
     { id: 'status',         label: 'Statut',            field: 'status',   type: 'single_select', options: ['Commande vide', "Gel d'envois", 'En attente', 'Items à fabriquer ou à acheter', 'Tous les items sont disponibles', 'Tout est dans la boite', 'Partiellement envoyé', 'Drop ship seulement', 'JWT-config', "Envoyé aujourd'hui", 'Envoyé', 'ERREUR SYSTÈME'] },
     { id: 'priority',       label: 'Priorité',          field: 'priority', type: 'single_select', options: ['low', 'normal', 'high', 'urgent'] },
-    { id: 'items_count',    label: 'Items',             field: 'items_count', type: 'number', groupable: false, sortable: false },
+    { id: 'items_count',    label: 'Items',             field: 'items_count', type: 'number', groupable: false, sortable: false, description: 'Nombre de lignes d\'articles (line items) sur la commande.' },
     { id: 'assigned_name',  label: 'Assigné à',         field: 'assigned_name', type: 'user', defaultVisible: false },
   ],
 
@@ -139,7 +184,7 @@ export const TABLE_COLUMN_META = {
     { id: 'status',        label: 'Statut',     field: 'status', type: 'single_select', options: ['open', 'in_progress', 'resolved', 'closed'] },
     { id: 'type',          label: 'Type',       field: 'type',   type: 'single_select', options: ['question', 'bug', 'feature', 'installation', 'maintenance', 'autre'] },
     { id: 'assigned_name', label: 'Assigné à',  field: 'assigned_name', type: 'user' },
-    { id: 'duration_minutes', label: 'Durée (min)', field: 'duration_minutes', type: 'number', defaultVisible: false },
+    { id: 'duration_minutes', label: 'Durée (min)', field: 'duration_minutes', type: 'number', defaultVisible: false, description: 'Temps total passé sur le billet, en minutes.' },
     { id: 'created_at', label: 'Créé le', field: 'created_at', type: 'date' },
   ],
 
@@ -195,12 +240,12 @@ export const TABLE_COLUMN_META = {
     { id: 'document_date',         label: 'Date document',     field: 'document_date',         type: 'date' },
     { id: 'due_date',              label: 'Échéance',          field: 'due_date',              type: 'date', defaultVisible: false },
     { id: 'currency',              label: 'Devise',            field: 'currency',              type: 'single_select', options: ['CAD', 'USD', 'EUR'], defaultVisible: false },
-    { id: 'amount_before_tax_cad', label: 'Avant taxes (CAD)', field: 'amount_before_tax_cad', type: 'number' },
-    { id: 'total_amount',          label: 'Total',             field: 'total_amount',          type: 'number' },
-    { id: 'balance_due',           label: 'Solde dû',          field: 'balance_due',           type: 'number' },
-    { id: 'refund_amount',         label: 'Remboursé',         field: 'refund_amount',         type: 'number', defaultVisible: false },
+    { id: 'amount_before_tax_cad', label: 'Avant taxes (CAD)', field: 'amount_before_tax_cad', type: 'number', description: 'Montant hors taxes converti en CAD au taux de la date de facture.' },
+    { id: 'total_amount',          label: 'Total',             field: 'total_amount',          type: 'number', description: 'Total taxes incluses, dans la devise d\'origine de la facture.' },
+    { id: 'balance_due',           label: 'Solde dû',          field: 'balance_due',           type: 'number', description: 'Reste à payer = total − paiements − remboursements. Zéro quand la facture est soldée.' },
+    { id: 'refund_amount',         label: 'Remboursé',         field: 'refund_amount',         type: 'number', defaultVisible: false, description: 'Somme des remboursements (refunds) appliqués à cette facture.' },
     { id: 'is_sent',               label: 'Envoyée',           field: 'is_sent',               type: 'boolean', defaultVisible: false },
-    { id: 'deferred_revenue_state',label: 'Revenu reçu d\'avance', field: 'deferred_revenue_state', type: 'single_select', options: ['Constaté', 'En attente', '—'], defaultVisible: false },
+    { id: 'deferred_revenue_state',label: 'Revenu reçu d\'avance', field: 'deferred_revenue_state', type: 'single_select', options: ['Constaté', 'En attente', '—'], defaultVisible: false, description: 'État du revenu reporté : « En attente » tant que l\'expédition n\'a pas eu lieu, « Constaté » une fois la commande expédiée.' },
     { id: 'notes',                 label: 'Notes',             field: 'notes' },
   ],
 
@@ -221,8 +266,8 @@ export const TABLE_COLUMN_META = {
     { id: 'category',            label: 'Mouvement',      field: 'category',       type: 'single_select', options: ['creation', 'upgrade', 'downgrade', 'churn', 'reactivation'] },
     { id: 'company_name',        label: 'Entreprise',     field: 'company_name' },
     { id: 'subscription_link',   label: 'Abonnement',     field: 'stripe_subscription_id', sortable: false, filterable: false, groupable: false },
-    { id: 'amount_cad_delta',    label: 'Δ MRR (CAD)',    field: 'amount_cad_delta', type: 'number' },
-    { id: 'rachat',              label: 'Rachat',         field: 'rachat_status', type: 'single_select', options: ['probable', 'confirmed', 'merged', 'none'], sortable: false },
+    { id: 'amount_cad_delta',    label: 'Δ MRR (CAD)',    field: 'amount_cad_delta', type: 'number', description: 'Variation du revenu mensuel récurrent (MRR) en CAD : positive pour un upgrade/création, négative pour un downgrade/churn.' },
+    { id: 'rachat',              label: 'Rachat',         field: 'rachat_status', type: 'single_select', options: ['probable', 'confirmed', 'merged', 'none'], sortable: false, description: 'Statut de détection d\'un rachat (churn suivi d\'une recréation rapprochée) : probable, confirmé, fusionné ou aucun.' },
     { id: 'previous_amount_cad', label: 'Avant (CAD)',    field: 'previous_amount_cad', type: 'number', defaultVisible: false },
     { id: 'new_amount_cad',      label: 'Après (CAD)',    field: 'new_amount_cad', type: 'number', defaultVisible: false },
     { id: 'currency',            label: 'Devise',         field: 'currency', type: 'single_select', options: ['CAD', 'USD'], defaultVisible: false },
@@ -239,6 +284,8 @@ export const TABLE_COLUMN_META = {
     { id: 'component_name',  label: 'Composant',     field: 'component_name' },
     { id: 'component_sku',   label: 'SKU composant', field: 'component_sku' },
     { id: 'qty_required',    label: 'Qté requise',   field: 'qty_required', type: 'number' },
+    { id: 'component_stock_qty', label: 'Stock composant', field: 'component_stock_qty', type: 'number', description: 'Stock courant du composant en inventaire. Croisé avec « Qté requise » pour calculer le nombre d\'unités assemblables.' },
+    { id: 'buildable',       label: 'Assemblables',  field: 'buildable', type: 'number', sortable: false, filterable: false, groupable: false, description: 'Unités du produit que ce composant seul permet d\'assembler = plancher(Stock composant ÷ Qté requise).' },
     { id: 'ref_des',         label: 'Ref. des.',     field: 'ref_des' },
     { id: 'product_name',    label: 'Produit parent', field: 'product_name', defaultVisible: false },
     { id: 'product_sku',     label: 'SKU parent',     field: 'product_sku',  defaultVisible: false },
@@ -273,6 +320,17 @@ export const TABLE_COLUMN_META = {
     { id: 'issues',                label: 'Problèmes',          field: 'issues', defaultVisible: false },
   ],
 
+  // Banque d'heures — soldes agrégés par employé (lignes expandables vers
+  // l'historique des ajustements). Voir BanqueHeures.jsx.
+  hour_bank: [
+    { id: 'employee_name',   label: 'Employé',         field: 'employee_name', type: 'text' },
+    { id: 'matricule',       label: 'Matricule',       field: 'matricule', type: 'text' },
+    { id: 'entry_count',     label: 'Ajustements',     field: 'entry_count', type: 'number', description: 'Nombre d\'ajustements enregistrés dans la banque d\'heures de l\'employé.' },
+    { id: 'balance_hours',   label: 'Solde (h)',       field: 'balance_hours', type: 'number', description: 'Solde courant en heures = somme algébrique de tous les ajustements de l\'employé.' },
+    { id: 'vacation_remaining', label: 'Solde vac. (j)', field: 'vacation_remaining', type: 'number', description: 'Jours de vacances payées restants pour l\'année civile courante = droit annuel − jours ouvrables pris. Négatif = dépassement.' },
+    { id: 'last_entry_date', label: 'Dernier ajust.',  field: 'last_entry_date', type: 'date', description: 'Date du dernier ajustement appliqué à la banque d\'heures.' },
+  ],
+
   paies: [
     { id: 'number',                label: '#',                field: 'number', type: 'number' },
     { id: 'period_end',            label: 'Fin de période',   field: 'period_end', type: 'date' },
@@ -302,9 +360,10 @@ export const TABLE_COLUMN_META = {
     { id: 'vacation',       label: 'Vacances',       field: 'vacation', type: 'number', defaultVisible: false },
     { id: 'commission',     label: 'Commission',     field: 'commission', type: 'number' },
     { id: 'expense_reimb',  label: 'Remb. dépenses', field: 'expense_reimb', type: 'number', defaultVisible: false },
-    { id: 'rsde_pct',       label: 'RSDE %',         field: 'rsde_pct', type: 'number', defaultVisible: false },
-    { id: 'insurance_gains', label: 'Gains assur.',  field: 'insurance_gains', type: 'number', defaultVisible: false },
-    { id: 'holiday_1_20',   label: 'Férié 1/20',     field: 'holiday_1_20', type: 'number', defaultVisible: false },
+    { id: 'holiday_1_20',   label: 'Férié 1/20',     field: 'holiday_1_20', type: 'number', description: 'Paie fériée Québec : 1/20 des heures régulières des 2 dernières paies × taux horaire × nombre de congés fériés. Calculé à la création de la paie.' },
+    { id: 'insurance_gains', label: 'Gains assur.',  field: 'insurance_gains', type: 'number', description: 'Gains assurables — synchronisés depuis Airtable.' },
+    { id: 'paid_leave',     label: 'Congés payés',   field: 'paid_leave', description: 'Congés payés — synchronisés depuis Airtable.' },
+    { id: 'rsde_pct',       label: 'RSDE %',         field: 'rsde_pct', type: 'number', defaultVisible: false, description: 'Pourcentage RSDE (recherche scientifique) — synchronisé depuis Airtable.' },
     { id: 'notes',          label: 'Notes',          field: 'notes', defaultVisible: false },
   ],
 
@@ -344,9 +403,33 @@ export const TABLE_COLUMN_META = {
     { id: 'qty',            label: 'Quantité',       field: 'qty',            type: 'number' },
     { id: 'reason',         label: 'Raison',         field: 'reason',         type: 'single_select', options: ['Fabrication', 'Utilisation pour le reconditionnement', 'Ajustement (augmentation)', 'Ajustement (diminution)', 'Utilisation de pièces usagés', 'Prélèvement pour R&D'] },
     { id: 'unit_cost',      label: 'Coût unitaire',  field: 'unit_cost',      type: 'number' },
-    { id: 'movement_value', label: 'Valeur',         field: 'movement_value', type: 'number' },
+    { id: 'movement_value', label: 'Valeur',         field: 'movement_value', type: 'number', description: 'Valeur du mouvement = quantité × coût unitaire.' },
     { id: 'user_name',      label: 'Utilisateur',    field: 'user_name',      type: 'user', defaultVisible: false },
     { id: 'reference_id',   label: 'Référence',      field: 'reference_id',   defaultVisible: false },
+  ],
+
+  // Historique des mouvements de stock affiché sur la fiche produit (un seul produit) :
+  // pas de colonnes produit (SKU/nom) puisque la fiche concerne déjà un produit unique.
+  product_movements: [
+    { id: 'created_at',     label: 'Date',          field: 'created_at',     type: 'date' },
+    { id: 'type',           label: 'Type',          field: 'type',           type: 'single_select', options: ['in', 'out', 'adjustment'] },
+    { id: 'qty',            label: 'Qté',           field: 'qty',            type: 'number' },
+    { id: 'reason',         label: 'Raison',        field: 'reason',         type: 'single_select', options: ['Fabrication', 'Utilisation pour le reconditionnement', 'Ajustement (augmentation)', 'Ajustement (diminution)', 'Utilisation de pièces usagés', 'Prélèvement pour R&D'] },
+    { id: 'user_name',      label: 'Utilisateur',   field: 'user_name',      type: 'user' },
+    { id: 'unit_cost',      label: 'Coût unitaire', field: 'unit_cost',      type: 'number', defaultVisible: false },
+    { id: 'movement_value', label: 'Valeur',        field: 'movement_value', type: 'number', defaultVisible: false },
+    { id: 'reference_id',   label: 'Référence',     field: 'reference_id',                  defaultVisible: false },
+  ],
+
+  // Journal de synchronisation (Connectors) — entièrement read-only.
+  sync_log: [
+    { id: 'created_at',       label: 'Date',     field: 'created_at',       type: 'date' },
+    { id: 'module',           label: 'Module',   field: 'module',           type: 'single_select', options: ['airtable', 'projets', 'pieces', 'orders', 'achats', 'billets', 'serials', 'envois', 'soumissions', 'retours', 'retour_items', 'adresses', 'bom', 'serial_changes', 'assemblages', 'factures'] },
+    { id: 'trigger',          label: 'Source',   field: 'trigger',          type: 'single_select', options: ['webhook', 'manual', 'scheduled'] },
+    { id: 'status',           label: 'Statut',   field: 'status',           type: 'single_select', options: ['success', 'error'] },
+    { id: 'records_modified', label: 'Modifiés', field: 'records_modified', type: 'number' },
+    { id: 'duration_ms',      label: 'Durée',    field: 'duration_ms',      type: 'number' },
+    { id: 'error_message',    label: 'Erreur',   field: 'error_message' },
   ],
 
   journal_entries: [
@@ -356,6 +439,39 @@ export const TABLE_COLUMN_META = {
     { id: 'lines_count', label: 'Lignes', field: 'lines_count', type: 'number', groupable: false },
     { id: 'total',       label: 'Total',  field: 'total',       type: 'number', groupable: false },
     { id: 'qb',          label: 'QB',     field: 'qb_url',      sortable: false, filterable: false, groupable: false },
+  ],
+
+  // Numéros de série — vue unifiée des transitions d'état observées + règles
+  // définies sans observation récente (SerialAccountingRules.jsx). État précédent
+  // et nouvel état sont des colonnes distinctes pour permettre de grouper/trier
+  // par paire de transition. Les render() sont attachés côté page.
+  serial_transitions: [
+    { id: 'previous_status',    label: 'État précédent', field: 'previous_status' },
+    { id: 'new_status',         label: 'Nouvel état',    field: 'new_status' },
+    { id: 'count',              label: 'Occurrences',    field: 'count',              type: 'number' },
+    { id: 'missing_value_count', label: 'Sans valeur',   field: 'missing_value_count', type: 'number' },
+    { id: 'last_seen',          label: 'Dernière',       field: 'last_seen',          type: 'date' },
+    { id: 'mapping_status',     label: 'Mapping',        field: 'mapping_status',     type: 'single_select', options: ['mapped', 'skip', 'unmapped'] },
+    { id: 'action',             label: 'Action',         field: null, sortable: false, filterable: false, groupable: false },
+  ],
+
+  serial_accounting_rules: [
+    { id: 'previous_status', label: 'État précédent', field: 'previous_status' },
+    { id: 'new_status',      label: 'Nouvel état',    field: 'new_status' },
+    { id: 'debit',           label: 'Débit',          field: 'debit_account_name' },
+    { id: 'credit',          label: 'Crédit',         field: 'credit_account_name' },
+    { id: 'valuation',       label: 'Valeur',         field: 'valuation_source', type: 'single_select', options: ['manufacture_value', 'product_cost', 'fixed_amount'] },
+    { id: 'active',          label: 'Actif',          field: 'active_label',     type: 'single_select', options: ['Oui', 'Non'] },
+    { id: 'action',          label: '',               field: null, sortable: false, filterable: false, groupable: false },
+  ],
+
+  serial_missing_valuations: [
+    { id: 'date',       label: 'Date',       field: 'changed_at', type: 'date' },
+    { id: 'serial',     label: 'Serial',     field: 'serial' },
+    { id: 'product',    label: 'Produit',    field: 'product' },
+    { id: 'company',    label: 'Client',     field: 'company_name' },
+    { id: 'transition', label: 'Transition', field: 'transition' },
+    { id: 'value',      label: 'Valeur',     field: 'value_label', sortable: false, filterable: false, groupable: false },
   ],
 
   users: [
@@ -388,12 +504,125 @@ export const TABLE_COLUMN_META = {
     { id: 'pdf',             label: 'PDF',         field: 'generated_pdf_path', sortable: false, filterable: false, groupable: false },
   ],
 
+  // Soumissions liées affichées sur la fiche projet (read-only, scope = un projet).
+  // Clé de table distincte de `soumissions` pour que les vues/colonnes persistées
+  // ne se mélangent pas avec la page principale (cf. product_movements vs stock_movements).
+  project_soumissions: [
+    { id: 'at_id',              label: 'ID',          field: 'at_id' },
+    { id: 'status',             label: 'Statut',      field: 'status', type: 'single_select', options: ['Brouillon', 'Envoyée', 'Acceptée', 'Refusée', 'Expirée', 'legacy'] },
+    { id: 'created_at',         label: 'Date',        field: 'created_at', type: 'date' },
+    { id: 'expiration_date',    label: 'Expiration',  field: 'expiration_date', type: 'date' },
+    { id: 'purchase_price',     label: 'Prix achat',  field: 'purchase_price', type: 'number' },
+    { id: 'subscription_price', label: 'Prix abo',    field: 'subscription_price', type: 'number' },
+    { id: 'currency',           label: 'Devise',      field: 'currency', type: 'single_select', options: ['CAD', 'USD'] },
+    { id: 'links',              label: 'Liens',       field: 'generated_pdf_path', sortable: false, filterable: false, groupable: false },
+  ],
+
+  // Factures liées affichées sur la fiche projet (read-only, scope = un projet).
+  // Clé distincte de `factures` pour ne pas partager la config de vues.
+  project_factures: [
+    { id: 'document_number', label: 'Numéro',   field: 'document_number' },
+    { id: 'status',          label: 'Statut',   field: 'status', type: 'single_select', options: ['Payée', 'Partielle', 'En retard', 'Envoyée', 'Brouillon', 'Annulée'] },
+    { id: 'document_date',   label: 'Date',     field: 'document_date', type: 'date' },
+    { id: 'due_date',        label: 'Échéance', field: 'due_date', type: 'date' },
+    { id: 'total_amount',    label: 'Total',    field: 'total_amount', type: 'number' },
+    { id: 'balance_due',     label: 'Solde dû', field: 'balance_due', type: 'number' },
+  ],
+
+  // ── Sous-tableaux de la fiche entreprise (CompanyDetail) ──────────────────
+  // Clés distinctes des tables principales (contacts, orders, …) pour ne pas
+  // partager la config de vues persistée (cf. company_serials, project_factures).
+  // La colonne `company_name` est omise partout : la fiche concerne déjà une
+  // entreprise unique.
+  company_contacts: [
+    { id: 'name',     label: 'Nom',        field: 'last_name' },
+    { id: 'email',    label: 'Courriel',   field: 'email' },
+    { id: 'phone',    label: 'Téléphone',  field: 'phone', type: 'phone' },
+    { id: 'language', label: 'Langue',     field: 'language', type: 'single_select', options: ['French', 'English'] },
+  ],
+
+  company_orders: [
+    { id: 'order_number', label: '# Commande', field: 'order_number' },
+    { id: 'status',       label: 'Statut',     field: 'status', type: 'single_select', options: ['Commande vide', "Gel d'envois", 'En attente', 'Items à fabriquer ou à acheter', 'Tous les items sont disponibles', 'Tout est dans la boite', 'Partiellement envoyé', 'Drop ship seulement', 'JWT-config', "Envoyé aujourd'hui", 'Envoyé', 'ERREUR SYSTÈME'] },
+    { id: 'items_count',  label: 'Articles',   field: 'items_count', type: 'number', groupable: false, sortable: false },
+    { id: 'created_at',   label: 'Date',       field: 'created_at', type: 'date' },
+  ],
+
+  company_tickets: [
+    { id: 'title',      label: 'Titre',  field: 'title' },
+    { id: 'type',       label: 'Type',   field: 'type', type: 'single_select', options: ['question', 'bug', 'feature', 'installation', 'maintenance', 'autre'] },
+    { id: 'status',     label: 'Statut', field: 'status', type: 'single_select', options: ['open', 'in_progress', 'resolved', 'closed'] },
+    { id: 'created_at', label: 'Date',   field: 'created_at', type: 'date' },
+  ],
+
+  company_factures: [
+    { id: 'document_number',       label: 'N° document', field: 'document_number' },
+    { id: 'status',                label: 'Statut',      field: 'status', type: 'single_select', options: ['Payée', 'Partielle', 'En retard', 'Envoyée', 'Brouillon', 'Annulée'] },
+    { id: 'document_date',         label: 'Date',        field: 'document_date', type: 'date' },
+    { id: 'amount_before_tax_cad', label: 'Total HT',    field: 'amount_before_tax_cad', type: 'number' },
+    { id: 'currency',              label: 'Devise',      field: 'currency', type: 'single_select', options: ['CAD', 'USD', 'EUR'] },
+  ],
+
+  company_abonnements: [
+    { id: 'product_name', label: 'Produit', field: 'product_name' },
+    { id: 'type',         label: 'Type',    field: 'type' },
+    { id: 'status',       label: 'Statut',  field: 'status', type: 'single_select', options: ['active', 'trialing', 'past_due', 'canceled', 'Actif', 'Inactif', 'Suspendu', 'Annulé', 'Expiré'] },
+    { id: 'amount_cad',   label: 'Montant', field: 'amount_cad', type: 'number' },
+    { id: 'start_date',   label: 'Début',   field: 'start_date', type: 'date' },
+    { id: 'end_date',     label: 'Fin',     field: 'end_date', type: 'date', defaultVisible: false },
+  ],
+
+  company_envois: [
+    { id: 'tracking_number', label: 'N° de suivi',  field: 'tracking_number' },
+    { id: 'status',          label: 'Statut',       field: 'status', type: 'single_select', options: ['À envoyer', 'Envoyé'] },
+    { id: 'carrier',         label: 'Transporteur', field: 'carrier' },
+    { id: 'order_number',    label: 'Commande',     field: 'order_number' },
+    { id: 'shipped_at',      label: 'Envoyé le',    field: 'shipped_at', type: 'date' },
+  ],
+
+  company_tasks: [
+    { id: 'title',    label: 'Tâche',    field: 'title' },
+    { id: 'status',   label: 'Statut',   field: 'status', type: 'single_select', options: ['À faire', 'En cours', 'Terminé', 'Annulé'] },
+    { id: 'priority', label: 'Priorité', field: 'priority', type: 'single_select', options: ['Basse', 'Normal', 'Haute', 'Urgente'] },
+    { id: 'due_date', label: 'Échéance', field: 'due_date', type: 'date' },
+  ],
+
+  company_achats: [
+    { id: 'type',            label: 'Type',       field: 'type', type: 'single_select', options: ['bill', 'purchase'] },
+    { id: 'reference',       label: 'Référence',  field: 'reference' },
+    { id: 'status',          label: 'Statut',     field: 'status', type: 'single_select', options: ['Brouillon', 'Soumis', 'Approuvé', 'Refusé', 'Remboursé', 'Reçue', 'Approuvée', 'Payée partiellement', 'Payée', 'En retard', 'Annulée'] },
+    { id: 'date_achat',      label: 'Date',       field: 'date_achat', type: 'date' },
+    { id: 'due_date',        label: 'Échéance',   field: 'due_date', type: 'date', defaultVisible: false },
+    { id: 'total_cad',       label: 'Total',      field: 'total_cad', type: 'number' },
+    { id: 'balance_due_cad', label: 'Solde dû',   field: 'balance_due_cad', type: 'number' },
+  ],
+
+  company_retours: [
+    { id: 'return_number',     label: 'N° RMA',      field: 'return_number' },
+    { id: 'status',            label: 'Statut',      field: 'status', type: 'single_select', options: ['Ouvert', 'En cours', 'Fermé'] },
+    { id: 'processing_status', label: 'Traitement',  field: 'processing_status', type: 'single_select', options: ['Reçu', 'En attente', 'En traitement', 'Refusé'] },
+    { id: 'contact_name',      label: 'Contact',     field: 'contact_first_name' },
+    { id: 'order_number',      label: 'Commande',    field: 'order_number' },
+    { id: 'items_count',       label: 'Articles',    field: 'items_count', type: 'number' },
+    { id: 'created_at',        label: 'Date',        field: 'created_at', type: 'date' },
+  ],
+
+  // Tâches affichées sur la fiche contact (ContactDetail). Clé distincte de
+  // `tasks` et `company_tasks` pour une config de vues indépendante.
+  contact_tasks: [
+    { id: 'title',    label: 'Tâche',    field: 'title' },
+    { id: 'status',   label: 'Statut',   field: 'status', type: 'single_select', options: ['À faire', 'En cours', 'Terminé', 'Annulé'] },
+    { id: 'due_date', label: 'Échéance', field: 'due_date', type: 'date' },
+  ],
+
   automations: [
     { id: 'name',            label: 'Nom',         field: 'name' },
     { id: 'trigger_type',    label: 'Trigger',     field: 'trigger_type', type: 'single_select', options: ['record_created', 'record_updated', 'field_changed', 'field_rule', 'schedule', 'manual', 'system'] },
+    { id: 'summary',         label: 'Déclencheur', field: 'summary', sortable: false },
     { id: 'active',          label: 'Statut',      field: 'active', type: 'boolean' },
     { id: 'last_run_at',     label: 'Dernier run', field: 'last_run_at', type: 'date' },
-    { id: 'runs_30d',        label: 'Runs (30j)',  field: 'runs_30d', type: 'number' },
+    { id: 'runs_30d',        label: 'Runs (30j)',  field: 'runs_30d', type: 'number', description: 'Nombre de déclenchements de l\'automation sur les 30 derniers jours.' },
+    { id: 'health',          label: 'Santé',       field: 'errors_30d', type: 'number', sortable: true, description: 'Nombre d\'exécutions en erreur sur les 30 derniers jours. 0 = en bonne santé.' },
     { id: 'system',          label: 'Système',     field: 'system', type: 'boolean', defaultVisible: false },
     { id: 'description',     label: 'Description', field: 'description', defaultVisible: false },
   ],
@@ -437,8 +666,8 @@ export const TABLE_COLUMN_META = {
     { id: 'status',            label: 'Statut',        field: 'status',            type: 'single_select', options: ['En cours', 'Terminé', 'Abandonné'] },
     { id: 'contact_full_name', label: 'Contact',       field: 'contact_full_name', defaultVisible: false },
     { id: 'motivation_today',  label: 'Motivation',    field: 'motivation_today' },
-    { id: 'pain_points_count', label: 'Pains',         field: 'pain_points_count', type: 'number' },
-    { id: 'red_flags_count',   label: 'Red flags',     field: 'red_flags_count',   type: 'number' },
+    { id: 'pain_points_count', label: 'Pains',         field: 'pain_points_count', type: 'number', description: 'Nombre de points de douleur (pain points) relevés pendant l\'appel de qualification.' },
+    { id: 'red_flags_count',   label: 'Red flags',     field: 'red_flags_count',   type: 'number', description: 'Nombre de signaux d\'alerte (red flags) identifiés pendant l\'appel.' },
     { id: 'quote_paid_at',     label: 'Payé',          field: 'quote_paid_at',     type: 'date' },
     { id: 'source',            label: 'Source',        field: 'source',            type: 'single_select', options: ['ERP', 'Airtable'] },
     { id: 'summary',           label: 'Résumé',        field: 'summary',           defaultVisible: false },
@@ -481,5 +710,6 @@ export const TABLE_COLUMN_META = {
     { id: 'quickbooks_id',   label: 'QuickBooks',     field: 'quickbooks_id' },
     { id: 'original_name',   label: 'Fichier',        field: 'original_name', defaultVisible: false },
     { id: 'created_at',      label: 'Téléversé le',   field: 'created_at', type: 'date', defaultVisible: false },
+    { id: 'archived_at',     label: 'Archivé le',     field: 'archived_at', type: 'date', defaultVisible: false },
   ],
 }

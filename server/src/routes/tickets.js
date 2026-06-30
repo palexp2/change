@@ -4,7 +4,9 @@ import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { getCentralControllers } from '../utils/centralController.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
+import { checkForeignKeys } from '../utils/fkExists.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
+import { notifyAssignment } from '../services/notifications.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -105,6 +107,8 @@ router.get('/:id', (req, res) => {
 // POST /api/tickets
 router.post('/', (req, res) => {
   const { company_id, contact_id, assigned_to, title, description, response, type, status, duration_minutes } = req.body;
+  const fkErr = checkForeignKeys({ company_id, contact_id });
+  if (fkErr) return res.status(400).json({ error: fkErr.message });
   const id = uuidv4();
   db.prepare(
     `INSERT INTO tickets (id, company_id, contact_id, assigned_to, title, description, response, type, status, duration_minutes)
@@ -114,12 +118,19 @@ router.post('/', (req, res) => {
 
   const created = buildTicketRow(id);
   emitEntity('ticket', 'created', id, created, req.user?.id);
+  notifyAssignment({
+    assignedTo: assigned_to,
+    actorUserId: req.user?.id,
+    type: 'ticket:assigned',
+    title: `Ticket assigné : ${title}`,
+    link: `/tickets/${id}`,
+  });
   res.status(201).json(created);
 });
 
 // PUT /api/tickets/:id — partial update
 router.put('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM tickets WHERE id = ?').get(req.params.id);
+  const existing = db.prepare('SELECT id, assigned_to, title FROM tickets WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Ticket not found' });
 
   const { setClause, values, error } = buildPartialUpdate(req.body, {
@@ -136,6 +147,16 @@ router.put('/:id', (req, res) => {
 
   const updated = buildTicketRow(req.params.id);
   emitEntity('ticket', 'updated', req.params.id, updated, req.user?.id);
+  if ('assigned_to' in req.body) {
+    notifyAssignment({
+      assignedTo: req.body.assigned_to,
+      prevAssignedTo: existing.assigned_to,
+      actorUserId: req.user?.id,
+      type: 'ticket:assigned',
+      title: `Ticket assigné : ${updated?.title || existing.title}`,
+      link: `/tickets/${req.params.id}`,
+    });
+  }
   res.json(updated);
 });
 

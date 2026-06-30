@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Bot, Send, CheckCircle, XCircle, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2, Terminal, FileText, Edit3, Search, ListTodo, Activity, Maximize2, Minimize2, Lightbulb, MessageSquare, Power, ShieldAlert, Plus, RotateCw } from 'lucide-react'
+import { Bot, Send, CheckCircle, XCircle, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2, Terminal, FileText, Edit3, Search, ListTodo, Activity, Maximize2, Minimize2, Lightbulb, MessageSquare, Power, ShieldAlert, Plus, RotateCw, Clock } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -32,6 +32,33 @@ function _toolIcon(name) {
   if (n === 'write' || n === 'edit') return <Edit3 size={11} />
   if (n === 'glob' || n === 'grep') return <Search size={11} />
   return <Terminal size={11} />
+}
+
+// ─── Elapsed-time counter ─────────────────────────────────────────────────────
+function formatDuration(ms) {
+  if (!Number.isFinite(ms) || ms < 0) ms = 0
+  const totalSec = Math.floor(ms / 1000)
+  const h = Math.floor(totalSec / 3600)
+  const m = Math.floor((totalSec % 3600) / 60)
+  const s = totalSec % 60
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}m ${String(s).padStart(2, '0')}s`
+  if (m > 0) return `${m}m ${String(s).padStart(2, '0')}s`
+  return `${s}s`
+}
+
+// Compteur de temps écoulé. `live` → ré-render chaque seconde (exécution en cours) ;
+// sinon affiche la durée figée entre started_at et completed_at (tâche terminée).
+function ElapsedTimer({ startedAt, completedAt, live = false }) {
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (!live) return
+    const i = setInterval(() => tick(t => t + 1), 1000)
+    return () => clearInterval(i)
+  }, [live])
+  if (!startedAt) return <span className="tabular-nums">--:--</span>
+  const start = new Date(startedAt).getTime()
+  const end = live || !completedAt ? Date.now() : new Date(completedAt).getTime()
+  return <span className="tabular-nums" data-testid="elapsed-timer">{formatDuration(end - start)}</span>
 }
 
 // ─── Live stream display ──────────────────────────────────────────────────────
@@ -108,6 +135,7 @@ function ProposalCard({ task, onUpdate, onDelete, onSend, streamChunks, defaultE
   const [comment, setComment] = useState(task.user_comment || '')
   const [commentSaving, setCommentSaving] = useState(false)
   const [commentSaved, setCommentSaved] = useState(false)
+  const [showStream, setShowStream] = useState(false)  // repli debug : stream Claude masqué par défaut
   const cfg = STATUS_CONFIG[task.status] || STATUS_CONFIG.pending
   const Icon = cfg.icon
   const isProposal = task.kind === 'proposal'
@@ -168,9 +196,28 @@ function ProposalCard({ task, onUpdate, onDelete, onSend, streamChunks, defaultE
         {expanded ? <ChevronUp size={14} className="text-slate-400 flex-shrink-0 mt-1" /> : <ChevronDown size={14} className="text-slate-400 flex-shrink-0 mt-1" />}
       </div>
 
-      {/* Live stream when running */}
+      {/* Compteur de temps écoulé pendant l'exécution (remplace le stream, gardé en repli). */}
       {task.status === 'in_progress' && (
-        <div className="px-3.5 sm:px-4 pb-3"><TaskStream chunks={streamChunks} /></div>
+        <div className="px-3.5 sm:px-4 pb-3 space-y-2">
+          <div className="flex items-center justify-between gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5">
+            <div className="flex items-center gap-2 text-amber-700">
+              <Clock size={15} className="animate-pulse" />
+              <span className="text-sm font-medium">Temps écoulé</span>
+            </div>
+            <span className="text-lg font-semibold text-amber-700 tabular-nums">
+              <ElapsedTimer startedAt={task.started_at} live />
+            </span>
+          </div>
+          <button
+            onClick={e => { e.stopPropagation(); setShowStream(s => !s) }}
+            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-600 transition-colors"
+          >
+            <Terminal size={12} />
+            {showStream ? 'Masquer le stream Claude' : 'Voir le stream Claude'}
+            {showStream ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          </button>
+          {showStream && <TaskStream chunks={streamChunks} />}
+        </div>
       )}
 
       {expanded && (
@@ -264,8 +311,29 @@ function ProposalCard({ task, onUpdate, onDelete, onSend, streamChunks, defaultE
             </div>
           )}
 
-          {/* Execution replay + result for done/blocked */}
-          {(task.status === 'done' || task.status === 'blocked') && streamChunks?.length > 0 && <TaskStream chunks={streamChunks} done />}
+          {/* Durée totale d'exécution pour les tâches terminées. */}
+          {(task.status === 'done' || task.status === 'blocked') && task.started_at && task.completed_at && (
+            <div className="flex items-center gap-2 text-sm text-slate-600">
+              <Clock size={14} className="text-slate-400" />
+              <span>Durée d'exécution : </span>
+              <span className="font-medium text-slate-700"><ElapsedTimer startedAt={task.started_at} completedAt={task.completed_at} /></span>
+            </div>
+          )}
+
+          {/* Execution replay (debug) for done/blocked — replié par défaut. */}
+          {(task.status === 'done' || task.status === 'blocked') && streamChunks?.length > 0 && (
+            <div className="space-y-2">
+              <button
+                onClick={() => setShowStream(s => !s)}
+                className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <Terminal size={12} />
+                {showStream ? 'Masquer le journal d\'exécution' : 'Voir le journal d\'exécution'}
+                {showStream ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              </button>
+              {showStream && <TaskStream chunks={streamChunks} done />}
+            </div>
+          )}
           {task.agent_result && (
             <div className="bg-white rounded-lg p-3 border border-slate-200">
               <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wider mb-1.5">Rapport agent</p>
@@ -345,8 +413,10 @@ function BacklogPanel({ items, onAdd, onDelete }) {
   )
 }
 
-// ─── Prompt général (préambule système éditable) ──────────────────────────────
-function PromptPanel({ value, onSave }) {
+// ─── Éditeur de prompt générique (préambule + modèles d'activité) ──────────────
+// Tout ce que le modèle reçoit en prompt est éditable ici. Les modèles d'activité
+// acceptent des jetons {{placeholder}} remplacés à l'exécution par le serveur.
+function PromptEditorPanel({ testid, title, description, value, defaultValue, placeholders = [], rows = 8, onSave }) {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState(value || '')
   const [saving, setSaving] = useState(false)
@@ -356,23 +426,31 @@ function PromptPanel({ value, onSave }) {
   useEffect(() => { setText(value || '') }, [value])
 
   const dirty = text !== (value || '')
+  // « Personnalisé » = la valeur enregistrée diffère du modèle d'usine.
+  const customized = defaultValue != null && (value || '') !== defaultValue
 
   // Autosave on blur (règle « autosave partout » du CLAUDE.md — pas de bouton Enregistrer).
-  async function save() {
-    if (!dirty || saving) return
+  async function persist(next) {
     setSaving(true)
     try {
-      await onSave(text)
+      await onSave(next)
       setSaved(true)
       setTimeout(() => setSaved(false), 2000)
     } finally { setSaving(false) }
+  }
+  async function save() { if (dirty && !saving) await persist(text) }
+  async function resetDefault() {
+    if (defaultValue == null || saving) return
+    setText(defaultValue)
+    await persist(defaultValue)
   }
 
   return (
     <div className="mb-6 bg-white border border-slate-200 rounded-xl p-3.5 shadow-sm">
       <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-2 text-left">
         <FileText size={15} className="text-brand-500" />
-        <span className="text-sm font-medium text-slate-700 flex-1">Prompt général</span>
+        <span className="text-sm font-medium text-slate-700 flex-1">{title}</span>
+        {customized && !open && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">Personnalisé</span>}
         {saving
           ? <Loader2 size={13} className="text-slate-400 animate-spin" />
           : saved
@@ -382,17 +460,38 @@ function PromptPanel({ value, onSave }) {
       </button>
       {open && (
         <div className="mt-3 space-y-2">
-          <p className="text-xs text-slate-400">
-            Préambule injecté en tête de chaque activité de l'agent (génération d'idées, discussion, exécution de code). Enregistré automatiquement à la sortie du champ.
-          </p>
+          <p className="text-xs text-slate-400">{description}</p>
+          {placeholders.length > 0 && (
+            <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5 space-y-1">
+              <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Variables disponibles</p>
+              <div className="flex flex-col gap-0.5">
+                {placeholders.map(([token, desc]) => (
+                  <div key={token} className="flex items-baseline gap-2 text-xs">
+                    <code className="text-brand-600 bg-brand-50 px-1 rounded font-mono whitespace-nowrap">{token}</code>
+                    <span className="text-slate-500">{desc}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <textarea
             value={text}
             onChange={e => setText(e.target.value)}
             onBlur={save}
-            rows={8}
-            placeholder="Instructions générales données à l'agent…"
+            data-testid={testid ? `prompt-textarea-${testid}` : undefined}
+            rows={rows}
+            placeholder="Instructions données à l'agent…"
             className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 font-mono leading-relaxed resize-y focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20"
           />
+          {customized && (
+            <button
+              onClick={resetDefault}
+              data-testid={testid ? `prompt-reset-${testid}` : undefined}
+              className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 transition-colors"
+            >
+              <RotateCw size={12} /> Réinitialiser le modèle par défaut
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -499,6 +598,7 @@ export function AgentContent() {
   const [tasks, setTasks] = useState([])
   const [loading, setLoading] = useState(true)
   const [settings, setSettings] = useState({ enabled: false })
+  const [promptDefaults, setPromptDefaults] = useState({})
   const [backlog, setBacklog] = useState([])
   const [activity, setActivity] = useState(null)
   const [streamData, setStreamData] = useState({})
@@ -509,6 +609,7 @@ export function AgentContent() {
     try {
       const [t, s, b] = await Promise.all([api.agent.listTasks(), api.agent.getSettings(), api.agent.listBacklog()])
       setTasks(t); setSettings(s); setBacklog(b)
+      if (s.defaults) setPromptDefaults(s.defaults)
     } catch {
       showToast('Erreur chargement de l\'agent', 'error')
     } finally { setLoading(false) }
@@ -603,10 +704,10 @@ export function AgentContent() {
     try { await api.agent.deleteBacklog(id); setBacklog(prev => prev.filter(i => i.id !== id)) }
     catch { showToast('Erreur', 'error') }
   }
-  async function savePrompt(generalPrompt) {
+  async function savePromptField(key, value) {
     try {
-      const s = await api.agent.saveSettings({ generalPrompt })
-      setSettings(s)
+      const s = await api.agent.saveSettings({ [key]: value })
+      setSettings(prev => ({ ...prev, ...s }))
     } catch { showToast('Erreur enregistrement du prompt', 'error') }
   }
 
@@ -658,7 +759,61 @@ export function AgentContent() {
         <div className="flex items-center justify-center py-16"><Loader2 size={20} className="animate-spin text-slate-400" /></div>
       ) : (
         <>
-          <PromptPanel value={settings.generalPrompt} onSave={savePrompt} />
+          <PromptEditorPanel
+            testid="general"
+            title="Prompt général"
+            description="Préambule injecté en tête de CHAQUE activité de l'agent (génération d'idées, discussion, exécution). C'est le {{general}} des trois modèles ci-dessous. Enregistré automatiquement à la sortie du champ."
+            value={settings.generalPrompt}
+            defaultValue={promptDefaults.generalPrompt}
+            rows={8}
+            onSave={v => savePromptField('generalPrompt', v)}
+          />
+          <PromptEditorPanel
+            testid="generation"
+            title="Prompt — génération d'idées"
+            description="Le prompt COMPLET envoyé au modèle quand il génère des propositions d'amélioration. C'est ici que se décide l'originalité : ordre des sources, ton, contraintes de format. Édite-le librement (garde un bloc ```json en sortie sinon la génération ne pourra plus être parsée)."
+            value={settings.generationPrompt}
+            defaultValue={promptDefaults.generationPrompt}
+            rows={22}
+            placeholders={[
+              ['{{general}}', 'le prompt général ci-dessus'],
+              ['{{slots}}', 'nombre max de propositions à produire ce tour'],
+              ['{{backlog}}', 'tes notes de backlog non traitées'],
+              ['{{signals}}', 'erreurs récentes sync_log / automation_logs (JSON)'],
+              ['{{history}}', 'propositions déjà faites / rejetées / ouvertes (dédup)'],
+            ]}
+            onSave={v => savePromptField('generationPrompt', v)}
+          />
+          <PromptEditorPanel
+            testid="conversation"
+            title="Prompt — discussion d'une proposition"
+            description="Le prompt envoyé quand tu discutes d'une proposition dans le fil (réponse en lecture seule, sans coder)."
+            value={settings.conversationPrompt}
+            defaultValue={promptDefaults.conversationPrompt}
+            rows={14}
+            placeholders={[
+              ['{{general}}', 'le prompt général'],
+              ['{{proposal}}', 'titre de la proposition discutée'],
+              ['{{why}}', 'ligne « Pourquoi » (si renseignée)'],
+              ['{{zone}}', 'ligne « Zone visée » (si renseignée)'],
+              ['{{thread}}', 'le fil de discussion humain / agent'],
+            ]}
+            onSave={v => savePromptField('conversationPrompt', v)}
+          />
+          <PromptEditorPanel
+            testid="execution"
+            title="Prompt — exécution (codage)"
+            description="Le prompt envoyé quand une proposition est approuvée et que l'agent code réellement (lecture/écriture du repo)."
+            value={settings.executionPrompt}
+            defaultValue={promptDefaults.executionPrompt}
+            rows={16}
+            placeholders={[
+              ['{{general}}', 'le prompt général'],
+              ['{{brief}}', 'le brief de la tâche (titre, pourquoi, zone, commentaire, fil)'],
+              ['{{internalSecret}}', 'secret d\'auth pour créer des sous-tâches via l\'API'],
+            ]}
+            onSave={v => savePromptField('executionPrompt', v)}
+          />
           <ClaudeMdPanel />
           <BacklogPanel items={backlog} onAdd={addBacklog} onDelete={delBacklog} />
 

@@ -1,5 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { JWT_SECRET } from '../config/secrets.js';
+import { requestContext } from '../utils/requestContext.js';
 
 export function requireAuth(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -20,7 +21,10 @@ export function requireAuth(req, res, next) {
       role: payload.role,
       name: payload.name,
     };
-    next();
+    // Propage l'utilisateur dans le contexte async de toute la suite de la requête
+    // (handlers + services), pour que les écritures QuickBooks soient attribuées à
+    // la bonne personne sans threader req.user à travers chaque appel.
+    requestContext.run({ user: req.user }, () => next());
   } catch {
     return res.status(401).json({ error: 'Invalid or expired token' });
   }

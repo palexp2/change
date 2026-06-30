@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { Undo2 } from 'lucide-react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
@@ -62,6 +63,7 @@ export default function Retours() {
           loading={loading}
           onRowClick={row => navigate(`/retours/${row.id}`)}
           searchFields={['return_number', 'tracking_number', 'company_name']}
+          emptyState={{ icon: Undo2, title: 'Aucun retour', description: "Aucune demande de retour (RMA) n'a été enregistrée. Les retours clients apparaissent ici." }}
         />
       </div>
     </Layout>

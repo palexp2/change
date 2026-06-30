@@ -13,7 +13,7 @@ if (!PASS) throw new Error('ERP_PASS env var required')
 
 describe('Extraction de données : édition des lignes d\'articles', () => {
   let browser, ctx, page
-  let token, receiptId, originalItems
+  let token, receiptId, originalItems, originalAmounts
 
   before(async () => {
     browser = await chromium.launch()
@@ -34,6 +34,15 @@ describe('Extraction de données : édition des lignes d\'articles', () => {
     assert.ok(candidate, 'Préalable : au moins un reçu status=done est requis')
     receiptId = candidate.id
     originalItems = candidate.items || []
+    // Éditer les lignes recompose désormais sous-total/taxes/total (cascade) —
+    // on sauvegarde ces montants pour les restaurer dans after().
+    originalAmounts = {
+      subtotal: candidate.subtotal ?? null,
+      tps: candidate.tps ?? null,
+      tvq: candidate.tvq ?? null,
+      other_taxes: candidate.other_taxes ?? null,
+      total: candidate.total ?? null,
+    }
 
     await page.goto(URL + '/sale-receipts/' + receiptId, { waitUntil: 'networkidle' })
     await page.getByTestId('receipt-item-add').waitFor({ state: 'visible', timeout: 10000 })
@@ -43,7 +52,7 @@ describe('Extraction de données : édition des lignes d\'articles', () => {
     if (receiptId && token) {
       await page.request.patch(URL + '/api/sale-receipts/' + receiptId, {
         headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
-        data: { items: originalItems },
+        data: { items: originalItems, ...originalAmounts },
       })
     }
     await browser?.close()

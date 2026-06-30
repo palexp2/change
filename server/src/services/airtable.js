@@ -9,6 +9,7 @@ import { broadcastAll } from './realtime.js'
 import { emitCompany, emitOrder } from './realtimeEmitters.js'
 import { evaluateFieldRules } from './fieldRuleEngine.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
+import { consumeWritebackEcho } from './airtableWriteback.js'
 import { reconcileFacturesForOrder } from './quickbooks.js'
 import { logSystemRun } from './systemAutomations.js'
 
@@ -95,6 +96,20 @@ function lookupCompany(fields, fieldName) {
     if (co) return co.id
   }
   return null
+}
+
+// Diagnostic helper for FK failures on `projects`: list which records still
+// reference a given project (blocks deletes via project_id REFERENCES projects(id)).
+function describeProjectReferences(projectLocalId) {
+  if (!projectLocalId) return ''
+  const refs = []
+  for (const t of ['orders', 'soumissions', 'factures']) {
+    try {
+      const n = db.prepare(`SELECT COUNT(*) c FROM ${t} WHERE project_id=?`).get(projectLocalId)?.c || 0
+      if (n) refs.push(`${t}×${n}`)
+    } catch {}
+  }
+  return refs.join(', ')
 }
 
 /**
@@ -584,7 +599,26 @@ export async function syncPieces(changes = null) {
           procurement_type: autoMapField(rec.fields, 'approvisionnement', 'procurement', 'type achat'),
           weight_lbs:       autoMapField(rec.fields, 'poids', 'weight', 'poids lbs'),
           image:            autoMapField(rec.fields, 'image', 'photo', 'images', 'photos', 'picture'),
+          // Étape 5 « Priorité d'assemblage » — champs produits finis (one-way Airtable → ERP)
+          assembly_status:          autoMapField(rec.fields, "status d'assemblage", 'status assemblage', "statut d'assemblage", 'statut assemblage', 'assembly status'),
+          finished_min_stock:       autoMapField(rec.fields, 'seuil min. produits finis', 'seuil min produits finis', 'seuil min produits fini', 'seuil minimum produits finis'),
+          projected_available_qty:  autoMapField(rec.fields, 'quantité sera disponible', 'quantite sera disponible', 'qté sera disponible', 'quantité disponible projetée'),
+          producible_qty:           autoMapField(rec.fields, 'nombre de produit possible', 'nombre de produits possible', 'nombre de produits possibles', 'nb produit possible', 'produit possible'),
+          // Étape 4 « Priorité d'assemblage » — lien fournisseur (bouton externe)
+          supplier_link:            autoMapField(rec.fields, 'lien fournisseur', "lien d'achat", 'url fournisseur', 'lien'),
         }
+      }
+      // Backfill des 4 champs étape 5 même si le field_map est déjà figé en DB
+      // (l'auto-map initial ci-dessus ne s'exécute qu'au tout 1er sync). On reprobe
+      // tant que non trouvé, car Airtable omet les champs vides : un champ peut
+      // n'apparaître que dans un record plus loin. Idempotent.
+      if (fieldMap && rec.fields) {
+        const probe = (key, ...cands) => { if (!fieldMap[key]) { const m = autoMapField(rec.fields, ...cands); if (m) fieldMap[key] = m } }
+        probe('assembly_status', "status d'assemblage", 'status assemblage', "statut d'assemblage", 'statut assemblage', 'assembly status')
+        probe('finished_min_stock', 'seuil min. produits finis', 'seuil min produits finis', 'seuil min produits fini', 'seuil minimum produits finis')
+        probe('projected_available_qty', 'quantité sera disponible', 'quantite sera disponible', 'qté sera disponible', 'quantité disponible projetée')
+        probe('producible_qty', 'nombre de produit possible', 'nombre de produits possible', 'nombre de produits possibles', 'nb produit possible', 'produit possible')
+        probe('supplier_link', 'lien fournisseur', "lien d'achat", 'url fournisseur', 'lien')
       }
       if (fieldMap?.image) {
         const attachments = rec.fields[fieldMap.image]
@@ -636,21 +670,29 @@ export async function syncPieces(changes = null) {
           procurement_type: procurementType,
           weight_lbs:       toFloat(fieldMap?.weight_lbs) ?? 0,
           image_url:        imageUrl,
+          // Étape 5 « Priorité d'assemblage » (null si champ absent → on ne fausse pas le calcul du manque)
+          assembly_status:          toFloat(fieldMap?.assembly_status),
+          finished_min_stock:       toInt(fieldMap?.finished_min_stock),
+          projected_available_qty:  toInt(fieldMap?.projected_available_qty),
+          producible_qty:           toInt(fieldMap?.producible_qty),
+          supplier_link:            getVal(rec.fields, fieldMap?.supplier_link),
         }
 
         const existing = db.prepare('SELECT id FROM products WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE products SET name_fr=?, name_en=?, sku=?, type=?, unit_cost=?, price_cad=?, stock_qty=?, min_stock=?, supplier=?, procurement_type=?, weight_lbs=?, image_url=COALESCE(?,image_url), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-            .run(payload.name_fr, payload.name_en, payload.sku, payload.type, payload.unit_cost, payload.price_cad, payload.stock_qty, payload.min_stock, payload.supplier, payload.procurement_type, payload.weight_lbs, payload.image_url, existing.id)
+          db.prepare(`UPDATE products SET name_fr=?, name_en=?, sku=?, type=?, unit_cost=?, price_cad=?, stock_qty=?, min_stock=?, supplier=?, procurement_type=?, weight_lbs=?, image_url=COALESCE(?,image_url), assembly_status=?, finished_min_stock=?, projected_available_qty=?, producible_qty=?, supplier_link=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
+            .run(payload.name_fr, payload.name_en, payload.sku, payload.type, payload.unit_cost, payload.price_cad, payload.stock_qty, payload.min_stock, payload.supplier, payload.procurement_type, payload.weight_lbs, payload.image_url, payload.assembly_status, payload.finished_min_stock, payload.projected_available_qty, payload.producible_qty, payload.supplier_link, existing.id)
           updated++
         } else {
-          db.prepare(`INSERT INTO products (id, name_fr, name_en, sku, type, unit_cost, price_cad, stock_qty, min_stock, supplier, procurement_type, weight_lbs, image_url, airtable_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(uuid(), payload.name_fr, payload.name_en, payload.sku, payload.type, payload.unit_cost, payload.price_cad, payload.stock_qty, payload.min_stock, payload.supplier, payload.procurement_type, payload.weight_lbs, payload.image_url, rec.id)
+          db.prepare(`INSERT INTO products (id, name_fr, name_en, sku, type, unit_cost, price_cad, stock_qty, min_stock, supplier, procurement_type, weight_lbs, image_url, assembly_status, finished_min_stock, projected_available_qty, producible_qty, supplier_link, airtable_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(uuid(), payload.name_fr, payload.name_en, payload.sku, payload.type, payload.unit_cost, payload.price_cad, payload.stock_qty, payload.min_stock, payload.supplier, payload.procurement_type, payload.weight_lbs, payload.image_url, payload.assembly_status, payload.finished_min_stock, payload.projected_available_qty, payload.producible_qty, payload.supplier_link, rec.id)
           imported++
         }
       }
-      db.prepare(`UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='pieces'`).run()
+      // Persiste le field_map (incl. les 4 clés étape 5 backfillées) pour qu'il soit durable
+      // et visible dans la config — évite tout UPDATE manuel de la DB.
+      db.prepare(`UPDATE airtable_module_config SET field_map=?, last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='pieces'`).run(fieldMap ? JSON.stringify(fieldMap) : null)
     })(records)
     console.log(`🔩 Pièces: ${imported} importées, ${updated} mises à jour`)
     if (!changes) {
@@ -681,25 +723,40 @@ export async function syncAchats(changes = null) {
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'achats', _recordIds)
     let fieldMap = config.field_map ? JSON.parse(config.field_map) : null
+
+    // Field map computed from the UNION of keys across all fetched records, not a
+    // single sample. Airtable omits empty fields per-record, so auto-detecting from
+    // the first record alone made fields (notably "Date de réception complète")
+    // appear/disappear between syncs depending on which record landed first in the
+    // batch. On a full sync the union is complete → persist it so later incremental
+    // syncs (small batches that may not contain every field) reuse a stable map.
+    if (!fieldMap && records.length) {
+      const union = {}
+      for (const rec of records) if (rec.fields) Object.assign(union, rec.fields)
+      fieldMap = {
+        product:        autoMapField(union, 'nom de la pièce', 'nom de la piece', 'produit', 'pièce', 'piece', 'product', 'item'),
+        supplier:       autoMapField(union, 'fournisseur - legacy', 'fournisseur legacy', 'fournisseur', 'supplier', 'vendor'),
+        reference:      autoMapField(union, 'numéro de commande', 'numero de commande', 'référence', 'reference', 'ref', 'po', 'numéro'),
+        order_date:     autoMapField(union, 'date de commande', 'date commande', 'date achat', 'order date', 'date'),
+        expected_date:  autoMapField(union, 'date prévue', 'date prevue', 'expected', 'livraison prévue'),
+        received_date:  autoMapField(union, 'date de réception complète', 'date de réception', 'date réception', 'date reception', 'received date', 'reçu le'),
+        qty_ordered:    autoMapField(union, 'quantité commandé', 'quantite commande', 'qté commandée', 'qty ordered', 'quantité commandée', 'qte commandee'),
+        qty_received:   autoMapField(union, 'qté reçue', 'qty received', 'quantité reçue', 'qte recue'),
+        unit_cost:      autoMapField(union, 'prix unitaire ($ cad)', 'prix unitaire', 'coût unitaire', 'cout unitaire', 'unit cost'),
+        status:         autoMapField(union, 'statut', 'status', 'état'),
+        notes:          autoMapField(union, 'notes', 'commentaires', 'remarks'),
+      }
+      // Persist only on full sync — an incremental batch's union may be partial.
+      if (!changes) db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='achats'").run(JSON.stringify(fieldMap))
+    }
     let imported = 0, updated = 0
 
+    let echoed = 0
     db.transaction((recs) => {
       for (const rec of recs) {
-        if (!fieldMap && rec.fields) {
-          fieldMap = {
-            product:        autoMapField(rec.fields, 'nom de la pièce', 'nom de la piece', 'produit', 'pièce', 'piece', 'product', 'item'),
-            supplier:       autoMapField(rec.fields, 'fournisseur - legacy', 'fournisseur legacy', 'fournisseur', 'supplier', 'vendor'),
-            reference:      autoMapField(rec.fields, 'numéro de commande', 'numero de commande', 'référence', 'reference', 'ref', 'po', 'numéro'),
-            order_date:     autoMapField(rec.fields, 'date de commande', 'date commande', 'date achat', 'order date', 'date'),
-            expected_date:  autoMapField(rec.fields, 'date prévue', 'date prevue', 'expected', 'livraison prévue'),
-            received_date:  autoMapField(rec.fields, 'date de réception complète', 'date de réception', 'date réception', 'date reception', 'received date', 'reçu le'),
-            qty_ordered:    autoMapField(rec.fields, 'quantité commandé', 'quantite commande', 'qté commandée', 'qty ordered', 'quantité commandée', 'qte commandee'),
-            qty_received:   autoMapField(rec.fields, 'qté reçue', 'qty received', 'quantité reçue', 'qte recue'),
-            unit_cost:      autoMapField(rec.fields, 'prix unitaire ($ cad)', 'prix unitaire', 'coût unitaire', 'cout unitaire', 'unit cost'),
-            status:         autoMapField(rec.fields, 'statut', 'status', 'état'),
-            notes:          autoMapField(rec.fields, 'notes', 'commentaires', 'remarks'),
-          }
-        }
+        // Garde anti-boucle : si ce record est l'echo d'un write-back ERP récent
+        // (mêmes valeurs), ne pas le ré-importer — évite la boucle avec le webhook.
+        if (consumeWritebackEcho(rec.id, rec.fields)) { echoed++; continue }
 
         function toFloat(fieldKey) {
           const raw = fieldKey ? rec.fields[fieldKey] : null
@@ -736,7 +793,15 @@ export async function syncAchats(changes = null) {
           'annulé': 'Annulé', 'cancelled': 'Annulé', 'canceled': 'Annulé', 'annule': 'Annulé',
         }
         const rawStatus = (getVal(rec.fields, fieldMap?.status) || '').trim()
-        const status = STATUS_MAP[rawStatus.toLowerCase()] || 'Commandé'
+        const receivedDate = getVal(rec.fields, fieldMap?.received_date)
+        const qtyOrdered = toInt(fieldMap?.qty_ordered) ?? 0
+        const mappedQtyReceived = toInt(fieldMap?.qty_received)
+        // Airtable's "achats" table has no Statut / Qté reçue column — reception is
+        // tracked solely by "Date de réception complète". Prefer an explicit status
+        // field when one exists; otherwise derive it: a reception date ⇒ Reçu (and
+        // assume the full ordered qty received), absence ⇒ still Commandé.
+        const status = STATUS_MAP[rawStatus.toLowerCase()] || (receivedDate ? 'Reçu' : 'Commandé')
+        const qtyReceived = mappedQtyReceived ?? (status === 'Reçu' ? qtyOrdered : 0)
 
         const payload = {
           product_id:     productId,
@@ -744,9 +809,9 @@ export async function syncAchats(changes = null) {
           reference:      getVal(rec.fields, fieldMap?.reference),
           order_date:     getVal(rec.fields, fieldMap?.order_date),
           expected_date:  getVal(rec.fields, fieldMap?.expected_date),
-          received_date:  getVal(rec.fields, fieldMap?.received_date),
-          qty_ordered:    toInt(fieldMap?.qty_ordered) ?? 0,
-          qty_received:   toInt(fieldMap?.qty_received) ?? 0,
+          received_date:  receivedDate,
+          qty_ordered:    qtyOrdered,
+          qty_received:   qtyReceived,
           unit_cost:      toFloat(fieldMap?.unit_cost) ?? 0,
           status,
           notes:          getVal(rec.fields, fieldMap?.notes),
@@ -765,7 +830,7 @@ export async function syncAchats(changes = null) {
       }
       db.prepare(`UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='achats'`).run()
     })(records)
-    console.log(`🛒 Achats: ${imported} importés, ${updated} mis à jour`)
+    console.log(`🛒 Achats: ${imported} importés, ${updated} mis à jour${echoed ? `, ${echoed} echo(s) write-back ignoré(s)` : ''}`)
     if (!changes) {
       purgeOrphans('purchases', records)
       await syncDynamicFields('achats', 'purchases', config.base_id, config.table_id, fieldMap, records)
@@ -895,10 +960,15 @@ export async function syncEnvois(changes = null) {
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'envois', _recordIds)
     let fieldMap = config.field_map ? JSON.parse(config.field_map) : null
-    let imported = 0, updated = 0
+    let imported = 0, updated = 0, echoed = 0
 
     db.transaction((recs) => {
       for (const rec of recs) {
+        // Garde anti-boucle : si ce record est l'echo d'un write-back ERP récent
+        // (mêmes valeurs scalaires), ne pas le ré-importer — évite la boucle avec
+        // le webhook déclenché par notre propre PATCH Airtable.
+        if (consumeWritebackEcho(rec.id, rec.fields)) { echoed++; continue }
+
         if (!fieldMap && rec.fields) {
           fieldMap = {
             order:           autoMapField(rec.fields, 'commande', 'order', 'numéro de commande', 'order number'),
@@ -909,6 +979,7 @@ export async function syncEnvois(changes = null) {
             notes:           autoMapField(rec.fields, 'notes', 'commentaires'),
             address:         autoMapField(rec.fields, 'adresse', 'adresse de livraison', 'shipping address', 'address', 'delivery address'),
             pays:            autoMapField(rec.fields, 'pays', 'pays de livraison', 'country', 'destination country', 'pays destination'),
+            items:           autoMapField(rec.fields, 'items expédiés', 'items expedies', 'items à expédier', 'items a expedier', 'articles expédiés', 'articles expedies'),
           }
         }
 
@@ -947,20 +1018,46 @@ export async function syncEnvois(changes = null) {
         }
 
         const existing = db.prepare('SELECT id FROM shipments WHERE airtable_id=?').get(rec.id)
+        let shipmentId = null
         if (existing) {
           db.prepare(`UPDATE shipments SET order_id=COALESCE(?,order_id), tracking_number=?, carrier=?, status=?, shipped_at=?, notes=?, address_id=COALESCE(?,address_id), pays=? WHERE id=?`)
             .run(orderId, tracking_number, carrier, status || 'À envoyer', shipped_at, notes, addressId, pays, existing.id)
+          shipmentId = existing.id
           updated++
         } else {
           if (!orderId) continue
+          shipmentId = uuid()
           db.prepare(`INSERT INTO shipments (id, order_id, airtable_id, tracking_number, carrier, status, shipped_at, notes, address_id, pays) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-            .run(uuid(), orderId, rec.id, tracking_number, carrier, status || 'À envoyer', shipped_at, notes, addressId, pays)
+            .run(shipmentId, orderId, rec.id, tracking_number, carrier, status || 'À envoyer', shipped_at, notes, addressId, pays)
           imported++
+        }
+
+        // Lier les items expédiés (Airtable « items expédiés ») → order_items.shipment_id.
+        // C'est la source de vérité de « quels articles partent dans cet envoi » : sans ça,
+        // la fiche envoi retombe sur l'affichage de toute la commande. On ne ré-assigne que
+        // si Airtable fournit une liste explicite — sinon on ne touche à rien (vieux envois).
+        const itemsField = fieldMap?.items
+          || autoMapField(rec.fields, 'items expédiés', 'items expedies', 'items à expédier', 'items a expedier', 'articles expédiés', 'articles expedies')
+        if (shipmentId && itemsField) {
+          const raw = rec.fields[itemsField]
+          const linkedIds = Array.isArray(raw) ? raw : []
+          const oiIds = []
+          for (const atid of linkedIds) {
+            const oi = db.prepare('SELECT id FROM order_items WHERE airtable_id=? LIMIT 1').get(atid)
+            if (oi) oiIds.push(oi.id)
+          }
+          if (oiIds.length) {
+            // Détache d'abord les items pointant vers cet envoi mais absents de la nouvelle liste,
+            // puis (re)lie ceux d'Airtable. Idempotent.
+            db.prepare('UPDATE order_items SET shipment_id=NULL WHERE shipment_id=?').run(shipmentId)
+            const link = db.prepare('UPDATE order_items SET shipment_id=? WHERE id=?')
+            for (const oiId of oiIds) link.run(shipmentId, oiId)
+          }
         }
       }
       db.prepare(`UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='envois'`).run()
     })(records)
-    console.log(`🚚 Envois: ${imported} importés, ${updated} mis à jour`)
+    console.log(`🚚 Envois: ${imported} importés, ${updated} mis à jour${echoed ? `, ${echoed} echos ignorés` : ''}`)
     if (!changes) {
       purgeOrphans('shipments', records)
       await syncDynamicFields('envois', 'shipments', config.base_id, config.table_id, fieldMap, records)
@@ -1097,6 +1194,153 @@ export async function syncBillets(changes = null) {
   } catch (e) { console.error('❌ Billets sync:', e.message) }
 }
 
+// Sentinel thrown by upsertProjectRecord when a project links to a company that
+// isn't imported in ERP yet. The caller catches it, syncs the missing companies,
+// then retries — instead of importing the project as a company-less orphan.
+const DEFER_MISSING_COMPANY = 'DEFER_MISSING_COMPANY'
+
+// Upsert a single Airtable record into `projects`.
+// Returns 'imported' | 'updated' | 'skipped'. Throws on DB constraint.
+// When the record links to a company not yet imported and !allowMissingCompany,
+// throws DEFER_MISSING_COMPANY so the caller can sync companies first and retry.
+function upsertProjectRecord(rec, fmap, frozenSet, allowMissingCompany = false) {
+  const name = getVal(rec.fields, fmap?.name)
+  if (!name) return 'skipped'
+
+  // Status: use user-defined choices map, fallback to Oui/Non legacy
+  const rawStatus = (getVal(rec.fields, fmap?.status) || '').trim()
+  const STATUS_CHOICES = fmap?.status_choices || { 'Oui': 'Gagné', 'Non': 'Perdu' }
+  const status = STATUS_CHOICES[rawStatus] || 'Ouvert'
+
+  // Type: use user-defined choices map, fallback to exact match
+  const rawType = getVal(rec.fields, fmap?.type) || ''
+  const validTypes = ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange']
+  const TYPE_CHOICES = fmap?.type_choices || {}
+  const type = TYPE_CHOICES[rawType] || validTypes.find(t => t.toLowerCase() === rawType.toLowerCase()) || null
+
+  // Company lookup. If the Airtable record links a company (linked-record id)
+  // that ERP hasn't imported yet, defer rather than insert an orphan.
+  const companyLink = fmap?.company ? rec.fields?.[fmap.company] : undefined
+  const companyLinked = Array.isArray(companyLink) ? companyLink.find(v => typeof v === 'string') : null
+  const companyId = lookupCompany(rec.fields, fmap?.company)
+  if (!allowMissingCompany && companyLinked && !companyId) {
+    const err = new Error(DEFER_MISSING_COMPANY)
+    err.code = DEFER_MISSING_COMPANY
+    throw err
+  }
+
+  const toFloat = (fieldKey) => {
+    const raw = fieldKey ? rec.fields[fieldKey] : null
+    const n = parseFloat(String(raw ?? '').replace(/[^0-9.-]/g, ''))
+    return isNaN(n) ? null : n
+  }
+  const toInt = (fieldKey) => {
+    const raw = fieldKey ? rec.fields[fieldKey] : null
+    const n = parseFloat(String(raw ?? '').replace(/[^0-9.-]/g, ''))
+    return isNaN(n) ? null : Math.round(n)
+  }
+
+  const valueCad = toFloat(fmap?.value_cad)
+  // Airtable percent fields are stored as decimals (0.30 = 30%) — multiply by 100 if ≤ 1
+  const rawProb = fmap?.probability ? rec.fields[fmap.probability] : null
+  const probFloat = parseFloat(String(rawProb ?? ''))
+  const probability = isNaN(probFloat) ? null : Math.round(probFloat > 1 ? probFloat : probFloat * 100)
+  const monthlyCad = toFloat(fmap?.monthly_cad)
+  const nbGreenhouses = toInt(fmap?.nb_greenhouses)
+  const closeDate = getVal(rec.fields, fmap?.close_date)
+  const notes = getVal(rec.fields, fmap?.notes)
+
+  const existing = db.prepare('SELECT id FROM projects WHERE airtable_id=?').get(rec.id)
+  const allPairs = [
+    ['name', name],
+    ['company_id', companyId],
+    ['status', status],
+    ['type', type],
+    ['value_cad', valueCad],
+    ['probability', probability],
+    ['monthly_cad', monthlyCad],
+    ['nb_greenhouses', nbGreenhouses],
+    ['close_date', closeDate],
+    ['notes', notes],
+  ]
+  if (existing) {
+    const writable = allPairs.filter(([c]) => !frozenSet.has(c))
+    if (!writable.length) return 'skipped'
+    const setClause = writable.map(([c]) => `${c}=?`).join(', ')
+    db.prepare(`UPDATE projects SET ${setClause}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
+      .run(...writable.map(([, v]) => v), existing.id)
+    return 'updated'
+  }
+  db.prepare('INSERT INTO projects (id, name, company_id, status, type, value_cad, probability, monthly_cad, nb_greenhouses, close_date, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
+    .run(uuid(), name, companyId, status, type, valueCad, probability, monthlyCad, nbGreenhouses, closeDate, notes, rec.id)
+  return 'imported'
+}
+
+// Retry project records deferred during the first pass: sync the companies they
+// reference (the missing dependency) then re-upsert them. On this second pass a
+// still-missing company no longer blocks the import (the project is created with
+// a null company_id rather than being lost indefinitely).
+// Returns { imported, updated, stillDeferred }.
+async function retryDeferredProjects(deferredMain, deferredExtra, mainFieldMap, frozenSet) {
+  const crm = db.prepare('SELECT base_id, companies_table_id FROM airtable_sync_config').get()
+  const missingCompanyIds = new Set()
+  const collect = (rec, fmap) => {
+    const link = fmap?.company ? rec.fields?.[fmap.company] : undefined
+    if (!Array.isArray(link)) return
+    for (const v of link) {
+      if (typeof v !== 'string') continue
+      const exists = db.prepare('SELECT 1 FROM companies WHERE airtable_id=? LIMIT 1').get(v)
+      if (!exists) missingCompanyIds.add(v)
+    }
+  }
+  for (const rec of deferredMain) collect(rec, mainFieldMap)
+  for (const { rec, fmap } of deferredExtra) collect(rec, fmap)
+
+  // Sync the missing companies first (the dependency), then retry.
+  if (crm?.companies_table_id && missingCompanyIds.size) {
+    try {
+      console.log(`🔗 Projets: ${missingCompanyIds.size} entreprise(s) liée(s) manquante(s) — sync companies avant retry`)
+      await syncAirtable({
+        [crm.companies_table_id]: {
+          recordIds: [...missingCompanyIds],
+          destroyedIds: [],
+          changedFieldIds: [],
+          hasCreates: false,
+        },
+      })
+    } catch (e) {
+      console.error('❌ Projets: sync de la dépendance companies échoué:', e.message)
+    }
+  }
+
+  let imported = 0, updated = 0, stillDeferred = 0
+  // Same savepoint isolation as the first pass: a record still failing its FK
+  // (company unresolvable even after syncing the dependency) rolls back only
+  // itself, so the other recovered projects still commit.
+  const upsertOne = db.transaction((rec, fmap) =>
+    upsertProjectRecord(rec, fmap, frozenSet, true))
+  const retryPass = db.transaction(() => {
+    const retryOne = (rec, fmap, isExtra) => {
+      try {
+        const action = upsertOne(rec, fmap)
+        if (action === 'imported') imported++
+        else if (action === 'updated') updated++
+      } catch (e) {
+        stillDeferred++
+        console.error(`⚠️  Projets${isExtra ? ' (table extra)' : ''}: record ${rec.id} toujours en échec après sync des dépendances — ${e.message}`)
+      }
+    }
+    for (const rec of deferredMain) retryOne(rec, mainFieldMap, false)
+    for (const { rec, fmap } of deferredExtra) retryOne(rec, fmap, true)
+  })
+  retryPass()
+
+  const recovered = imported + updated
+  if (recovered) console.log(`🔁 Projets: ${recovered} record(s) ré-importé(s)/mis à jour après sync des dépendances (${imported} importés, ${updated} mis à jour)`)
+  if (stillDeferred) console.warn(`⚠️  Projets: ${stillDeferred} record(s) encore en échec après retry`)
+  return { imported, updated, stillDeferred }
+}
+
 export async function syncProjets(changes = null) {
   const config = db.prepare('SELECT * FROM airtable_projets_config').get()
   if (!config?.base_id || !config?.projects_table_id) { console.log('⚠️  Projets config missing'); return }
@@ -1108,8 +1352,17 @@ export async function syncProjets(changes = null) {
     for (const e of extraTables0) if (e.table_id) allTableIds.push(e.table_id)
     for (const tid of allTableIds) {
       if (changes[tid]?.destroyedIds?.length) {
-        for (const id of changes[tid].destroyedIds)
-          db.prepare('DELETE FROM projects WHERE airtable_id=?').run(id)
+        for (const id of changes[tid].destroyedIds) {
+          try {
+            db.prepare('DELETE FROM projects WHERE airtable_id=?').run(id)
+          } catch (e) {
+            // FK constraint (projet encore référencé par une commande/soumission/facture) :
+            // ne pas tuer tout le module — logger le record fautif et différer sa suppression.
+            const proj = db.prepare('SELECT id, name FROM projects WHERE airtable_id=?').get(id)
+            const refs = proj ? describeProjectReferences(proj.id) : ''
+            console.error(`⚠️  Projets: suppression différée du projet ${id}${proj ? ` ("${proj.name}")` : ''} — ${e.message}${refs ? ` ; encore référencé par ${refs}` : ''}`)
+          }
+        }
       }
     }
     // Skip entirely if no records to process in any projets table
@@ -1140,8 +1393,24 @@ export async function syncProjets(changes = null) {
 
     const frozenProjects = getFrozenColumns('projects')
 
-    db.transaction((recs) => {
-      for (const rec of recs) {
+    // Pass 1: upsert every record. Any record that references a not-yet-imported
+    // company — or that hits a DB constraint — is collected for a second pass run
+    // AFTER its dependency (companies) is synced. This is the root-cause fix: the
+    // webhook can dispatch 'Projets' before 'Companies', and without this the
+    // project would be imported as a company-less orphan (or fail the FK).
+    const deferredMain = []
+    const deferredExtra = []
+
+    // Each record upserts inside its own SAVEPOINT (a nested db.transaction
+    // compiles to SAVEPOINT/RELEASE/ROLLBACK TO). A FK/CHECK failure on one
+    // orphan (e.g. company_id pointing to a not-yet-synced companies row) rolls
+    // back only that record's writes — the surrounding batch transaction stays
+    // open and the valid projects still commit.
+    const upsertOne = db.transaction((rec, fmap, allowMissing) =>
+      upsertProjectRecord(rec, fmap, frozenProjects, allowMissing))
+
+    const runPass = db.transaction(() => {
+      for (const rec of records) {
         if (!fieldMap && rec.fields) {
           fieldMap = {
             name:           autoMapField(rec.fields, 'name', 'nom', 'projet', 'project') || Object.keys(rec.fields)[0],
@@ -1156,123 +1425,49 @@ export async function syncProjets(changes = null) {
             notes:          autoMapField(rec.fields, 'notes', 'description', 'commentaires'),
           }
         }
-
-        const name = getVal(rec.fields, fieldMap?.name)
-        if (!name) continue
-
-        // Status: use user-defined choices map, fallback to Oui/Non legacy
-        const rawStatus = (getVal(rec.fields, fieldMap?.status) || '').trim()
-        const STATUS_CHOICES = fieldMap?.status_choices || { 'Oui': 'Gagné', 'Non': 'Perdu' }
-        const status = STATUS_CHOICES[rawStatus] || (rawStatus ? 'Ouvert' : 'Ouvert')
-
-        // Type: use user-defined choices map, fallback to exact match
-        const rawType = getVal(rec.fields, fieldMap?.type) || ''
-        const validTypes = ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange']
-        const TYPE_CHOICES = fieldMap?.type_choices || {}
-        const type = TYPE_CHOICES[rawType] || validTypes.find(t => t.toLowerCase() === rawType.toLowerCase()) || null
-
-        // Company lookup
-        const companyId = lookupCompany(rec.fields, fieldMap?.company)
-
-        function toFloat(fieldKey) {
-          const raw = fieldKey ? rec.fields[fieldKey] : null
-          const n = parseFloat(String(raw ?? '').replace(/[^0-9.-]/g, ''))
-          return isNaN(n) ? null : n
-        }
-        function toInt(fieldKey) {
-          const raw = fieldKey ? rec.fields[fieldKey] : null
-          const n = parseFloat(String(raw ?? '').replace(/[^0-9.-]/g, ''))
-          return isNaN(n) ? null : Math.round(n)
-        }
-
-        const valueCad      = toFloat(fieldMap?.value_cad)
-        // Airtable percent fields are stored as decimals (0.30 = 30%) — multiply by 100 if ≤ 1
-        const rawProb = fieldMap?.probability ? rec.fields[fieldMap.probability] : null
-        const probFloat = parseFloat(String(rawProb ?? ''))
-        const probability = isNaN(probFloat) ? null : Math.round(probFloat > 1 ? probFloat : probFloat * 100)
-        const monthlyCad    = toFloat(fieldMap?.monthly_cad)
-        const nbGreenhouses = toInt(fieldMap?.nb_greenhouses)
-        const closeDate     = getVal(rec.fields, fieldMap?.close_date)
-        const notes         = getVal(rec.fields, fieldMap?.notes)
-
-        const existing = db.prepare('SELECT id FROM projects WHERE airtable_id=?').get(rec.id)
-        const allPairs = [
-          ['name', name],
-          ['company_id', companyId],
-          ['status', status],
-          ['type', type],
-          ['value_cad', valueCad],
-          ['probability', probability],
-          ['monthly_cad', monthlyCad],
-          ['nb_greenhouses', nbGreenhouses],
-          ['close_date', closeDate],
-          ['notes', notes],
-        ]
-        if (existing) {
-          const writable = allPairs.filter(([c]) => !frozenProjects.has(c))
-          if (writable.length) {
-            const setClause = writable.map(([c]) => `${c}=?`).join(', ')
-            db.prepare(`UPDATE projects SET ${setClause}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-              .run(...writable.map(([, v]) => v), existing.id)
-            updated++
+        try {
+          const action = upsertOne(rec, fieldMap, false)
+          if (action === 'imported') imported++
+          else if (action === 'updated') updated++
+        } catch (e) {
+          // Constraint (FK company_id, CHECK…) or missing-company on a single record
+          // must not abort the whole batch — its savepoint rolled back; defer it and continue.
+          deferredMain.push(rec)
+          if (e.code !== DEFER_MISSING_COMPANY) {
+            const companyVal = fieldMap?.company ? rec.fields?.[fieldMap.company] : undefined
+            console.error(`⚠️  Projets: record ${rec.id} différé — ${e.message}${companyVal !== undefined ? ` ; ${fieldMap.company}=${JSON.stringify(companyVal)}` : ''}`)
           }
-        } else {
-          db.prepare('INSERT INTO projects (id, name, company_id, status, type, value_cad, probability, monthly_cad, nb_greenhouses, close_date, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), name, companyId, status, type, valueCad, probability, monthlyCad, nbGreenhouses, closeDate, notes, rec.id)
-          imported++
         }
       }
 
       // Sync extra tables (additional Airtable tables mapped to projects)
       for (const { extra, extraRecords } of extraTableData) {
         const extraFieldMap = extra.field_map || {}
-        const validTypes = ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange']
         for (const rec of extraRecords) {
-          const name = getVal(rec.fields, extraFieldMap.name)
-          if (!name) continue
-          const rawStatus2 = (getVal(rec.fields, extraFieldMap.status) || '').trim()
-          const STATUS_CHOICES2 = extraFieldMap.status_choices || { 'Oui': 'Gagné', 'Non': 'Perdu' }
-          const status2 = STATUS_CHOICES2[rawStatus2] || 'Ouvert'
-          const rawType2 = getVal(rec.fields, extraFieldMap.type) || ''
-          const TYPE_CHOICES2 = extraFieldMap.type_choices || {}
-          const type2 = TYPE_CHOICES2[rawType2] || validTypes.find(t => t.toLowerCase() === rawType2.toLowerCase()) || null
-          const companyId2 = lookupCompany(rec.fields, extraFieldMap.company)
-          function toF(k) { const r = k ? rec.fields[k] : null; const n = parseFloat(String(r ?? '').replace(/[^0-9.-]/g, '')); return isNaN(n) ? null : n }
-          function toI(k) { const r = k ? rec.fields[k] : null; const n = parseInt(String(r ?? '').replace(/[^0-9]/g, '')); return isNaN(n) ? null : n }
-          const rawProb2 = extraFieldMap.probability ? rec.fields[extraFieldMap.probability] : null
-          const pf2 = parseFloat(String(rawProb2 ?? ''))
-          const prob2 = isNaN(pf2) ? null : Math.round(pf2 > 1 ? pf2 : pf2 * 100)
-          const existing2 = db.prepare('SELECT id FROM projects WHERE airtable_id=?').get(rec.id)
-          if (existing2) {
-            const extraPairs = [
-              ['name', name],
-              ['company_id', companyId2],
-              ['status', status2],
-              ['type', type2],
-              ['value_cad', toF(extraFieldMap.value_cad)],
-              ['probability', prob2],
-              ['monthly_cad', toF(extraFieldMap.monthly_cad)],
-              ['nb_greenhouses', toI(extraFieldMap.nb_greenhouses)],
-              ['close_date', getVal(rec.fields, extraFieldMap.close_date)],
-              ['notes', getVal(rec.fields, extraFieldMap.notes)],
-            ]
-            const writable = extraPairs.filter(([c]) => !frozenProjects.has(c))
-            if (writable.length) {
-              const setClause = writable.map(([c]) => `${c}=?`).join(', ')
-              db.prepare(`UPDATE projects SET ${setClause}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-                .run(...writable.map(([, v]) => v), existing2.id)
-              updated++
+          try {
+            const action = upsertOne(rec, extraFieldMap, false)
+            if (action === 'imported') imported++
+            else if (action === 'updated') updated++
+          } catch (e) {
+            deferredExtra.push({ rec, fmap: extraFieldMap })
+            if (e.code !== DEFER_MISSING_COMPANY) {
+              const companyVal = extraFieldMap.company ? rec.fields?.[extraFieldMap.company] : undefined
+              console.error(`⚠️  Projets (table extra): record ${rec.id} différé — ${e.message}${companyVal !== undefined ? ` ; ${extraFieldMap.company}=${JSON.stringify(companyVal)}` : ''}`)
             }
-          } else {
-            db.prepare('INSERT INTO projects (id, name, company_id, status, type, value_cad, probability, monthly_cad, nb_greenhouses, close_date, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-              .run(uuid(), name, companyId2, status2, type2, toF(extraFieldMap.value_cad), prob2, toF(extraFieldMap.monthly_cad), toI(extraFieldMap.nb_greenhouses), getVal(rec.fields, extraFieldMap.close_date), getVal(rec.fields, extraFieldMap.notes), rec.id)
-            imported++
           }
         }
       }
 
       db.prepare(`UPDATE airtable_projets_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`).run()
-    })(records)
+    })
+    runPass()
+
+    // Pass 2: re-process deferred records after syncing their missing company deps.
+    if (deferredMain.length || deferredExtra.length) {
+      const r = await retryDeferredProjects(deferredMain, deferredExtra, fieldMap, frozenProjects)
+      imported += r.imported
+      updated += r.updated
+    }
     console.log(`📋 Inventaire: ${imported} importés, ${updated} mis à jour`)
     if (!changes) {
       const allRecords = [...records]

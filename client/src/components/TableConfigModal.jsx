@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Settings, Plus, X, Pencil, Check } from 'lucide-react'
+import { Settings, Plus, X, Pencil, Check, Lock, Unlock } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import api from '../lib/api.js'
 import { TABLE_LABELS } from '../lib/tableDefs.js'
@@ -81,6 +81,12 @@ export function TableConfigModal({ table, bulkDelete = false }) {
     window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
   }
 
+  async function handleToggleLock(pill) {
+    const updated = await api.views.setPillLocked(table, pill.id, !pill.locked)
+    setPills(p => p.map(x => x.id === pill.id ? updated : x))
+    window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
+  }
+
   function startEdit(pill) {
     setEditingId(pill.id)
     setEditingName(pill.label)
@@ -134,21 +140,35 @@ export function TableConfigModal({ table, bulkDelete = false }) {
                       </>
                     ) : (
                       <>
-                        <span className="flex-1 text-sm text-slate-700 truncate">{pill.label}</span>
+                        <span className="flex-1 text-sm text-slate-700 truncate flex items-center gap-1.5">
+                          {pill.locked && <Lock size={12} className="text-amber-600 flex-shrink-0" />}
+                          {pill.label}
+                        </span>
                         <button
-                          onClick={() => startEdit(pill)}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-slate-700 transition-opacity"
-                          title="Renommer"
+                          onClick={() => handleToggleLock(pill)}
+                          className={`p-1 transition-opacity ${pill.locked ? 'text-amber-600 opacity-100 hover:text-amber-700' : 'opacity-0 group-hover:opacity-100 text-slate-400 hover:text-slate-700'}`}
+                          title={pill.locked ? 'Déverrouiller (rendre modifiable)' : 'Verrouiller en lecture seule'}
                         >
-                          <Pencil size={13} />
+                          {pill.locked ? <Lock size={14} /> : <Unlock size={14} />}
                         </button>
-                        <button
-                          onClick={() => handleDeleteView(pill.id)}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-red-500 transition-opacity"
-                          title="Supprimer"
-                        >
-                          <X size={15} />
-                        </button>
+                        {!pill.locked && (
+                          <>
+                            <button
+                              onClick={() => startEdit(pill)}
+                              className="opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-slate-700 transition-opacity"
+                              title="Renommer"
+                            >
+                              <Pencil size={13} />
+                            </button>
+                            <button
+                              onClick={() => handleDeleteView(pill.id)}
+                              className="opacity-0 group-hover:opacity-100 p-1 text-slate-300 hover:text-red-500 transition-opacity"
+                              title="Supprimer"
+                            >
+                              <X size={15} />
+                            </button>
+                          </>
+                        )}
                       </>
                     )}
                   </div>

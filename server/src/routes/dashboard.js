@@ -10,8 +10,26 @@ router.use(requireAuth);
 
 // GET /api/dashboard
 router.get('/', (req, res) => {
+  // Isolation des pannes par widget — chaque sous-requête est exécutée dans un
+  // `safe()` qui capture l'erreur, la journalise et la consigne dans `errors`
+  // (renvoyé au client sous `_errors`), tout en retournant un fallback inerte.
+  // Une seule sous-requête cassée ne doit JAMAIS vider tout le tableau de bord :
+  // le reste des indicateurs continue de s'afficher (cockpit-style). La clé
+  // passée à `safe()` correspond au champ de réponse / à la section côté client
+  // (cf. ERROR_KEYS dans Dashboard.jsx) pour un mapping erreur → widget direct.
+  const errors = {};
+  const safe = (key, fn, fallback) => {
+    try {
+      return fn();
+    } catch (e) {
+      errors[key] = e?.message || String(e);
+      console.error(`[dashboard] section "${key}" a échoué:`, e);
+      return fallback;
+    }
+  };
+
   // Project goal (target count + end date)
-  const goalSettings = db.prepare("SELECT key, value FROM connector_config WHERE connector = 'dashboard_goal'").all();
+  const goalSettings = safe('projectGoal', () => db.prepare("SELECT key, value FROM connector_config WHERE connector = 'dashboard_goal'").all(), []);
   const goalTarget = Number(goalSettings.find(s => s.key === 'target_qty')?.value || 0);
   const goalEndDate = goalSettings.find(s => s.key === 'end_date')?.value || null;
   const goalStartDate = goalSettings.find(s => s.key === 'start_date')?.value || (new Date().getFullYear() + '-01-01');
@@ -20,60 +38,61 @@ router.get('/', (req, res) => {
   if (goalTarget > 0 && goalEndDate) {
     // Utilise `creation` (champ canonique unifié) pour compter les projets réellement
     // créés dans la fenêtre, peu importe quand la ligne a été insérée en DB.
-    goalCurrentCount = db.prepare(`
+    goalCurrentCount = safe('projectGoal', () => db.prepare(`
       SELECT COUNT(*) as count FROM projects
       WHERE creation >= ? AND creation <= ? AND deleted_at IS NULL
-    `).get(goalStartDate + 'T00:00:00Z', goalEndDate + 'T23:59:59Z').count;
+    `).get(goalStartDate + 'T00:00:00Z', goalEndDate + 'T23:59:59Z').count, 0);
   }
   // Companies by lifecycle phase
-  const companiesByPhase = db.prepare(
+  const companiesByPhase = safe('companies', () => db.prepare(
     `SELECT lifecycle_phase, COUNT(*) as count FROM companies GROUP BY lifecycle_phase ORDER BY count DESC`
-  ).all();
+  ).all(), []);
 
   // Projects by status with values
-  const projectsByStatus = db.prepare(
+  const projectsByStatus = safe('projects', () => db.prepare(
     `SELECT status, COUNT(*) as count, SUM(value_cad) as total_value, SUM(value_cad * probability / 100.0) as weighted_value
      FROM projects WHERE deleted_at IS NULL GROUP BY status`
-  ).all();
+  ).all(), []);
 
   // Orders by status
-  const ordersByStatus = db.prepare(
-    `SELECT status, COUNT(*) as count FROM orders GROUP BY status`
-  ).all();
+  const ordersByStatus = safe('orders', () => db.prepare(
+    `SELECT status, COUNT(*) as count FROM orders WHERE deleted_at IS NULL GROUP BY status`
+  ).all(), []);
 
   // Low stock count
-  const lowStockCount = db.prepare(
+  const lowStockCount = safe('inventory', () => db.prepare(
     `SELECT COUNT(*) as count FROM products WHERE active = 1 AND min_stock > 0 AND stock_qty <= min_stock`
-  ).get();
+  ).get(), { count: 0 });
 
   // Open tickets count
-  const openTickets = db.prepare(
+  const openTickets = safe('support', () => db.prepare(
     `SELECT COUNT(*) as count FROM tickets WHERE status != 'Fermé'`
-  ).get();
+  ).get(), { count: 0 });
 
   // Monthly revenue (orders marked Envoyée this month)
-  const monthlyRevenue = db.prepare(
+  const monthlyRevenue = safe('orders', () => db.prepare(
     `SELECT COALESCE(SUM(oi.qty * COALESCE(oi.shipped_unit_cost, oi.unit_cost)), 0) as revenue
      FROM orders o
      JOIN order_items oi ON oi.order_id = o.id
      WHERE o.status = 'Envoyée'
+     AND o.deleted_at IS NULL
      AND strftime('%Y-%m', o.updated_at) = strftime('%Y-%m', 'now')`
-  ).get();
+  ).get(), { revenue: 0 });
 
   // Total companies count
-  const companiesTotal = db.prepare('SELECT COUNT(*) as count FROM companies').get();
+  const companiesTotal = safe('companies', () => db.prepare('SELECT COUNT(*) as count FROM companies WHERE deleted_at IS NULL').get(), { count: 0 });
 
   // Pipeline summary
   const pipelineOpen = projectsByStatus.find(p => p.status === 'Ouvert') || { count: 0, total_value: 0, weighted_value: 0 };
   const _pipelineWon = projectsByStatus.find(p => p.status === 'Gagné') || { count: 0, total_value: 0 };
 
   // Won this month
-  const wonThisMonth = db.prepare(
+  const wonThisMonth = safe('projects', () => db.prepare(
     `SELECT COUNT(*) as count, SUM(value_cad) as total FROM projects WHERE deleted_at IS NULL AND status = 'Gagné' AND strftime('%Y-%m', updated_at) = strftime('%Y-%m', 'now')`
-  ).get();
+  ).get(), { count: 0, total: 0 });
 
   // Weekly shipments (last 16 weeks)
-  const weeklyShipments = db.prepare(`
+  const weeklyShipments = safe('weeklyShipments', () => db.prepare(`
     SELECT
       date(shipped_at, '-' || ((cast(strftime('%w', shipped_at) as integer) + 6) % 7) || ' days') as week_start,
       COUNT(*) as count
@@ -81,7 +100,7 @@ router.get('/', (req, res) => {
     WHERE shipped_at IS NOT NULL AND shipped_at >= date('now', '-112 days')
     GROUP BY week_start
     ORDER BY week_start ASC
-  `).all();
+  `).all(), []);
 
   // Projects created by month — last 24 months (current year + previous year for YoY comparison).
   // Source de date: `creation` — champ canonique, rempli pour TOUS les projets (importés
@@ -89,7 +108,7 @@ router.get('/', (req, res) => {
   // Bucketing en UTC (strftime sur la valeur stockée). Airtable encode les dates « date-only »
   // en minuit UTC du jour choisi par l'utilisateur, donc le mois UTC = mois choisi. Le front
   // (`fmtDate()`) détecte ce pattern et l'affiche en UTC aussi → cohérent.
-  const projectsCreatedByMonth = db.prepare(`
+  const projectsCreatedByMonth = safe('projectsCreatedByMonth', () => db.prepare(`
     SELECT strftime('%Y-%m', creation) AS month, COUNT(*) AS count
     FROM projects
     WHERE deleted_at IS NULL
@@ -97,10 +116,10 @@ router.get('/', (req, res) => {
       AND creation >= date('now', 'start of month', '-24 months')
     GROUP BY month
     ORDER BY month ASC
-  `).all();
+  `).all(), []);
 
   // Closing rate by month × type (last 12 months) — use close_date, fall back to updated_at
-  const closingByMonth = db.prepare(`
+  const closingByMonth = safe('closingByMonth', () => db.prepare(`
     SELECT
       strftime('%Y-%m', COALESCE(close_date, updated_at)) as month,
       COALESCE(type, '') as type,
@@ -112,12 +131,12 @@ router.get('/', (req, res) => {
       AND COALESCE(close_date, updated_at) >= date('now', '-12 months')
     GROUP BY month, type
     ORDER BY month, type
-  `).all();
+  `).all(), []);
 
   // Tickets created by month — last 24 months (current year + previous year for YoY comparison).
   // On retourne le compte de billets et la somme des durées (minutes) bucketés par mois UTC,
   // pour permettre au front d'alterner entre les deux métriques sans seconde requête.
-  const ticketsByMonth = db.prepare(`
+  const ticketsByMonth = safe('ticketsByMonth', () => db.prepare(`
     SELECT
       strftime('%Y-%m', created_at) AS month,
       COUNT(*) AS count,
@@ -127,10 +146,10 @@ router.get('/', (req, res) => {
       AND created_at >= date('now', 'start of month', '-24 months')
     GROUP BY month
     ORDER BY month ASC
-  `).all();
+  `).all(), []);
 
   // Weekly support quality stats (last 16 weeks, week starts Sunday)
-  const weeklySupportStats = db.prepare(`
+  const weeklySupportStats = safe('weeklySupportStats', () => db.prepare(`
     SELECT
       date(created_at, '-' || cast(strftime('%w', created_at) as integer) || ' days') as week_start,
       COUNT(*) as total,
@@ -141,11 +160,11 @@ router.get('/', (req, res) => {
     WHERE created_at >= date('now', '-112 days')
     GROUP BY week_start
     ORDER BY week_start DESC
-  `).all();
+  `).all(), []);
 
   // Geo clients — customers only, using the FIRST shipping address registered
   // (earliest adresses.created_at) per company. Excludes soft-deleted companies.
-  const geoClients = db.prepare(`
+  const geoClients = safe('geoClients', () => db.prepare(`
     WITH ranked AS (
       SELECT ct.company_id, a.province, a.country,
         ROW_NUMBER() OVER (
@@ -166,10 +185,10 @@ router.get('/', (req, res) => {
       AND co.lifecycle_phase = 'Customer'
     GROUP BY r.province, r.country
     ORDER BY count DESC
-  `).all();
+  `).all(), []);
 
   // Customers with no usable shipping address province (cannot be placed on the map)
-  const geoClientsUnplaced = db.prepare(`
+  const geoClientsUnplaced = safe('geoClients', () => db.prepare(`
     SELECT COUNT(*) AS count
     FROM companies c
     WHERE c.deleted_at IS NULL
@@ -181,7 +200,7 @@ router.get('/', (req, res) => {
           AND a.province IS NOT NULL AND a.province != ''
           AND ct.company_id IS NOT NULL
       )
-  `).get().count;
+  `).get().count, 0);
 
   // Weekly profitability — last 16 weeks, fully-shipped orders ('Envoyé')
   // Excludes orders that are 100% replacement (no Facturable items)
@@ -190,12 +209,13 @@ router.get('/', (req, res) => {
   //   linked directly to order OR via order's project (1 project = 1 order)
   // COGS: SUM(shipped_unit_cost or unit_cost * qty) for Facturable items only
   // Grouped by week of last shipment, split by is_subscription
-  const weeklyProfitability = db.prepare(`
+  const weeklyProfitability = safe('weeklyProfitability', () => db.prepare(`
     WITH shipped_orders AS (
       SELECT
         o.id AS order_id,
         o.project_id,
         o.is_subscription,
+        o.revenue_override_cad,
         date(
           MAX(s.shipped_at),
           '-' || ((CAST(strftime('%w', MAX(s.shipped_at)) AS INTEGER) + 6) % 7) || ' days'
@@ -213,7 +233,9 @@ router.get('/', (req, res) => {
     ),
     order_revenue AS (
       SELECT so.order_id,
-        CASE WHEN so.is_subscription = 1 THEN
+        -- L'override manuel (revenue_override_cad) prime sur le calcul factures.
+        CASE WHEN so.revenue_override_cad IS NOT NULL THEN so.revenue_override_cad
+        WHEN so.is_subscription = 1 THEN
           COALESCE((
             SELECT f.amount_before_tax_cad * 38
             FROM factures f
@@ -248,10 +270,13 @@ router.get('/', (req, res) => {
     LEFT JOIN order_cogs c ON c.order_id = so.order_id
     GROUP BY so.week_start, so.is_subscription
     ORDER BY so.week_start ASC
-  `).all();
+  `).all(), []);
 
-  // Orders shipped in last 28 days (status = 'Envoyé', last shipment date)
-  const recentShippedOrders = db.prepare(`
+  // Orders shipped in the last 140 days (status = 'Envoyé', last shipment date).
+  // 140j couvre la fenêtre 28j glissante du point le plus ancien du graphe (16 semaines) :
+  // le point ~15 semaines en arrière agrège jusqu'à 21 jours avant son lundi (~132j).
+  // Le tableau filtre ensuite côté client par fenêtre du point cliqué (ou 28j par défaut).
+  const recentShippedOrders = safe('recentShippedOrders', () => db.prepare(`
     WITH order_cogs AS (
       SELECT oi.order_id, SUM(COALESCE(oi.shipped_unit_cost, oi.unit_cost) * oi.qty) AS cogs
       FROM order_items oi
@@ -262,8 +287,10 @@ router.get('/', (req, res) => {
       o.id, o.order_number, o.is_subscription, o.status, o.project_id,
       c.name AS company_name, o.company_id,
       MAX(s.shipped_at) AS last_shipped_at,
-      -- Revenu HT (amount_before_tax_cad) — taxes exclues, voir weeklyProfitability ci-dessus
-      CASE WHEN o.is_subscription = 1 THEN
+      -- Revenu HT (amount_before_tax_cad) — taxes exclues, voir weeklyProfitability ci-dessus.
+      -- L'override manuel (revenue_override_cad) prime sur le calcul factures.
+      CASE WHEN o.revenue_override_cad IS NOT NULL THEN o.revenue_override_cad
+      WHEN o.is_subscription = 1 THEN
         COALESCE((
           SELECT f.amount_before_tax_cad * 38
           FROM factures f
@@ -292,9 +319,9 @@ router.get('/', (req, res) => {
         WHERE oi.order_id = o.id AND oi.item_type = 'Facturable'
       )
     GROUP BY o.id
-    HAVING MAX(s.shipped_at) >= date('now', '-28 days')
+    HAVING MAX(s.shipped_at) >= date('now', '-140 days')
     ORDER BY MAX(s.shipped_at) DESC
-  `).all();
+  `).all(), []);
 
   // Inventory valuation — "Pièces" alignée sur la vue « Valeur inventaire »
   // de la table products (id pill 997d024c). Filtres et source identiques :
@@ -317,7 +344,7 @@ router.get('/', (req, res) => {
     'Inconnu',
     'Non construit',
   ];
-  const piecesInventory = db.prepare(`
+  const piecesInventory = safe('inventory', () => db.prepare(`
     SELECT COALESCE(SUM(CAST(valeur_inventaire AS REAL)), 0) AS total_value,
            COUNT(*) AS count
     FROM products
@@ -325,9 +352,9 @@ router.get('/', (req, res) => {
       AND type IS NOT NULL AND type != ''
       AND type NOT IN ('JWT', 'SYSTEM', 'PIÈCE OBSOLÈTE', 'PRODUIT OBSOLÈTE')
       AND deleted_at IS NULL
-  `).get();
+  `).get(), { total_value: 0, count: 0 });
   const placeholders = EXCLUDED_SN_STATUSES.map(() => '?').join(',');
-  const serialInventoryByStatus = db.prepare(`
+  const serialInventoryByStatus = safe('inventory', () => db.prepare(`
     SELECT status,
            COUNT(*) AS count,
            COALESCE(SUM(manufacture_value), 0) AS total_value
@@ -336,22 +363,22 @@ router.get('/', (req, res) => {
       AND status NOT IN (${placeholders})
     GROUP BY status
     ORDER BY total_value DESC
-  `).all(...EXCLUDED_SN_STATUSES);
+  `).all(...EXCLUDED_SN_STATUSES), []);
 
   // Replacement rate — monthly for last 12 months
   // Cost: manufacture_value for serialized items, unit_cost×qty otherwise
   // Only Remplacement items on fully shipped orders
-  const parkValue = db.prepare(`
+  const parkValue = safe('replacementRate', () => db.prepare(`
     SELECT COALESCE(SUM(manufacture_value), 0) AS total
     FROM serial_numbers
     WHERE (
         status = 'Opérationnel - Loué'
         OR (status = 'Opérationnel - Vendu' AND statut_de_garantie = 'Sous garantie')
       )
-  `).get().total;
+  `).get().total, 0);
 
   // Replacement cost — rolling 28 days
-  const replacementLast28 = db.prepare(`
+  const replacementLast28 = safe('replacementRate', () => db.prepare(`
     WITH shipped_orders AS (
       SELECT o.id AS order_id, MAX(s.shipped_at) AS last_shipped_at
       FROM orders o
@@ -373,9 +400,9 @@ router.get('/', (req, res) => {
     FROM shipped_orders so
     JOIN order_items oi ON oi.order_id = so.order_id AND oi.item_type = 'Remplacement'
     LEFT JOIN sn_agg ON sn_agg.order_item_id = oi.id
-  `).get().cost;
+  `).get().cost, 0);
 
-  const replacementByMonth = db.prepare(`
+  const replacementByMonth = safe('replacementRate', () => db.prepare(`
     WITH shipped_orders AS (
       SELECT o.id AS order_id, MAX(s.shipped_at) AS last_shipped_at
       FROM orders o
@@ -402,16 +429,16 @@ router.get('/', (req, res) => {
     LEFT JOIN sn_agg ON sn_agg.order_item_id = oi.id
     GROUP BY month
     ORDER BY month ASC
-  `).all();
+  `).all(), []);
 
   // Weekly shipping costs — aggregate account 65000 "Expédition, livraison et poste"
   // from achats_fournisseurs (both QB Bills and Purchases).
   // Line amounts are in transaction currency; multiply by exchange_rate for CAD.
-  const shippingRows = db.prepare(`
+  const shippingRows = safe('weeklyShippingCosts', () => db.prepare(`
     SELECT date_achat AS txn_date, lines, exchange_rate FROM achats_fournisseurs
     WHERE lines LIKE '%Expédition%'
       AND date_achat >= date('now', '-370 days')
-  `).all();
+  `).all(), []);
 
   // Per transaction: CAD amount on the expédition account
   const shippingByDate = {};
@@ -454,7 +481,7 @@ router.get('/', (req, res) => {
   }
 
   // Replacement line items detail — last 12 months
-  const replacementItems = db.prepare(`
+  const replacementItems = safe('replacementRate', () => db.prepare(`
     WITH shipped_orders AS (
       SELECT o.id AS order_id, o.order_number, c.name AS company_name,
              MAX(s.shipped_at) AS shipped_at
@@ -485,7 +512,7 @@ router.get('/', (req, res) => {
     LEFT JOIN products p ON p.id = oi.product_id
     LEFT JOIN sn_agg ON sn_agg.order_item_id = oi.id
     ORDER BY so.shipped_at DESC
-  `).all();
+  `).all(), []);
 
   res.json({
     companies: {
@@ -533,7 +560,12 @@ router.get('/', (req, res) => {
       current: goalCurrentCount,
       start_date: goalStartDate,
       end_date: goalEndDate
-    }
+    },
+    // Carte des sections en panne : { <clé section> : <message d'erreur> }.
+    // Vide si tout s'est bien chargé. Le client (Dashboard.jsx) l'utilise pour
+    // afficher un encart d'erreur ciblé sur le widget concerné plutôt que de
+    // laisser un graphique vide (qui se confondrait avec « aucune donnée »).
+    _errors: errors
   });
 });
 
@@ -1069,6 +1101,142 @@ router.put('/goal', requireAdmin, (req, res) => {
   res.json({ success: true });
 });
 
+// GET /api/dashboard/aging-receivables
+// Balance âgée des comptes clients (accounts receivable aging) — le rapport
+// comptable standard qui ventile l'encours client par tranche d'ancienneté.
+// Calcul du retard sur due_date (fallback document_date), buckets demandés :
+//   0–30 / 31–60 / 61–90 / 90+ jours.
+// « Facture ouverte » = balance_due > 0 ET statut hors payé / annulé / brouillon
+// / avoir / remboursement / irrécouvrable (Uncollectible = créance radiée, pas
+// un compte à recevoir). Montants convertis en CAD au taux BoC USD→CAD à la
+// date de référence (cohérent avec le reste du dashboard). balance_due est en
+// devise native de la facture.
+//
+// Réponse :
+//   { as_of, currency:'CAD',
+//     buckets:[{ key, label, total }], total,
+//     companies:[{ company_id, company_name, b0_30, b31_60, b61_90, b90, total,
+//                  invoices:[{ id, document_number, document_date, due_date,
+//                              status, currency, balance_due, balance_due_cad,
+//                              days_overdue, bucket }] }] }
+router.get('/aging-receivables', async (req, res) => {
+  // Statuts exclus de l'encours client (paiement soldé, annulation, brouillon,
+  // avoir, remboursement, créance irrécouvrable). On garde les variantes
+  // accentuées/non-accentuées rencontrées en DB (sync Airtable + Stripe + ERP).
+  const EXCLUDED_STATUSES = [
+    'Payé', 'Payée', 'Void', 'Annulée', 'Annulé', 'Draft', 'Brouillon',
+    'Note de crédit', 'Remboursement', 'Remboursé', 'Uncollectible',
+  ];
+  const placeholders = EXCLUDED_STATUSES.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT f.id, f.document_number, f.document_date, f.due_date, f.status,
+           f.currency, f.balance_due, f.company_id, c.name AS company_name
+    FROM factures f
+    LEFT JOIN companies c ON c.id = f.company_id
+    WHERE f.balance_due > 0
+      AND COALESCE(f.status, '') NOT IN (${placeholders})
+    ORDER BY f.due_date ASC, f.document_date ASC
+  `).all(...EXCLUDED_STATUSES);
+
+  // Date de référence (aujourd'hui, UTC date-only) pour le calcul du retard.
+  const now = new Date();
+  const asOfMs = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const asOfStr = new Date(asOfMs).toISOString().slice(0, 10);
+
+  // Cache des taux USD→CAD par date (mêmes conventions que /stripe-revenue).
+  const rateCache = new Map();
+  async function rateFor(date) {
+    if (!date) return 1;
+    const key = date.slice(0, 10);
+    if (rateCache.has(key)) return rateCache.get(key);
+    let r = null;
+    try { r = await getUsdCadRate(key); } catch { r = null; }
+    const v = r || 1;
+    rateCache.set(key, v);
+    return v;
+  }
+
+  function bucketOf(days) {
+    if (days <= 30) return 'b0_30';   // inclut les factures non encore échues
+    if (days <= 60) return 'b31_60';
+    if (days <= 90) return 'b61_90';
+    return 'b90';
+  }
+
+  const companiesMap = new Map();
+  const bucketTotals = { b0_30: 0, b31_60: 0, b61_90: 0, b90: 0 };
+
+  for (const r of rows) {
+    const refDate = (r.due_date && r.due_date.slice(0, 10))
+      || (r.document_date && r.document_date.slice(0, 10))
+      || asOfStr;
+    const refMs = Date.parse(refDate + 'T00:00:00Z');
+    const daysOverdue = Number.isFinite(refMs) ? Math.floor((asOfMs - refMs) / 86400000) : 0;
+    const bucket = bucketOf(daysOverdue);
+
+    const currency = (r.currency || 'CAD').toUpperCase();
+    let cad = Number(r.balance_due) || 0;
+    if (currency === 'USD') {
+      const rate = await rateFor(refDate);
+      cad = cad * rate;
+    }
+    cad = Math.round(cad * 100) / 100;
+
+    bucketTotals[bucket] += cad;
+
+    const cid = r.company_id || '__none__';
+    if (!companiesMap.has(cid)) {
+      companiesMap.set(cid, {
+        company_id: r.company_id || null,
+        company_name: r.company_name || '(Sans entreprise)',
+        b0_30: 0, b31_60: 0, b61_90: 0, b90: 0, total: 0,
+        invoices: [],
+      });
+    }
+    const co = companiesMap.get(cid);
+    co[bucket] += cad;
+    co.total += cad;
+    co.invoices.push({
+      id: r.id,
+      document_number: r.document_number,
+      document_date: r.document_date,
+      due_date: r.due_date,
+      status: r.status,
+      currency,
+      balance_due: Math.round((Number(r.balance_due) || 0) * 100) / 100,
+      balance_due_cad: cad,
+      days_overdue: daysOverdue,
+      bucket,
+    });
+  }
+
+  const round2 = (n) => Math.round(n * 100) / 100;
+  const companies = [...companiesMap.values()].map(co => ({
+    ...co,
+    b0_30: round2(co.b0_30),
+    b31_60: round2(co.b31_60),
+    b61_90: round2(co.b61_90),
+    b90: round2(co.b90),
+    total: round2(co.total),
+    invoices: co.invoices.sort((a, b) => b.days_overdue - a.days_overdue),
+  })).sort((a, b) => b.total - a.total);
+
+  const total = round2(Object.values(bucketTotals).reduce((s, v) => s + v, 0));
+
+  res.json({
+    as_of: asOfStr,
+    currency: 'CAD',
+    buckets: [
+      { key: 'b0_30', label: '0–30 jours', total: round2(bucketTotals.b0_30) },
+      { key: 'b31_60', label: '31–60 jours', total: round2(bucketTotals.b31_60) },
+      { key: 'b61_90', label: '61–90 jours', total: round2(bucketTotals.b61_90) },
+      { key: 'b90', label: '90+ jours', total: round2(bucketTotals.b90) },
+    ],
+    total,
+    companies,
+  });
+});
+
 // GET /api/dashboard/subscription-events
 // Retourne les événements d'abonnement classifiés par mois et catégorie pour
 // le panel "Mouvements d'abonnements". Catégories :
@@ -1499,6 +1667,65 @@ router.get('/balance-sheet', async (req, res) => {
     res.json(payload)
   } catch (e) {
     console.error('[dashboard/balance-sheet]', e)
+    res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
+  }
+})
+
+// GET /api/dashboard/bank-accounts
+// Soldes du jour des comptes bancaires et cartes de crédit depuis QuickBooks.
+// QB expose le solde courant de chaque compte via le champ CurrentBalance.
+// Les cartes de crédit (passif) ont typiquement un CurrentBalance négatif.
+//
+// Cache permanent invalidé sur toute écriture QB via onQbMutation ci-dessous,
+// et sur `?refresh=1` (bouton de rafraîchissement manuel). Une édition humaine
+// directe dans l'UI QuickBooks ne déclenche pas l'invalidation — utiliser
+// ?refresh=1 dans ce cas.
+const bankAccountsCache = new Map()
+onQbMutation(() => bankAccountsCache.clear())
+
+router.get('/bank-accounts', async (req, res) => {
+  try {
+    if (!req.query.refresh) {
+      const hit = bankAccountsCache.get('default')
+      if (hit) return res.json(hit)
+    }
+    const query = "SELECT * FROM Account WHERE AccountType IN ('Bank', 'Credit Card') AND Active = true MAXRESULTS 300"
+    const q = new URLSearchParams({ query })
+    const data = await qbGet(`/query?${q}`)
+    const rawAccounts = data.QueryResponse?.Account || []
+
+    const accounts = rawAccounts.map(a => ({
+      id: a.Id,
+      name: a.Name,
+      type: a.AccountType, // 'Bank' | 'Credit Card'
+      sub_type: a.AccountSubType || null,
+      balance: a.CurrentBalance != null ? Number(a.CurrentBalance) : 0,
+      currency: a.CurrencyRef?.value || 'CAD',
+    }))
+
+    // Tri : comptes bancaires d'abord, puis cartes de crédit, alpha par nom.
+    accounts.sort((x, y) => {
+      if (x.type !== y.type) return x.type === 'Bank' ? -1 : 1
+      return x.name.localeCompare(y.name)
+    })
+
+    const bankTotal = accounts.filter(a => a.type === 'Bank').reduce((s, a) => s + a.balance, 0)
+    const creditCardTotal = accounts.filter(a => a.type === 'Credit Card').reduce((s, a) => s + a.balance, 0)
+
+    const payload = {
+      currency: accounts[0]?.currency || 'CAD',
+      generated_at: new Date().toISOString(),
+      accounts,
+      totals: {
+        bank: bankTotal,
+        credit_card: creditCardTotal,
+        net: bankTotal + creditCardTotal,
+      },
+    }
+    bankAccountsCache.set('default', payload)
+    res.json(payload)
+  } catch (e) {
+    console.error('[dashboard/bank-accounts]', e)
     res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
   }
 })

@@ -251,8 +251,21 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
     // hardcodée (souvent avec NULL, quand l'ancien champ Airtable a été remplacé).
     if (mappedErpColumns.has(existingDef.column_name)) continue
 
-    let defOptions = {}
-    try { defOptions = JSON.parse(existingDef.options || '{}') } catch {}
+    // Les options de la def portent la config de mapping (choices single_select,
+    // précision number, etc.). Un JSON malformé ferait perdre cette config
+    // silencieusement — données déjà connues comme instables côté Airtable. On
+    // signale donc l'échec bruyamment et on retombe sur les options fraîchement
+    // dérivées des métadonnées Airtable (`mapped.options`) plutôt que sur {}.
+    let defOptions = mapped.options
+    try {
+      defOptions = JSON.parse(existingDef.options || '{}')
+    } catch (e) {
+      console.error(
+        `❌ ${module}: options JSON invalide pour le champ « ${atField.name} » ` +
+        `(def id=${existingDef.id}, colonne ${existingDef.column_name}) : ${e.message} — ` +
+        `raw=${JSON.stringify(existingDef.options)} ; fallback sur les options Airtable`
+      )
+    }
     dynamicFieldMap.push({
       airtableFieldName: atField.name,
       columnName: existingDef.column_name,

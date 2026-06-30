@@ -1,19 +1,18 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Plus, Trash2, AlertCircle, CheckCircle2, ArrowRight, Ban } from 'lucide-react'
+import { Plus, Trash2, AlertCircle, CheckCircle2, Ban } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { fmtDate } from '../lib/formatDate.js'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 const VALUATION_LABELS = {
   manufacture_value: 'Valeur de fabrication',
   product_cost: 'Coût du produit',
   fixed_amount: 'Montant fixe',
-}
-
-function fmtDate(s) {
-  if (!s) return '—'
-  return new Date(s).toLocaleDateString('fr-CA')
 }
 
 function statusLabel(s) {
@@ -41,6 +40,10 @@ function RuleForm({ initial, transition, accounts, onSave, onCancel }) {
 
   async function submit(e) {
     e.preventDefault()
+    if (!form.skip_accounting && (!form.debit_account_id || !form.credit_account_id)) {
+      setError('Comptes débit et crédit requis.')
+      return
+    }
     setSaving(true); setError('')
     try {
       const debit = findAcct(form.debit_account_id)
@@ -112,35 +115,33 @@ function RuleForm({ initial, transition, accounts, onSave, onCancel }) {
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="label">Compte débit *</label>
-            <select
+            <SearchableSelect
               className="input"
+              size="sm"
               value={form.debit_account_id}
-              onChange={e => setField('debit_account_id', e.target.value)}
-              required
-            >
-              <option value="">— Choisir —</option>
-              {accounts.map(a => (
-                <option key={a.Id} value={a.Id}>
-                  {a.FullyQualifiedName || a.Name} ({a.AccountType})
-                </option>
-              ))}
-            </select>
+              onChange={v => setField('debit_account_id', v)}
+              options={accounts}
+              getOptionValue={a => a.Id}
+              getOptionLabel={a => `${a.FullyQualifiedName || a.Name} (${a.AccountType})`}
+              getOptionKey={a => a.Id}
+              placeholder="— Choisir —"
+              testId="debit-account-select"
+            />
           </div>
           <div>
             <label className="label">Compte crédit *</label>
-            <select
+            <SearchableSelect
               className="input"
+              size="sm"
               value={form.credit_account_id}
-              onChange={e => setField('credit_account_id', e.target.value)}
-              required
-            >
-              <option value="">— Choisir —</option>
-              {accounts.map(a => (
-                <option key={a.Id} value={a.Id}>
-                  {a.FullyQualifiedName || a.Name} ({a.AccountType})
-                </option>
-              ))}
-            </select>
+              onChange={v => setField('credit_account_id', v)}
+              options={accounts}
+              getOptionValue={a => a.Id}
+              getOptionLabel={a => `${a.FullyQualifiedName || a.Name} (${a.AccountType})`}
+              getOptionKey={a => a.Id}
+              placeholder="— Choisir —"
+              testId="credit-account-select"
+            />
           </div>
         </div>
       )}
@@ -297,6 +298,111 @@ export default function SerialAccountingRules() {
     reload()
   }
 
+  // ── Données décorées pour les DataTable ─────────────────────────────────
+  // Chaque ligne reçoit un `id` stable + des champs dérivés (mapping_status,
+  // active_label, transition…) qui rendent le tri/filtre/groupage possibles.
+  const transitionRows = useMemo(() => mergedRows.map(t => {
+    const rule = ruleByKey.get(t.key)
+    return {
+      ...t,
+      id: t.key,
+      rule,
+      mapping_status: rule ? (rule.skip_accounting ? 'skip' : 'mapped') : 'unmapped',
+    }
+  }), [mergedRows, ruleByKey])
+
+  const ruleRows = useMemo(() => rules.map(r => ({
+    ...r,
+    active_label: r.active ? 'Oui' : 'Non',
+  })), [rules])
+
+  const missingRows = useMemo(() => (missingVals.data || []).map(m => ({
+    ...m,
+    id: m.change_id,
+    changed_at: m.changed_at || m.created_at,
+    product: m.product_name || m.product_sku || '—',
+    transition: `${statusLabel(m.previous_status)} → ${statusLabel(m.new_status)}`,
+    value_label: m.manufacture_value == null ? 'NULL' : '0 $',
+  })), [missingVals])
+
+  // ── Colonnes (meta centralisée + render attachés ici pour capter le scope) ─
+  const transitionColumns = useMemo(() => {
+    const RENDERS = {
+      previous_status: t => <span className="text-slate-700">{statusLabel(t.previous_status)}</span>,
+      new_status:      t => <span className="text-slate-900 font-medium">{statusLabel(t.new_status)}</span>,
+      count:           t => t.count > 0 ? <span className="tabular-nums">{t.count}</span> : <span className="text-slate-300">0</span>,
+      missing_value_count: t => t.missing_value_count > 0
+        ? <span className="inline-flex items-center gap-1 text-red-600 font-medium" title="Numéros de série sans valeur de fabrication"><AlertCircle size={11} /> {t.missing_value_count}</span>
+        : <span className="text-slate-300">—</span>,
+      last_seen:       t => t.last_seen ? <span className="text-slate-500 text-xs">{fmtDate(t.last_seen)}</span> : <span className="text-slate-300">—</span>,
+      mapping_status:  t => {
+        const rule = t.rule
+        if (!rule) return <span className="inline-flex items-center gap-1 text-xs text-red-600"><AlertCircle size={12} /> Non mappé</span>
+        if (rule.skip_accounting) return <span className="inline-flex items-center gap-1 text-xs text-slate-500"><Ban size={12} /> Aucune écriture</span>
+        return <span className="inline-flex items-center gap-1 text-xs text-green-700"><CheckCircle2 size={12} /> {rule.debit_account_name?.split(':').pop() || rule.debit_account_id} / {rule.credit_account_name?.split(':').pop() || rule.credit_account_id}</span>
+      },
+      action: t => t.rule
+        ? <button onClick={() => setModal({ rule: t.rule })} className="text-xs text-brand-600 hover:text-brand-800">Modifier</button>
+        : <button onClick={() => setModal({ transition: t })} className="inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-800"><Plus size={12} /> Mapper</button>,
+    }
+    const labelFor = { mapped: 'Mappé', skip: 'Aucune écriture', unmapped: 'Non mappé' }
+    return TABLE_COLUMN_META.serial_transitions.map(meta => ({
+      ...meta,
+      render: RENDERS[meta.id],
+      ...(meta.id === 'previous_status' || meta.id === 'new_status' ? { formatGroupKey: statusLabel } : {}),
+      ...(meta.id === 'mapping_status' ? { formatGroupKey: k => labelFor[k] || k } : {}),
+    }))
+  }, [])
+
+  const ruleColumns = useMemo(() => {
+    const RENDERS = {
+      previous_status: r => <span className="text-slate-500">{statusLabel(r.previous_status)}</span>,
+      new_status:      r => <span className="text-slate-900 font-medium">{statusLabel(r.new_status)}</span>,
+      debit:  r => r.skip_accounting ? <span className="text-slate-400 italic">— skip —</span> : <span className="text-slate-700 text-xs">{r.debit_account_name || r.debit_account_id}</span>,
+      credit: r => r.skip_accounting ? <span className="text-slate-400 italic">— skip —</span> : <span className="text-slate-700 text-xs">{r.credit_account_name || r.credit_account_id}</span>,
+      valuation: r => r.skip_accounting
+        ? <span className="text-xs text-slate-400">Aucune écriture</span>
+        : <span className="text-xs text-slate-600">{VALUATION_LABELS[r.valuation_source]}{r.valuation_source === 'fixed_amount' && r.fixed_amount != null && ` (${r.fixed_amount} $)`}</span>,
+      active: r => r.active ? <span className="text-xs text-green-700">Oui</span> : <span className="text-xs text-slate-400">Non</span>,
+      action: r => (
+        <div className="text-right">
+          <button onClick={() => setModal({ rule: r })} className="text-xs text-brand-600 hover:text-brand-800 mr-3">Modifier</button>
+          <button onClick={() => deleteRule(r.id)} className="text-xs text-red-600 hover:text-red-800 inline-flex items-center gap-1"><Trash2 size={11} /></button>
+        </div>
+      ),
+    }
+    return TABLE_COLUMN_META.serial_accounting_rules.map(meta => ({
+      ...meta,
+      render: RENDERS[meta.id],
+      ...(meta.id === 'previous_status' || meta.id === 'new_status' ? { formatGroupKey: statusLabel } : {}),
+      ...(meta.id === 'valuation' ? { formatGroupKey: k => VALUATION_LABELS[k] || k } : {}),
+    }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const missingColumns = useMemo(() => {
+    const RENDERS = {
+      date:   m => <span className="text-slate-500 text-xs">{fmtDate(m.changed_at)}</span>,
+      serial: m => (
+        <span>
+          <a href={`/erp/serials/${m.serial_id}`} className="text-brand-600 hover:underline">{m.serial}</a>
+          {m.serial_airtable_id && (
+            <a
+              href={`https://airtable.com/appB4Fehk9jYd4s4B/tblJKSmWxtwBQjdmB/viw6ZdCpuYAQ6KWT2/${m.serial_airtable_id}?blocks=hide`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="ml-2 text-xs text-amber-600 hover:text-amber-800 underline"
+              title="Éditer dans Airtable"
+            >Airtable ↗</a>
+          )}
+        </span>
+      ),
+      company: m => <span className="text-slate-500 text-xs">{m.company_name || '—'}</span>,
+      value:   m => <span className="text-red-600 text-xs">{m.value_label}</span>,
+    }
+    return TABLE_COLUMN_META.serial_missing_valuations.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
+  }, [])
+
   return (
     <Layout>
       <div className="p-6 max-w-6xl mx-auto">
@@ -339,46 +445,15 @@ export default function SerialAccountingRules() {
               </button>
             </div>
             {showMissing && (
-              <div className="mt-3 max-h-72 overflow-auto bg-white rounded border border-red-100">
-                <table className="w-full text-xs">
-                  <thead className="bg-red-50 text-red-700">
-                    <tr>
-                      <th className="text-left px-2 py-1">Date</th>
-                      <th className="text-left px-2 py-1">Serial</th>
-                      <th className="text-left px-2 py-1">Produit</th>
-                      <th className="text-left px-2 py-1">Client</th>
-                      <th className="text-left px-2 py-1">Transition</th>
-                      <th className="text-right px-2 py-1">Valeur</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {missingVals.data.map(m => (
-                      <tr key={m.change_id} className="border-t border-red-50">
-                        <td className="px-2 py-1 text-slate-500">{fmtDate(m.changed_at || m.created_at)}</td>
-                        <td className="px-2 py-1">
-                          <a href={`/erp/serials/${m.serial_id}`} className="text-brand-600 hover:underline">{m.serial}</a>
-                          {m.serial_airtable_id && (
-                            <a
-                              href={`https://airtable.com/appB4Fehk9jYd4s4B/tblJKSmWxtwBQjdmB/viw6ZdCpuYAQ6KWT2/${m.serial_airtable_id}?blocks=hide`}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="ml-2 text-xs text-amber-600 hover:text-amber-800 underline"
-                              title="Éditer dans Airtable"
-                            >Airtable ↗</a>
-                          )}
-                        </td>
-                        <td className="px-2 py-1 text-slate-700">{m.product_name || m.product_sku || '—'}</td>
-                        <td className="px-2 py-1 text-slate-500">{m.company_name || '—'}</td>
-                        <td className="px-2 py-1 text-slate-600">
-                          {statusLabel(m.previous_status)} → {statusLabel(m.new_status)}
-                        </td>
-                        <td className="px-2 py-1 text-right text-red-600">
-                          {m.manufacture_value == null ? 'NULL' : '0 $'}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="mt-3">
+                <DataTable
+                  table="serial_missing_valuations"
+                  columns={missingColumns}
+                  data={missingRows}
+                  loading={loading}
+                  searchFields={['serial', 'product', 'company_name', 'transition']}
+                  height="320px"
+                />
                 {missingVals.data.length < missingVals.total && (
                   <p className="text-xs text-slate-400 px-2 py-1">… {missingVals.total - missingVals.data.length} autres lignes non affichées.</p>
                 )}
@@ -387,81 +462,15 @@ export default function SerialAccountingRules() {
           </div>
         )}
 
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-              <tr>
-                <th className="text-left px-3 py-2">État précédent</th>
-                <th className="text-left px-3 py-2"></th>
-                <th className="text-left px-3 py-2">Nouvel état</th>
-                <th className="text-right px-3 py-2">Occurrences</th>
-                <th className="text-right px-3 py-2">Sans valeur</th>
-                <th className="text-left px-3 py-2">Dernière</th>
-                <th className="text-left px-3 py-2">Mapping</th>
-                <th className="text-right px-3 py-2">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading && (
-                <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">Chargement…</td></tr>
-              )}
-              {!loading && mergedRows.length === 0 && (
-                <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400">Aucune transition ni règle.</td></tr>
-              )}
-              {mergedRows.map((t) => {
-                const rule = ruleByKey.get(t.key)
-                return (
-                  <tr key={t.key} className={`border-t border-slate-100 hover:bg-slate-50 ${t.source === 'rule_only' ? 'bg-slate-50/40' : ''}`}>
-                    <td className="px-3 py-2 text-slate-700">{statusLabel(t.previous_status)}</td>
-                    <td className="px-3 py-2 text-slate-300"><ArrowRight size={14} /></td>
-                    <td className="px-3 py-2 text-slate-900 font-medium">{statusLabel(t.new_status)}</td>
-                    <td className="px-3 py-2 text-right text-slate-700">
-                      {t.count > 0 ? t.count : <span className="text-slate-300">0</span>}
-                    </td>
-                    <td className="px-3 py-2 text-right text-xs">
-                      {t.missing_value_count > 0
-                        ? <span className="inline-flex items-center gap-1 text-red-600 font-medium" title="Numéros de série sans valeur de fabrication">
-                            <AlertCircle size={11} /> {t.missing_value_count}
-                          </span>
-                        : <span className="text-slate-300">—</span>
-                      }
-                    </td>
-                    <td className="px-3 py-2 text-slate-500 text-xs">{t.last_seen ? fmtDate(t.last_seen) : '—'}</td>
-                    <td className="px-3 py-2">
-                      {rule ? (
-                        rule.skip_accounting
-                          ? <span className="inline-flex items-center gap-1 text-xs text-slate-500"><Ban size={12} /> Aucune écriture</span>
-                          : <span className="inline-flex items-center gap-1 text-xs text-green-700">
-                              <CheckCircle2 size={12} />
-                              {rule.debit_account_name?.split(':').pop() || rule.debit_account_id} / {rule.credit_account_name?.split(':').pop() || rule.credit_account_id}
-                            </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1 text-xs text-red-600">
-                          <AlertCircle size={12} /> Non mappé
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      {rule ? (
-                        <button
-                          onClick={() => setModal({ rule })}
-                          className="text-xs text-brand-600 hover:text-brand-800"
-                        >Modifier</button>
-                      ) : (
-                        <button
-                          onClick={() => setModal({ transition: t })}
-                          className="inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-800"
-                        >
-                          <Plus size={12} /> Mapper
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          table="serial_transitions"
+          columns={transitionColumns}
+          data={transitionRows}
+          loading={loading}
+          searchFields={['previous_status', 'new_status']}
+          height="calc(100vh - 460px)"
+          emptyState={{ icon: AlertCircle, title: 'Aucune transition ni règle', description: "Aucune transition d'état observée dans la fenêtre et aucune règle définie." }}
+        />
 
         <div className="mt-8">
           <div className="flex items-center justify-between mb-2">
@@ -474,58 +483,15 @@ export default function SerialAccountingRules() {
               <Plus size={12} /> Nouvelle règle
             </button>
           </div>
-          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-                <tr>
-                  <th className="text-left px-3 py-2">Transition</th>
-                  <th className="text-left px-3 py-2">Débit</th>
-                  <th className="text-left px-3 py-2">Crédit</th>
-                  <th className="text-left px-3 py-2">Valeur</th>
-                  <th className="text-left px-3 py-2">Actif</th>
-                  <th className="px-3 py-2"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {rules.length === 0 && (
-                  <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400">Aucune règle définie.</td></tr>
-                )}
-                {rules.map(r => (
-                  <tr key={r.id} className="border-t border-slate-100">
-                    <td className="px-3 py-2">
-                      <span className="text-slate-500">{statusLabel(r.previous_status)}</span>
-                      <ArrowRight size={12} className="inline mx-1 text-slate-300" />
-                      <span className="text-slate-900 font-medium">{statusLabel(r.new_status)}</span>
-                    </td>
-                    <td className="px-3 py-2 text-slate-700 text-xs">
-                      {r.skip_accounting ? <span className="text-slate-400 italic">— skip —</span> : (r.debit_account_name || r.debit_account_id)}
-                    </td>
-                    <td className="px-3 py-2 text-slate-700 text-xs">
-                      {r.skip_accounting ? <span className="text-slate-400 italic">— skip —</span> : (r.credit_account_name || r.credit_account_id)}
-                    </td>
-                    <td className="px-3 py-2 text-xs text-slate-600">
-                      {r.skip_accounting
-                        ? <span className="text-slate-400">Aucune écriture</span>
-                        : (<>
-                            {VALUATION_LABELS[r.valuation_source]}
-                            {r.valuation_source === 'fixed_amount' && r.fixed_amount != null && ` (${r.fixed_amount} $)`}
-                          </>)
-                      }
-                    </td>
-                    <td className="px-3 py-2 text-xs">
-                      {r.active ? <span className="text-green-700">Oui</span> : <span className="text-slate-400">Non</span>}
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      <button onClick={() => setModal({ rule: r })} className="text-xs text-brand-600 hover:text-brand-800 mr-3">Modifier</button>
-                      <button onClick={() => deleteRule(r.id)} className="text-xs text-red-600 hover:text-red-800 inline-flex items-center gap-1">
-                        <Trash2 size={11} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            table="serial_accounting_rules"
+            columns={ruleColumns}
+            data={ruleRows}
+            loading={loading}
+            searchFields={['previous_status', 'new_status', 'debit_account_name', 'credit_account_name']}
+            height="calc(100vh - 460px)"
+            emptyState={{ icon: AlertCircle, title: 'Aucune règle définie', description: 'Crée une règle de mapping pour générer les écritures comptables.' }}
+          />
         </div>
       </div>
 

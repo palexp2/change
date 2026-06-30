@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { RefreshCw, Database, ChevronDown, ChevronRight, Plus, Pencil, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -51,12 +53,38 @@ const RENDERS_PAIE_ITEMS = {
   vacation:                row => <span className="tabular-nums">{money(row.vacation)}</span>,
   commission:              row => <span className="tabular-nums">{money(row.commission)}</span>,
   expense_reimb:           row => <span className="tabular-nums">{money(row.expense_reimb)}</span>,
+  holiday_1_20:            row => <span className="tabular-nums">{money(row.holiday_1_20)}</span>,
+  insurance_gains:         row => <span className="tabular-nums">{money(row.insurance_gains)}</span>,
+  rsde_pct:                row => <span className="tabular-nums">{row.rsde_pct == null ? '—' : `${num(row.rsde_pct)} %`}</span>,
+  paid_leave:              row => <span className="text-slate-600">{row.paid_leave || '—'}</span>,
   period_end:              row => <span className="text-slate-700">{fmtDate(row.period_end)}</span>,
 }
 
 const COLUMNS_PAIE_ITEMS = TABLE_COLUMN_META.paie_items
   .filter(meta => meta.id !== 'period_end')
   .map(meta => ({ ...meta, render: RENDERS_PAIE_ITEMS[meta.id] }))
+
+// FK → fiche employé. La route /employees/:id est hrOnly : on ne rend le lien
+// que pour admin/rh (sinon un clic redirige vers /dashboard). Non-HR garde le texte.
+function buildPaieItemsColumns(isHR) {
+  if (!isHR) return COLUMNS_PAIE_ITEMS
+  return COLUMNS_PAIE_ITEMS.map(col =>
+    col.id === 'employee_name'
+      ? {
+          ...col,
+          render: row => (
+            <Link
+              to={`/employees/${row.employee_id}`}
+              onClick={e => e.stopPropagation()}
+              className="font-medium text-brand-600 hover:underline"
+            >
+              {row.first_name} {row.last_name}
+            </Link>
+          ),
+        }
+      : col,
+  )
+}
 
 function SyncPanel({ onSynced }) {
   const [open, setOpen] = useState(false)
@@ -132,7 +160,18 @@ const EMPTY_PAIE = {
   includes_paid_leave: 0, includes_holiday_hours: 0, includes_sales_commissions: 0,
 }
 
+// Conversion d'un champ vers sa valeur persistée (numériques → null si vide).
+const NUMERIC_FIELDS = new Set(['number', 'nb_holiday_days', 'total_with_charges_and_reimb'])
+function normalizeField(key, value) {
+  if (NUMERIC_FIELDS.has(key)) return value === '' || value == null ? null : Number(value)
+  return value
+}
+
 function PaieForm({ paie, onClose, onSaved, onDeleted }) {
+  // Édition d'une paie existante → autosave (PATCH on blur / on change), pas de
+  // bouton « Enregistrer » (règle CLAUDE.md). Création → bouton « Enregistrer »
+  // car le record n'a pas encore d'id.
+  const editing = !!paie
   const [form, setForm] = useState(() => {
     if (!paie) return { ...EMPTY_PAIE }
     return {
@@ -148,12 +187,39 @@ function PaieForm({ paie, onClose, onSaved, onDeleted }) {
   const [deleting, setDeleting] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [error, setError] = useState('')
+  const { status: saveStatus, save } = useSaveStatus()
+  // Dernières valeurs persistées — évite les PATCH redondants au blur.
+  const savedRef = useRef(editing ? { ...form } : null)
 
+  // Persiste un champ unique en édition ; ignore les no-op et (pour period_end,
+  // requis) les valeurs vides qui effaceraient la borne de période.
+  const saveField = useCallback((key, rawValue) => {
+    if (!paie) return
+    if (savedRef.current && savedRef.current[key] === rawValue) return
+    if (key === 'period_end' && !rawValue) return
+    if (savedRef.current) savedRef.current[key] = rawValue
+    setError('')
+    save(() => api.paies.update(paie.id, { [key]: normalizeField(key, rawValue) }))
+  }, [paie, save])
+
+  // Inputs texte/nombre : maj du form au change, persistance au blur en édition.
   const f = k => e => setForm(p => ({ ...p, [k]: e.target.value }))
-  const chk = k => e => setForm(p => ({ ...p, [k]: e.target.checked ? 1 : 0 }))
+  const blurSave = k => () => { if (editing) saveField(k, form[k]) }
+  // Select / checkbox : changement discret → maj du form + persistance immédiate.
+  const sel = k => e => {
+    const v = e.target.value
+    setForm(p => ({ ...p, [k]: v }))
+    if (editing) saveField(k, v)
+  }
+  const chk = k => e => {
+    const v = e.target.checked ? 1 : 0
+    setForm(p => ({ ...p, [k]: v }))
+    if (editing) saveField(k, v)
+  }
 
   async function handleSubmit(e) {
     e.preventDefault()
+    if (editing) return // édition = autosave, pas de soumission groupée
     setSaving(true)
     setError('')
     try {
@@ -163,8 +229,7 @@ function PaieForm({ paie, onClose, onSaved, onDeleted }) {
         nb_holiday_days: form.nb_holiday_days === '' ? null : Number(form.nb_holiday_days),
         total_with_charges_and_reimb: form.total_with_charges_and_reimb === '' ? null : Number(form.total_with_charges_and_reimb),
       }
-      if (paie) await api.paies.update(paie.id, payload)
-      else await api.paies.create(payload)
+      await api.paies.create(payload)
       onSaved()
     } catch (err) { setError(err.message) }
     finally { setSaving(false) }
@@ -187,29 +252,29 @@ function PaieForm({ paie, onClose, onSaved, onDeleted }) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="label">Fin de période *</label>
-            <input type="date" value={form.period_end || ''} onChange={f('period_end')} className="input" required />
+            <input type="date" value={form.period_end || ''} onChange={f('period_end')} onBlur={blurSave('period_end')} className="input" required />
           </div>
           <div>
             <label className="label">Numéro</label>
-            <input type="number" value={form.number} onChange={f('number')} className="input" />
+            <input type="number" value={form.number} onChange={f('number')} onBlur={blurSave('number')} className="input" />
           </div>
           <div>
             <label className="label">Statut</label>
-            <select value={form.status || ''} onChange={f('status')} className="input">
+            <select value={form.status || ''} onChange={sel('status')} className="input">
               {STATUSES.map(s => <option key={s}>{s}</option>)}
             </select>
           </div>
           <div>
             <label className="label">Nombre de congés fériés</label>
-            <input type="number" step="1" value={form.nb_holiday_days ?? ''} onChange={f('nb_holiday_days')} className="input" />
+            <input type="number" step="1" value={form.nb_holiday_days ?? ''} onChange={f('nb_holiday_days')} onBlur={blurSave('nb_holiday_days')} className="input" />
           </div>
           <div>
             <label className="label">Date limite correction FdT</label>
-            <input value={form.timesheets_deadline || ''} onChange={f('timesheets_deadline')} className="input" placeholder="ex. Mardi 11h AM" />
+            <input value={form.timesheets_deadline || ''} onChange={f('timesheets_deadline')} onBlur={blurSave('timesheets_deadline')} className="input" placeholder="ex. Mardi 11h AM" />
           </div>
           <div>
             <label className="label">Total paie (optionnel)</label>
-            <input type="number" step="0.01" value={form.total_with_charges_and_reimb ?? ''} onChange={f('total_with_charges_and_reimb')} className="input" />
+            <input type="number" step="0.01" value={form.total_with_charges_and_reimb ?? ''} onChange={f('total_with_charges_and_reimb')} onBlur={blurSave('total_with_charges_and_reimb')} className="input" />
           </div>
         </div>
       </div>
@@ -258,9 +323,18 @@ function PaieForm({ paie, onClose, onSaved, onDeleted }) {
             )
           )}
         </div>
-        <div className="flex gap-2">
-          <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-          <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
+        <div className="flex items-center gap-3">
+          {editing ? (
+            <>
+              <SaveStatus status={saveStatus} />
+              <button type="button" onClick={onClose} className="btn-primary">Fermer</button>
+            </>
+          ) : (
+            <>
+              <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
+              <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
+            </>
+          )}
         </div>
       </div>
     </form>
@@ -271,6 +345,7 @@ function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
   const { addToast } = useToast()
   const { user } = useAuth()
   const isHR = ['admin', 'rh'].includes(user?.role)
+  const paieItemsColumns = useMemo(() => buildPaieItemsColumns(isHR), [isHR])
   const [detail, setDetail] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -383,7 +458,7 @@ function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
 
       <DataTable
         table="paie_items"
-        columns={COLUMNS_PAIE_ITEMS}
+        columns={paieItemsColumns}
         data={detail.items}
         searchFields={['first_name', 'last_name', 'accounting_department']}
       />

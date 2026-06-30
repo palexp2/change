@@ -6,6 +6,7 @@ import { rematchCalls } from './calls.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
 import { emitEntity, emitCompanyContactsChanged } from '../services/realtimeEmitters.js';
 import { CC_PERMISSION_SELECT, CC_PERMISSIONS_JOIN } from '../utils/ccPermissions.js';
+import { findContactDuplicates } from '../utils/duplicateMatch.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -79,6 +80,15 @@ router.get('/', (req, res) => {
 
   const total = limitAll ? contacts.length : db.prepare(`SELECT COUNT(*) as c FROM contacts ct ${where}`).get(...params).c;
   res.json({ data: contacts, total, page: parseInt(page), limit: parseInt(limit) });
+});
+
+// GET /api/contacts/duplicates — correspondances potentielles (nom complet /
+// courriel / téléphone) avant de créer un contact. Non bloquant.
+// Doit rester AVANT la route GET /:id pour ne pas être capturé par celle-ci.
+router.get('/duplicates', (req, res) => {
+  const { first_name, last_name, email, phone, mobile, exclude_id } = req.query;
+  const matches = findContactDuplicates(db, { first_name, last_name, email, phone, mobile, excludeId: exclude_id });
+  res.json({ matches });
 });
 
 // GET /api/contacts/:id

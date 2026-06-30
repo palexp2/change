@@ -43,10 +43,10 @@ describe('CompanyDetail — clic sur ligne facture ouvre le détail', () => {
     await page.waitForLoadState('networkidle')
 
     await page.click('button:has-text("factures")')
-    await page.locator('th:has-text("N° document")').waitFor({ state: 'visible', timeout: 5000 })
+    await page.waitForSelector('text=/\\d+\\s+lignes?/', { timeout: 10000 })
 
-    // Cible la ligne correspondant au document_number connu
-    const row = page.locator('table tbody tr', { hasText: factureDoc }).first()
+    // Cible la ligne (div DataTable) correspondant au document_number connu
+    const row = page.locator('[data-row-id]', { hasText: factureDoc }).first()
     await row.waitFor({ state: 'visible', timeout: 5000 })
 
     // Vérifie que le curseur est pointer (affordance visuelle)

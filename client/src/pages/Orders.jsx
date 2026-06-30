@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { Plus } from 'lucide-react'
+import { Plus, Package } from 'lucide-react'
 import api from '../lib/api.js'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
@@ -37,7 +37,8 @@ function NewOrderModal({ companies, users, onSave, onClose }) {
     e.preventDefault()
     setError('')
     setSaving(true)
-    try { await onSave(form); onClose() }
+    // Trim des champs texte au submit pour éviter des records pollués par des espaces seuls.
+    try { await onSave({ ...form, notes: form.notes.trim() }); onClose() }
     catch (err) { setError(err.message) }
     finally { setSaving(false) }
   }
@@ -150,6 +151,8 @@ export default function Orders() {
           loading={loading}
           onRowClick={row => navigate(`/orders/${row.id}`)}
           searchFields={['order_number', 'company_name']}
+          realtimeEntity="orders"
+          emptyState={{ icon: Package, title: 'Aucune commande', description: "Aucune commande n'a encore été créée. Crée une commande pour démarrer une vente.", cta: { label: 'Nouvelle commande', icon: Plus, onClick: () => setShowModal(true) } }}
         />
       </div>
 

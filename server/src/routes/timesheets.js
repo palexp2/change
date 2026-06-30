@@ -18,8 +18,32 @@ function resolveTargetUserId(req, requested) {
   return null // not allowed
 }
 
+// Retourne un message d'erreur si `user` ne peut pas éditer le contenu de `day`
+// (header ou entrées) à cause du verrouillage du workflow d'approbation, sinon null.
+// - 'approved' : verrouillée pour tous, il faut d'abord la rouvrir (RH).
+// - 'submitted' : verrouillée pour l'employé ; un gestionnaire RH peut encore corriger.
+function editLockError(day, user) {
+  if (day.status === 'approved') {
+    return 'Feuille approuvée et verrouillée. Demandez à un gestionnaire de la rouvrir avant de la modifier.'
+  }
+  if (day.status === 'submitted' && !isHROrAdmin(user)) {
+    return 'Feuille soumise et verrouillée. Annulez la soumission pour la modifier.'
+  }
+  return null
+}
+
 function loadDayWithEntries(id) {
-  const day = db.prepare('SELECT * FROM timesheet_days WHERE id = ? AND deleted_at IS NULL').get(id)
+  const day = db.prepare(`
+    SELECT d.*,
+      su.name AS submitted_by_name,
+      au.name AS approved_by_name,
+      ru.name AS rejected_by_name
+    FROM timesheet_days d
+    LEFT JOIN users su ON d.submitted_by = su.id
+    LEFT JOIN users au ON d.approved_by = au.id
+    LEFT JOIN users ru ON d.rejected_by = ru.id
+    WHERE d.id = ? AND d.deleted_at IS NULL
+  `).get(id)
   if (!day) return null
   const entries = db.prepare(`
     SELECT e.*, ac.name as activity_code_name, ac.payable as activity_code_payable, c.name as company_name
@@ -45,17 +69,28 @@ router.get('/', (req, res) => {
   if (to) { where += ' AND date <= ?'; params.push(to) }
 
   const days = db.prepare(`SELECT * FROM timesheet_days ${where} ORDER BY date DESC`).all(...params)
-  const result = days.map(d => {
-    const entries = db.prepare(`
+
+  // Charge toutes les entrées de la plage en une seule requête (WHERE day_id IN (...))
+  // puis regroupe en mémoire, plutôt qu'une requête par jour (N+1).
+  const entriesByDay = new Map()
+  if (days.length) {
+    const placeholders = days.map(() => '?').join(', ')
+    const allEntries = db.prepare(`
       SELECT e.*, ac.name as activity_code_name, ac.payable as activity_code_payable, c.name as company_name
       FROM timesheet_entries e
       LEFT JOIN activity_codes ac ON e.activity_code_id = ac.id
       LEFT JOIN companies c ON e.company_id = c.id
-      WHERE day_id = ?
+      WHERE day_id IN (${placeholders})
       ORDER BY sort_order ASC, created_at ASC
-    `).all(d.id)
-    return { ...d, entries }
-  })
+    `).all(...days.map(d => d.id))
+    for (const e of allEntries) {
+      let arr = entriesByDay.get(e.day_id)
+      if (!arr) { arr = []; entriesByDay.set(e.day_id, arr) }
+      arr.push(e)
+    }
+  }
+
+  const result = days.map(d => ({ ...d, entries: entriesByDay.get(d.id) || [] }))
   res.json({ data: result })
 })
 
@@ -125,6 +160,8 @@ router.patch('/day/:id', (req, res) => {
   if (!day) return res.status(404).json({ error: 'Not found' })
   const target = resolveTargetUserId(req, day.user_id)
   if (!target) return res.status(403).json({ error: 'Accès refusé' })
+  const lockMsg = editLockError(day, req.user)
+  if (lockMsg) return res.status(409).json({ error: lockMsg })
 
   const updates = []
   const params = []
@@ -164,19 +201,93 @@ router.patch('/day/:id', (req, res) => {
 
 // DELETE /api/timesheets/day/:id — soft delete (aligné avec le reste de l'app)
 router.delete('/day/:id', (req, res) => {
-  const day = db.prepare('SELECT user_id FROM timesheet_days WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
+  const day = db.prepare('SELECT user_id, status FROM timesheet_days WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!day) return res.status(404).json({ error: 'Not found' })
   if (!resolveTargetUserId(req, day.user_id)) return res.status(403).json({ error: 'Accès refusé' })
+  const lockMsg = editLockError(day, req.user)
+  if (lockMsg) return res.status(409).json({ error: lockMsg })
   db.prepare(`UPDATE timesheet_days SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(req.params.id)
   emitEntity('timesheet', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ success: true })
 })
 
+// PATCH /api/timesheets/day/:id/status — workflow d'approbation / verrouillage.
+// Transitions autorisées :
+//   draft|rejected → submitted   (employé ou RH) : soumet pour approbation, verrouille côté employé
+//   submitted      → approved    (RH seulement)  : signe et verrouille pour tous
+//   submitted      → rejected    (RH seulement)  : renvoie à l'employé avec un motif obligatoire
+//   submitted      → draft       (employé ou RH) : retire la soumission (avant approbation)
+//   approved       → draft       (RH seulement)  : rouvre une feuille approuvée
+const STATUS_VALUES = new Set(['draft', 'submitted', 'approved', 'rejected'])
+const ALLOWED_TRANSITIONS = {
+  draft: ['submitted'],
+  rejected: ['submitted'],
+  submitted: ['approved', 'rejected', 'draft'],
+  approved: ['draft'],
+}
+
+router.patch('/day/:id/status', (req, res) => {
+  const day = db.prepare('SELECT * FROM timesheet_days WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
+  if (!day) return res.status(404).json({ error: 'Not found' })
+  if (!resolveTargetUserId(req, day.user_id)) return res.status(403).json({ error: 'Accès refusé' })
+
+  const { status } = req.body || {}
+  const reason = (req.body?.reason || '').trim()
+  if (!STATUS_VALUES.has(status)) return res.status(400).json({ error: 'status invalide' })
+
+  const from = day.status || 'draft'
+  if (status === from) return res.json(loadDayWithEntries(day.id))
+  if (!ALLOWED_TRANSITIONS[from]?.includes(status)) {
+    return res.status(409).json({ error: `Transition ${from} → ${status} non autorisée` })
+  }
+
+  const hr = isHROrAdmin(req.user)
+  // Séparation des tâches : seul un gestionnaire RH approuve, rejette, ou rouvre une feuille approuvée.
+  if (status === 'approved' || status === 'rejected') {
+    if (!hr) return res.status(403).json({ error: 'Seul un gestionnaire RH peut approuver ou rejeter une feuille' })
+  }
+  if (status === 'draft' && from === 'approved' && !hr) {
+    return res.status(403).json({ error: 'Seul un gestionnaire RH peut rouvrir une feuille approuvée' })
+  }
+  if (status === 'rejected' && !reason) {
+    return res.status(400).json({ error: 'Un motif de rejet est requis' })
+  }
+
+  const now = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
+  let sql
+  const params = []
+  if (status === 'submitted') {
+    // Nouvelle soumission : on efface tout rejet antérieur.
+    sql = `UPDATE timesheet_days SET status = 'submitted', submitted_at = ${now}, submitted_by = ?,
+             rejected_at = NULL, rejected_by = NULL, rejection_reason = NULL, updated_at = ${now} WHERE id = ?`
+    params.push(req.user.id, req.params.id)
+  } else if (status === 'approved') {
+    sql = `UPDATE timesheet_days SET status = 'approved', approved_at = ${now}, approved_by = ?, updated_at = ${now} WHERE id = ?`
+    params.push(req.user.id, req.params.id)
+  } else if (status === 'rejected') {
+    sql = `UPDATE timesheet_days SET status = 'rejected', rejected_at = ${now}, rejected_by = ?,
+             rejection_reason = ?, approved_at = NULL, approved_by = NULL, updated_at = ${now} WHERE id = ?`
+    params.push(req.user.id, reason, req.params.id)
+  } else {
+    // Retour à draft (retrait de soumission ou réouverture) : on efface la piste de soumission/approbation.
+    sql = `UPDATE timesheet_days SET status = 'draft', submitted_at = NULL, submitted_by = NULL,
+             approved_at = NULL, approved_by = NULL, rejected_at = NULL, rejected_by = NULL,
+             rejection_reason = NULL, updated_at = ${now} WHERE id = ?`
+    params.push(req.params.id)
+  }
+  db.prepare(sql).run(...params)
+  const updated = loadDayWithEntries(req.params.id)
+  emitEntity('timesheet', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
+})
+
 // POST /api/timesheets/day/:dayId/entries — ajoute une activité
 router.post('/day/:dayId/entries', (req, res) => {
-  const day = db.prepare('SELECT user_id FROM timesheet_days WHERE id = ? AND deleted_at IS NULL').get(req.params.dayId)
+  const day = db.prepare('SELECT user_id, status FROM timesheet_days WHERE id = ? AND deleted_at IS NULL').get(req.params.dayId)
   if (!day) return res.status(404).json({ error: 'Day not found' })
   if (!resolveTargetUserId(req, day.user_id)) return res.status(403).json({ error: 'Accès refusé' })
+  const lockMsg = editLockError(day, req.user)
+  if (lockMsg) return res.status(409).json({ error: lockMsg })
 
   const { description, activity_code_id, company_id, duration, duration_minutes, rsde, sort_order } = req.body || {}
   const mins = duration_minutes != null
@@ -209,13 +320,15 @@ const ENTRY_PATCHABLE = new Set(['description', 'activity_code_id', 'company_id'
 // PATCH /api/timesheets/entries/:id — met à jour une activité
 router.patch('/entries/:id', (req, res) => {
   const entry = db.prepare(`
-    SELECT e.*, d.user_id
+    SELECT e.*, d.user_id, d.status
     FROM timesheet_entries e
     JOIN timesheet_days d ON e.day_id = d.id
     WHERE e.id = ? AND d.deleted_at IS NULL
   `).get(req.params.id)
   if (!entry) return res.status(404).json({ error: 'Not found' })
   if (!resolveTargetUserId(req, entry.user_id)) return res.status(403).json({ error: 'Accès refusé' })
+  const lockMsg = editLockError(entry, req.user)
+  if (lockMsg) return res.status(409).json({ error: lockMsg })
 
   const updates = []
   const params = []
@@ -253,13 +366,15 @@ router.patch('/entries/:id', (req, res) => {
 // DELETE /api/timesheets/entries/:id — hard delete (les entrées sont des sous-lignes)
 router.delete('/entries/:id', (req, res) => {
   const entry = db.prepare(`
-    SELECT e.day_id, d.user_id
+    SELECT e.day_id, d.user_id, d.status
     FROM timesheet_entries e
     JOIN timesheet_days d ON e.day_id = d.id
     WHERE e.id = ? AND d.deleted_at IS NULL
   `).get(req.params.id)
   if (!entry) return res.status(404).json({ error: 'Not found' })
   if (!resolveTargetUserId(req, entry.user_id)) return res.status(403).json({ error: 'Accès refusé' })
+  const lockMsg = editLockError(entry, req.user)
+  if (lockMsg) return res.status(409).json({ error: lockMsg })
   db.prepare('DELETE FROM timesheet_entries WHERE id = ?').run(req.params.id)
   const updated = loadDayWithEntries(entry.day_id)
   emitEntity('timesheet', 'updated', entry.day_id, updated, req.user?.id)

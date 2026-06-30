@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, X, Download, ExternalLink, Send, Hourglass, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
@@ -14,6 +15,8 @@ import { FieldGuard, FieldGuardProvider } from '../components/FieldGuard.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { useRecordKeyNav } from '../lib/useRecordKeyNav.js'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 // Champs disponibles pour le builder de règles de visibilité. Le picker
 // utilise `field` (clé du record) et `label` (humain). On expose un
@@ -129,6 +132,7 @@ export default function FactureDetail() {
   const { user } = useAuth()
   const [facture, setFacture] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [projects, setProjects] = useState([])
   const [orders, setOrders] = useState([])
   const [companies, setCompanies] = useState([])
@@ -144,6 +148,8 @@ export default function FactureDetail() {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState(null)
+  const [retryingPdf, setRetryingPdf] = useState(false)
+  const [pdfRetryError, setPdfRetryError] = useState(null)
 
   async function handleDelete() {
     setDeleting(true)
@@ -156,6 +162,21 @@ export default function FactureDetail() {
       setDeleting(false)
     }
   }
+  async function handleRetryPdf() {
+    setRetryingPdf(true)
+    setPdfRetryError(null)
+    try {
+      await api.factures.retryPdf(id)
+      // Recharge la facture : airtable_pdf_path est maintenant posé, ce qui
+      // déclenche le fetch du blob et l'affichage de l'aperçu.
+      load()
+    } catch (e) {
+      setPdfRetryError(e?.message || 'Échec du re-téléchargement du PDF')
+    } finally {
+      setRetryingPdf(false)
+    }
+  }
+
   function openSendModal() {
     if (facture?.source !== 'pending') return
     setSendModalOpen(true)
@@ -176,8 +197,9 @@ export default function FactureDetail() {
     }
   }
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true)
+    setLoadError(null)
     setProjects([])
     setOrders([])
     api.factures.get(id)
@@ -211,11 +233,14 @@ export default function FactureDetail() {
           }).catch(() => {})
         }
       })
-      .catch(() => {
+      .catch((e) => {
         setFacture(null)
+        setLoadError(e?.message || 'Erreur de chargement')
         setLoading(false)
       })
   }, [id])
+
+  useEffect(() => { load() }, [load])
 
   useRealtimeChannel(id ? `facture:${id}` : null, (msg) => {
     if (msg.type === 'facture:updated') setFacture(f => f ? { ...f, ...msg.payload } : f)
@@ -235,6 +260,12 @@ export default function FactureDetail() {
 
   const prevId = neighbors.prev
   const nextId = neighbors.next
+
+  // Navigation clavier entre factures (j/↓ suivante · k/↑ précédente).
+  useRecordKeyNav({
+    prev: prevId ? `/factures/${prevId}` : null,
+    next: nextId ? `/factures/${nextId}` : null,
+  })
 
   async function handleProjectChange(newProjectId) {
     setSelectedProjectId(newProjectId || '')
@@ -282,12 +313,11 @@ export default function FactureDetail() {
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" />
-        </div>
+        <Spinner center />
       </Layout>
     )
   }
+  if (loadError && !facture) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
   if (!facture) return <Layout><div className="p-6 text-slate-500">Facture introuvable.</div></Layout>
 
   return (
@@ -388,7 +418,7 @@ export default function FactureDetail() {
               onClick={() => prevId && navigate(`/factures/${prevId}`)}
               disabled={!prevId}
               className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-              title="Facture précédente"
+              title="Facture précédente (k / ↑)"
               aria-label="Facture précédente"
             >
               <ChevronLeft size={16} />
@@ -397,7 +427,7 @@ export default function FactureDetail() {
               onClick={() => nextId && navigate(`/factures/${nextId}`)}
               disabled={!nextId}
               className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-              title="Facture suivante"
+              title="Facture suivante (j / ↓)"
               aria-label="Facture suivante"
             >
               <ChevronRight size={16} />
@@ -407,7 +437,7 @@ export default function FactureDetail() {
 
         <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
           {/* Entreprise */}
-          <div className="grid grid-cols-2 gap-4 p-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-5">
             <div>
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Entreprise</p>
               <LinkedRecordField
@@ -441,7 +471,7 @@ export default function FactureDetail() {
           </div>
 
           {/* Commande / Abonnement */}
-          <div className="grid grid-cols-2 gap-4 p-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-5">
             <FieldGuard fieldId="order_field" label="Commande">
               <div data-field-id="order_field">
                 <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Commande</p>
@@ -473,6 +503,28 @@ export default function FactureDetail() {
             </FieldGuard>
           </div>
 
+          {/* PDF manquant — re-télécharger depuis Stripe. Le download peut avoir
+              échoué au webhook (airtable_pdf_path null) ; rien ne le retente
+              automatiquement, donc on l'offre à la demande sur les factures Stripe. */}
+          {!facture.airtable_pdf_path && facture.invoice_id && (
+            <div className="p-5">
+              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">PDF Stripe</p>
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                <p className="text-sm text-amber-800 mb-2">Le PDF de cette facture n'a pas pu être récupéré depuis Stripe.</p>
+                <button
+                  onClick={handleRetryPdf}
+                  disabled={retryingPdf}
+                  className="btn-secondary btn-sm disabled:opacity-50"
+                >
+                  {retryingPdf ? 'Récupération…' : 'Re-télécharger le PDF Stripe'}
+                </button>
+                {pdfRetryError && (
+                  <p className="text-xs text-red-600 mt-2">{pdfRetryError}</p>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* PDF thumbnail */}
           {pdfBlobUrl && (
             <div className="p-5">
@@ -496,7 +548,7 @@ export default function FactureDetail() {
           )}
 
           {/* Dates */}
-          <div className="grid grid-cols-4 gap-4 p-5">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 p-5">
             <div>
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Date de facturation</p>
               <p className="text-sm text-slate-700">{fmtDate(facture.document_date)}</p>

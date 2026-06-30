@@ -15,6 +15,22 @@ function ensureHR(req, res, next) {
   next()
 }
 
+// Garde « impossible by design » sur le nombre de jours fériés d'une paie. Sans
+// ce contrôle, un `nb_holiday_days` négatif AUGMENTAIT les heures régulières
+// (regularHours -= nbHolidays × …, avec nbHolidays < 0) et le bonus 1/20, tandis
+// qu'un NaN était silencieusement ramené à 0 par `Number(v) || 0`. On exige donc
+// un entier ≥ 0. Une valeur absente / vide reste tolérée (= 0 jour férié).
+function validateNbHolidayDays(body) {
+  if (!Object.prototype.hasOwnProperty.call(body, 'nb_holiday_days')) return null
+  const v = body.nb_holiday_days
+  if (v === null || v === '' || v === undefined) return null
+  const n = Number(v)
+  if (!Number.isInteger(n) || n < 0) {
+    return `nb_holiday_days doit être un entier positif (reçu : ${JSON.stringify(v)})`
+  }
+  return null
+}
+
 function buildPaieListRow(id) {
   return db.prepare(`
     SELECT p.*,
@@ -125,6 +141,8 @@ const last2HoursStmt = db.prepare(`
 
 router.post('/', ensureHR, (req, res) => {
   if (!req.body.period_end) return res.status(400).json({ error: 'Fin de période requise' })
+  const holidayError = validateNbHolidayDays(req.body)
+  if (holidayError) return res.status(400).json({ error: holidayError })
   const id = randomUUID()
   const cols = ['id', ...ALLOWED.filter(k => k in req.body)]
   const vals = [id, ...ALLOWED.filter(k => k in req.body).map(k => req.body[k] ?? null)]
@@ -208,6 +226,8 @@ router.post('/:id/import-timesheets', ensureHR, (req, res) => {
 router.patch('/:id', ensureHR, (req, res) => {
   const existing = db.prepare('SELECT id FROM paies WHERE id=?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
+  const holidayError = validateNbHolidayDays(req.body)
+  if (holidayError) return res.status(400).json({ error: holidayError })
   const fields = ["updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"]
   const params = []
   for (const key of ALLOWED) {

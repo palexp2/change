@@ -1,23 +1,34 @@
 import { useState, useEffect, useRef } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, Settings,
+  Settings,
   ChevronLeft, ChevronRight, ChevronDown, LogOut, Menu, X,
-  Search,
-  TrendingUp, ShoppingCart, Package, LifeBuoy,
-  ShoppingBag, Truck, RotateCcw, FileText, RefreshCw, Wrench,
-  Barcode, MessageSquare, CheckSquare,
-  Receipt, ReceiptText, Landmark, Users, Banknote, Contact, BookOpen,
-  ArrowLeftRight, CreditCard, Clock, Tag, Wallet, Mail, PhoneCall,
-  FolderOpen, Building2
+  Search, ExternalLink, Sparkles, Network, Bot,
 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
+import { useNavPrefs } from '../lib/navPrefs.jsx'
+import { defaultNavItems } from '../lib/navItems.js'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
 import { api } from '../lib/api.js'
 import { prefetch } from '../lib/prefetch.js'
 import { connect as realtimeConnect, disconnect as realtimeDisconnect } from '../lib/realtime.js'
+import { hasUnseenChangelog, CHANGELOG_SEEN_EVENT } from '../lib/changelog.js'
 import { Modal } from './Modal.jsx'
+import { KeyboardShortcutsModal } from './KeyboardShortcutsModal.jsx'
 import { GlobalSearch as CRMSearch } from './GlobalSearch.jsx'
+import { FeedbackFab } from './FeedbackFab.jsx'
+
+// Raccourcis clavier de navigation globaux — source unique de vérité.
+// Le handler clavier de Layout construit sa table de routage à partir d'ici,
+// et la modale d'aide (« ? ») les liste pour les rendre découvrables. Ajouter
+// un raccourci = ajouter une entrée ici (et rien d'autre).
+export const NAV_SHORTCUTS = [
+  { key: 'd', label: 'Tableau de bord', to: '/dashboard' },
+  { key: 't', label: 'Feuille de temps', to: '/feuille-de-temps' },
+  { key: 'b', label: 'Tickets', to: '/tickets' },
+  { key: 'p', label: 'Pipeline', to: '/pipeline' },
+  { key: 'c', label: 'Commandes', to: '/orders' },
+]
 
 // When the user hovers a nav link, kick off the page's primary list fetch.
 // The request-level cache in prefetch.js keeps the in-flight promise, so the
@@ -59,56 +70,30 @@ function useHoverPrefetch(to) {
   return { onMouseEnter: onEnter, onMouseLeave: onLeave }
 }
 
-const defaultNavItems = [
-  { to: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/public-files', icon: FolderOpen,      label: 'Fichiers publics' },
-  { group: 'Clients', icon: Contact, items: [
-    { to: '/contacts',     icon: Contact,       label: 'Contacts' },
-    { to: '/companies',    icon: Building2,     label: 'Entreprises' },
-    { to: '/pipeline',     icon: TrendingUp,    label: 'Projets' },
-    { to: '/tasks',        icon: CheckSquare,   label: 'Tâches' },
-    { to: '/tickets',      icon: LifeBuoy,      label: 'Billets' },
-    { to: '/interactions', icon: MessageSquare, label: 'Interactions' },
-    { to: '/qualification-call', icon: PhoneCall, label: 'Appels de qualification' },
-    { to: '/relance-qualification', icon: Mail, label: 'Relances qualification' },
-    { to: '/discovery-forms', icon: FileText, label: 'Formulaires de découverte' },
-  ]},
-  { group: 'Envois', icon: Truck, items: [
-    { to: '/orders',   icon: ShoppingCart, label: 'Commandes' },
-    { to: '/envois',   icon: Truck,        label: 'Envois' },
-    { to: '/retours',  icon: RotateCcw,    label: 'Retours' },
-  ]},
-  { group: 'Comptabilité', icon: Landmark, items: [
-    { to: '/factures',              icon: FileText,   label: 'Factures clients' },
-    { to: '/items-vendus',          icon: Tag,        label: 'Items vendus' },
-    { to: '/abonnements',           icon: RefreshCw,  label: 'Abonnements' },
-    { to: '/abonnements/mouvements', icon: RefreshCw, label: "Mouvements d'abonnements" },
-    { to: '/achats-fournisseurs',   icon: Receipt,    label: 'Achats fournisseurs' },
-    { to: '/sale-receipts',         icon: ReceiptText,label: 'Extraction de données' },
-    { to: '/stripe-payouts',        icon: CreditCard, label: 'Stripe Payouts' },
-    { to: '/journal-entries',       icon: BookOpen,   label: 'Écritures de journal' },
-    { to: '/comptabilite/regles-serials', icon: BookOpen, label: 'Mouvements numéros de série' },
-    { to: '/stock-movement',        icon: ArrowLeftRight, label: "Mouvements d'inventaire" },
-  ]},
-  { group: 'Inventaire', icon: Package, items: [
-    { to: '/purchases',    icon: ShoppingBag, label: 'Achats' },
-    { to: '/assemblages',  icon: Wrench,      label: 'Assemblages' },
-    { to: '/products',     icon: Package,     label: 'Pièces/Produits' },
-    { to: '/serials',      icon: Barcode,     label: 'Numéros de série' },
-  ]},
-  { group: 'RH', icon: Users, items: [
-    { to: '/employees',        icon: Users,    label: 'Employés',              hrOnly: true },
-    { to: '/feuille-de-temps', icon: Clock,    label: 'Feuille de temps' },
-    { to: '/codes-activite',   icon: Tag,      label: "Codes d'activité",      hrOnly: true },
-    { to: '/paies',            icon: Banknote, label: 'Paies' },
-    { to: '/banque-heures',    icon: Wallet,   label: "Banque d'heures" },
-  ]},
-]
-
 const bottomNavItems = []
 
-function NavItem({ to, icon: Icon, label, collapsed, badge }) {
+function NavItem({ to, href, external, icon: Icon, label, collapsed, badge }) {
   const hover = useHoverPrefetch(to)
+  if (external) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        data-testid="nav-external"
+        className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all
+          text-slate-300 hover:text-white hover:bg-slate-800
+          ${collapsed ? 'justify-center' : ''}`}
+        title={collapsed ? label : undefined}
+      >
+        <div className="relative flex-shrink-0">
+          <Icon size={16} />
+        </div>
+        {!collapsed && <span className="flex-1">{label}</span>}
+        {!collapsed && <ExternalLink size={12} className="flex-shrink-0 text-slate-500" />}
+      </a>
+    )
+  }
   return (
     <NavLink
       to={to}
@@ -293,7 +278,7 @@ function NavGroup({ group, icon: Icon, items, collapsed }) {
   )
 }
 
-function UserAvatarMenu({ user, roleLabel, onLogout }) {
+function UserAvatarMenu({ user, roleLabel, onLogout, hasUnseenNews }) {
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState({ top: 0, left: 0 })
   const triggerRef = useRef(null)
@@ -336,10 +321,18 @@ function UserAvatarMenu({ user, roleLabel, onLogout }) {
     <>
       <div
         ref={triggerRef}
+        data-testid="user-avatar-trigger"
         onMouseEnter={openMenu}
-        className="w-8 h-8 bg-gradient-to-br from-brand-500 to-emerald-700 rounded-full flex items-center justify-center cursor-pointer ring-2 ring-transparent hover:ring-brand-300/40 transition"
+        className="relative w-8 h-8 bg-gradient-to-br from-brand-500 to-emerald-700 rounded-full flex items-center justify-center cursor-pointer ring-2 ring-transparent hover:ring-brand-300/40 transition"
       >
         <span className="text-white text-xs font-semibold tracking-tight">{initials}</span>
+        {hasUnseenNews && (
+          <span
+            data-testid="changelog-badge"
+            className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-amber-400 rounded-full ring-2 ring-slate-900"
+            title="Nouveautés disponibles"
+          />
+        )}
       </div>
 
       {open && (
@@ -352,9 +345,30 @@ function UserAvatarMenu({ user, roleLabel, onLogout }) {
             <div className="text-white text-sm font-medium truncate">{user?.name}</div>
             <div className="text-slate-400 text-xs mt-0.5">{roleLabel[user?.role] || user?.role}</div>
           </div>
+          <NavLink
+            to="/changelog"
+            data-testid="user-menu-changelog"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2.5 w-full px-3 py-2 mt-1 mx-1 rounded-md text-sm text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
+            style={{ width: 'calc(100% - 0.5rem)' }}
+          >
+            <Sparkles size={14} />
+            <span className="flex-1 text-left">Nouveautés</span>
+            {hasUnseenNews && <span className="w-2 h-2 bg-amber-400 rounded-full" />}
+          </NavLink>
+          <NavLink
+            to="/settings"
+            data-testid="user-menu-settings"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2.5 w-full px-3 py-2 mx-1 rounded-md text-sm text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
+            style={{ width: 'calc(100% - 0.5rem)' }}
+          >
+            <Settings size={14} />
+            Paramètres
+          </NavLink>
           <button
             onClick={onLogout}
-            className="flex items-center gap-2.5 w-full px-3 py-2 mt-1 mx-1 rounded-md text-sm text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
+            className="flex items-center gap-2.5 w-full px-3 py-2 mx-1 rounded-md text-sm text-slate-300 hover:text-white hover:bg-slate-700 transition-colors"
             style={{ width: 'calc(100% - 0.5rem)' }}
           >
             <LogOut size={14} />
@@ -416,18 +430,23 @@ export function Layout({ children }) {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [showChangePw, setShowChangePw] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
+  const [showShortcuts, setShowShortcuts] = useState(false)
   const { user, logout } = useAuth()
+  const { isHidden } = useNavPrefs()
   const { anyRunning } = useSyncStatus()
+  const [hasUnseenNews, setHasUnseenNews] = useState(() => hasUnseenChangelog())
+
+  // Pastille « nouveautés » : initialisée depuis localStorage, retirée quand la
+  // page Changelog émet l'événement `changelog:seen` au montage.
+  useEffect(() => {
+    const onSeen = () => setHasUnseenNews(false)
+    window.addEventListener(CHANGELOG_SEEN_EVENT, onSeen)
+    return () => window.removeEventListener(CHANGELOG_SEEN_EVENT, onSeen)
+  }, [])
 
   // Raccourcis clavier globaux
   useEffect(() => {
-    const SHORTCUTS = {
-      d: '/dashboard',
-      t: '/feuille-de-temps',
-      b: '/tickets',
-      p: '/pipeline',
-      c: '/orders',
-    }
+    const NAV_MAP = Object.fromEntries(NAV_SHORTCUTS.map(s => [s.key, s.to]))
     function onKey(e) {
       // Cmd+K → recherche globale
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -443,7 +462,17 @@ export function Layout({ children }) {
       const ae = document.activeElement
       const tag = ae?.tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || ae?.isContentEditable) return
-      const target = SHORTCUTS[e.key.toLowerCase()]
+      // Un scanner code-barre est monté (ex. fiche commande) : les frappes sont
+      // des caractères de code, pas des raccourcis — ne pas naviguer.
+      if (window.__barcodeScannerActive) return
+      // « ? » → overlay d'aide des raccourcis (standard GitHub/Linear/Gmail).
+      // e.key vaut '?' (Shift+/) ; on tolère aussi shiftKey sans le bloquer.
+      if (e.key === '?') {
+        e.preventDefault()
+        setShowShortcuts(s => !s)
+        return
+      }
+      const target = NAV_MAP[e.key.toLowerCase()]
       if (target) {
         e.preventDefault()
         navigate(target)
@@ -463,10 +492,19 @@ export function Layout({ children }) {
 
   const roleLabel = { admin: 'Admin', rh: 'RH', sales: 'Ventes', support: 'Support', ops: 'Opérations' }
   const isHR = ['admin', 'rh'].includes(user?.role)
+  // Filtrage en deux temps : d'abord les permissions de rôle (hrOnly), puis les
+  // préférences perso de l'utilisateur (items/groupes cachés via Paramètres).
+  // Clés : item = `to`, groupe = `group:<nom>`.
   const filteredNavItems = defaultNavItems
     .map(item => {
-      if (!item.group) return item
-      const items = item.items.filter(i => !i.hrOnly || isHR)
+      // Liens externes : toujours préservés, hors logique de rôle/préférences
+      // (pas de `to` interne à filtrer).
+      if (item.external) return item
+      if (!item.group) {
+        return isHidden(item.to) ? null : item
+      }
+      if (isHidden(`group:${item.group}`)) return null
+      const items = item.items.filter(i => (!i.hrOnly || isHR) && !isHidden(i.to))
       if (items.length === 0) return null
       return { ...item, items }
     })
@@ -509,7 +547,7 @@ export function Layout({ children }) {
         {filteredNavItems.map(item =>
           item.group
             ? <NavGroup key={item.group} {...item} collapsed={collapsed && !mobile} />
-            : <NavItem key={item.to} {...item} collapsed={collapsed && !mobile} />
+            : <NavItem key={item.to || item.href} {...item} collapsed={collapsed && !mobile} />
         )}
       </nav>
 
@@ -523,11 +561,17 @@ export function Layout({ children }) {
           )
         })}
         {user?.role === 'admin' && (
+          <NavItem to="/admin/agent" icon={Bot} label="Agent" collapsed={collapsed && !mobile} />
+        )}
+        {user?.role === 'admin' && (
+          <NavItem to="/architecture" icon={Network} label="Architecture" collapsed={collapsed && !mobile} />
+        )}
+        {user?.role === 'admin' && (
           <NavItem to="/admin" icon={Settings} label="Paramètres" collapsed={collapsed && !mobile} />
         )}
         {/* User avatar with hover menu */}
         <div className="flex justify-start px-2 py-2 mt-1">
-          <UserAvatarMenu user={user} roleLabel={roleLabel} onLogout={logout} />
+          <UserAvatarMenu user={user} roleLabel={roleLabel} onLogout={logout} hasUnseenNews={hasUnseenNews} />
         </div>
       </div>
     </div>
@@ -577,6 +621,10 @@ export function Layout({ children }) {
       </Modal>
 
       <CRMSearch open={showSearch} onClose={() => setShowSearch(false)} />
+
+      <KeyboardShortcutsModal isOpen={showShortcuts} onClose={() => setShowShortcuts(false)} />
+
+      <FeedbackFab />
     </div>
   )
 }

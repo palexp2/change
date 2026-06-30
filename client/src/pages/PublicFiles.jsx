@@ -171,6 +171,8 @@ function EditFileModal({ file, onClose, onChange }) {
   const [tagsText, setTagsText] = useState((file.tags || []).join(', '))
   const [originalName, setOriginalName] = useState(file.original_name || '')
   const [saving, setSaving] = useState(false)
+  const [replacing, setReplacing] = useState(false)
+  const replaceInputRef = useRef(null)
 
   const dirtyRef = useRef(false)
   useEffect(() => { dirtyRef.current = true }, [folder, description, tagsText, originalName])
@@ -198,6 +200,37 @@ function EditFileModal({ file, onClose, onChange }) {
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [folder, description, tagsText, originalName])
+
+  async function handleReplaceFile(e) {
+    const picked = e.target.files?.[0]
+    e.target.value = '' // permet de re-choisir le même fichier ensuite
+    if (!picked) return
+
+    const ok = await confirm({
+      title: 'Remplacer le fichier ?',
+      message: `Le contenu actuel de "${file.original_name}" sera remplacé par "${picked.name}". `
+        + `L'ancien fichier sera supprimé définitivement. Le lien public reste identique : `
+        + `tout endroit qui l'affiche montrera désormais le nouveau fichier.`,
+      confirmLabel: 'Remplacer',
+      danger: true,
+    })
+    if (!ok) return
+
+    setReplacing(true)
+    try {
+      const fd = new FormData()
+      fd.append('file', picked)
+      const updated = await api.publicFiles.replace(file.id, fd)
+      setOriginalName(updated.original_name || '')
+      dirtyRef.current = false // évite un autosave parasite sur le nouveau nom
+      onChange?.(updated)
+      addToast({ message: 'Fichier remplacé', type: 'success' })
+    } catch (err) {
+      addToast({ message: 'Erreur: ' + err.message, type: 'error' })
+    } finally {
+      setReplacing(false)
+    }
+  }
 
   async function handleDelete() {
     const ok = await confirm({
@@ -271,6 +304,27 @@ function EditFileModal({ file, onClose, onChange }) {
             >
               <ExternalLink size={12} /> Ouvrir
             </a>
+          </div>
+          <div className="mt-3">
+            <input
+              ref={replaceInputRef}
+              type="file"
+              className="hidden"
+              data-testid="replace-file-input"
+              onChange={handleReplaceFile}
+            />
+            <button
+              type="button"
+              onClick={() => replaceInputRef.current?.click()}
+              disabled={replacing}
+              data-testid="replace-file-btn"
+              className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-slate-300 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+            >
+              {replacing
+                ? <><RefreshCw size={14} className="animate-spin" /> Remplacement…</>
+                : <><Upload size={14} /> Remplacer le fichier</>}
+            </button>
+            <p className="text-xs text-slate-400 mt-1">Garde le même lien public — remplace seulement le contenu.</p>
           </div>
         </div>
         <div className="flex items-center justify-between pt-2">

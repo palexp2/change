@@ -1,7 +1,4 @@
-function fmtCad(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
+import { fmtCad } from '../utils/formatters.js'
 
 export function LineItemsTable({ lines }) {
   const items = (() => { try { return JSON.parse(lines || '[]') } catch { return [] } })()

@@ -1,11 +1,13 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, ExternalLink } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 
 const STATUS_COLORS = {
@@ -81,8 +83,16 @@ function ItemDetailModal({ item, onClose }) {
           <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Réception &amp; analyse</h3>
           <dl className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
             <Field label="Reçu le">{fmtDate(item.received_at)}</Field>
-            <Field label="Reçu par">{item.received_by}</Field>
-            <Field label="Analysé par">{item.analyzed_by}</Field>
+            <Field label="Reçu par">
+              {item.received_by_employee_id
+                ? <Link to={`/employees/${item.received_by_employee_id}`} className="text-brand-600 hover:underline" onClick={onClose}>{item.received_by}</Link>
+                : item.received_by}
+            </Field>
+            <Field label="Analysé par">
+              {item.analyzed_by_employee_id
+                ? <Link to={`/employees/${item.analyzed_by_employee_id}`} className="text-brand-600 hover:underline" onClick={onClose}>{item.analyzed_by}</Link>
+                : item.analyzed_by}
+            </Field>
             <Field label="Date d'analyse">{fmtDate(item.date_d_analyse)}</Field>
             {item.analysis_notes && <Field label="Notes d'analyse" full>{item.analysis_notes}</Field>}
             {item.notes_de_retour && <Field label="Notes du retour" full>{item.notes_de_retour}</Field>}
@@ -131,25 +141,28 @@ export default function RetourDetail() {
   const navigate = useNavigate()
   const [retour, setRetour] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [selectedItem, setSelectedItem] = useState(null)
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true)
+    setLoadError(null)
     api.retours.get(id)
       .then(data => setRetour(data))
-      .catch(() => setRetour(null))
+      .catch((e) => { setRetour(null); setLoadError(e?.message || 'Erreur de chargement') })
       .finally(() => setLoading(false))
   }, [id])
+
+  useEffect(() => { load() }, [load])
 
   if (loading) {
     return (
       <Layout>
-        <div className="flex items-center justify-center h-64">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" />
-        </div>
+        <Spinner center />
       </Layout>
     )
   }
+  if (loadError && !retour) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
   if (!retour) return <Layout><div className="p-6 text-slate-500">Retour introuvable.</div></Layout>
 
   return (
@@ -239,7 +252,11 @@ export default function RetourDetail() {
                   >
                     <td className="px-4 py-3 font-mono text-xs font-medium text-slate-900">{item.serial_number || '—'}</td>
                     <td className="px-4 py-3">
-                      <div className="font-medium text-slate-900">{item.product_name || '—'}</div>
+                      <div className="font-medium text-slate-900">
+                        {item.product_id
+                          ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{item.product_name || 'Produit'}</Link>
+                          : (item.product_name || '—')}
+                      </div>
                       {item.sku && <div className="text-xs text-slate-400 font-mono">{item.sku}</div>}
                     </td>
                     <td className="px-4 py-3 hidden sm:table-cell text-slate-600">{item.return_reason || '—'}</td>

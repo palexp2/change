@@ -48,25 +48,26 @@ router.get('/:id', (req, res) => {
 })
 
 router.post('/', (req, res) => {
-  const { name, description, active, payable } = req.body || {}
+  const { name, description, active, payable, rsde_default } = req.body || {}
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name requis' })
   const id = uuidv4()
   db.prepare(`
-    INSERT INTO activity_codes (id, name, description, active, payable)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO activity_codes (id, name, description, active, payable, rsde_default)
+    VALUES (?, ?, ?, ?, ?, ?)
   `).run(
     id,
     String(name).trim(),
     description || null,
     active === false ? 0 : 1,
     payable === false ? 0 : 1,
+    rsde_default ? 1 : 0,
   )
   const row = db.prepare('SELECT * FROM activity_codes WHERE id = ?').get(id)
   emitEntity('activity_code', 'created', id, row, req.user?.id)
   res.status(201).json(row)
 })
 
-const PATCHABLE = new Set(['name', 'description', 'active', 'payable'])
+const PATCHABLE = new Set(['name', 'description', 'active', 'payable', 'rsde_default'])
 
 router.patch('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM activity_codes WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
@@ -76,7 +77,7 @@ router.patch('/:id', (req, res) => {
   for (const [k, rawV] of Object.entries(req.body || {})) {
     if (!PATCHABLE.has(k)) continue
     let v = rawV
-    if (k === 'active' || k === 'payable') v = v ? 1 : 0
+    if (k === 'active' || k === 'payable' || k === 'rsde_default') v = v ? 1 : 0
     else if (v === '' || v === undefined) v = null
     else if (k === 'name') {
       v = String(v).trim()

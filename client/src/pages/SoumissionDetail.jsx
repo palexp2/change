@@ -1,14 +1,16 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, FileDown, Copy, Trash2, Pencil, Check, Plus, ChevronUp, ChevronDown, ExternalLink } from 'lucide-react'
+import { ArrowLeft, FileDown, Copy, Trash2, Pencil, Check, Plus, ChevronUp, ChevronDown, ExternalLink, PackagePlus } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 function fmtPrice(n, currency = 'CAD') {
   if (!n && n !== 0) return '—'
@@ -45,11 +47,13 @@ export default function SoumissionDetail() {
   const [soumission, setSoumission] = useState(null)
   const [catalog, setCatalog] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState({})
   const [items, setItems] = useState([])
   const [saving, setSaving] = useState(false)
   const [duplicating, setDuplicating] = useState(false)
+  const [converting, setConverting] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [pdfLoading, setPdfLoading] = useState(false)
   const saveTimerRef = useRef(null)
@@ -58,6 +62,8 @@ export default function SoumissionDetail() {
   const { addToast } = useToast()
 
   const load = async () => {
+    setLoading(true)
+    setLoadError(null)
     try {
       const data = await api.documents.soumissions.get(id)
       skipSaveRef.current = true
@@ -72,8 +78,9 @@ export default function SoumissionDetail() {
         discount_valid_until: data.discount_valid_until || '',
       })
       setItems((data.items || []).map(it => ({ ...it })))
-    } catch {
+    } catch (e) {
       setSoumission(null)
+      setLoadError(e?.message || 'Erreur de chargement')
     } finally {
       setLoading(false)
     }
@@ -148,6 +155,29 @@ export default function SoumissionDetail() {
     }
   }
 
+  const convertToOrder = async () => {
+    // Si déjà convertie, on navigue simplement vers la commande existante.
+    if (soumission.converted_order?.id) {
+      navigate(`/orders/${soumission.converted_order.id}`)
+      return
+    }
+    if (!(await confirm('Convertir cette soumission en commande ? Les articles seront copiés dans une nouvelle commande.'))) return
+    setConverting(true)
+    try {
+      const order = await api.documents.soumissions.convertToOrder(id)
+      addToast({
+        message: order.already_converted
+          ? `Soumission déjà convertie — commande #${order.order_number}`
+          : `Commande #${order.order_number} créée depuis la soumission`,
+        type: 'success',
+      })
+      navigate(`/orders/${order.id}`)
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+      setConverting(false)
+    }
+  }
+
   const handleDelete = async () => {
     if (!(await confirm('Supprimer cette soumission ?'))) return
     setDeleting(true)
@@ -214,13 +244,12 @@ export default function SoumissionDetail() {
 
   const inp = 'border border-slate-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-brand-400 bg-white'
 
-  if (loading) return <Layout><div className="p-8 text-center text-slate-400">Chargement…</div></Layout>
+  if (loading) return <Layout><Spinner center label="Chargement…" /></Layout>
+  if (loadError && !soumission) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
   if (!soumission) return <Layout><div className="p-8 text-center text-slate-500">Soumission introuvable.</div></Layout>
 
-  const goBack = () => {
-    if (soumission.project_id) navigate(`/projects/${soumission.project_id}`, { state: { tab: 'soumissions' } })
-    else navigate(-1)
-  }
+  // project_id case handled by the back <Link>; this only covers the no-project fallback
+  const goBack = () => navigate(-1)
 
   return (
     <Layout>
@@ -228,10 +257,18 @@ export default function SoumissionDetail() {
 
         {/* Top bar */}
         <div className="flex items-center justify-between mb-6">
-          <button onClick={goBack} className="flex items-center gap-2 text-slate-500 hover:text-slate-700 text-sm">
-            <ArrowLeft size={16} />
-            {soumission.project_name ? `Projet : ${soumission.project_name}` : 'Retour'}
-          </button>
+          {soumission.project_id ? (
+            <Link to={`/projects/${soumission.project_id}`} state={{ tab: 'soumissions' }}
+              className="flex items-center gap-2 text-slate-500 hover:text-slate-700 text-sm">
+              <ArrowLeft size={16} />
+              {soumission.project_name ? `Projet : ${soumission.project_name}` : 'Retour'}
+            </Link>
+          ) : (
+            <button onClick={goBack} className="flex items-center gap-2 text-slate-500 hover:text-slate-700 text-sm">
+              <ArrowLeft size={16} />
+              Retour
+            </button>
+          )}
 
           <div className="flex items-center gap-2">
             {!editing && isDraft && (
@@ -251,6 +288,17 @@ export default function SoumissionDetail() {
             )}
             {!editing && (
               <>
+                {soumission.converted_order ? (
+                  <Link to={`/orders/${soumission.converted_order.id}`}
+                    className="flex items-center gap-1.5 border border-green-200 bg-green-50 text-green-700 px-3 py-2 rounded-lg text-sm hover:bg-green-100">
+                    <PackagePlus size={14} /> Commande #{soumission.converted_order.order_number}
+                  </Link>
+                ) : (
+                  <button onClick={convertToOrder} disabled={converting}
+                    className="flex items-center gap-1.5 bg-brand-600 text-white px-3 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
+                    <PackagePlus size={14} /> {converting ? 'Conversion…' : 'Convertir en commande'}
+                  </button>
+                )}
                 <button onClick={duplicate} disabled={duplicating}
                   className="flex items-center gap-1.5 border border-slate-200 text-slate-600 px-3 py-2 rounded-lg text-sm hover:bg-slate-50">
                   <Copy size={14} /> {duplicating ? 'Copie…' : 'Dupliquer'}
@@ -328,7 +376,9 @@ export default function SoumissionDetail() {
             </div>
             <div>
               <p className="text-xs text-slate-400 uppercase tracking-wider mb-0.5">Projet</p>
-              <p className="text-slate-700">{soumission.project_name || '—'}</p>
+              {soumission.project_id
+                ? <Link to={`/projects/${soumission.project_id}`} className="text-brand-500 hover:underline">{soumission.project_name || 'Projet'}</Link>
+                : <p className="text-slate-700">{soumission.project_name || '—'}</p>}
             </div>
           </div>
 

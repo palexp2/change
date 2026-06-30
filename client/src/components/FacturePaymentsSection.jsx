@@ -40,6 +40,7 @@ export default function FacturePaymentsSection({
   const [err, setErr] = useState(null)
   const [convertOpen, setConvertOpen] = useState(false)
   const [converting, setConverting] = useState(false)
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   // Form state
   const [method, setMethod] = useState('cheque')
@@ -117,6 +118,21 @@ export default function FacturePaymentsSection({
     }
   }
 
+  // Étape 1 : valider le montant puis ouvrir la modale de confirmation des
+  // side effects (mouvement monétaire + push QuickBooks). On ne crée le
+  // paiement qu'après confirmation explicite — voir règle « confirmation des
+  // side effects » du CLAUDE.md.
+  function requestSubmit() {
+    setErr(null)
+    const amt = parseFloat(amount)
+    if (!Number.isFinite(amt) || amt <= 0) {
+      setErr('Le montant doit être supérieur à 0.')
+      return
+    }
+    setConfirmOpen(true)
+  }
+
+  // Étape 2 : exécution réelle après confirmation dans la modale.
   async function submit() {
     setErr(null)
     const amt = parseFloat(amount)
@@ -136,10 +152,12 @@ export default function FacturePaymentsSection({
         notes: notes.trim() || undefined,
         skip_qb: skipQb || undefined,
       })
+      setConfirmOpen(false)
       setFormOpen(null)
       if (res.qb_error) setErr(`Saisi mais écriture QB échouée : ${res.qb_error}`)
       reload()
     } catch (e) {
+      setConfirmOpen(false)
       setErr(e.message || 'Erreur')
     } finally {
       setSubmitting(false)
@@ -303,7 +321,7 @@ export default function FacturePaymentsSection({
               className="px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-100 rounded-md"
             >Annuler</button>
             <button
-              onClick={submit}
+              onClick={requestSubmit}
               disabled={submitting}
               className={`px-3 py-1.5 text-xs font-medium text-white rounded-md disabled:opacity-50 ${formOpen === 'in' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'}`}
               data-testid="payment-submit"
@@ -311,6 +329,18 @@ export default function FacturePaymentsSection({
           </div>
         </div>
       )}
+
+      <PaymentConfirmModal
+        isOpen={confirmOpen}
+        submitting={submitting}
+        direction={formOpen}
+        method={method}
+        amount={parseFloat(amount)}
+        currency={currency}
+        skipQb={skipQb}
+        onCancel={() => setConfirmOpen(false)}
+        onConfirm={submit}
+      />
 
       <div className="px-5 py-3">
         {loading ? (
@@ -375,6 +405,80 @@ function ConvertConfirmModal({ isOpen, converting, facturePaidAt, onCancel, onCo
           data-testid="convert-to-off-stripe-confirm"
         >
           {converting ? 'Conversion…' : 'Confirmer la conversion'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// Modale de confirmation des side effects à la saisie manuelle d'un paiement
+// (direction 'in') ou d'un remboursement (direction 'out'). Liste explicitement
+// le mouvement monétaire enregistré ET l'écriture poussée dans QuickBooks
+// (sauf si « écriture déjà postée » est coché) — règle « confirmation des side
+// effects » du CLAUDE.md.
+function PaymentConfirmModal({ isOpen, submitting, direction, method, amount, currency, skipQb, onCancel, onConfirm }) {
+  if (!isOpen) return null
+  const isIn = direction === 'in'
+  const money = fmtMoney(Number.isFinite(amount) ? amount : 0, currency)
+  const methodLabel = METHOD_LABELS[method] || method
+  return (
+    <Modal
+      isOpen={true}
+      onClose={onCancel}
+      title={isIn ? 'Confirmer le paiement (hors Stripe)' : 'Confirmer le remboursement (hors Stripe)'}
+      size="md"
+    >
+      <div className="text-sm text-slate-700 space-y-3" data-testid="payment-confirm-body">
+        <p>Cette action déclenche les effets suivants :</p>
+        <ul className="list-disc pl-5 space-y-1.5">
+          <li>
+            {isIn ? (
+              <>Enregistrement d'un <strong>paiement reçu</strong> de <strong>{money}</strong> ({methodLabel}) sur cette facture.</>
+            ) : (
+              <>Enregistrement d'un <strong>remboursement émis</strong> de <strong>{money}</strong> ({methodLabel}) sur cette facture.</>
+            )}
+          </li>
+          <li>
+            Mise à jour du <strong>solde dû</strong> et du <strong>statut</strong> de la facture en conséquence.
+          </li>
+          {skipQb ? (
+            <li>
+              <strong>Aucune écriture</strong> ne sera postée dans QuickBooks
+              (case <em>« Écriture déjà postée »</em> cochée). La ligne est créée
+              uniquement pour la traçabilité ERP.
+            </li>
+          ) : (
+            <li>
+              {isIn ? (
+                <>Pose d'un <strong>Deposit</strong> dans <strong>QuickBooks</strong> pour l'encaissement de {money}.</>
+              ) : (
+                <>Traitement d'un <strong>remboursement</strong> dans <strong>QuickBooks</strong> pour {money} (écriture / Refund Receipt).</>
+              )}
+            </li>
+          )}
+        </ul>
+        {!skipQb && (
+          <p className="text-xs text-slate-500">
+            Si la pose QuickBooks échoue, la ligne reste enregistrée et un bouton
+            <em> Retry</em> permettra de réessayer l'écriture comptable.
+          </p>
+        )}
+      </div>
+      <div className="flex justify-end gap-3 mt-6">
+        <button
+          onClick={onCancel}
+          disabled={submitting}
+          className="px-3 py-1.5 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg disabled:opacity-50"
+        >
+          Annuler
+        </button>
+        <button
+          onClick={onConfirm}
+          disabled={submitting}
+          className={`px-3 py-1.5 text-sm font-medium text-white rounded-lg disabled:opacity-50 ${isIn ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'}`}
+          data-testid="payment-confirm-submit"
+        >
+          {submitting ? 'Enregistrement…' : (isIn ? 'Confirmer le paiement' : 'Confirmer le remboursement')}
         </button>
       </div>
     </Modal>

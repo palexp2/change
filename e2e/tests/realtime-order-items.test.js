@@ -48,11 +48,14 @@ describe('Realtime — items de commande sur /orders/:id', () => {
   })
 
   after(async () => {
+    // Hard delete (?hard=true) — supprime la commande ET ses order_items pour ne
+    // laisser aucun résidu en base (un simple DELETE ne fait qu'un soft-delete).
+    // S'exécute même si le test a échoué.
     if (orderId) {
       try {
         await pageB.evaluate(async (id) => {
           const tok = localStorage.getItem('erp_token')
-          await fetch(`/erp/api/orders/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${tok}` } })
+          await fetch(`/erp/api/orders/${id}?hard=true`, { method: 'DELETE', headers: { Authorization: `Bearer ${tok}` } })
         }, orderId)
       } catch {}
     }

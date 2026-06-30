@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus } from 'lucide-react'
+import { Plus, Package } from 'lucide-react'
 import api from '../lib/api.js'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
@@ -25,9 +25,23 @@ function ProductForm({ initial = {}, onSave, onClose }) {
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
+    // Trim des champs texte au submit pour éviter des records pollués par des espaces seuls.
+    const trimmed = {
+      ...form,
+      sku: form.sku.trim(),
+      name_fr: form.name_fr.trim(),
+      name_en: form.name_en.trim(),
+      type: form.type.trim(),
+      supplier: form.supplier.trim(),
+      notes: form.notes.trim(),
+    }
+    if (!trimmed.name_fr) {
+      setError('Le nom (FR) est requis.')
+      return
+    }
     setSaving(true)
     try {
-      await onSave(form)
+      await onSave(trimmed)
       onClose()
     } catch (err) {
       setError(err.message)
@@ -202,6 +216,7 @@ export default function Products() {
               onChange: syncStore,
             })
           }}
+          emptyState={{ icon: Package, title: 'Aucun produit', description: "Aucun produit n'est encore au catalogue. Ajoute un produit pour le vendre et l'assembler.", cta: { label: 'Nouveau produit', icon: Plus, onClick: () => setShowModal(true) } }}
         />
       </div>
 

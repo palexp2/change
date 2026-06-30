@@ -6,6 +6,7 @@ import db from '../db/database.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
 import { requireAuth } from '../middleware/auth.js'
 import { qbGet, qbAttachmentDownloadUrl } from '../connectors/quickbooks.js'
+import { pushAchatToQB } from '../services/quickbooks.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 
 const ACHAT_LIST_SELECT = `
@@ -24,6 +25,26 @@ const QB_ATTACH_DIR = path.join(UPLOADS_ROOT, 'qb-attachments')
 function sanitizeFileName(name) {
   return String(name || 'file').replace(/[/\\?%*:|"<>]/g, '_').slice(0, 200) || 'file'
 }
+
+// Garde « impossible by design » sur les montants comptables. Un montant fourni
+// doit être un nombre fini ≥ 0 : sans ce contrôle, `Number(v) || 0` transformait
+// silencieusement un NaN ('abc', '12,5', objet…) en 0, et un montant négatif
+// faussait les totaux et les soldes. Une valeur absente / vide ('' ou null) reste
+// tolérée — elle signifie « non fournie » et sera traitée comme 0 / clear.
+const MONEY_FIELDS = ['amount_cad', 'tax_cad', 'total_cad', 'amount_paid_cad']
+function validateMoneyFields(body, fields = MONEY_FIELDS) {
+  for (const f of fields) {
+    if (!Object.prototype.hasOwnProperty.call(body, f)) continue
+    const v = body[f]
+    if (v === null || v === '' || v === undefined) continue
+    const n = Number(v)
+    if (!Number.isFinite(n) || n < 0) {
+      return `${f} doit être un nombre positif (reçu : ${JSON.stringify(v)})`
+    }
+  }
+  return null
+}
+const toMoney = (v) => (v === null || v === '' || v === undefined ? 0 : Number(v))
 
 router.get('/', (req, res) => {
   const { type, status, category, vendor_id, page = 1, limit = 50 } = req.query
@@ -74,8 +95,14 @@ router.post('/', (req, res) => {
   if (type === 'bill' && !vendor) return res.status(400).json({ error: 'vendor requis pour une facture' })
   if (type === 'purchase' && !description) return res.status(400).json({ error: 'description requise pour une dépense' })
 
+  const moneyError = validateMoneyFields(req.body)
+  if (moneyError) return res.status(400).json({ error: moneyError })
+
   const id = randomUUID()
-  const tot = total_cad != null ? total_cad : ((amount_cad || 0) + (tax_cad || 0))
+  const amt = toMoney(amount_cad)
+  const tax = toMoney(tax_cad)
+  const paid = toMoney(amount_paid_cad)
+  const tot = (total_cad != null && total_cad !== '') ? Number(total_cad) : (amt + tax)
   const defaultStatus = type === 'bill' ? 'Reçue' : 'Brouillon'
 
   db.prepare(`
@@ -88,7 +115,7 @@ router.post('/', (req, res) => {
     id, type, date_achat, due_date || null, vendor || null, vendor_id || null,
     vendor_invoice_number || null, bill_number || null, reference || null, description || null,
     category || null, payment_method || null,
-    amount_cad || 0, tax_cad || 0, tot, amount_paid_cad || 0,
+    amt, tax, tot, paid,
     status || defaultStatus, notes || null, lines || null, req.user.id
   )
 
@@ -101,8 +128,12 @@ router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id, type FROM achats_fournisseurs WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
 
-  // If total_cad is absent but amount_cad / tax_cad are touched, recompute it
   const body = { ...req.body }
+
+  const moneyError = validateMoneyFields(body)
+  if (moneyError) return res.status(400).json({ error: moneyError })
+
+  // If total_cad is absent but amount_cad / tax_cad are touched, recompute it
   if (!('total_cad' in body) && ('amount_cad' in body || 'tax_cad' in body)) {
     const existingRow = db.prepare('SELECT amount_cad, tax_cad FROM achats_fournisseurs WHERE id = ?').get(req.params.id)
     const amt = 'amount_cad' in body ? (Number(body.amount_cad) || 0) : (existingRow.amount_cad || 0)
@@ -113,7 +144,8 @@ router.put('/:id', (req, res) => {
   const { setClause, values, error } = buildPartialUpdate(body, {
     allowed: ['date_achat', 'due_date', 'vendor', 'vendor_id',
       'vendor_invoice_number', 'bill_number', 'reference', 'description', 'category', 'payment_method',
-      'amount_cad', 'tax_cad', 'total_cad', 'amount_paid_cad', 'status', 'notes', 'lines'],
+      'amount_cad', 'tax_cad', 'total_cad', 'amount_paid_cad', 'status', 'notes', 'lines',
+      'expense_account_id', 'payment_account_id', 'tax_code_id', 'quickbooks_id'],
     nonNullable: new Set(['date_achat', 'status']),
   })
   if (error) return res.status(400).json({ error })
@@ -143,6 +175,43 @@ router.delete('/:id', (req, res) => {
   db.prepare('DELETE FROM achats_fournisseurs WHERE id = ?').run(req.params.id)
   emitEntity('achat_fournisseur', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })
+})
+
+// Transactions passées du même fournisseur déjà publiées sur QuickBooks — servent
+// de modèle de comptabilisation. Fournisseur identifié par vendor_id si présent,
+// sinon par le champ texte `vendor` (insensible casse/espaces).
+router.get('/:id/vendor-history', (req, res) => {
+  const row = db.prepare('SELECT id, vendor, vendor_id FROM achats_fournisseurs WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+
+  let rows = []
+  if (row.vendor_id) {
+    rows = db.prepare(`
+      SELECT * FROM achats_fournisseurs
+      WHERE vendor_id = ? AND quickbooks_id IS NOT NULL AND id != ?
+      ORDER BY COALESCE(date_achat, created_at) DESC LIMIT 20
+    `).all(row.vendor_id, req.params.id)
+  } else if (row.vendor && row.vendor.trim()) {
+    rows = db.prepare(`
+      SELECT * FROM achats_fournisseurs
+      WHERE LOWER(TRIM(vendor)) = LOWER(TRIM(?)) AND quickbooks_id IS NOT NULL AND id != ?
+      ORDER BY COALESCE(date_achat, created_at) DESC LIMIT 20
+    `).all(row.vendor, req.params.id)
+  }
+  res.json({ data: rows })
+})
+
+// Publie un achat vers QuickBooks (Purchase ou Bill). Action transactionnelle
+// explicite : crée une entité QB et persiste les comptes utilisés comme modèle.
+router.post('/:id/push-to-qb', async (req, res) => {
+  try {
+    const qbId = await pushAchatToQB(req.params.id)
+    const updated = db.prepare(ACHAT_LIST_SELECT).get(req.params.id)
+    if (updated) emitEntity('achat_fournisseur', 'updated', req.params.id, updated, req.user?.id)
+    res.json({ ok: true, quickbooks_id: qbId, data: updated })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
 })
 
 // --- QB attachments ---

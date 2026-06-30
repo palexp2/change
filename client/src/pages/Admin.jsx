@@ -1,8 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Trash2, Plug, Zap, Bot, Users, Timer } from 'lucide-react'
+import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Trash2, Plug, Zap, Bot, Users, Timer, Hash } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { fmtDateTime } from '../lib/formatDate.js'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { useAuth } from '../lib/auth.jsx'
@@ -11,7 +12,9 @@ import { ConnectorsContent } from './Connectors.jsx'
 import { AutomationsContent } from './Automations.jsx'
 import { AgentContent } from './Agent.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { TABLE_COLUMN_META, TABLE_LABELS } from '../lib/tableDefs.js'
+import { FieldSelect } from '../components/FilterRow.jsx'
+import { useDecimalPrefs } from '../lib/decimalPrefs.jsx'
 
 function fmt(bytes) {
   if (bytes == null) return '—'
@@ -82,7 +85,7 @@ function HealthDashboard() {
       <div className="flex items-center justify-between">
         <h2 className="font-semibold text-slate-800 flex items-center gap-2"><Server size={16} /> Tableau de bord système</h2>
         <div className="flex items-center gap-3">
-          {lastRefresh && <span className="text-xs text-slate-400">Mis à jour {lastRefresh.toLocaleTimeString('fr-CA')}</span>}
+          {lastRefresh && <span className="text-xs text-slate-400">Mis à jour {fmtDateTime(lastRefresh)}</span>}
           <button onClick={load} disabled={loading} className="btn-secondary btn-sm text-xs">
             <RefreshCw size={11} className={loading ? 'animate-spin' : ''} /> Actualiser
           </button>
@@ -457,9 +460,73 @@ function ResetPasswordForm({ userId, onClose }) {
   )
 }
 
+// Réglage du nombre de décimales affichées par colonne numérique. La préférence
+// est par utilisateur (users.decimal_preferences) et appliquée dans DataTable.
+function DecimalsSection() {
+  const { getDecimals, setDecimals } = useDecimalPrefs()
+
+  // Tables possédant au moins une colonne type:'number'. Picker recherchable.
+  const tableOptions = Object.keys(TABLE_COLUMN_META)
+    .filter(t => (TABLE_COLUMN_META[t] || []).some(c => c.type === 'number'))
+    .map(t => ({ id: t, field: t, label: TABLE_LABELS[t] || t }))
+    .sort((a, b) => a.label.localeCompare(b.label, 'fr'))
+
+  const [table, setTable] = useState(tableOptions[0]?.field || '')
+
+  const numericCols = (TABLE_COLUMN_META[table] || []).filter(c => c.type === 'number')
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 p-5 max-w-2xl">
+      <h2 className="font-semibold text-slate-800 flex items-center gap-2 mb-1">
+        <Hash size={16} /> Décimales d'affichage
+      </h2>
+      <p className="text-slate-500 text-sm mb-4">
+        Choisissez le nombre de décimales affichées pour chaque colonne numérique dans les tableaux.
+        Le réglage est propre à votre compte. « Brut » conserve la valeur telle quelle.
+      </p>
+
+      <div className="mb-4">
+        <label className="block text-xs font-medium text-slate-500 mb-1">Table</label>
+        <div className="flex max-w-xs">
+          <FieldSelect columns={tableOptions} value={table} onChange={setTable} cls="text-sm" />
+        </div>
+      </div>
+
+      {numericCols.length === 0 ? (
+        <p className="text-sm text-slate-400">Aucune colonne numérique pour cette table.</p>
+      ) : (
+        <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg overflow-hidden">
+          {numericCols.map(col => {
+            const current = getDecimals(table, col.field)
+            return (
+              <div key={col.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                <span className="text-sm text-slate-700 truncate">{col.label}</span>
+                <select
+                  value={current == null ? '' : String(current)}
+                  onChange={e => {
+                    const v = e.target.value
+                    setDecimals(table, col.field, v === '' ? null : Number(v))
+                  }}
+                  className="select text-sm w-32 flex-shrink-0"
+                >
+                  <option value="">Brut</option>
+                  {[0, 1, 2, 3, 4, 5].map(n => (
+                    <option key={n} value={n}>{n} décimale{n > 1 ? 's' : ''}</option>
+                  ))}
+                </select>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 const TABS = [
   { key: 'systeme',     label: 'Système',     icon: Server },
   { key: 'utilisateurs', label: 'Utilisateurs', icon: Users },
+  { key: 'affichage',   label: 'Affichage',   icon: Hash },
   { key: 'connecteurs', label: 'Connecteurs', icon: Plug },
   { key: 'automations', label: 'Automations', icon: Zap },
   { key: 'agent',       label: 'Agent',       icon: Bot },
@@ -594,6 +661,7 @@ export default function Admin() {
 
         {activeTab === 'systeme' && <HealthDashboard />}
         {activeTab === 'utilisateurs' && <UsersSection currentUser={currentUser} />}
+        {activeTab === 'affichage' && <DecimalsSection />}
 
         {activeTab === 'connecteurs' && <ConnectorsContent />}
         {activeTab === 'automations' && <AutomationsContent />}

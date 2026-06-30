@@ -1,0 +1,50 @@
+{
+  "_comment": "Journal des nouveautés affiché dans l'app (/changelog). Fichier versionné : ajouter une entrée en TÊTE du tableau `entries` à chaque livraison notable de fonctionnalité. Format d'une entrée — date: 'YYYY-MM-DD' (date métier, sans heure), title: titre court, category: étiquette de domaine (ex. Comptabilité, Envois, Ventes…), changes: liste de { type, text }. type ∈ 'new' (nouveauté), 'improved' (amélioration), 'fixed' (correction). Les entrées sont triées par date décroissante à l'affichage, pas besoin de les ranger ici.",
+  "entries": [
+    {
+      "date": "2026-06-18",
+      "title": "Journal des nouveautés",
+      "category": "Application",
+      "changes": [
+        { "type": "new", "text": "Cette page : suivez ce qui change dans l'ERP, livraison après livraison. Une pastille apparaît sur votre avatar quand de nouvelles entrées sont publiées." }
+      ]
+    },
+    {
+      "date": "2026-06-12",
+      "title": "Refonte de la comptabilité factures & reçus de vente",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "improved", "text": "Section comptable repensée sur les fiches Facture et Reçu de vente : écritures de journal plus lisibles et rapprochement Stripe ↔ QuickBooks clarifié." },
+        { "type": "new", "text": "Bilan (balance sheet) intégré au tableau de bord pour un coup d'œil financier immédiat." },
+        { "type": "fixed", "text": "Les reçus taxes incluses (Amazon) ne comptent plus la taxe en double lors de la publication vers QuickBooks." }
+      ]
+    },
+    {
+      "date": "2026-06-05",
+      "title": "Synchronisation temps réel des commandes",
+      "category": "Envois",
+      "changes": [
+        { "type": "new", "text": "Les commandes et leurs lignes se mettent à jour en direct : plus besoin de rafraîchir la page quand un collègue modifie un envoi." },
+        { "type": "fixed", "text": "Correction d'un cas où des colonnes héritées d'Airtable écrasaient le détail réel d'une commande." }
+      ]
+    },
+    {
+      "date": "2026-05-28",
+      "title": "Guide d'appel de qualification & formulaires de découverte",
+      "category": "Ventes",
+      "changes": [
+        { "type": "new", "text": "Guide d'appel de qualification interactif pour cadrer les appels prospects, avec autocomplétion d'adresse." },
+        { "type": "new", "text": "Formulaires de découverte technique partageables via un lien public court." }
+      ]
+    },
+    {
+      "date": "2026-05-20",
+      "title": "Étiquettes d'expédition Novoxpress",
+      "category": "Envois",
+      "changes": [
+        { "type": "new", "text": "Génération d'étiquettes d'expédition Novoxpress directement depuis une commande." },
+        { "type": "fixed", "text": "Un échec d'impression d'étiquette ne fait plus perdre l'achat : un nouveau bouton re-télécharge le PDF sans refacturer." }
+      ]
+    }
+  ]
+}

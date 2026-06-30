@@ -3,9 +3,22 @@ import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
+import { vacationBalance } from '../services/vacationBalance.js'
 
 const router = Router()
 router.use(requireAuth)
+
+// GET /api/vacations/balance?employee_id=X&year=YYYY
+// Solde de vacances payées calculé : droit annuel, jours pris, jours restants
+// et indicateur de dépassement. Doit précéder les routes /:id.
+router.get('/balance', (req, res) => {
+  const { employee_id } = req.query
+  if (!employee_id) return res.status(400).json({ error: 'employee_id requis' })
+  const year = parseInt(req.query.year, 10) || new Date().getFullYear()
+  const bal = vacationBalance(employee_id, year)
+  if (!bal) return res.status(404).json({ error: 'Employé introuvable' })
+  res.json(bal)
+})
 
 router.get('/', (req, res) => {
   const { employee_id } = req.query

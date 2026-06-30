@@ -4,13 +4,18 @@ import { ArrowLeft, Trash2, ChevronDown, ChevronUp, ExternalLink, Plus, CheckCir
 import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
 import { Layout } from '../components/Layout.jsx'
+import Spinner from '../components/Spinner.jsx'
 import { Badge, ticketStatusColor } from '../components/Badge.jsx'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
+import Attachments from '../components/Attachments.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { Modal } from '../components/Modal.jsx'
 import TaskForm from '../components/TaskForm.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { useRecordKeyNav } from '../lib/useRecordKeyNav.js'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 
 
@@ -38,6 +43,8 @@ export default function TicketDetail() {
   const [users, setUsers] = useState([])
   const [meta, setMeta] = useState({ types: [], statuses: [] })
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
+  const [reloadKey, setReloadKey] = useState(0)
   const [fieldSaving, setFieldSaving] = useState({})
   const [ticketIds, setTicketIds] = useState([])
   const [linkedInteractions, setLinkedInteractions] = useState([])
@@ -117,10 +124,17 @@ export default function TicketDetail() {
   const prevId = currentIdx > 0 ? ticketIds[currentIdx - 1] : null
   const nextId = currentIdx >= 0 && currentIdx < ticketIds.length - 1 ? ticketIds[currentIdx + 1] : null
 
+  // Navigation clavier entre billets (j/↓ suivant · k/↑ précédent).
+  useRecordKeyNav({
+    prev: prevId ? `/tickets/${prevId}` : null,
+    next: nextId ? `/tickets/${nextId}` : null,
+  })
+
   useEffect(() => {
     const ac = new AbortController()
     async function load() {
       setLoading(true)
+      setLoadError(null)
       try {
         const [t, m] = await Promise.all([
           api.tickets.get(id, ac.signal),
@@ -131,6 +145,7 @@ export default function TicketDetail() {
         setMeta(m)
       } catch (err) {
         if (err.name === 'AbortError') return
+        setLoadError(err?.message || 'Erreur de chargement')
       } finally {
         if (!ac.signal.aborted) setLoading(false)
       }
@@ -141,7 +156,7 @@ export default function TicketDetail() {
     }
     load()
     return () => ac.abort()
-  }, [id])
+  }, [id, reloadKey])
 
   async function saveField(key, value) {
     setFieldSaving(s => ({ ...s, [key]: true }))
@@ -209,7 +224,10 @@ export default function TicketDetail() {
   }, [users, ticket?.assigned_to, ticket?.assigned_name])
 
   if (loading) {
-    return <Layout><div className="flex items-center justify-center h-64"><div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" /></div></Layout>
+    return <Layout><Spinner center /></Layout>
+  }
+  if (loadError && !ticket) {
+    return <Layout><DetailLoadError message={loadError} onRetry={() => setReloadKey(k => k + 1)} /></Layout>
   }
   if (!ticket) {
     return <Layout><div className="p-6 text-slate-500">Billet introuvable.</div></Layout>
@@ -236,7 +254,7 @@ export default function TicketDetail() {
               onClick={() => prevId && navigate(`/tickets/${prevId}`)}
               disabled={!prevId}
               className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-              title="Billet précédent"
+              title="Billet précédent (k / ↑)"
             >
               <ChevronUp size={16} />
             </button>
@@ -244,7 +262,7 @@ export default function TicketDetail() {
               onClick={() => nextId && navigate(`/tickets/${nextId}`)}
               disabled={!nextId}
               className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-              title="Billet suivant"
+              title="Billet suivant (j / ↓)"
             >
               <ChevronDown size={16} />
             </button>
@@ -263,17 +281,31 @@ export default function TicketDetail() {
             </div>
             <div>
               <FieldLabel label="Statut" saving={fieldSaving.status} />
-              <select value={ticket.status || ''} onChange={e => saveField('status', e.target.value)} className="select text-sm w-full" disabled={!!fieldSaving.status}>
-                <option value="">—</option>
-                {meta.statuses.map(s => <option key={s} value={s}>{s}</option>)}
-              </select>
+              <SearchableSelect
+                value={ticket.status || ''}
+                options={(meta.statuses || []).map(s => ({ value: s, label: s }))}
+                emptyOption="—"
+                placeholder="—"
+                onChange={v => saveField('status', v)}
+                className="input text-sm w-full"
+                size="sm"
+                disabled={!!fieldSaving.status}
+                testId="ticket-field-status"
+              />
             </div>
             <div>
               <FieldLabel label="Type" saving={fieldSaving.type} />
-              <select value={ticket.type || ''} onChange={e => saveField('type', e.target.value)} className="select text-sm w-full" disabled={!!fieldSaving.type}>
-                <option value="">—</option>
-                {meta.types.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
+              <SearchableSelect
+                value={ticket.type || ''}
+                options={(meta.types || []).map(t => ({ value: t, label: t }))}
+                emptyOption="—"
+                placeholder="—"
+                onChange={v => saveField('type', v)}
+                className="input text-sm w-full"
+                size="sm"
+                disabled={!!fieldSaving.type}
+                testId="ticket-field-type"
+              />
             </div>
             <div>
               <FieldLabel label="Entreprise" saving={fieldSaving.company_id} />
@@ -361,6 +393,11 @@ export default function TicketDetail() {
         <div className="text-xs text-slate-400 flex gap-4">
           <span>Cree: {fmtDateTime(ticket.created_at)}</span>
           {ticket.updated_at && <span>Modifie: {fmtDateTime(ticket.updated_at)}</span>}
+        </div>
+
+        {/* Pièces jointes */}
+        <div className="mt-8">
+          <Attachments entityType="tickets" entityId={id} />
         </div>
 
         {/* Tâches liées */}

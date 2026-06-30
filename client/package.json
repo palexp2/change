@@ -4,6 +4,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "gen:architecture": "node scripts/gen-architecture.mjs",
+    "prebuild": "node scripts/gen-architecture.mjs",
     "build": "vite build",
     "lint": "eslint src"
   },

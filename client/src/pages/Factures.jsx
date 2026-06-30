@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { X } from 'lucide-react'
+import { X, FileText } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -14,11 +14,8 @@ import { useCustomFields } from '../lib/useCustomFields.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { fmtDate } from '../lib/formatDate.js'
-
-function fmtCad(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
+import { fmtCad } from '../utils/formatters.js'
+import { renderCustomFieldValue, customFieldColumnType, parseSelectChoices } from '../lib/customFieldDisplay.jsx'
 
 
 const STATUS_COLORS = {
@@ -119,7 +116,18 @@ export default function Factures() {
   useEntityListRealtime('facture', setFactures)
 
   async function handleDeleteCustomField(field) {
-    if (!(await confirm(`Supprimer le champ "${field.name}" ? Restaurable depuis la corbeille.`))) return
+    // Rapport d'usage : avertit si des champs calculés référencent celui-ci avant
+    // de les casser en silence (#ERROR).
+    let dependents = []
+    try { dependents = (await api.customFields.dependents(field.id))?.dependents || [] } catch {}
+    const depMsg = dependents.length
+      ? `\n\n⚠️ Référencé par ${dependents.length} champ(s) calculé(s) : ${dependents.map(d => d.name).join(', ')}. Ces champs cesseront de se calculer (#ERROR).`
+      : ''
+    if (!(await confirm({
+      title: 'Supprimer le champ',
+      message: `Supprimer le champ "${field.name}" ? Restaurable depuis la corbeille.${depMsg}`,
+      confirmLabel: dependents.length ? 'Supprimer quand même' : 'Supprimer',
+    }))) return
     try {
       await api.customFields.delete(field.id)
       addToast({ message: 'Champ supprimé', type: 'success' })
@@ -164,16 +172,15 @@ export default function Factures() {
       id: f.column_name,
       label: f.name,
       field: f.column_name,
-      type: f.result_type === 'date' ? 'date' : (f.result_type === 'number' || f.type === 'number' ? 'number' : 'text'),
-      groupable: true,
-      sortable: true,
-      filterable: true,
-      render: row => {
-        const v = row[f.column_name]
-        if (v == null || v === '') return <span className="text-slate-400">—</span>
-        if (f.result_type === 'date') return <span className="text-slate-500">{fmtDate(v)}</span>
-        return <span className="text-slate-700">{v}</span>
-      },
+      type: customFieldColumnType(f),
+      ...((f.type === 'single_select' || f.type === 'multi_select')
+        ? { options: parseSelectChoices(f), selectChoices: parseSelectChoices(f) }
+        : {}),
+      // Bouton : action sur la ligne → ni groupable, ni triable, ni filtrable.
+      groupable: f.type !== 'button',
+      sortable: f.type !== 'button',
+      filterable: f.type !== 'button',
+      render: row => renderCustomFieldValue(f, row[f.column_name], row),
     }))
     return [...COLUMNS, ...customCols]
   }, [customFields])
@@ -229,6 +236,7 @@ export default function Factures() {
           onAddCustomField={() => setCustomFieldModal({ editing: null })}
           onEditCustomField={(field) => setCustomFieldModal({ editing: field })}
           onDeleteCustomField={handleDeleteCustomField}
+          emptyState={{ icon: FileText, title: 'Aucune facture', description: "Aucune facture n'a encore été émise. Les factures apparaissent ici une fois créées ou synchronisées." }}
         />
       </div>
 
@@ -238,6 +246,7 @@ export default function Factures() {
         erpTable="factures"
         editing={customFieldModal?.editing || null}
         onSaved={async () => { await reloadCustomFields(); load() }}
+        onDeleted={async () => { await reloadCustomFields(); load() }}
       />
     </Layout>
   )

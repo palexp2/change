@@ -3,9 +3,24 @@ import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
 import { requireAuth, isHROrAdmin } from '../middleware/auth.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
+import { vacationBalance } from '../services/vacationBalance.js'
 
 const router = Router()
 router.use(requireAuth)
+
+// Ajoute le solde de vacances payées (année civile courante) à chaque ligne
+// de la vue agrégée banque d'heures, pour un aperçu RH consolidé.
+function withVacationBalance(rows) {
+  return rows.map(r => {
+    const bal = vacationBalance(r.employee_id)
+    return {
+      ...r,
+      vacation_allowance: bal?.allowance ?? 0,
+      vacation_used_days: bal?.used_days ?? 0,
+      vacation_remaining: bal?.remaining ?? 0,
+    }
+  })
+}
 
 function myEmployeeId(userId) {
   const row = db.prepare('SELECT employee_id FROM users WHERE id = ?').get(userId)
@@ -29,7 +44,7 @@ router.get('/', (req, res) => {
       HAVING COUNT(hb.id) > 0 OR e.active = 1
       ORDER BY e.last_name, e.first_name
     `).all()
-    return res.json({ data: rows })
+    return res.json({ data: withVacationBalance(rows) })
   }
   const empId = myEmployeeId(req.user.id)
   if (!empId) return res.json({ data: [] })
@@ -44,7 +59,7 @@ router.get('/', (req, res) => {
     WHERE e.id = ?
     GROUP BY e.id
   `).get(empId)
-  res.json({ data: row ? [row] : [] })
+  res.json({ data: row ? withVacationBalance([row]) : [] })
 })
 
 // GET /api/hour-bank/:employeeId — historique des ajustements pour un employé.

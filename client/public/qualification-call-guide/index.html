@@ -1497,6 +1497,55 @@ html:not(.assistant-mode) .testimonial-split-body{
 .step-zero[data-tab-set="proposal"][data-active-tab="script"] .phase-block[data-phase="rabais"] > *{display:none;}
 .step-zero[data-tab-set="proposal"][data-active-tab="rabais"] .phase-block:not([data-phase="rabais"]) > *{display:none;}
 
+/* Tab visibility — Conclusion step : Script (contenu actuel) + System builder (vide pour l'instant). */
+.step-zero[data-tab-set="conclusion"] .phase-block{display:contents;}
+.step-zero[data-tab-set="conclusion"][data-active-tab="script"] .phase-block[data-phase="systembuilder"] > *{display:none;}
+.step-zero[data-tab-set="conclusion"][data-active-tab="systembuilder"] .phase-block:not([data-phase="systembuilder"]) > *{display:none;}
+
+/* ===== SYSTEM BUILDER (assistant view, onglet System builder du step Conclusion) ===== */
+.sb-wrap{display:flex;flex-direction:column;gap:10px;max-width:680px;margin-top:8px;}
+.sb-label{font-size:13px;font-weight:600;color:#444;margin-top:4px;}
+.sb-email-input{
+  padding:10px 12px;border:1px solid #d8d8d8;border-radius:8px;font-size:14px;
+  font-family:inherit;outline:none;transition:border-color 0.15s,box-shadow 0.15s;
+}
+.sb-email-input:focus{border-color:#2EAA4A;box-shadow:0 0 0 3px rgba(46,170,74,0.12);}
+.sb-overflow{
+  background:#fff7ed;border:1px solid #fed7aa;border-radius:8px;padding:9px 12px;
+  font-size:13px;font-weight:600;color:#b45309;line-height:1.4;
+}
+.sb-link-box{background:#f7f7f7;border:1px solid #e8e8e8;border-radius:8px;padding:10px 12px;}
+.sb-link{font-size:12px;color:#2EAA4A;word-break:break-all;text-decoration:none;line-height:1.5;}
+.sb-link:hover{text-decoration:underline;}
+.sb-actions{display:flex;gap:8px;}
+.sb-btn{
+  padding:8px 14px;border:1px solid #d8d8d8;border-radius:8px;background:#fff;
+  font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:background 0.15s;
+}
+.sb-btn:hover{background:#f3f3f3;}
+.sb-btn-primary{background:#2EAA4A;border-color:#2EAA4A;color:#fff;}
+.sb-btn-primary:hover{background:#27933f;}
+.sb-btn:disabled{opacity:0.6;cursor:default;}
+.sb-confirm{
+  display:flex;flex-direction:column;gap:10px;
+  background:#f0f9f2;border:1px solid #bfe6c9;border-radius:8px;padding:12px;
+}
+.sb-confirm-text{font-size:13px;color:#236b34;line-height:1.4;}
+.sb-send-status{font-size:13px;font-weight:600;line-height:1.4;min-height:18px;}
+.sb-send-status.is-info{color:#64748b;}
+.sb-send-status.is-ok{color:#2EAA4A;}
+.sb-send-status.is-error{color:#c0392b;}
+/* Bloc note pour les serres au-delà des 3 slots du formulaire Fillout (>3 serres). */
+.sb-notes-block{display:none;flex-direction:column;gap:8px;margin-top:6px;border-top:1px solid #eee;padding-top:14px;}
+.sb-notes-block.is-shown{display:flex;}
+.sb-notes-hint{font-size:13px;color:#64748b;line-height:1.4;}
+.sb-notes-input{
+  padding:12px;border:1px solid #d8d8d8;border-radius:8px;font-size:13px;
+  font-family:inherit;line-height:1.55;outline:none;resize:vertical;min-height:280px;
+  white-space:pre-wrap;transition:border-color 0.15s,box-shadow 0.15s;
+}
+.sb-notes-input:focus{border-color:#2EAA4A;box-shadow:0 0 0 3px rgba(46,170,74,0.12);}
+
 /* ===== RABAIS TABLE (assistant view, onglet Rabais du step Proposal) ===== */
 .rabais-table{
   margin-top:8px;display:flex;flex-direction:column;
@@ -2515,6 +2564,10 @@ function applyQuoteStateToUI(){
   // → décoche les Apply.
   syncDiscountFormFromState();
   syncRabaisCheckboxes();
+  // Si l'onglet System builder (Conclusion) est monté, rafraîchir le lien Fillout,
+  // l'avertissement de débordement et la visibilité du champ note en direct quand
+  // les quantités changent — sans ça ils ne se mettent à jour qu'au prochain render.
+  if(document.getElementById('sb-link'))updateSystemBuilderLink();
 }
 // Mutate state, render, broadcast cross-window, trigger autosave to server.
 function setQuoteState(partial){
@@ -4042,19 +4095,48 @@ function renderAssistant(){
   if(cur===7){
     body.innerHTML=flagWarningHTML+`
       <div class="assistant-section-label">Step 5 · Payment and next steps</div>
-      <div class="step-zero" data-tab-set="none">
-        <div class="step-subhead">Payment</div>
-        <div class="step-quote">"Perfect. Let's get you set up right now. I'll take your credit card over the phone."</div>
-        <div class="step-note">Take the payment. Confirm it went through before moving on.</div>
-        <div class="step-subhead">System builder</div>
-        <div class="step-quote">"You're in. You'll get an email in the next few minutes with the System Builder. It's a short form where you'll pick your onboarding session date and tell us about your equipment so we can configure everything to your farm. That's also where you schedule your full training with us. Fill it out right after we hang up so we can ship today."</div>
-        <div class="step-quote">"And if you get stuck anywhere on the form, just call me. I'm here until 4."</div>
-        <div class="step-subhead">Upsell other greenhouses</div>
-        <div class="step-note">Once payment is confirmed and System Builder is explained, ask about the other greenhouses naturally.</div>
-        <div class="step-quote">"By the way, I imagine the problem you're dealing with in this greenhouse, you're dealing with in the others too?"</div>
-        <div class="step-note">Let them answer. If yes: "We can add Chief Grower to those tunnels too. As long as you have one you're still checking manually, you won't get the full benefit of not having to drive out there." This is not a push. It's a logical observation.</div>
-        <div class="step-subhead">Close</div>
-        <div class="step-quote">"Looking forward to seeing what we can do for your farm. Talk soon."</div>
+      <div class="step-zero" data-tab-set="conclusion">
+        <div class="phase-block" data-phase="script">
+          <div class="step-subhead">Payment</div>
+          <div class="step-quote">"Perfect. Let's get you set up right now. I'll take your credit card over the phone."</div>
+          <div class="step-note">Take the payment. Confirm it went through before moving on.</div>
+          <div class="step-subhead">System builder</div>
+          <div class="step-quote">"You're in. You'll get an email in the next few minutes with the System Builder. It's a short form where you'll pick your onboarding session date and tell us about your equipment so we can configure everything to your farm. That's also where you schedule your full training with us. Fill it out right after we hang up so we can ship today."</div>
+          <div class="step-quote">"And if you get stuck anywhere on the form, just call me. I'm here until 4."</div>
+          <div class="step-subhead">Upsell other greenhouses</div>
+          <div class="step-note">Once payment is confirmed and System Builder is explained, ask about the other greenhouses naturally.</div>
+          <div class="step-quote">"By the way, I imagine the problem you're dealing with in this greenhouse, you're dealing with in the others too?"</div>
+          <div class="step-note">Let them answer. If yes: "We can add Chief Grower to those tunnels too. As long as you have one you're still checking manually, you won't get the full benefit of not having to drive out there." This is not a push. It's a logical observation.</div>
+          <div class="step-subhead">Close</div>
+          <div class="step-quote">"Looking forward to seeing what we can do for your farm. Talk soon."</div>
+        </div>
+        <div class="phase-block" data-phase="systembuilder">
+          <div class="sb-wrap">
+            <div class="step-subhead">System Builder</div>
+            <div class="step-note">Pre-filled Fillout link to send to the customer. The email is editable; everything else (farm name, address, greenhouses purchased) comes from the call.</div>
+            <label class="sb-label" for="sb-email">Email</label>
+            <input type="email" id="sb-email" class="sb-email-input" placeholder="customer@example.com" autocomplete="email">
+            <div class="sb-overflow" id="sb-overflow" style="display:none;"></div>
+            <div class="sb-notes-block" id="sb-notes-block">
+              <label class="sb-label" for="sb-notes">Notes — additional greenhouses (beyond the 3 in the form)</label>
+              <div class="sb-notes-hint">The System Builder form only covers 3 greenhouses. Capture the equipment details for the extra greenhouses here. Saved automatically.</div>
+              <textarea id="sb-notes" class="sb-notes-input" spellcheck="false"></textarea>
+            </div>
+            <div class="sb-link-box"><a id="sb-link" class="sb-link" href="#" target="_blank" rel="noopener"></a></div>
+            <div class="sb-actions">
+              <button type="button" class="sb-btn sb-btn-primary" id="sb-copy">Copy link</button>
+              <button type="button" class="sb-btn" id="sb-send">Send email</button>
+            </div>
+            <div class="sb-confirm" id="sb-confirm" style="display:none;">
+              <div class="sb-confirm-text" id="sb-confirm-text"></div>
+              <div class="sb-actions">
+                <button type="button" class="sb-btn sb-btn-primary" id="sb-send-confirm">Confirm &amp; send</button>
+                <button type="button" class="sb-btn" id="sb-send-cancel">Cancel</button>
+              </div>
+            </div>
+            <div class="sb-send-status" id="sb-send-status"></div>
+          </div>
+        </div>
       </div>
     `;
     return;
@@ -4069,6 +4151,7 @@ function renderAssistant(){
   }finally{
     const _body=document.getElementById('assistant-body');
     if(_body)injectStepTabs(_body);
+    if(_body)setupSystemBuilder(_body);
     // Quote builder DOM (assistant) est régénéré à chaque renderAssistant — re-sync
     // l'état stocké. Pour la slide view, ça met aussi à jour le bloc total de slide-6.
     applyQuoteStateToUI();
@@ -4103,6 +4186,9 @@ function injectStepTabs(container){
       // Défaut : Battle Cards partout, sauf "support" (How we work) = Script
       // et "proposal" = Quote.
       defaultTab=tabSet==='support'?'script':tabSet==='proposal'?'quote':'battlecards';
+    }else if(tabSet==='conclusion'){
+      tabsConfig=[{id:'script',label:'Script'},{id:'systembuilder',label:'System builder'}];
+      defaultTab='systembuilder';
     }else if(tabSet==='objection-only'){
       tabsConfig=[{id:'battlecards',label:'Battle Cards'}];
       defaultTab='battlecards';
@@ -4127,6 +4213,342 @@ document.addEventListener('click',e=>{
   stepZero.dataset.activeTab=tab.dataset.tab;
   if(stepZero.dataset.tabSet)lastActiveTab[stepZero.dataset.tabSet]=tab.dataset.tab;
   stepZero.querySelectorAll('.step-tab').forEach(t=>t.classList.toggle('active',t===tab));
+});
+
+// ===== System Builder (onglet du step Conclusion) =====
+// Construit le lien Fillout pré-rempli à partir des données de l'appel. Seul l'email
+// est éditable ; farm_name (nom de l'entreprise), farm_address (adresse Ferme
+// structurée) et greenhouse1-3 (1 serre par unité achetée dans Proposal) sont dérivés.
+// Tous les autres params (équipement, lte, force_custom) sont à 0, project_id vide.
+const SYSTEM_BUILDER_FORM='https://forms.fillout.com/t/roRLoV4Nnwus';
+// Gabarit par défaut du champ de note "serres en surplus" (>3 serres). Affiché tel
+// quel tant que rien n'a été saisi/sauvegardé ; une fois édité, la valeur réelle est
+// persistée sur qualification_calls.system_builder_notes (référence interne).
+const SB_NOTES_TEMPLATE=`Permissions:
+
+
+Farm address :
+
+
+Shipping address (if different):
+
+
+Mobile Internet Access:
+Can you browse social media without interruption with your cell phone where the central controller will be installed?:
+
+
+
+Wi-Fi:
+Will there be Wi-Fi in the greenhouse or near (less than 250 ft with direct line of sight) the greenhouse?
+
+What is your Wi-Fi network name:
+
+What is your Wi-Fi network password (to preset your controller):
+
+
+
+Installation:
+You can call in advance to schedule a 30-minute training or call if something is not clear.
+
+It is preferable to install the Orisha boxes within easy reach to facilitate maintenance, operation, and troubleshooting.
+
+During operation, the central controller needs to be placed in a room with a temperature between 0 and 40 °C (32 to 104 °F). The central controller shall not be exposed to direct sunlight.
+
+We recommend preparing one square foot per orisha box.
+
+
+
+Temperature and humidity sensor:
+The humidity probe needs to be changed every year to have an accurate humidity reading.
+
+
+
+Roll-up:
+Number of greenhouses with side curtains:
+
+Number of side curtains per greenhouse:
+
+Greenhouse lengths:
+
+Side curtains heights:
+
+Horizontal pipe diameter:
+
+Horizontal pipe type (steel or aluminium):
+
+Do you already have guide pipes ?:
+
+Guide pipe diameter (if already present):
+
+
+
+Irrigation:
+Number of valve automations in each greenhouse:
+
+Do you already have the valves ?:
+
+Wire needs:
+
+All valves sent by Orisha have a diameter of one inch.
+
+
+
+Advanced ventilation:
+Do you want to plug fans ?:
+
+Total HP need to be lower than 1 HP
+
+Do you have louver ?:
+
+Do they have fans ?:
+
+Whats the brand and model ?:
+
+Do you have roofs ?:
+
+Greenhouse roof length:
+
+Brand / Model of the motors:
+
+Do you already have the motor controllers ?:
+
+Motor controller brand/model (if present):
+
+Wire needs:
+
+
+
+Heating:
+Quantity in each greenhouse:
+
+Brand / Model for each:
+
+Do you already have backup thermostats ?:
+
+Control Wire needs:
+
+
+
+Humidity conservation:
+Valve ?:
+
+HAF ?:
+
+
+
+Rain protection:
+The client needs to provide a 1-inch to 1 3/4 inch diameter pipe where the rain sensor will be installed.
+
+The rain sensor can trigger false positives. If it is the case, move the sensor to another location.
+
+
+
+Wind protection:
+The client needs to provide a 1-inch to 1 3/4 inch diameter pipe where the wind sensor will be installed.
+
+Install the wind sensor at least two feet higher than the highest point of the greenhouse.
+
+
+
+Customs fees
+If the carrier asks you to pay a customs fee, transfer the payment link to us and we will take care of it. Do not return the package.`;
+// Valeur sauvegardée des notes (chargée via init, mise à jour à chaque save). Vide
+// tant que l'utilisateur n'a rien saisi → le textarea affiche alors le gabarit.
+let sbNotesSaved='';
+let sbNotesTimer=null;
+// 1 serre par unité vendue : chief d'abord, puis helper, 3 slots max, reste 'none'.
+// Renvoie aussi le nombre d'unités qui débordent (le form Fillout n'a que 3 serres).
+function sbGreenhouseInfo(){
+  const slots=[];
+  for(let i=0;i<(quoteState.chief||0);i++)slots.push('chief');
+  for(let i=0;i<(quoteState.helper||0);i++)slots.push('helper');
+  const dropped=slots.slice(3);
+  return {
+    slots:[slots[0]||'none',slots[1]||'none',slots[2]||'none'],
+    droppedChief:dropped.filter(s=>s==='chief').length,
+    droppedHelper:dropped.filter(s=>s==='helper').length,
+  };
+}
+function buildSystemBuilderUrl(email){
+  const enc=encodeURIComponent;
+  // Nom de ferme : valeur vivante du champ qa-farm (slide 0, éditable), sinon le
+  // param URL company_name figé au chargement de l'iframe.
+  const farmInput=document.getElementById('qa-farm');
+  const companyName=(farmInput&&farmInput.value)||new URLSearchParams(location.search).get('company_name')||'';
+  const farmAddress=window.__farmAddressStr||'';
+  const g=sbGreenhouseInfo().slots;
+  const parts=[
+    'email='+enc(email||''),
+    'project_id=',
+    'farm_name='+enc(companyName),
+    'farm_address='+enc(farmAddress),
+    'lte=0',
+    'force_custom=0',
+    'greenhouse1='+g[0],'greenhouse2='+g[1],'greenhouse3='+g[2],
+    'side_ventilation1=0','side_ventilation2=0','side_ventilation3=0',
+    'heating1=0','heating2=0','heating3=0',
+    'irrigation1=0','irrigation2=0','irrigation3=0',
+    'fan_ventilation1=0','fan_ventilation2=0','fan_ventilation3=0',
+    'ridge_ventilation1=0','ridge_ventilation2=0','ridge_ventilation3=0',
+    'disease_prevention1=0','disease_prevention2=0','disease_prevention3=0',
+    'wind_protection=0','rain_protection=0',
+  ];
+  return SYSTEM_BUILDER_FORM+'?'+parts.join('&');
+}
+// Résout l'adresse Ferme structurée (line1/city/province/postal/country) via l'API
+// et la mémorise en string. Cache pour éviter un refetch à chaque renderAssistant.
+function sbEnsureFarmAddress(cb){
+  if(window.__farmAddressStr!==undefined){if(cb)cb();return;}
+  const id=window.__quotePayCallId,tok=window.__quotePayErpToken;
+  if(!id){window.__farmAddressStr='';if(cb)cb();return;}
+  fetch('/erp/api/qualification-calls/'+encodeURIComponent(id)+'/farm-address'+(tok?'?token='+encodeURIComponent(tok):''))
+    .then(r=>r.ok?r.json():null)
+    .then(a=>{window.__farmAddressStr=a?[a.line1,a.city,a.province,a.postal_code,a.country].filter(Boolean).join(', '):'';if(cb)cb();})
+    .catch(()=>{window.__farmAddressStr='';if(cb)cb();});
+}
+function updateSystemBuilderLink(){
+  const input=document.getElementById('sb-email');
+  const link=document.getElementById('sb-link');
+  if(!link)return;
+  const url=buildSystemBuilderUrl(input?input.value:'');
+  link.href=url;link.textContent=url;
+  // Avertissement : unités achetées au-delà des 3 serres du formulaire.
+  const warn=document.getElementById('sb-overflow');
+  const info=sbGreenhouseInfo();
+  const overflow=(info.droppedChief>0)||(info.droppedHelper>0);
+  // Bloc note : visible seulement quand on dépasse les 3 serres du formulaire.
+  const notesBlock=document.getElementById('sb-notes-block');
+  if(notesBlock)notesBlock.classList.toggle('is-shown',overflow);
+  if(warn){
+    const parts=[];
+    if(info.droppedChief>0)parts.push(info.droppedChief+' Chief');
+    if(info.droppedHelper>0)parts.push(info.droppedHelper+' Helper');
+    if(parts.length){
+      // Répartition des 3 slots réellement couverts (mélange chief/helper possible).
+      const coveredChief=info.slots.filter(s=>s==='chief').length;
+      const coveredHelper=info.slots.filter(s=>s==='helper').length;
+      const breakdown=[];
+      if(coveredChief>0)breakdown.push(coveredChief+' Chief');
+      if(coveredHelper>0)breakdown.push(coveredHelper+' Helper');
+      warn.textContent='⚠ '+parts.join(' and ')+' not included in the link — the form only covers 3 greenhouses ('+breakdown.join(', ')+').';
+      warn.style.display='';
+    }else{
+      warn.style.display='none';
+    }
+  }
+}
+function setupSystemBuilder(container){
+  const input=container.querySelector('#sb-email');
+  if(!input)return;
+  // Email par défaut = "Email for receipt" saisi à l'étape Proposal (capturé dans
+  // window.__receiptEmail), sinon l'email de paiement déjà encaissé.
+  if(!input.value)input.value=window.__receiptEmail||quoteState.paidEmail||'';
+  // Champ note (serres en surplus) : le DOM est régénéré à chaque renderAssistant,
+  // donc on (re)peuple et (re)câble à chaque setupSystemBuilder. Tant que rien n'a
+  // été sauvegardé, on affiche le gabarit ; sinon la valeur persistée.
+  const notes=container.querySelector('#sb-notes');
+  if(notes){
+    notes.value=sbNotesSaved&&sbNotesSaved.trim()?sbNotesSaved:SB_NOTES_TEMPLATE;
+    // setupSystemBuilder est au top-level — hors de la closure qui détient send()/
+    // setStatus(). On poste directement au parent (le parent renvoie 'saved' qui
+    // déclenche l'indicateur de statut global via son listener).
+    const saveNotes=()=>{try{window.parent.postMessage({source:'qualification-call',type:'save',data:{system_builder_notes:notes.value||''}},'*');}catch(e){}};
+    notes.addEventListener('input',()=>{
+      sbNotesSaved=notes.value;
+      if(sbNotesTimer)clearTimeout(sbNotesTimer);
+      sbNotesTimer=setTimeout(saveNotes,600);
+    });
+    notes.addEventListener('blur',()=>{
+      if(sbNotesTimer){clearTimeout(sbNotesTimer);sbNotesTimer=null;}
+      saveNotes();
+    });
+  }
+  sbEnsureFarmAddress(updateSystemBuilderLink);
+  updateSystemBuilderLink();
+}
+// Envoi de l'email System Builder : relayé au parent React (qui détient le JWT et
+// appelle Postmark côté serveur). Pattern requête/réponse par id, comme subscribe-card.
+const SB_EMAIL={pendingId:0,pending:null};
+function sendSystemBuilderEmailRequest(body){
+  return new Promise(resolve=>{
+    const id=++SB_EMAIL.pendingId;
+    SB_EMAIL.pending={id,resolve};
+    try{
+      window.parent.postMessage({source:'qualification-call',type:'send-system-builder-email',id,body},'*');
+    }catch(e){SB_EMAIL.pending=null;resolve({error:'Cannot reach parent frame'});}
+    setTimeout(()=>{
+      if(SB_EMAIL.pending&&SB_EMAIL.pending.id===id){SB_EMAIL.pending=null;resolve({error:'Request timed out'});}
+    },20000);
+  });
+}
+function sbSetSendStatus(kind,text){
+  const el=document.getElementById('sb-send-status');
+  if(!el)return;
+  el.textContent=text||'';
+  el.className='sb-send-status'+(kind?(' is-'+kind):'');
+}
+async function sbDoSendEmail(){
+  const input=document.getElementById('sb-email');
+  const link=document.getElementById('sb-link');
+  const email=(input&&input.value||'').trim();
+  const url=(link&&link.href||'').trim();
+  // Prénom = premier mot du nom de contact (qa-contact).
+  const contact=(document.getElementById('qa-contact')||{}).value||'';
+  const firstName=contact.trim().split(/\s+/)[0]||'';
+  const confirmBtn=document.getElementById('sb-send-confirm');
+  if(confirmBtn)confirmBtn.disabled=true;
+  sbSetSendStatus('info','Sending…');
+  const res=await sendSystemBuilderEmailRequest({email,link:url,first_name:firstName});
+  if(confirmBtn)confirmBtn.disabled=false;
+  if(res&&res.ok){sbSetSendStatus('ok','Email sent to '+email+' ✓');}
+  else{sbSetSendStatus('error','Failed to send: '+((res&&res.error)||'unknown error'));}
+}
+// Capture l'email de reçu (slide Proposal) et recalcule le lien quand l'email System
+// Builder change — délégation pour survivre aux re-render de renderAssistant.
+document.addEventListener('input',e=>{
+  if(!e.target||!e.target.id)return;
+  if(e.target.id==='quote-pay-email'){window.__receiptEmail=e.target.value||'';}
+  else if(e.target.id==='sb-email'){
+    updateSystemBuilderLink();
+    // L'email a changé : referme une éventuelle confirmation ouverte (devenue obsolète).
+    const c=document.getElementById('sb-confirm');if(c)c.style.display='none';
+  }
+});
+document.addEventListener('click',e=>{
+  // Copier le lien
+  const copyBtn=e.target.closest('#sb-copy');
+  if(copyBtn){
+    const link=document.getElementById('sb-link');
+    if(link&&link.href&&navigator.clipboard){
+      navigator.clipboard.writeText(link.href).then(()=>{
+        copyBtn.textContent='Copied ✓';
+        setTimeout(()=>{copyBtn.textContent='Copy link';},1500);
+      }).catch(()=>{});
+    }
+    return;
+  }
+  // Demander l'envoi → ouvre la confirmation listant le side effect.
+  if(e.target.closest('#sb-send')){
+    const input=document.getElementById('sb-email');
+    const email=(input&&input.value||'').trim();
+    if(!email||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)){
+      sbSetSendStatus('error','Enter a valid email first.');return;
+    }
+    const txt=document.getElementById('sb-confirm-text');
+    if(txt)txt.textContent='An email with the System Builder link will be sent to '+email+' from info@orisha.io.';
+    const c=document.getElementById('sb-confirm');if(c)c.style.display='';
+    sbSetSendStatus('','');
+    return;
+  }
+  if(e.target.closest('#sb-send-cancel')){
+    const c=document.getElementById('sb-confirm');if(c)c.style.display='none';
+    return;
+  }
+  if(e.target.closest('#sb-send-confirm')){
+    const c=document.getElementById('sb-confirm');if(c)c.style.display='none';
+    sbDoSendEmail();
+    return;
+  }
 });
 
 // ===== Sync message handler (shared by BroadcastChannel + localStorage) =====
@@ -4415,6 +4837,9 @@ renderAssistant();
       quoteState.paidAt=d.quote_paid_at||null;
       quoteState.paidEmail=d.quote_paid_email||null;
       quoteState.subscriptionId=d.quote_subscription_id||null;
+      // Notes System Builder (serres en surplus) — mémorisées pour repeuplement à
+      // chaque renderAssistant (le DOM de l'onglet est régénéré).
+      sbNotesSaved=d.system_builder_notes||'';
       applyQuoteStateToUI();
       // Push the freshly-loaded state to the slide view window (if open) so it
       // mirrors the assistant view. Text fields use the same broadcast protocol
@@ -4461,6 +4886,12 @@ renderAssistant();
       if(DISCOVERY_FORM.pending&&DISCOVERY_FORM.pending.id===msg.id){
         const fn=DISCOVERY_FORM.pending.resolve;
         DISCOVERY_FORM.pending=null;
+        fn(msg.result||{error:'Empty response'});
+      }
+    }else if(msg.type==='send-system-builder-email-result'&&typeof msg.id==='number'){
+      if(SB_EMAIL.pending&&SB_EMAIL.pending.id===msg.id){
+        const fn=SB_EMAIL.pending.resolve;
+        SB_EMAIL.pending=null;
         fn(msg.result||{error:'Empty response'});
       }
     }

@@ -218,7 +218,14 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
     allColumns,
     dynamicFields,
     airtableFieldsByColumn,
-    columnWidths: adminConfig?.column_widths || {},
+    // Largeurs persistées par vue : priorité à la pill active ; fallback sur le
+    // column_widths legacy de table_view_configs (vue « Tous »/forceAllView et
+    // vues pas encore redimensionnées). Ainsi passer d'une vue à l'autre n'écrase
+    // plus la mise en page de la précédente.
+    columnWidths: (activeView?.column_widths && Object.keys(activeView.column_widths).length > 0)
+      ? activeView.column_widths
+      : (adminConfig?.column_widths || {}),
+    footerAggregations: adminConfig?.footer_aggregations || {},
     bulkDeleteEnabled: adminConfig?.bulk_delete_enabled === true,
   }
 }

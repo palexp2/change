@@ -879,6 +879,11 @@ export function initSchema() {
     // extra_pages = JSON [{filename, file_type, original_name}] pour les pages suivantes.
     // L'extraction IA et l'attachement QB parcourent l'ensemble (page 1 + extra_pages).
     "ALTER TABLE sale_receipts ADD COLUMN extra_pages TEXT DEFAULT '[]'",
+    // Dédup inter-boîtes des factures reçues par courriel : factures@orisha.io est un
+    // alias livré dans plusieurs boîtes connectées — le même message y porte des
+    // gmail_message_id différents mais un seul Message-ID RFC822. On ne l'importe qu'une fois.
+    'ALTER TABLE sale_receipts ADD COLUMN rfc822_message_id TEXT',
+    'CREATE INDEX IF NOT EXISTS idx_sale_receipts_rfc822 ON sale_receipts(rfc822_message_id) WHERE rfc822_message_id IS NOT NULL',
     // qualification_calls — colonnes additionnelles pour le module d'appel guidé
     'ALTER TABLE qualification_calls ADD COLUMN heard_about TEXT',
     'ALTER TABLE qualification_calls ADD COLUMN red_flags TEXT',
@@ -1257,6 +1262,12 @@ export function initSchema() {
     // (vue « Tous »/forceAllView et migration des vues sans largeurs propres).
     // JSON { [colId]: pixels }, même format que table_view_configs.column_widths.
     "ALTER TABLE table_view_pills ADD COLUMN column_widths TEXT DEFAULT '{}'",
+    // Formatage conditionnel PAR VUE (règles de couleur à la Airtable).
+    // JSON array ordonné : [{ id, color, filters }] où `filters` reprend le
+    // format des filtres de vue ({conjunction, rules} ou array plat legacy).
+    // La première règle qui matche colore la ligne ; évaluation côté client
+    // (applyFilterGroup), le serveur ne fait que persister.
+    "ALTER TABLE table_view_pills ADD COLUMN color_rules TEXT DEFAULT '[]'",
     // Employees — add airtable_id for Airtable sync
     'ALTER TABLE employees ADD COLUMN airtable_id TEXT',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_employees_airtable ON employees(airtable_id) WHERE airtable_id IS NOT NULL',
@@ -2919,6 +2930,26 @@ export function initSchema() {
     )
   `)
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_attachments_entity ON attachments(entity_type, entity_id, deleted_at)`) } catch {}
+
+  // Répertoire fournisseurs — miroir du Google Doc « Fournisseurs_Particularités »
+  // (services/vendorDirectory.js, resync horaire). Sert de contexte à l'extraction IA
+  // des reçus (nom canonique, devise habituelle, catégorie comptable). Le doc Drive
+  // reste la source de vérité : les lignes disparues y sont soft-deletées, pas éditées ici.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS vendor_directory (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      currency TEXT,
+      payment_method TEXT,
+      qb_category TEXT,
+      description TEXT,
+      particularites TEXT,
+      synced_at TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
 
   console.log('Database schema initialized');
 }

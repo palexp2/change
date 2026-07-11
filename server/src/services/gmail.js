@@ -10,6 +10,11 @@ import { logSync } from './syncLog.js'
 
 const DOMAIN = 'orisha.io'
 const INVOICE_LABEL_NAME = 'ERP/Factures'
+// Adresse dédiée aux factures fournisseurs. C'est un alias (pas un compte connecté) :
+// tout message qui y est adressé/livré atterrit dans les boîtes connectées et doit être
+// ingéré comme facture MÊME SANS le label ERP/Factures. L'alias livrant le même message
+// dans plusieurs boîtes, la dédup inter-boîtes se fait par Message-ID RFC822.
+const INVOICE_RECIPIENT = 'factures@orisha.io'
 const RECEIPT_ATTACHMENT_EXTS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp']
 const RECEIPT_MIME_PREFIXES = ['application/pdf', 'image/']
 // Les images de signature courriel (logos sociaux, pixels de suivi) sont
@@ -174,6 +179,13 @@ async function syncAccount(oauthRow, trigger = 'scheduled') {
       }
 
       const headers = msg.data.payload.headers
+
+      // Adressé/livré à factures@ — facture fournisseur (traitée par syncInvoiceLabel),
+      // même sans label : ne pas polluer emails/interactions ni créer de faux contacts.
+      const recipientBlob = [
+        getHeader(headers, 'to'), getHeader(headers, 'cc'), getHeader(headers, 'delivered-to'),
+      ].join(' ').toLowerCase()
+      if (recipientBlob.includes(INVOICE_RECIPIENT)) continue
       const fromEmail = parseEmailAddress(getHeader(headers, 'from'))
       const toEmail = parseEmailAddress(getHeader(headers, 'to'))
       const dateHeader = getHeader(headers, 'date')
@@ -332,7 +344,7 @@ const skippedInvoiceMessageIds = new Set()
 // Facture sans pièce jointe : le corps du courriel est la facture (ex. Manychat).
 // On le matérialise en PDF texte puis on suit le même chemin que les PJ.
 // Retourne true si un reçu a été créé.
-async function importInlineInvoice({ message, msgId, userId }) {
+async function importInlineInvoice({ message, msgId, userId, rfc822Id = null }) {
   const headers = message.payload?.headers || []
   const subject = getHeader(headers, 'Subject')
   const { html, text } = extractBodies(message.payload)
@@ -364,9 +376,9 @@ async function importInlineInvoice({ message, msgId, userId }) {
 
   const originalName = `${(subject || 'courriel').replace(/[/\\]/g, '_').slice(0, 120)}.pdf`
   db.prepare(`
-    INSERT INTO sale_receipts (id, filename, original_name, file_type, status, created_by, source, gmail_message_id)
-    VALUES (?, ?, ?, '.pdf', 'processing', ?, 'email', ?)
-  `).run(id, storedName, originalName, userId, msgId)
+    INSERT INTO sale_receipts (id, filename, original_name, file_type, status, created_by, source, gmail_message_id, rfc822_message_id)
+    VALUES (?, ?, ?, '.pdf', 'processing', ?, 'email', ?, ?)
+  `).run(id, storedName, originalName, userId, msgId, rfc822Id)
 
   const created = db.prepare('SELECT * FROM sale_receipts WHERE id=?').get(id)
   if (created) emitEntity('sale_receipt', 'created', id, { ...created, items: [] }, userId)
@@ -397,27 +409,34 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
     logSync(module, trigger, { status: 'error', error: `labels.list: ${e.message}`, durationMs: Date.now() - t0 })
     return { status: 'error', imported: 0, error: e.message }
   }
-  if (!labelId) {
-    // Label inexistant sur ce compte — rien à faire, mais on trace pour visibilité.
-    logSync(module, trigger, { status: 'success', modified: 0, durationMs: Date.now() - t0 })
-    return { status: 'success', imported: 0 }
-  }
-
-  let messages = []
+  // Deux sources, dédupliquées par id : le label ERP/Factures (tri manuel) ET tout
+  // message adressé/livré à factures@orisha.io — l'adresse dédiée fonctionne donc
+  // sans qu'aucun label ne soit posé (fournisseurs configurés pour y envoyer leurs
+  // factures, forwards internes, etc.).
+  const byId = new Map()
   try {
-    // Pas de filtre has:attachment : certaines factures (ex. Manychat) arrivent
-    // sans pièce jointe, le corps HTML du courriel est la facture elle-même.
+    if (labelId) {
+      // Pas de filtre has:attachment : certaines factures (ex. Manychat) arrivent
+      // sans pièce jointe, le corps HTML du courriel est la facture elle-même.
+      const list = await gmail.users.messages.list({
+        userId: 'me',
+        labelIds: [labelId],
+        maxResults: 50,
+      })
+      for (const m of list.data.messages || []) byId.set(m.id, m)
+    }
     const list = await gmail.users.messages.list({
       userId: 'me',
-      labelIds: [labelId],
+      q: `to:${INVOICE_RECIPIENT} OR cc:${INVOICE_RECIPIENT} OR deliveredto:${INVOICE_RECIPIENT}`,
       maxResults: 50,
     })
-    messages = list.data.messages || []
+    for (const m of list.data.messages || []) byId.set(m.id, m)
   } catch (e) {
     console.error(`❌ Gmail invoice list ${account_email}:`, e.message)
     logSync(module, trigger, { status: 'error', error: `list: ${e.message}`, durationMs: Date.now() - t0 })
     return { status: 'error', imported: 0, error: e.message }
   }
+  const messages = [...byId.values()]
 
   let imported = 0
   for (const msgRef of messages) {
@@ -429,9 +448,18 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
     try { msg = await gmail.users.messages.get({ userId: 'me', id: msgRef.id, format: 'full' }) }
     catch { continue }
 
+    // Dédup inter-boîtes : factures@ est un alias livré dans plusieurs boîtes connectées.
+    // Le même courriel y porte des gmail_message_id différents mais un seul Message-ID
+    // RFC822 — s'il a déjà été importé via une autre boîte, on ne le réimporte pas.
+    const rfc822Id = getHeader(msg.data.payload?.headers || [], 'message-id').trim() || null
+    if (rfc822Id && db.prepare('SELECT 1 FROM sale_receipts WHERE rfc822_message_id=?').get(rfc822Id)) {
+      skippedInvoiceMessageIds.add(msgRef.id)
+      continue
+    }
+
     const attachments = collectAttachments(msg.data.payload)
     if (attachments.length === 0) {
-      if (await importInlineInvoice({ message: msg.data, msgId: msgRef.id, userId })) imported++
+      if (await importInlineInvoice({ message: msg.data, msgId: msgRef.id, userId, rfc822Id })) imported++
       continue
     }
 
@@ -464,9 +492,9 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
       catch (e) { console.error(`❌ Gmail attachment write ${msgRef.id}:`, e.message); continue }
 
       db.prepare(`
-        INSERT INTO sale_receipts (id, filename, original_name, file_type, status, created_by, source, gmail_message_id)
-        VALUES (?, ?, ?, ?, 'processing', ?, 'email', ?)
-      `).run(id, storedName, att.filename || storedName, ext, userId, msgRef.id)
+        INSERT INTO sale_receipts (id, filename, original_name, file_type, status, created_by, source, gmail_message_id, rfc822_message_id)
+        VALUES (?, ?, ?, ?, 'processing', ?, 'email', ?, ?)
+      `).run(id, storedName, att.filename || storedName, ext, userId, msgRef.id, rfc822Id)
 
       const created = db.prepare('SELECT * FROM sale_receipts WHERE id=?').get(id)
       if (created) emitEntity('sale_receipt', 'created', id, { ...created, items: [] }, userId)

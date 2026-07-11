@@ -61,18 +61,36 @@ export const SYSTEM_AUTOMATIONS = [
     id: 'sys_revenue_recognition',
     name: 'Constat de vente à l\'expédition (Dr 23900|AR / Cr 40000)',
     description:
-      "Quand un envoi passe à « Envoyé », le revenu des factures kind='order' liées à la commande est constaté en QB " +
-      "(JournalEntry Dr 23900 Revenus perçus d'avance | AR / Cr 40000 Ventes). " +
+      "Quand un envoi satisfait la condition configurée (défaut : status = « Envoyé »), le revenu des factures kind='order' " +
+      "liées à la commande est constaté en QB (JournalEntry Dr passif différé | AR / Cr Ventes — comptes configurables ci-dessous). " +
       "Déclenché par modification DB via un watcher qui tail change_log sur la table shipments (revenueRecognitionWatcher) — " +
       "plus aucune route front-end n'appelle la reconnaissance directement. " +
       "Idempotent (skip si déjà constaté, abonnement, pas d'envoi lié, ou payout Stripe en attente). " +
       "Les échecs (QB indisponible, montant manquant) sont persistés dans revenue_recognition_queue et retentés avec backoff " +
-      "jusqu'au succès — le revenu n'est jamais silencieusement perdu.",
+      "jusqu'au succès — le revenu n'est jamais silencieusement perdu. " +
+      "La condition de déclenchement et les comptes QB sont modifiables ; désactiver l'automation suspend le constat (les " +
+      "écritures survenues pendant la pause ne sont pas rejouées à la réactivation). " +
+      "La condition peut aussi porter sur la table factures — y compris un champ personnalisé (ex. lookup « Date d'envoi de " +
+      "la commande liée ») : la facture qui satisfait la condition est alors constatée directement, et elle est réévaluée " +
+      "quand la facture, sa commande ou un envoi de la commande change.",
+    // Partie éditable (colonne/op/valeur sur shipments) — voir CONFIGURABLE_SYSTEM_AUTOMATIONS.
     trigger_config: {
       kind: 'db_change',
       source: 'change_log(shipments) → revenueRecognitionWatcher',
       summary: "Déclenché à l'écriture DB d'un shipment status='Envoyé' (toute origine : UI, Novoxpress, sync Airtable)",
+      erp_table: 'shipments',
+      column: 'status',
+      op: 'eq',
+      value: 'Envoyé',
     },
+    // Overrides de comptes QB (AcctNum) lus par postRevenueRecognitionJE.
+    action_config: {
+      deferred_acctnum: '23900',
+      sale_acctnum: '40000',
+      ar_cad_acctnum: '12000',
+      ar_usd_acctnum: '12100',
+    },
+    configurable: true,
   },
   {
     id: 'sys_stripe_charge_refunded',
@@ -147,6 +165,10 @@ export const SYSTEM_AUTOMATIONS = [
     description:
       "Synchronise toutes les boîtes Gmail connectées (via OAuth) : récupère les nouveaux messages, " +
       "les associe aux contacts/entreprises, crée des interactions + emails. " +
+      "Ingère comme factures fournisseurs (sale_receipts + extraction IA) tout message portant le label ERP/Factures " +
+      "OU adressé/livré à factures@orisha.io — aucun label requis ; dédup inter-boîtes par Message-ID RFC822. " +
+      "Resynchronise d'abord le répertoire fournisseurs (table vendor_directory) depuis le Google Doc " +
+      "« Fournisseurs_Particularités », injecté ensuite dans le prompt d'extraction. " +
       "Exécute aussi rematchCalls() pour relier les appels orphelins à des contacts. " +
       "Démarre 30s après le boot puis s'exécute toutes les heures.",
     trigger_config: {
@@ -235,6 +257,27 @@ export const SYSTEM_AUTOMATIONS = [
   },
 ]
 
+// System automations dont trigger_config/action_config sont partiellement
+// éditables par l'utilisateur (routes/automations.js PATCH + AutomationDetail.jsx).
+// Le seed ne doit PAS écraser leur configuration au boot — seed-on-first-insert
+// puis merge additif des clés par défaut manquantes (migration douce).
+export const CONFIGURABLE_SYSTEM_AUTOMATIONS = new Set(
+  SYSTEM_AUTOMATIONS.filter(sa => sa.configurable).map(sa => sa.id)
+)
+
+// Merge additif : ajoute dans le JSON stocké les clés par défaut absentes, sans
+// toucher aux valeurs existantes (les éditions utilisateur priment). Retourne la
+// chaîne JSON à persister, ou null si rien à changer.
+function mergeMissingKeys(storedJson, defaults) {
+  let stored
+  try { stored = JSON.parse(storedJson || '{}') } catch { stored = {} }
+  let changed = false
+  for (const [k, v] of Object.entries(defaults || {})) {
+    if (stored[k] === undefined) { stored[k] = v; changed = true }
+  }
+  return changed ? JSON.stringify(stored) : null
+}
+
 export function seedSystemAutomations() {
   // ON CONFLICT doesn't touch `active`, so user toggles persist across seeds.
   // On first insert we honour `default_active` (default 1) — use 0 to ship a
@@ -242,7 +285,7 @@ export function seedSystemAutomations() {
   const insertStmt = db.prepare(`
     INSERT INTO automations
       (id, name, description, trigger_type, trigger_config, action_type, action_config, active, system, created_at, updated_at)
-    VALUES (?, ?, ?, 'system', ?, 'system', '{}', ?, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    VALUES (?, ?, ?, 'system', ?, 'system', ?, ?, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       description = excluded.description,
@@ -250,9 +293,42 @@ export function seedSystemAutomations() {
       system = 1,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
   `)
+  // Variante configurable : ne réécrit jamais trigger_config au boot.
+  const insertConfigurableStmt = db.prepare(`
+    INSERT INTO automations
+      (id, name, description, trigger_type, trigger_config, action_type, action_config, active, system, created_at, updated_at)
+    VALUES (?, ?, ?, 'system', ?, 'system', ?, ?, 1, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      description = excluded.description,
+      system = 1,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  `)
 
   for (const sa of SYSTEM_AUTOMATIONS) {
-    insertStmt.run(sa.id, sa.name, sa.description, JSON.stringify(sa.trigger_config), sa.default_active ?? 1)
+    const stmt = sa.configurable ? insertConfigurableStmt : insertStmt
+    stmt.run(
+      sa.id, sa.name, sa.description,
+      JSON.stringify(sa.trigger_config),
+      JSON.stringify(sa.action_config || {}),
+      sa.default_active ?? 1,
+    )
+    if (sa.configurable) {
+      // Migration douce : complète le row existant avec les clés éditables
+      // introduites depuis (ex. column/op/value absents de l'ancien shape).
+      const row = db.prepare('SELECT trigger_config, action_config FROM automations WHERE id = ?').get(sa.id)
+      const tc = mergeMissingKeys(row?.trigger_config, sa.trigger_config)
+      const ac = mergeMissingKeys(row?.action_config, sa.action_config)
+      if (tc || ac) {
+        db.prepare(`
+          UPDATE automations SET
+            trigger_config = COALESCE(?, trigger_config),
+            action_config = COALESCE(?, action_config),
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          WHERE id = ?
+        `).run(tc, ac, sa.id)
+      }
+    }
   }
   console.log(`✅ System automations seeded (${SYSTEM_AUTOMATIONS.length})`)
 

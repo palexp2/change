@@ -32,6 +32,7 @@ import { getAuthUrl as amazonAuthUrl, exchangeCode as amazonExchange, isAmazonCo
 import { syncAmazon } from '../services/amazon.js'
 import { syncAllAchatsToQB, importFromQB } from '../services/quickbooks.js'
 import { syncAllMailboxes } from '../services/gmail.js'
+import { syncVendorDirectory } from '../services/vendorDirectory.js'
 import { syncDrive } from '../services/drive.js'
 import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncEmployees, syncPaies, syncPaieItems, syncStockMovements } from '../services/airtable.js'
 import { tracked, getStatus } from '../services/syncState.js'
@@ -991,7 +992,12 @@ router.get('/sync/status', requireAuth, (req, res) => {
 
 // ── Manual sync triggers
 router.post('/sync/gmail', requireAuth, async (req, res) => {
-  tracked('gmail', () => syncAllMailboxes('manual')).catch(console.error)
+  // Répertoire fournisseurs d'abord (best effort), puis les boîtes — même ordre
+  // que le sync horaire : l'extraction profite du répertoire à jour.
+  tracked('vendor_directory', () => syncVendorDirectory('manual'))
+    .catch(console.error)
+    .then(() => tracked('gmail', () => syncAllMailboxes('manual')))
+    .catch(console.error)
   res.json({ ok: true })
 })
 

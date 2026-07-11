@@ -86,6 +86,7 @@ import { createRealtimeServer } from './services/realtime.js'
 import { initTaskRunner, shutdownTaskRunner } from './services/taskRunner.js'
 import { initScheduler } from './services/automationScheduler.js'
 import { syncAllMailboxes } from './services/gmail.js'
+import { syncVendorDirectory } from './services/vendorDirectory.js'
 import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncStockMovements } from './services/airtable.js'
 import { tracked } from './services/syncState.js'
 import { syncStripeSubscriptions, isStripeConfigured } from './services/stripe.js'
@@ -347,7 +348,13 @@ const server = app.listen(PORT, () => {
   // Gmail sync — toutes les heures
   function scheduleGmailSync() {
     const t0 = Date.now()
-    tracked('gmail', () => syncAllMailboxes('scheduled'))
+    // Répertoire fournisseurs (doc Drive Fournisseurs_Particularités) d'abord :
+    // l'extraction des factures ingérées juste après profite du répertoire à jour.
+    // Best effort — syncVendorDirectory gère ses erreurs en interne (logSync
+    // vendor_directory), on enchaîne toujours sur le sync des boîtes.
+    tracked('vendor_directory', () => syncVendorDirectory('scheduled'))
+      .catch(e => console.error('Vendor directory sync error:', e.message))
+      .then(() => tracked('gmail', () => syncAllMailboxes('scheduled')))
       .then((summary = {}) => {
         const { accounts = 0, emailsImported = 0, invoicesImported = 0, errors = [] } = summary
         const base = `${accounts} boîte(s) — ${emailsImported} courriel(s) + ${invoicesImported} facture(s) importé(s).`

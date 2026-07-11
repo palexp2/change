@@ -4,8 +4,11 @@ import db from '../db/database.js'
 import { emitEntity } from './realtimeEmitters.js'
 import { logSync } from './syncLog.js'
 import { buildTransportInvoice } from './transportInvoice.js'
+import { buildVendorExtractionContext, findVendorDirectoryName } from './vendorDirectory.js'
 
 const IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+
+const round2 = n => Math.round((Number(n) || 0) * 100) / 100
 
 const SYSTEM_PROMPT = `Tu es un assistant spécialisé dans l'extraction de données de reçus, factures et relevés que NOTRE entreprise a REÇUS de ses fournisseurs/marchands.
 
@@ -51,7 +54,10 @@ RÈGLES DE COHÉRENCE DES MONTANTS (TRÈS IMPORTANT — vérifie le calcul avant
 RÈGLE — FACTURES DE TRANSPORT MULTI-EXPÉDITIONS (NovoXpress / Groupe Alliances et Privilèges, ou toute messagerie listant plusieurs expéditions avec des taxes PAR expédition) :
 - Quand le document détaille PLUSIEURS expéditions, chacune avec ses propres frais ET ses propres taxes (TPS/TVQ calculées envoi par envoi, souvent une page par expédition), n'utilise PAS le sommaire de la 1re page pour "items". Remplis plutôt "shipments" : UNE entrée par expédition, avec le transporteur/service, la PROVINCE et le PAYS de DESTINATION (la destination réelle du colis, pas l'expéditeur), le TOTAL de l'expédition, et la liste de SES taxes {label, amount} telles qu'imprimées (TPS, TVQ, TVH/HST, PST…). Le "label" doit refléter le type de taxe affiché.
 - Une expédition sans aucune taxe affichée a "taxes": []. Une expédition vers les États-Unis / hors Canada a généralement "taxes": [] (export).
-- Dans ce cas, laisse "items" vide ([]) : les lignes seront reconstruites automatiquement par regroupement de taxe. Donne quand même subtotal/tps/tvq/other_taxes/total globaux du document.
+- CRÉDITS / RETOURS : les sections de crédits (ex. « UPS - Crédits », « Sommaire des Crédits », montants négatifs) font partie de la facture. Chaque crédit devient AUSSI une entrée de "shipments", avec un "total" NÉGATIF (et ses taxes négatives le cas échéant) et la destination de l'envoi crédité. Ne les saute JAMAIS : sans eux le total ne balance pas.
+- AUTRES FRAIS : tout frais du document qui n'est rattaché à aucune expédition (frais de compte, frais administratifs, ajustement global…) devient aussi une entrée de "shipments" : "carrier" = le libellé du frais, destination_province/country = null ou "CA", et ses taxes telles qu'imprimées.
+- VÉRIFICATION OBLIGATOIRE : la somme des "total" de toutes les entrées de "shipments" (crédits négatifs inclus) doit égaler le MONTANT TOTAL DÛ affiché sur la facture (à un cent près). Si ça ne balance pas, tu as manqué une expédition, un crédit ou un frais — relis TOUTES les pages (les crédits sont souvent sur la dernière page) et corrige avant de répondre.
+- Dans ce cas, laisse "items" vide ([]) : les lignes seront reconstruites automatiquement par regroupement par province/pays de destination. Donne quand même subtotal/tps/tvq/other_taxes globaux, et mets "total" = le MONTANT TOTAL DÛ imprimé sur la facture.
 - Si le document N'est PAS de ce type (un seul achat, pas de ventilation par expédition), laisse "shipments" absent ou vide ([]) et remplis "items" normalement.
 
 DOCUMENT MULTIPAGE :
@@ -66,7 +72,9 @@ const MIME_MAP = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/p
 // `pages` : tableau [{ filePath, fileExt }] dans l'ordre des pages. Les images sont
 // envoyées comme image_url (vision), les PDF sont convertis en texte (pdftotext) et
 // concaténés. Tout est regroupé dans un seul message → un seul JSON consolidé.
-export async function extractWithOpenAI(pages) {
+// `vendorContext` (optionnel) : liste des fournisseurs connus (vendorDirectory.js)
+// injectée en contexte pour canoniser "company" et trancher la devise.
+export async function extractWithOpenAI(pages, vendorContext = null) {
   const apiKey = process.env.OPENAI_API_KEY
   if (!apiKey) throw new Error('OPENAI_API_KEY non configuré')
 
@@ -76,6 +84,7 @@ export async function extractWithOpenAI(pages) {
   const content = [
     { type: 'text', text: `Voici un document (reçu, facture ou relevé) que nous avons reçu d'un fournisseur, comportant ${list.length} page${list.length > 1 ? 's' : ''}. Extrait toutes les données disponibles en consolidant l'ensemble des pages en UN SEUL reçu. Le champ "company" est le fournisseur/marchand émetteur, jamais Orisha (qui est notre entreprise, le destinataire).` },
   ]
+  if (vendorContext) content.push({ type: 'text', text: vendorContext })
   const pdfTexts = []
   list.forEach((p, idx) => {
     if (IMAGE_EXT.includes(p.fileExt)) {
@@ -128,10 +137,11 @@ export async function extractWithOpenAI(pages) {
 const LIA_REF = /^\s*lia-\d+/i
 
 // Alias de fournisseurs : nom imprimé sur le document → nom canonique à enregistrer.
-// « Groupe Alliances et Privilèges » facture sous la marque NovoXpress — on enregistre
-// donc NovoXpress (affichage + rapprochement du fournisseur QB à la publication).
+// « Groupe Alliances et Privilèges » (marque NovoXpress) correspond au fournisseur
+// « Novo Express » dans notre liste QB — on enregistre donc CE nom exact pour que le
+// rapprochement du fournisseur QB tombe juste à la publication.
 const VENDOR_ALIASES = [
-  { match: /alliances?\s+et\s+privil/i, name: 'NovoXpress' },
+  { match: /alliances?\s+et\s+privil|novo\s*xpress/i, name: 'Novo Express' },
 ]
 
 export function canonicalVendorName(name) {
@@ -172,7 +182,11 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     const existing = db.prepare('SELECT deleted_at FROM sale_receipts WHERE id=?').get(saleReceiptId)
     if (!existing || existing.deleted_at) return
     const pageList = Array.isArray(pages) && pages.length ? pages : [{ filePath, fileExt }]
-    const extracted = await extractWithOpenAI(pageList)
+    // Répertoire fournisseurs en contexte — best effort : table vide ou en erreur,
+    // l'extraction fonctionne sans.
+    let vendorContext = null
+    try { vendorContext = buildVendorExtractionContext() } catch {}
+    const extracted = await extractWithOpenAI(pageList, vendorContext)
 
     // Facture de transport multi-expéditions : on reconstruit les lignes par code de
     // taxe (récupérable seulement, PST non récupérable repliée dans la dépense) et on
@@ -205,11 +219,24 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
           ? NO_TAX_CODE
           : (it.tax_code_name ? (nameToId.get(it.tax_code_name) || null) : null),
       }))
-      amounts = { subtotal: built.subtotal, tps: built.tps, tvq: built.tvq, other_taxes: built.other_taxes, total: built.total }
+      // Le total stocké reste le « Montant total dû » IMPRIMÉ sur la facture (ancrage de
+      // réconciliation), pas le total recomposé : si la reconstruction par expéditions ne
+      // boucle pas dessus (expédition, crédit ou frais manqué à l'extraction), l'écart
+      // reste VISIBLE dans l'UI (indicateur « reçu : X $ » sur la ligne Total) au lieu
+      // d'être maquillé par un total auto-cohérent mais faux.
+      const printedTotal = round2(Number(extracted.total) || 0)
+      if (printedTotal && Math.abs(printedTotal - built.total) > 0.02) {
+        console.warn(`Transport extraction ${saleReceiptId}: expéditions recomposées = ${built.total} $ ≠ montant dû ${printedTotal} $ — expédition/crédit/frais probablement manqué`)
+      }
+      amounts = { subtotal: built.subtotal, tps: built.tps, tvq: built.tvq, other_taxes: built.other_taxes, total: printedTotal || built.total }
     } else {
       // Fusionne les frais dans la ligne LIA quand il n'y a qu'un seul article LIA.
       items = consolidateSoleLiaItem(extracted.items || [])
     }
+    // Nom fournisseur : alias codés en dur d'abord, puis nom canonique du répertoire
+    // Fournisseurs_Particularités si le nom extrait y correspond (casse/accents près).
+    let company = canonicalVendorName(extracted.company) || null
+    try { company = findVendorDirectoryName(company) || company } catch {}
     db.prepare(`
       UPDATE sale_receipts SET
         status='done',
@@ -220,7 +247,7 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
       WHERE id=? AND deleted_at IS NULL
     `).run(
       extracted.receipt_date || null,
-      canonicalVendorName(extracted.company) || null,
+      company,
       extracted.address || null,
       extracted.receipt_number || null,
       extracted.general_description || null,

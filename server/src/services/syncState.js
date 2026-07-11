@@ -16,10 +16,12 @@ export function getStatus() {
   return state
 }
 
-// Wrap an async sync function with automatic state tracking
+// Wrap an async sync function with automatic state tracking.
+// Résout avec la valeur retournée par fn() — les appelants s'en servent pour
+// leur résumé (ex. logSystemRun de sys_gmail_sync).
 export function tracked(key, fn) {
   syncStart(key)
   return fn()
-    .then(() => syncEnd(key, null))
+    .then((result) => { syncEnd(key, null); return result })
     .catch(err => { syncEnd(key, err.message); throw err })
 }

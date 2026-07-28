@@ -1671,6 +1671,53 @@ router.get('/balance-sheet', async (req, res) => {
   }
 })
 
+// GET /api/dashboard/deferred-revenue
+// Revenus perçus d'avance (compte 23900) : factures de commande encaissées
+// (paid_at) dont le revenu n'a pas encore été constaté à l'expédition
+// (revenue_recognized_at NULL). Remplace la table manuelle « Revenus perçus
+// d'avance » du fichier CTB - Suivi. Abonnements exclus (kind='order' —
+// politique : constat à la création du premier envoi, ventes unitaires only).
+router.get('/deferred-revenue', (req, res) => {
+  const rows = db.prepare(`
+    SELECT f.id, f.document_number, f.paid_at, f.document_date,
+           f.paid_amount, f.total_amount, f.currency,
+           f.deferred_revenue_at, f.deferred_revenue_amount_cad,
+           f.company_id, c.name AS company_name, f.order_id
+    FROM factures f
+    LEFT JOIN companies c ON c.id = f.company_id
+    WHERE f.kind = 'order'
+      AND f.paid_at IS NOT NULL
+      AND f.revenue_recognized_at IS NULL
+      AND COALESCE(f.status, '') = 'Payé'
+    ORDER BY f.paid_at DESC
+  `).all()
+
+  const items = rows.map(r => {
+    const native = (Number(r.paid_amount) || 0) > 0 ? Number(r.paid_amount) : (Number(r.total_amount) || 0)
+    // CAD : montant de l'écriture 23900 si posée, sinon le montant encaissé
+    // (déjà en CAD quand currency=CAD ; pour l'USD sans écriture, inconnu → null).
+    const amountCad = r.deferred_revenue_amount_cad != null
+      ? Number(r.deferred_revenue_amount_cad)
+      : (r.currency === 'CAD' ? native : null)
+    return {
+      id: r.id,
+      document_number: r.document_number,
+      paid_at: r.paid_at,
+      company_id: r.company_id,
+      company_name: r.company_name,
+      order_id: r.order_id,
+      amount_native: Math.round(native * 100) / 100,
+      currency: r.currency || 'CAD',
+      amount_cad: amountCad != null ? Math.round(amountCad * 100) / 100 : null,
+      deferred_posted: r.deferred_revenue_at != null, // écriture Cr 23900 posée au dépôt du payout
+    }
+  })
+
+  const total_cad = Math.round(items.reduce((s, i) => s + (i.amount_cad || 0), 0) * 100) / 100
+  const unconverted = items.filter(i => i.amount_cad == null).length
+  res.json({ generated_at: new Date().toISOString(), items, total_cad, unconverted })
+})
+
 // GET /api/dashboard/bank-accounts
 // Soldes du jour des comptes bancaires et cartes de crédit depuis QuickBooks.
 // QB expose le solde courant de chaque compte via le champ CurrentBalance.
@@ -1682,6 +1729,10 @@ router.get('/balance-sheet', async (req, res) => {
 // ?refresh=1 dans ce cas.
 const bankAccountsCache = new Map()
 onQbMutation(() => bankAccountsCache.clear())
+
+// Limite de la marge de crédit (Desjardins + BNC confondues) — plancher de la
+// trésorerie affichée sur le dashboard. Valeur métier fournie par Orisha.
+const CREDIT_LINE_LIMIT = 360000
 
 router.get('/bank-accounts', async (req, res) => {
   try {
@@ -1703,24 +1754,49 @@ router.get('/bank-accounts', async (req, res) => {
       currency: a.CurrencyRef?.value || 'CAD',
     }))
 
+    // Taux de change QB pour convertir les comptes en devise étrangère (USD…)
+    // vers la devise maison (CAD). Sans conversion, les totaux mélangeraient
+    // des USD et des CAD. En cas d'échec du fetch, repli sur 1:1.
+    const foreignCurrencies = [...new Set(accounts.map(a => a.currency).filter(c => c && c !== 'CAD'))]
+    const exchangeRates = {}
+    for (const cur of foreignCurrencies) {
+      try {
+        const xr = await qbGet(`/exchangerate?sourcecurrencycode=${encodeURIComponent(cur)}`)
+        const rate = Number(xr?.ExchangeRate?.Rate)
+        if (Number.isFinite(rate) && rate > 0) exchangeRates[cur] = rate
+      } catch (e) {
+        console.error(`[dashboard/bank-accounts] taux de change ${cur} introuvable:`, e.message)
+      }
+    }
+    for (const a of accounts) {
+      const rate = a.currency === 'CAD' ? 1 : (exchangeRates[a.currency] || 1)
+      a.balance_cad = Math.round(a.balance * rate * 100) / 100
+    }
+
     // Tri : comptes bancaires d'abord, puis cartes de crédit, alpha par nom.
     accounts.sort((x, y) => {
       if (x.type !== y.type) return x.type === 'Bank' ? -1 : 1
       return x.name.localeCompare(y.name)
     })
 
-    const bankTotal = accounts.filter(a => a.type === 'Bank').reduce((s, a) => s + a.balance, 0)
-    const creditCardTotal = accounts.filter(a => a.type === 'Credit Card').reduce((s, a) => s + a.balance, 0)
+    const bankTotal = accounts.filter(a => a.type === 'Bank').reduce((s, a) => s + a.balance_cad, 0)
+    const creditCardTotal = accounts.filter(a => a.type === 'Credit Card').reduce((s, a) => s + a.balance_cad, 0)
+    // Les passifs (cartes, marges) ont un CurrentBalance négatif quand dus,
+    // donc l'addition donne bien banques − dettes.
+    const treasury = Math.round((bankTotal + creditCardTotal) * 100) / 100
 
     const payload = {
-      currency: accounts[0]?.currency || 'CAD',
+      currency: 'CAD',
       generated_at: new Date().toISOString(),
       accounts,
+      exchange_rates: exchangeRates,
       totals: {
-        bank: bankTotal,
-        credit_card: creditCardTotal,
-        net: bankTotal + creditCardTotal,
+        bank: Math.round(bankTotal * 100) / 100,
+        credit_card: Math.round(creditCardTotal * 100) / 100,
+        net: treasury,
       },
+      treasury,
+      credit_limit: CREDIT_LINE_LIMIT,
     }
     bankAccountsCache.set('default', payload)
     res.json(payload)

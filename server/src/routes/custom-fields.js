@@ -28,6 +28,12 @@ const ALLOWED_TABLES = new Set([
   'companies', 'contacts', 'products', 'orders', 'tickets', 'tasks',
   'shipments', 'employees', 'purchases', 'achats_fournisseurs',
   'returns', 'sale_receipts', 'serial_numbers', 'interactions',
+  // Fusion avec l'ancien système airtable_field_defs (voir migration schema.js) —
+  // tables qui n'avaient jusqu'ici que des champs Airtable, jamais de champ custom.
+  'order_items', 'abonnements', 'retours', 'return_items', 'adresses',
+  'soumissions', 'assemblages', 'paies', 'paie_items', 'bom_items', 'company_serials',
+  // Paiements clients (encaissements + remboursements) — page « Paiements ».
+  'payments',
 ])
 
 function slugify(s) {
@@ -204,6 +210,26 @@ function normalizeDurationOptions(raw) {
   return { json: JSON.stringify({ format }) }
 }
 
+// Normalise/valide la config d'un champ 'currency'. La config tient dans la
+// colonne `options` (JSON) : { currency: code ISO 4217 à 3 lettres }. Défaut
+// CAD (rétro-compatible : les champs devise existants n'ont pas d'options).
+// Retourne { json } ou lève une Error (message clair pour la route).
+function normalizeCurrencyOptions(raw) {
+  const code = String(raw?.currency ?? 'CAD').trim().toUpperCase()
+  if (!/^[A-Z]{3}$/.test(code)) throw new Error('Devise doit être un code ISO 4217 à 3 lettres (ex: CAD, USD, EUR)')
+  return { json: JSON.stringify({ currency: code }) }
+}
+
+// Normalise/valide la config d'un champ 'phone'. La config tient dans la colonne
+// `options` (JSON) : { country_code: 'show' | 'hide' } — affichage ou non de
+// l'indicatif de pays (+1) sur les numéros nord-américains. Défaut 'hide'
+// (rétro-compatible : les champs téléphone existants n'ont pas d'options et
+// s'affichent sans indicatif, comme les champs téléphone natifs). Retourne { json }.
+function normalizePhoneOptions(raw) {
+  const cc = raw?.country_code === 'show' ? 'show' : 'hide'
+  return { json: JSON.stringify({ country_code: cc }) }
+}
+
 // Normalise/valide une valeur par défaut pour un champ kind='data'.
 //   raw  : valeur brute du body (string/number/null/undefined)
 //   type : 'text' | 'number' | 'currency' | 'url' | 'duration' | 'checkbox'
@@ -240,13 +266,14 @@ router.get('/_meta/:erpTable', (req, res) => {
   catch (e) { res.status(400).json({ error: e.message }) }
 })
 
-// GET /api/custom-fields/:id/dependents — rapport d'usage : quels AUTRES champs
-// custom de la même table référencent ce champ (formules, clés étrangères de
-// lookup). Consommé par la modale au moment de la suppression pour avertir qu'on
-// va casser des champs calculés, plutôt que de le découvrir à l'#ERROR silencieux.
+// GET /api/custom-fields/:id/dependents — rapport d'usage : tout ce que la
+// suppression de ce champ va affecter (autres champs calculés — même table et
+// cross-table —, champ inverse d'une liaison, automations, vues, règles de
+// visibilité). Consommé par la modale au moment de la suppression pour avertir
+// AVANT de casser, plutôt que de le découvrir à l'#ERROR silencieux.
 router.get('/:id/dependents', (req, res) => {
   const field = db.prepare(
-    `SELECT id, erp_table, name, column_name, kind FROM custom_fields WHERE id=? AND deleted_at IS NULL`
+    `SELECT id, erp_table, name, column_name, kind, link_group_id FROM custom_fields WHERE id=? AND deleted_at IS NULL`
   ).get(req.params.id)
   if (!field) return res.status(404).json({ error: 'Champ introuvable' })
   try {
@@ -265,7 +292,7 @@ router.get('/:erpTable', (req, res) => {
     `SELECT id, name, column_name, type, decimals, sort_order,
             kind, formula_expr, lookup_fk, lookup_target_table, lookup_target_column, result_type,
             rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, view_error, options, default_value,
-            link_target_table, link_group_id, link_role, link_single
+            link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id
      FROM custom_fields
      WHERE erp_table=? AND deleted_at IS NULL
      ORDER BY sort_order, created_at`
@@ -281,14 +308,16 @@ router.get('/:erpTable', (req, res) => {
 //   - currency : nombre stocké en REAL, rendu avec format monétaire ($, séparateurs).
 //                `decimals` optionnel, défaut 2.
 //   - url      : texte stocké en TEXT, rendu comme lien cliquable si URL valide.
+//   - phone    : texte stocké en TEXT, formaté à l'affichage — (514) 123-4567 —
+//                et rendu comme lien tel: cliquable.
 router.post('/:erpTable', (req, res) => {
   const { erpTable } = req.params
   if (!ALLOWED_TABLES.has(erpTable)) return res.status(400).json({ error: 'Table non supportée' })
   const name = String(req.body?.name || '').trim()
   const type = req.body?.type
   if (!name) return res.status(400).json({ error: 'Nom requis' })
-  if (!['text', 'number', 'currency', 'url', 'duration', 'single_select', 'multi_select', 'checkbox'].includes(type)) {
-    return res.status(400).json({ error: 'Type doit être "text", "number", "currency", "url", "duration", "single_select", "multi_select" ou "checkbox"' })
+  if (!['text', 'long_text', 'number', 'currency', 'url', 'phone', 'duration', 'date', 'single_select', 'multi_select', 'checkbox'].includes(type)) {
+    return res.status(400).json({ error: 'Type doit être "text", "long_text", "number", "currency", "url", "phone", "duration", "date", "single_select", "multi_select" ou "checkbox"' })
   }
   // Single/multi select : valide/normalise la config des choix (libellés,
   // couleurs, défaut, alphabétisation) avant de créer la colonne. Le multi_select
@@ -300,6 +329,14 @@ router.post('/:erpTable', (req, res) => {
     catch (e) { return res.status(400).json({ error: e.message }) }
   } else if (type === 'duration') {
     optionsJson = normalizeDurationOptions(req.body?.options).json
+  } else if (type === 'currency') {
+    // Devise : le code (ISO 4217) tient dans `options`, les décimales dans
+    // `decimals` (validées plus bas). Absent → CAD.
+    try { optionsJson = normalizeCurrencyOptions(req.body?.options).json }
+    catch (e) { return res.status(400).json({ error: e.message }) }
+  } else if (type === 'phone') {
+    // Téléphone : affichage de l'indicatif de pays (+1) dans `options`. Défaut 'hide'.
+    optionsJson = normalizePhoneOptions(req.body?.options).json
   }
   let decimals = null
   if (type === 'number' || type === 'currency') {
@@ -321,7 +358,7 @@ router.post('/:erpTable', (req, res) => {
   // doit être un nombre fini ; duration : une durée parseable ; checkbox : 1 si
   // coché par défaut, sinon NULL. Vide → NULL.
   let defaultValue = null
-  if (['text', 'number', 'currency', 'url', 'duration', 'checkbox'].includes(type)) {
+  if (['text', 'number', 'currency', 'url', 'phone', 'duration', 'checkbox'].includes(type)) {
     try { defaultValue = normalizeDefaultValue(req.body?.default_value, type) }
     catch (e) { return res.status(400).json({ error: e.message }) }
   }
@@ -351,6 +388,57 @@ router.post('/:erpTable', (req, res) => {
   tx()
 
   const created = db.prepare(`SELECT id, name, column_name, type, decimals, sort_order, options, default_value FROM custom_fields WHERE id=?`).get(id)
+  res.status(201).json(created)
+})
+
+// POST /api/custom-fields/:erpTable/adopt — « adopte » une colonne physique déjà
+// existante sur la table (issue d'un mapping Airtable, ou orpheline) plutôt que
+// d'en créer une nouvelle. Contrairement à POST /:erpTable, ne fait AUCUN
+// ALTER TABLE : la colonne existe déjà, on ne fait que poser la métadonnée de
+// rendu (source='airtable'). Utilisé par le flux de mapping Airtable
+// (routes/connectors.js) après matérialisation d'une colonne.
+// Body : { column_name, name, type, options?, airtable_mapping_id? }
+const ADOPTABLE_TYPES = new Set(['text', 'long_text', 'number', 'date', 'single_select', 'multi_select', 'checkbox'])
+const SYSTEM_COLUMNS = new Set(['id', 'airtable_id', 'created_at', 'updated_at', 'deleted_at', 'rowid', 'oid', '_rowid_'])
+
+router.post('/:erpTable/adopt', (req, res) => {
+  const { erpTable } = req.params
+  if (!ALLOWED_TABLES.has(erpTable)) return res.status(400).json({ error: 'Table non supportée' })
+  const columnName = String(req.body?.column_name || '').trim()
+  const name = String(req.body?.name || '').trim()
+  const type = req.body?.type
+  if (!name) return res.status(400).json({ error: 'Nom requis' })
+  if (!columnName) return res.status(400).json({ error: 'column_name requis' })
+  if (!ADOPTABLE_TYPES.has(type)) {
+    return res.status(400).json({ error: `Type non supporté pour une colonne adoptée : ${[...ADOPTABLE_TYPES].join(', ')}` })
+  }
+  if (SYSTEM_COLUMNS.has(columnName)) return res.status(400).json({ error: 'Colonne système — non adoptable' })
+  const liveCols = new Set(db.pragma(`table_info(${erpTable})`).map(c => c.name))
+  if (!liveCols.has(columnName)) return res.status(400).json({ error: `Colonne "${columnName}" introuvable sur ${erpTable}` })
+  const dupe = db.prepare(`SELECT 1 FROM custom_fields WHERE erp_table=? AND column_name=? AND deleted_at IS NULL`).get(erpTable, columnName)
+  if (dupe) return res.status(400).json({ error: 'Cette colonne a déjà un champ actif' })
+
+  let optionsJson = null
+  if (type === 'single_select' || type === 'multi_select') {
+    try { optionsJson = normalizeSelectOptions(req.body?.options).json }
+    catch (e) { return res.status(400).json({ error: e.message }) }
+  }
+
+  const id = uuid()
+  const lastSortRow = db.prepare(
+    `SELECT MAX(sort_order) AS m FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL`
+  ).get(erpTable)
+  const sortOrder = (lastSortRow?.m ?? -1) + 1
+  const airtableMappingId = req.body?.airtable_mapping_id || null
+
+  db.prepare(`
+    INSERT INTO custom_fields (id, erp_table, name, column_name, type, kind, sort_order, options, source, airtable_mapping_id)
+    VALUES (?,?,?,?,?, 'data', ?, ?, 'airtable', ?)
+  `).run(id, erpTable, name, columnName, type, sortOrder, optionsJson, airtableMappingId)
+
+  const created = db.prepare(
+    `SELECT id, name, column_name, type, decimals, sort_order, options, source, airtable_mapping_id FROM custom_fields WHERE id=?`
+  ).get(id)
   res.status(201).json(created)
 })
 
@@ -759,9 +847,18 @@ router.get('/link/:fieldId/options', (req, res) => {
   catch (e) { res.status(400).json({ error: e.message }) }
 })
 
+// Types de données valides pour un champ kind='data' (aligné sur POST :erpTable).
+const DATA_TYPES = new Set(['text', 'long_text', 'number', 'currency', 'url', 'phone', 'duration', 'date', 'single_select', 'multi_select', 'checkbox'])
+
 // PUT /api/custom-fields/:id — modifie nom, décimales, et (selon le kind)
-// l'expression formule ou la config lookup. Le `column_name`, le `type`, et
-// le `kind` ne peuvent pas changer.
+// l'expression formule ou la config lookup. Le `column_name` et le `kind` ne
+// peuvent jamais changer. Le `type` est figé pour les champs `source='native'`
+// (comportement historique) MAIS est pleinement modifiable pour les champs
+// `source='airtable'` (colonne adoptée depuis un mapping Airtable) : l'utilisateur
+// a le plein contrôle sur le rendu de la colonne — n'importe quel type de donnée
+// est accepté. Le changement est purement métadonnée (aucun ALTER TABLE) : la
+// colonne physique existe déjà et SQLite est typé dynamiquement, donc le
+// re-typage ne touche jamais les valeurs déjà stockées.
 router.put('/:id', (req, res) => {
   const existing = db.prepare(`SELECT * FROM custom_fields WHERE id=?`).get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Champ introuvable' })
@@ -776,8 +873,24 @@ router.put('/:id', (req, res) => {
     if (!n) return res.status(400).json({ error: 'Nom requis' })
     updates.push('name=?'); values.push(n)
   }
+  if ('type' in (req.body || {}) && req.body.type !== existing.type) {
+    if (existing.source !== 'airtable' || existing.kind !== 'data') {
+      return res.status(400).json({ error: 'Le type ne peut pas être modifié après création' })
+    }
+    if (!DATA_TYPES.has(req.body.type)) {
+      return res.status(400).json({ error: 'Type invalide' })
+    }
+    updates.push('type=?'); values.push(req.body.type)
+    // Une devise fraîchement choisie démarre à 2 décimales si non précisé —
+    // même défaut qu'à la création (CustomFieldModal envoie decimals à part).
+    if (req.body.type === 'currency' && existing.decimals == null && !('decimals' in (req.body || {}))) {
+      updates.push('decimals=?'); values.push(2)
+    }
+  }
   if ('decimals' in (req.body || {})) {
-    if (existing.type !== 'number' && existing.type !== 'currency') return res.status(400).json({ error: 'Décimales applicable seulement aux champs nombre ou devise' })
+    // Prend en compte un changement de type dans la même requête (ex: number → currency).
+    const effectiveType = ('type' in (req.body || {})) ? req.body.type : existing.type
+    if (effectiveType !== 'number' && effectiveType !== 'currency') return res.status(400).json({ error: 'Décimales applicable seulement aux champs nombre ou devise' })
     const d = parseInt(req.body.decimals)
     if (!Number.isInteger(d) || d < 0 || d > 5) return res.status(400).json({ error: 'Décimales doit être entre 0 et 5' })
     updates.push('decimals=?'); values.push(d)
@@ -823,6 +936,19 @@ router.put('/:id', (req, res) => {
                 String(merged.rollup_agg).toUpperCase())
     viewDirty = true
   }
+  // result_type pilote l'affichage / le type de colonne (texte, nombre, date).
+  // Éditable sur les champs calculés ; notamment un rollup ARRAY/ARRAYUNIQUE
+  // bascule en 'text' (liste de valeurs), un rollup numérique reste en 'number'.
+  if ('result_type' in (req.body || {})) {
+    if (!['formula', 'lookup', 'rollup'].includes(existing.kind)) {
+      return res.status(400).json({ error: 'result_type applicable seulement aux champs formule, lookup ou rollup' })
+    }
+    const rt = req.body.result_type
+    if (!['text', 'number', 'date'].includes(rt)) {
+      return res.status(400).json({ error: "result_type doit être 'text', 'number' ou 'date'" })
+    }
+    updates.push('result_type=?'); values.push(rt)
+  }
 
   // Édition de la config single_select (choix, couleurs, défaut, alphabétisation).
   // Les renommages migrent les valeurs déjà stockées (cf_* contient le label), de
@@ -832,14 +958,23 @@ router.put('/:id', (req, res) => {
   if ('options' in (req.body || {}) && existing.type === 'duration') {
     // Duration : la seule option éditable est le format d'affichage.
     updates.push('options=?'); values.push(normalizeDurationOptions(req.body.options).json)
+  } else if ('options' in (req.body || {}) && existing.type === 'currency') {
+    // Devise : la seule option éditable est le code de devise (ISO 4217).
+    let norm
+    try { norm = normalizeCurrencyOptions(req.body.options) }
+    catch (e) { return res.status(400).json({ error: e.message }) }
+    updates.push('options=?'); values.push(norm.json)
   } else if ('options' in (req.body || {}) && existing.type === 'button') {
     // Bouton : libellé, automation cible et style.
     let norm
     try { norm = normalizeButtonOptions(req.body.options) }
     catch (e) { return res.status(400).json({ error: e.message }) }
     updates.push('options=?'); values.push(norm.json)
+  } else if ('options' in (req.body || {}) && existing.type === 'phone') {
+    // Téléphone : la seule option éditable est l'affichage de l'indicatif de pays.
+    updates.push('options=?'); values.push(normalizePhoneOptions(req.body.options).json)
   } else if ('options' in (req.body || {})) {
-    if (existing.type !== 'single_select' && existing.type !== 'multi_select') return res.status(400).json({ error: 'options applicable seulement aux champs Sélection ou Durée' })
+    if (existing.type !== 'single_select' && existing.type !== 'multi_select') return res.status(400).json({ error: 'options applicable seulement aux champs Sélection, Durée, Devise, Téléphone ou Bouton' })
     let prevIds = new Set()
     let prevById = new Map()
     try {
@@ -903,7 +1038,7 @@ router.put('/:id', (req, res) => {
     SELECT id, name, column_name, type, decimals, kind, formula_expr,
            lookup_fk, lookup_target_table, lookup_target_column, result_type, sort_order,
            rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, view_error, options, default_value,
-           link_target_table, link_group_id, link_role, link_single
+           link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id
     FROM custom_fields WHERE id=?
   `).get(req.params.id)
   res.json(updated)

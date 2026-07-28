@@ -2,11 +2,21 @@ import { Router } from 'express'
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { postPaymentDeposit, processRefund } from '../services/quickbooks.js'
+import { postPaymentDeposit, previewPaymentDeposit, processRefund } from '../services/quickbooks.js'
 import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { recomputeFactureBalance } from '../services/factureBalance.js'
 import { logSync } from '../services/syncLog.js'
 import { naiveLocalToUtcIso } from '../utils/datetime.js'
+import { buildPartialUpdate } from '../utils/partialUpdate.js'
+import { getActiveCustomColumns } from './custom-fields.js'
+
+// Relation de lecture des paiements : la VUE `payments_v` si elle existe (elle
+// expose en plus les champs custom virtuels — formule/lookup/rollup), sinon la
+// table physique `payments` (qui porte déjà les champs custom de kind='data').
+function paymentsReadRelation() {
+  const hasView = db.prepare("SELECT 1 FROM sqlite_master WHERE type='view' AND name='payments_v'").get()
+  return hasView ? 'payments_v' : 'payments'
+}
 
 const router = Router()
 router.use(requireAuth)
@@ -18,6 +28,247 @@ const VALID_CURRENCIES = new Set(['CAD', 'USD'])
 // comptabilisé). Tenu synchrone avec QB_SKIP_REASONS côté client
 // (FacturePaymentsSection.jsx).
 const VALID_QB_SKIP_REASONS = new Set(['deja_poste_payout', 'saisi_manuellement_qb', 'hors_bande', 'autre'])
+
+// GET /api/payments — liste centralisée de TOUS les paiements et remboursements
+// (page « Paiements »). Deux sources fusionnées :
+//   1. Lignes réelles de la table `payments` : encaissements/remboursements
+//      hors-Stripe saisis manuellement + refunds Stripe + paiements Stripe qui
+//      ont bel et bien une ligne payments.
+//   2. Lignes Stripe synthétiques : la majorité des encaissements Stripe ne
+//      créent PAS de ligne payments (le push QB se fait au payout). On les
+//      reconstruit depuis `factures.paid_at` — même logique que la vue par
+//      facture (GET /facture/:factureId) — pour que la page reflète vraiment
+//      l'argent entré, pas seulement les saisies manuelles. Ces lignes sont
+//      flagées `synthetic: true` (lecture seule côté client).
+// Contrat de pagination identique aux autres listes : { data, total, page, limit }
+// avec support `limit=all` (utilisé par loadProgressive).
+router.get('/', (req, res) => {
+  const { page = 1, limit = 50, direction, method } = req.query
+  const limitAll = limit === 'all'
+  const limitVal = limitAll ? -1 : parseInt(limit)
+  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+
+  // p.* : inclut les colonnes natives ET les champs personnalisés (colonnes
+  // physiques cf_* + colonnes virtuelles exposées par la vue payments_v). La page
+  // « Paiements » peut ainsi afficher n'importe quelle colonne custom ajoutée.
+  const real = db.prepare(`
+    SELECT p.*,
+           f.document_number, f.kind, c.id AS company_id, c.name AS company_name,
+           0 AS synthetic
+    FROM ${paymentsReadRelation()} p
+    JOIN factures f ON f.id = p.facture_id
+    LEFT JOIN companies c ON c.id = f.company_id
+  `).all()
+
+  // Encaissements Stripe sans ligne payments 'in' → reconstitués depuis paid_at.
+  // Exclut les factures à 0 $ (essais gratuits) et les Void, comme direct-deposits.
+  const synthetic = db.prepare(`
+    SELECT 'synthetic:stripe:' || f.id AS id, f.id AS facture_id, 'in' AS direction,
+           'stripe' AS method, f.paid_at AS received_at,
+           COALESCE(f.paid_amount, f.total_amount) AS amount,
+           UPPER(COALESCE(f.currency, 'CAD')) AS currency,
+           NULL AS amount_cad, NULL AS exchange_rate, NULL AS qb_deposit_id,
+           NULL AS qb_journal_entry_id, NULL AS qb_payment_id, 0 AS qb_skipped,
+           NULL AS qb_skip_reason,
+           'Paiement Stripe — écriture QB posée au payout' AS notes,
+           f.paid_at AS created_at,
+           f.document_number, f.kind, c.id AS company_id, c.name AS company_name,
+           1 AS synthetic
+    FROM factures f
+    LEFT JOIN companies c ON c.id = f.company_id
+    WHERE f.paid_at IS NOT NULL
+      AND COALESCE(f.status, '') != 'Void'
+      AND f.total_amount > 0
+      AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.facture_id = f.id AND p.direction = 'in')
+  `).all()
+
+  let merged = [...real, ...synthetic]
+  for (const r of merged) r.qb_skipped = !!r.qb_skipped
+  if (direction === 'in' || direction === 'out') merged = merged.filter(r => r.direction === direction)
+  if (method) merged = merged.filter(r => r.method === method)
+  merged.sort((a, b) => {
+    const da = a.received_at || a.created_at || ''
+    const db2 = b.received_at || b.created_at || ''
+    return db2.localeCompare(da)
+  })
+
+  const total = merged.length
+  const sliced = limitAll ? merged : merged.slice(offset, offset + limitVal)
+  res.json({ data: sliced, total, page: parseInt(page), limit: limitAll ? 'all' : parseInt(limit) })
+})
+
+// GET /api/payments/direct-deposits — vue centralisée des encaissements reçus
+// HORS payouts Stripe (virement, chèque, Interac, comptant). Alimente la
+// sous-section « Dépôts directs » de la page Stripe Payouts :
+//   - deposits   : lignes payments direction='in' hors Stripe, avec statut QB
+//                  (Deposit poussé / skip volontaire / échec à re-tenter)
+//   - candidates : factures marquées payées hors bande (paid_at posé sans
+//                  charge ni payment_intent Stripe → l'argent est entré
+//                  directement en banque) sans encaissement saisi — restent à
+//                  comptabiliser via POST /api/payments (Deposit QB automatique).
+router.get('/direct-deposits', (req, res) => {
+  const deposits = db.prepare(`
+    SELECT p.id, p.facture_id, p.method, p.received_at, p.amount, p.currency,
+           p.amount_cad, p.exchange_rate, p.qb_deposit_id, p.qb_journal_entry_id,
+           p.qb_payment_id, p.qb_skipped, p.qb_skip_reason,
+           p.qb_credit_account_id, p.qb_credit_account_name, p.notes,
+           f.document_number, f.kind, c.id AS company_id, c.name AS company_name
+    FROM payments p
+    JOIN factures f ON f.id = p.facture_id
+    LEFT JOIN companies c ON c.id = f.company_id
+    WHERE p.direction = 'in' AND p.method != 'stripe'
+    ORDER BY p.received_at DESC, p.created_at DESC
+  `).all()
+  for (const r of deposits) {
+    r.qb_skipped = !!r.qb_skipped
+    r.qb_deposit_url = r.qb_deposit_id ? qbEntityUrl('deposit', r.qb_deposit_id) : null
+    r.qb_journal_entry_url = r.qb_journal_entry_id ? qbEntityUrl('journal', r.qb_journal_entry_id) : null
+    r.qb_payment_url = r.qb_payment_id ? qbEntityUrl('recvpayment', r.qb_payment_id) : null
+  }
+
+  // total_amount > 0 : les factures d'abonnement à 0 $ (essais/gratuites) sont
+  // marquées payées par Stripe sans le moindre encaissement — rien à comptabiliser.
+  const candidates = db.prepare(`
+    SELECT f.id, f.document_number, f.kind, f.status, f.currency, f.total_amount,
+           f.paid_at, f.document_date, c.id AS company_id, c.name AS company_name
+    FROM factures f
+    LEFT JOIN companies c ON c.id = f.company_id
+    WHERE f.paid_at IS NOT NULL
+      AND (f.paid_charge_id IS NULL OR f.paid_charge_id = '')
+      AND (f.paid_payment_intent IS NULL OR f.paid_payment_intent = '')
+      AND COALESCE(f.status, '') != 'Void'
+      AND f.total_amount > 0
+      AND NOT EXISTS (SELECT 1 FROM payments p WHERE p.facture_id = f.id AND p.direction = 'in')
+    ORDER BY f.paid_at DESC
+  `).all()
+
+  res.json({ deposits, candidates })
+})
+
+// POST /api/payments/preview-deposit — aperçu du Deposit QB qu'un encaissement
+// hors-Stripe produirait, SANS rien écrire (ni QB, ni DB). Même contrat que
+// l'« Aperçu Deposit » des Stripe payouts : { deposit, summary, warnings }.
+// Body : { facture_id, amount, currency, method, received_at }.
+router.post('/preview-deposit', async (req, res) => {
+  const { facture_id, amount, currency, method, received_at } = req.body || {}
+  if (!facture_id) return res.status(400).json({ error: 'facture_id requis' })
+  const amt = Number(amount)
+  if (!Number.isFinite(amt) || amt <= 0) return res.status(400).json({ error: 'amount doit être un nombre > 0' })
+  const cur = String(currency || 'CAD').toUpperCase()
+  if (!VALID_CURRENCIES.has(cur)) return res.status(400).json({ error: 'currency doit être CAD ou USD' })
+  const facture = db.prepare('SELECT id FROM factures WHERE id = ?').get(facture_id)
+  if (!facture) return res.status(404).json({ error: 'Facture introuvable' })
+  try {
+    const preview = await previewPaymentDeposit({
+      factureId: facture_id,
+      amount: amt,
+      currency: cur,
+      method: VALID_METHODS.has(method) ? method : 'autre',
+      receivedAt: received_at || undefined,
+    })
+    res.json(preview)
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// GET /api/payments/direct-deposits/:id — détail d'un dépôt direct pour la page
+// /depots-directs/:id (miroir du détail d'un Stripe payout). :id est soit un
+// payment.id (dépôt comptabilisé), soit un facture.id (candidat à comptabiliser).
+// Si la facture a déjà un encaissement hors-Stripe, renvoie { kind:'redirect' }
+// vers le payment pour que la page bascule en mode « comptabilisé ».
+router.get('/direct-deposits/:id', (req, res) => {
+  const p = db.prepare(`
+    SELECT p.*, f.document_number, f.kind, f.total_amount AS facture_total_amount,
+           f.paid_at, f.document_date, c.id AS company_id, c.name AS company_name
+    FROM payments p
+    JOIN factures f ON f.id = p.facture_id
+    LEFT JOIN companies c ON c.id = f.company_id
+    WHERE p.id = ?
+  `).get(req.params.id)
+  if (p) {
+    p.qb_skipped = !!p.qb_skipped
+    p.qb_deposit_url = p.qb_deposit_id ? qbEntityUrl('deposit', p.qb_deposit_id) : null
+    p.qb_journal_entry_url = p.qb_journal_entry_id ? qbEntityUrl('journal', p.qb_journal_entry_id) : null
+    p.qb_payment_url = p.qb_payment_id ? qbEntityUrl('recvpayment', p.qb_payment_id) : null
+    return res.json({ kind: 'deposit', deposit: p })
+  }
+
+  const f = db.prepare(`
+    SELECT f.id, f.document_number, f.kind, f.status, f.currency, f.total_amount,
+           f.paid_at, f.document_date, c.id AS company_id, c.name AS company_name
+    FROM factures f
+    LEFT JOIN companies c ON c.id = f.company_id
+    WHERE f.id = ?
+  `).get(req.params.id)
+  if (!f) return res.status(404).json({ error: 'Dépôt introuvable' })
+  const existing = db.prepare(
+    "SELECT id FROM payments WHERE facture_id = ? AND direction = 'in' AND method != 'stripe' ORDER BY created_at DESC LIMIT 1"
+  ).get(f.id)
+  if (existing) return res.json({ kind: 'redirect', payment_id: existing.id })
+  res.json({ kind: 'candidate', candidate: f })
+})
+
+// PATCH /api/payments/:id/qb-ref — rattache une écriture QB EXISTANTE (saisie à la
+// main dans QuickBooks avant que le push automatique existe) à un paiement, pour
+// que la ligne affiche son lien QB au lieu de « saisi à la main »/« à pousser ».
+// Body : { qb_deposit_id } ou { qb_payment_id } (receive-payment QB). L'entité est
+// vérifiée dans QB avant d'être rattachée — un id inexistant est refusé.
+router.patch('/:id/qb-ref', async (req, res) => {
+  const p = db.prepare('SELECT id FROM payments WHERE id = ?').get(req.params.id)
+  if (!p) return res.status(404).json({ error: 'Paiement introuvable' })
+  const { qb_deposit_id, qb_payment_id } = req.body || {}
+  if (!qb_deposit_id && !qb_payment_id) {
+    return res.status(400).json({ error: 'qb_deposit_id ou qb_payment_id requis' })
+  }
+  if (qb_deposit_id && qb_payment_id) {
+    return res.status(400).json({ error: 'Fournir un seul id à la fois' })
+  }
+  const entity = qb_deposit_id ? 'Deposit' : 'Payment'
+  const qbId = String(qb_deposit_id || qb_payment_id)
+  try {
+    await qbGet(`/${entity.toLowerCase()}/${qbId}?minorversion=65`)
+  } catch (e) {
+    return res.status(400).json({ error: `${entity} #${qbId} introuvable dans QuickBooks : ${e.message}` })
+  }
+  const col = qb_deposit_id ? 'qb_deposit_id' : 'qb_payment_id'
+  db.prepare(`
+    UPDATE payments SET ${col} = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = ?
+  `).run(qbId, req.params.id)
+  const url = qbEntityUrl(qb_deposit_id ? 'deposit' : 'recvpayment', qbId)
+  res.json({ ok: true, [col]: qbId, qb_url: url })
+})
+
+// PATCH /api/payments/:id — met à jour UNIQUEMENT les champs personnalisés
+// (colonnes cf_*) d'un paiement. Les colonnes natives (montant, méthode, refs QB,
+// dates…) ne sont jamais modifiables ici : elles sont pilotées par la logique
+// comptable (webhooks Stripe, postPaymentDeposit/processRefund) et une édition
+// libre corromprait le suivi des AR. Alimente l'édition inline « tableur » des
+// colonnes custom de la page Paiements.
+router.patch('/:id', (req, res) => {
+  // Les lignes Stripe synthétiques n'ont pas de row `payments` réelle → aucune
+  // valeur custom ne peut y être stockée.
+  if (String(req.params.id).startsWith('synthetic:')) {
+    return res.status(400).json({ error: 'Ligne Stripe synthétique — pas de champ personnalisé éditable' })
+  }
+  const existing = db.prepare('SELECT id FROM payments WHERE id = ?').get(req.params.id)
+  if (!existing) return res.status(404).json({ error: 'Paiement introuvable' })
+
+  const customCols = getActiveCustomColumns('payments').map(c => c.column_name)
+  if (customCols.length === 0) {
+    return res.status(400).json({ error: 'Aucun champ personnalisé à modifier sur les paiements' })
+  }
+  const { setClause, values, error } = buildPartialUpdate(req.body, { allowed: customCols })
+  if (error) return res.status(400).json({ error })
+  if (setClause) {
+    db.prepare(`UPDATE payments SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+      .run(...values, req.params.id)
+  }
+  // Relit depuis la vue si elle existe → renvoie aussi les champs virtuels recalculés.
+  const updated = db.prepare(`SELECT * FROM ${paymentsReadRelation()} WHERE id = ?`).get(req.params.id)
+  res.json(updated)
+})
 
 // GET /api/payments/facture/:factureId — liste les paiements/refunds d'une facture
 router.get('/facture/:factureId', (req, res) => {
@@ -59,7 +310,7 @@ router.get('/facture/:factureId', (req, res) => {
     return qbId
   }
   for (const r of rows) {
-    r.qb_payment_url = r.qb_payment_id ? qbEntityUrl('salesreceipt', r.qb_payment_id) : null
+    r.qb_payment_url = r.qb_payment_id ? qbEntityUrl('recvpayment', r.qb_payment_id) : null
     r.qb_journal_entry_url = r.qb_journal_entry_id ? qbEntityUrl('journal', r.qb_journal_entry_id) : null
     r.qb_deposit_url = r.qb_deposit_id ? qbEntityUrl('deposit', r.qb_deposit_id) : null
     if (r.method === 'stripe') {
@@ -163,7 +414,7 @@ router.get('/facture/:factureId', (req, res) => {
 // POST /api/payments — saisie manuelle d'un paiement (in) ou remboursement (out) hors-Stripe
 // Les paiements Stripe sont créés automatiquement par le webhook invoice.paid (method='stripe').
 router.post('/', async (req, res) => {
-  const { facture_id, direction, method, received_at, amount, currency, notes, skip_qb, qb_skip_reason } = req.body || {}
+  const { facture_id, direction, method, received_at, amount, currency, notes, skip_qb, qb_skip_reason, clear_paid_status } = req.body || {}
 
   if (!facture_id) return res.status(400).json({ error: 'facture_id requis' })
   if (direction !== 'in' && direction !== 'out') return res.status(400).json({ error: 'direction doit être "in" ou "out"' })
@@ -196,8 +447,24 @@ router.post('/', async (req, res) => {
   }
   if (!receivedIso || Number.isNaN(Date.parse(receivedIso))) return res.status(400).json({ error: 'received_at invalide' })
 
-  const facture = db.prepare('SELECT id FROM factures WHERE id = ?').get(facture_id)
+  const facture = db.prepare(
+    'SELECT id, paid_at, paid_charge_id, paid_payment_intent, due_date FROM factures WHERE id = ?'
+  ).get(facture_id)
   if (!facture) return res.status(404).json({ error: 'Facture introuvable' })
+
+  // clear_paid_status=true : la facture est marquée payée hors bande dans Stripe
+  // (paid_at posé sans charge ni payment_intent) et on saisit ici l'encaissement
+  // réel. On efface l'état « payé » hérité de Stripe dans la MÊME transaction que
+  // l'INSERT — sinon recomputeFactureBalance ignore le paiement (paid_at fait
+  // autorité). Équivalent atomique et non-admin du POST /admin/factures/:id/
+  // clear-paid-status, strictement borné au cas hors bande : une facture avec une
+  // vraie charge Stripe est refusée (son état « payé » est authentique).
+  if (clear_paid_status) {
+    if (direction !== 'in') return res.status(400).json({ error: 'clear_paid_status ne s\'applique qu\'à un paiement reçu (direction=in)' })
+    if (facture.paid_at && (facture.paid_charge_id || facture.paid_payment_intent)) {
+      return res.status(409).json({ error: 'Facture payée via Stripe (charge/payment_intent présent) — état « payé » authentique, clear_paid_status refusé' })
+    }
+  }
 
   const id = randomUUID()
   // Atomique : l'INSERT du paiement et le recompute du solde de la facture
@@ -207,6 +474,20 @@ router.post('/', async (req, res) => {
   // est purement synchrone (lectures + UPDATE SQLite), donc compatible avec
   // db.transaction() de better-sqlite3.
   const insertAndRecompute = db.transaction(() => {
+    if (clear_paid_status && facture.paid_at) {
+      const today = new Date().toISOString().slice(0, 10)
+      const nextStatus = (facture.due_date && facture.due_date < today) ? 'En retard' : 'À payer'
+      db.prepare(`
+        UPDATE factures
+        SET paid_at = NULL,
+            paid_amount = NULL,
+            paid_charge_id = NULL,
+            paid_payment_intent = NULL,
+            status = CASE WHEN status IN ('Payé','Payée') THEN ? ELSE status END,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = ?
+      `).run(nextStatus, facture_id)
+    }
     db.prepare(`
       INSERT INTO payments (
         id, facture_id, direction, method, received_at, amount, currency,
@@ -250,6 +531,7 @@ router.post('/', async (req, res) => {
   }
 
   const created = db.prepare('SELECT * FROM payments WHERE id = ?').get(id)
+  if (qbResult?.qb_deposit_id) qbResult.qb_deposit_url = qbEntityUrl('deposit', qbResult.qb_deposit_id)
   res.status(201).json({ payment: created, qb: qbResult, qb_error: qbError, qb_skipped: !!skip_qb, qb_skip_reason: skipReason })
 })
 

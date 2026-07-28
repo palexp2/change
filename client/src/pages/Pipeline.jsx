@@ -7,7 +7,6 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
@@ -15,7 +14,8 @@ import { fmtDate } from '../lib/formatDate.js'
 import { useDisabledColumns } from '../lib/useDisabledColumns.js'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import CustomFieldModal from '../components/CustomFieldModal.jsx'
-import { renderCustomFieldValue, customFieldColumnType, parseSelectChoices, durationFormatOf } from '../lib/customFieldDisplay.jsx'
+import { customFieldToColumn } from '../lib/customFieldDisplay.jsx'
+import { summarizeDependents } from '../lib/customFieldDeps.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 
@@ -197,7 +197,7 @@ export default function Pipeline() {
   const [showModal, setShowModal] = useState(false)
   const [editProject, setEditProject] = useState(null)
   const disabledCols = useDisabledColumns('projects') // Map<column_name, { airtable_field_name }>
-  const { fields: customFields, reload: reloadCustomFields } = useCustomFields('projects')
+  const { fields: customFields, loaded: customFieldsLoaded, reload: reloadCustomFields } = useCustomFields('projects')
   const [customFieldModal, setCustomFieldModal] = useState(null) // { editing: field|null }
   const confirm = useConfirm()
   const { addToast } = useToast()
@@ -209,13 +209,12 @@ export default function Pipeline() {
   }, [customFields])
 
   async function handleDeleteCustomField(field) {
-    // Rapport d'usage : avertit si des champs calculés référencent celui-ci avant
-    // de les casser en silence (#ERROR).
+    // Rapport d'usage : liste les dépendances (champs calculés, automations,
+    // vues, règles de visibilité) que la suppression va affecter, avant de les
+    // casser en silence (#ERROR).
     let dependents = []
     try { dependents = (await api.customFields.dependents(field.id))?.dependents || [] } catch {}
-    const depMsg = dependents.length
-      ? `\n\n⚠️ Référencé par ${dependents.length} champ(s) calculé(s) : ${dependents.map(d => d.name).join(', ')}. Ces champs cesseront de se calculer (#ERROR).`
-      : ''
+    const depMsg = summarizeDependents(dependents)
     if (!(await confirm({
       title: 'Supprimer le champ',
       message: `Supprimer le champ "${field.name}" ? Restaurable depuis la corbeille.${depMsg}`,
@@ -338,32 +337,12 @@ export default function Pipeline() {
     }
   }, [addToast])
 
-  // Colonnes finales = colonnes hardcodées + champs custom (text/number).
-  const COLUMNS_WITH_CUSTOM = useMemo(() => {
-    const customCols = customFields.map(f => ({
-      id: f.column_name,
-      label: f.name,
-      field: f.column_name,
-      type: customFieldColumnType(f),
-      // Select : on expose les choix au filtre (FilterRow) et à l'éditeur inline.
-      ...((f.type === 'single_select' || f.type === 'multi_select')
-        ? { options: parseSelectChoices(f), selectChoices: parseSelectChoices(f) }
-        : {}),
-      // Durée : format d'affichage (h:mm / h:mm:ss) pour DynamicCell.
-      ...(f.type === 'duration' ? { durationFormat: durationFormatOf(f) } : {}),
-      // Bouton : action sur la ligne, pas une valeur → ni groupable, ni triable,
-      // ni filtrable, ni éditable.
-      groupable: f.type !== 'button',
-      sortable: f.type !== 'button',
-      filterable: f.type !== 'button',
-      // Seuls les champs kind='data' sont éditables (sélection/copier-coller/
-      // fill-down via le mode tableur de DataTable). Les champs virtuels
-      // (formula/lookup/auto/button) sont calculés à la lecture → lecture seule.
-      editable: (!f.kind || f.kind === 'data'),
-      render: row => renderCustomFieldValue(f, row[f.column_name], row),
-    }))
-    return [...COLUMNS, ...customCols]
-  }, [COLUMNS, customFields])
+  // Colonnes finales = colonnes hardcodées + champs custom (mapping partagé,
+  // voir customFieldToColumn — éditable pour kind='data' via le mode tableur).
+  const COLUMNS_WITH_CUSTOM = useMemo(
+    () => [...COLUMNS, ...customFields.map(customFieldToColumn)],
+    [COLUMNS, customFields]
+  )
 
   async function handleCreate(form) { await api.projects.create(form); load() }
 
@@ -380,7 +359,6 @@ export default function Pipeline() {
               <Database size={15} className="text-brand-500" />
               <span>Champs</span>
             </Link>
-            <TableConfigModal table="projects" />
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouveau projet
             </button>
@@ -405,6 +383,7 @@ export default function Pipeline() {
         )}
         <DataTable
           table="projects"
+          manageViews
           columns={COLUMNS_WITH_CUSTOM}
           data={displayedProjects}
           loading={loading}
@@ -416,6 +395,7 @@ export default function Pipeline() {
           disabledColumns={disabledCols}
           onAddCustomField={() => setCustomFieldModal({ editing: null })}
           customFieldsByColumn={customFieldsByColumn}
+          customFieldsLoaded={customFieldsLoaded}
           onEditCustomField={(field) => setCustomFieldModal({ editing: field })}
           onDeleteCustomField={handleDeleteCustomField}
         />

@@ -3,7 +3,6 @@ import { Link, useNavigate } from 'react-router-dom'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -67,11 +66,11 @@ export default function SerialNumbers() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Numéros de série</h1>
           </div>
-          <TableConfigModal table="serial_numbers" />
         </div>
 
         <DataTable
           table="serial_numbers"
+          manageViews
           columns={COLUMNS}
           data={serials}
           loading={loading}

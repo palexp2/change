@@ -37,6 +37,7 @@ import Retours from './pages/Retours.jsx'
 import RetourDetail from './pages/RetourDetail.jsx'
 import Factures from './pages/Factures.jsx'
 import FactureDetail from './pages/FactureDetail.jsx'
+import Paiements from './pages/Paiements.jsx'
 import ItemsVendus from './pages/ItemsVendus.jsx'
 import Abonnements from './pages/Abonnements.jsx'
 import AbonnementMouvements from './pages/AbonnementMouvements.jsx'
@@ -53,6 +54,11 @@ import RelanceQualification from './pages/RelanceQualification.jsx'
 import QualificationCall from './pages/QualificationCall.jsx'
 import Agent from './pages/Agent.jsx'
 import AchatsFournisseurs from './pages/AchatsFournisseurs.jsx'
+import VendorSubscriptions from './pages/VendorSubscriptions.jsx'
+import VendorProfiles from './pages/VendorProfiles.jsx'
+import PrepaidAccounts from './pages/PrepaidAccounts.jsx'
+import DettesLT from './pages/DettesLT.jsx'
+import ComptaDashboard from './pages/ComptaDashboard.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
 import SaleReceiptDetail from './pages/SaleReceiptDetail.jsx'
 import JournalEntries from './pages/JournalEntries.jsx'
@@ -69,6 +75,7 @@ import Companies from './pages/Companies.jsx'
 import CompanyDetail from './pages/CompanyDetail.jsx'
 import StripePayouts from './pages/StripePayouts.jsx'
 import StripePayoutDetail from './pages/StripePayoutDetail.jsx'
+import DirectDepositDetail from './pages/DirectDepositDetail.jsx'
 import CustomerPostPayment from './pages/CustomerPostPayment.jsx'
 import DiscoveryForms from './pages/DiscoveryForms.jsx'
 import PublicFiles from './pages/PublicFiles.jsx'
@@ -161,6 +168,7 @@ function AppRoutes() {
       <Route path="/retours/:id" element={<ProtectedRoute><RetourDetail /></ProtectedRoute>} />
       <Route path="/factures" element={<ProtectedRoute><Factures /></ProtectedRoute>} />
       <Route path="/factures/:id" element={<ProtectedRoute><FactureDetail /></ProtectedRoute>} />
+      <Route path="/paiements" element={<ProtectedRoute><Paiements /></ProtectedRoute>} />
       <Route path="/items-vendus" element={<ProtectedRoute><ItemsVendus /></ProtectedRoute>} />
       <Route path="/abonnements" element={<ProtectedRoute><Abonnements /></ProtectedRoute>} />
       <Route path="/abonnements/mouvements" element={<ProtectedRoute><AbonnementMouvements /></ProtectedRoute>} />
@@ -169,13 +177,21 @@ function AppRoutes() {
       <Route path="/soumissions/:id" element={<ProtectedRoute><SoumissionDetail /></ProtectedRoute>} />
       <Route path="/envois" element={<ProtectedRoute><Envois /></ProtectedRoute>} />
       <Route path="/envois/:id" element={<ProtectedRoute><EnvoisDetail /></ProtectedRoute>} />
-      <Route path="/achats-fournisseurs" element={<ProtectedRoute><AchatsFournisseurs /></ProtectedRoute>} />
-      <Route path="/depenses" element={<Navigate to="/achats-fournisseurs" replace />} />
-      <Route path="/factures-fournisseurs" element={<Navigate to="/achats-fournisseurs" replace />} />
+      <Route path="/fournisseurs" element={<ProtectedRoute><VendorProfiles /></ProtectedRoute>} />
+      <Route path="/fournisseurs/achats" element={<ProtectedRoute><AchatsFournisseurs /></ProtectedRoute>} />
+      <Route path="/fournisseurs/abonnements" element={<ProtectedRoute><VendorSubscriptions /></ProtectedRoute>} />
+      <Route path="/achats-fournisseurs" element={<Navigate to="/fournisseurs/achats" replace />} />
+      <Route path="/abonnements-fournisseurs" element={<Navigate to="/fournisseurs/abonnements" replace />} />
+      <Route path="/comptes-prepayes" element={<ProtectedRoute><PrepaidAccounts /></ProtectedRoute>} />
+      <Route path="/dettes-lt" element={<ProtectedRoute><DettesLT /></ProtectedRoute>} />
+      <Route path="/comptabilite" element={<ProtectedRoute><ComptaDashboard /></ProtectedRoute>} />
+      <Route path="/depenses" element={<Navigate to="/fournisseurs/achats" replace />} />
+      <Route path="/factures-fournisseurs" element={<Navigate to="/fournisseurs/achats" replace />} />
       <Route path="/sale-receipts" element={<ProtectedRoute><SaleReceipts /></ProtectedRoute>} />
       <Route path="/sale-receipts/:id" element={<ProtectedRoute><SaleReceiptDetail /></ProtectedRoute>} />
       <Route path="/stripe-payouts" element={<ProtectedRoute><StripePayouts /></ProtectedRoute>} />
       <Route path="/stripe-payouts/:stripeId" element={<ProtectedRoute><StripePayoutDetail /></ProtectedRoute>} />
+      <Route path="/depots-directs/:id" element={<ProtectedRoute><DirectDepositDetail /></ProtectedRoute>} />
       <Route path="/journal-entries" element={<ProtectedRoute><JournalEntries /></ProtectedRoute>} />
       <Route path="/stock-movement" element={<ProtectedRoute><StockMovements /></ProtectedRoute>} />
       <Route path="/employees" element={<ProtectedRoute hrOnly><Employees /></ProtectedRoute>} />
@@ -192,13 +208,13 @@ function AppRoutes() {
       <Route path="/admin/:tab" element={<ProtectedRoute adminOnly><Admin /></ProtectedRoute>} />
 
       <Route path="/public-files" element={<ProtectedRoute><PublicFiles /></ProtectedRoute>} />
-      <Route path="/activity" element={<ProtectedRoute><ActivityFeed /></ProtectedRoute>} />
+      <Route path="/activity" element={<ProtectedRoute adminOnly><ActivityFeed /></ProtectedRoute>} />
       <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
       <Route path="/changelog" element={<ProtectedRoute><Changelog /></ProtectedRoute>} />
       <Route path="/architecture" element={<ProtectedRoute adminOnly><Architecture /></ProtectedRoute>} />
       <Route path="/automations" element={<ProtectedRoute><Automations /></ProtectedRoute>} />
       <Route path="/automations/:id" element={<ProtectedRoute><AutomationDetail /></ProtectedRoute>} />
-      <Route path="/agent" element={<ProtectedRoute adminOnly><Agent /></ProtectedRoute>} />
+      <Route path="/agent" element={<ProtectedRoute><Agent /></ProtectedRoute>} />
 
       <Route path="/__boom" element={<ProtectedRoute adminOnly><CrashTest /></ProtectedRoute>} />
 

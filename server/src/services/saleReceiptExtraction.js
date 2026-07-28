@@ -5,6 +5,7 @@ import { emitEntity } from './realtimeEmitters.js'
 import { logSync } from './syncLog.js'
 import { buildTransportInvoice } from './transportInvoice.js'
 import { buildVendorExtractionContext, findVendorDirectoryName } from './vendorDirectory.js'
+import { findVendorProfile, computeDueDate } from './vendorProfiles.js'
 
 const IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
 
@@ -36,8 +37,15 @@ Extrait toutes les informations disponibles et retourne un JSON valide avec exac
   "total": 0.00,
   "payment_method": "méthode de paiement ou null",
   "currency": "CAD",
+  "due_date": "YYYY-MM-DD ou null",
+  "payment_terms_days": 0,
   "notes": "autres informations pertinentes ou null"
 }
+
+RÈGLE — TERMES DE PAIEMENT ET ÉCHÉANCE :
+- "due_date" : la date d'échéance de paiement IMPRIMÉE sur le document (« Due date », « Date d'échéance », « Payable avant le… »). null si aucune date d'échéance explicite.
+- "payment_terms_days" : le délai de paiement en JOURS si le document mentionne des termes (« Payment due 21 days from date of invoice » → 21 ; « Net 30 » → 30 ; « Terms: Net 45 » → 45 ; « payable à réception » → 0). 0 si aucun terme mentionné.
+- Si seuls les termes sont imprimés (pas de date d'échéance explicite), laisse "due_date" à null — elle sera calculée automatiquement depuis la date du document.
 
 RÈGLE — "general_description" (objet principal du document) :
 - C'est une SEULE phrase courte qui résume ce qui a été acheté, en termes généraux — la description principale de la facture, PAS la liste des articles. Ex. : « Pièces de plomberie », « Abonnement logiciel mensuel », « Matériel électronique et câblage », « Location d'équipement de chantier ».
@@ -100,7 +108,10 @@ export async function extractWithOpenAI(pages, vendorContext = null) {
 
   const hasImage = content.some(c => c.type === 'image_url')
   if (pdfTexts.length) {
-    content.push({ type: 'text', text: `Contenu textuel des pages PDF :\n\n${pdfTexts.join('\n\n').slice(0, 12000)}` })
+    // Les factures de transport multi-expéditions dépassent facilement 12 000 caractères
+    // (une expédition détaillée par bloc, 6+ pages) — tronquer perdait les dernières
+    // expéditions et cassait la réconciliation. gpt-4o encaisse 40 000 sans problème.
+    content.push({ type: 'text', text: `Contenu textuel des pages PDF :\n\n${pdfTexts.join('\n\n').slice(0, 40000)}` })
   }
   if (!hasImage && !pdfTexts.length) throw new Error('Impossible d\'extraire le contenu du document')
 
@@ -109,10 +120,51 @@ export async function extractWithOpenAI(pages, vendorContext = null) {
     { role: 'user', content },
   ]
 
+  // Réconciliation des factures de transport : si la somme des expéditions extraites ne
+  // retombe pas sur le montant total dû, l'IA a manqué (ou dupliqué) une expédition, un
+  // crédit ou un frais. On lui renvoie l'écart CHIFFRÉ et on la fait recommencer — le
+  // prompt seul ne suffit pas (facture 250954 : expédition de 137,52 $ sautée malgré la
+  // consigne « VÉRIFICATION OBLIGATOIRE »). On garde la meilleure tentative.
+  let best = null
+  for (let attempt = 0; attempt <= SHIPMENT_RECONCILE_RETRIES; attempt++) {
+    const { extracted, replyText } = await callOpenAI(apiKey, messages)
+    const delta = shipmentsImbalance(extracted)
+    if (best === null || Math.abs(delta) < Math.abs(shipmentsImbalance(best))) best = extracted
+    if (Math.abs(delta) <= 0.02 || attempt === SHIPMENT_RECONCILE_RETRIES) break
+    messages.push({ role: 'assistant', content: replyText })
+    messages.push({ role: 'user', content: buildImbalanceCorrection(extracted, delta) })
+  }
+  return best
+}
+
+const SHIPMENT_RECONCILE_RETRIES = 2
+
+// Écart entre le montant total dû extrait et la somme des expéditions extraites.
+// 0 si le document n'est pas une facture de transport (pas de shipments) ou si aucun
+// total imprimé n'a été extrait (rien à réconcilier).
+export function shipmentsImbalance(extracted) {
+  const ships = Array.isArray(extracted?.shipments) ? extracted.shipments.filter(s => s && Number(s.total)) : []
+  if (!ships.length) return 0
+  const printed = round2(Number(extracted.total) || 0)
+  if (!printed) return 0
+  const sum = round2(ships.reduce((s, x) => s + Number(x.total), 0))
+  return round2(printed - sum)
+}
+
+export function buildImbalanceCorrection(extracted, delta) {
+  const ships = extracted.shipments.filter(s => s && Number(s.total))
+  const sum = round2(ships.reduce((s, x) => s + Number(x.total), 0))
+  const missed = delta > 0
+  return `ERREUR DE RÉCONCILIATION — ta réponse ne balance pas. La somme des "total" de tes ${ships.length} entrées de "shipments" donne ${sum.toFixed(2)} $, mais le MONTANT TOTAL DÛ imprimé sur la facture est ${round2(Number(extracted.total)).toFixed(2)} $. Il ${missed ? `manque ${delta.toFixed(2)} $ : tu as sauté une ou plusieurs expéditions, crédits ou frais` : `y a ${Math.abs(delta).toFixed(2)} $ en trop : tu as compté une expédition en double ou inventé une entrée`}. Relis TOUTES les pages du document une par une, ${missed ? `trouve chaque expédition/crédit/frais absent de ta liste (cherche en particulier un ou des montants totalisant ${delta.toFixed(2)} $)` : 'retire les doublons'}, puis retourne le JSON COMPLET corrigé (toutes les expéditions, pas seulement les corrections), au même format que précédemment.`
+}
+
+async function callOpenAI(apiKey, messages) {
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: 'gpt-4o', messages, max_tokens: 2000, temperature: 0 }),
+    // 4000 tokens : une facture de transport à 30+ expéditions produit un JSON bien
+    // au-delà des 2000 tokens historiques (réponse tronquée → JSON invalide).
+    body: JSON.stringify({ model: 'gpt-4o', messages, max_tokens: 4000, temperature: 0 }),
   })
 
   if (!resp.ok) {
@@ -123,7 +175,7 @@ export async function extractWithOpenAI(pages, vendorContext = null) {
   const data = await resp.json()
   const replyText = data.choices?.[0]?.message?.content?.trim() || ''
   const cleaned = replyText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
-  return JSON.parse(cleaned)
+  return { extracted: JSON.parse(cleaned), replyText }
 }
 
 // Consolidation « article LIA unique » : quand un reçu contient EXACTEMENT UN article
@@ -142,6 +194,10 @@ const LIA_REF = /^\s*lia-\d+/i
 // rapprochement du fournisseur QB tombe juste à la publication.
 const VENDOR_ALIASES = [
   { match: /alliances?\s+et\s+privil|novo\s*xpress/i, name: 'Novo Express' },
+  // Les factures FedEx portent la raison sociale « Federal Express Canada Corporation »,
+  // qui ne partage aucun token avec le vendor QB « FedEx » — le rapprochement flou du
+  // client échouait et proposait de créer un doublon.
+  { match: /fed\s*ex(?!\w)|federal\s+express/i, name: 'FedEx' },
 ]
 
 export function canonicalVendorName(name) {
@@ -237,12 +293,27 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     // Fournisseurs_Particularités si le nom extrait y correspond (casse/accents près).
     let company = canonicalVendorName(extracted.company) || null
     try { company = findVendorDirectoryName(company) || company } catch {}
+    // Profil fournisseur : rattaché dès l'extraction — le profil est aussi utilisé
+    // comme filet pour les termes de paiement (Net N mémorisé) quand le document ne
+    // les imprime pas. La résolution du nom canonique passe aussi par ses alias.
+    let profile = null
+    try { profile = findVendorProfile(company) } catch {}
+    if (profile) company = profile.name
+    const extractedTerms = Number.isInteger(extracted.payment_terms_days) && extracted.payment_terms_days > 0
+      ? extracted.payment_terms_days : null
+    const termsDays = extractedTerms ?? profile?.payment_terms_days ?? null
+    const dueDate = computeDueDate({
+      dueDate: extracted.due_date || null,
+      receiptDate: extracted.receipt_date || null,
+      termsDays,
+    })
     db.prepare(`
       UPDATE sale_receipts SET
         status='done',
         receipt_date=?, company=?, address=?, receipt_number=?, general_description=?,
         subtotal=?, tps=?, tvq=?, other_taxes=?, total=?,
         payment_method=?, currency=?, items=?, raw_data=?,
+        due_date=?, payment_terms_days=?, vendor_profile_id=?,
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id=? AND deleted_at IS NULL
     `).run(
@@ -260,6 +331,9 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
       extracted.currency || 'CAD',
       JSON.stringify(items),
       JSON.stringify(extracted),
+      dueDate,
+      termsDays,
+      profile?.id || null,
       saleReceiptId,
     )
     const updated = fetchSaleReceiptRow(saleReceiptId)

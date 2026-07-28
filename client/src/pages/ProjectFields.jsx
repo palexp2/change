@@ -418,14 +418,16 @@ export default function ProjectFields() {
 
   useEffect(() => { setData(null); reload() }, [reload])
 
-  // Helper : upsert def par column (gère orphelines automatiquement)
+  // Rendu/type d'une colonne = un champ custom_fields (fusion avec l'ex-
+  // airtable_field_defs). Rename : PUT sur le champ existant. Première
+  // adoption d'une colonne orpheline (pas encore de cf_id) : POST .../adopt.
   async function applyChange(col, payload) {
     setSavingId(col.column_name)
     try {
-      if (col.def_id) {
-        await api.airtableFields.update(col.def_id, payload)
-      } else if (erpTable) {
-        await api.airtableFields.upsertByColumn(erpTable, col.column_name, payload)
+      if (col.cf_id) {
+        await api.customFields.update(col.cf_id, payload)
+      } else if (erpTable && payload.type) {
+        await api.customFields.adopt(erpTable, { column_name: col.column_name, name: col.label || col.column_name, type: payload.type })
       }
       await reload()
       // Notifie les DataTable ouverts pour rafraîchir le rendu (labels/types).
@@ -439,12 +441,19 @@ export default function ProjectFields() {
 
   async function handleRename(col, newLabel) {
     if (newLabel === (col.display_label || '')) return
-    await applyChange(col, { display_label: newLabel })
+    await applyChange(col, { name: newLabel })
   }
 
   async function handleTypeChange(col, newType) {
     if (newType === col.field_type) return
-    await applyChange(col, { field_type: newType })
+    // Le type est immuable une fois le champ posé (comportement custom_fields
+    // standard, cf. CustomFieldModal) — seule la première adoption d'une
+    // colonne orpheline (pas encore de cf_id) peut choisir son type ici.
+    if (col.cf_id) {
+      addToast({ message: 'Le type ne peut plus être changé — modifiez-le depuis la fiche du champ (clic-droit sur la colonne dans le tableau)', type: 'error' })
+      return
+    }
+    await applyChange(col, { type: newType })
   }
 
   async function handleMappingSave(payload) {
@@ -459,16 +468,16 @@ export default function ProjectFields() {
   }
 
   async function handleDelete(col) {
-    if (!col.def_id) {
-      addToast({ message: 'Cette colonne n\'a pas de def Airtable — impossible à supprimer ici', type: 'error' })
+    if (!col.cf_id) {
+      addToast({ message: 'Cette colonne n\'a pas de champ configuré — impossible à supprimer ici', type: 'error' })
       return
     }
-    const ok = await confirm(`Supprimer la colonne "${col.label}" ? Cette action est irréversible — la colonne et toutes ses données seront perdues.`)
+    const ok = await confirm(`Retirer le champ « ${col.label} » ? La colonne et ses données sont conservées (retirable de la corbeille des champs) — seul l'affichage disparaît des tableaux.`)
     if (!ok) return
     setSavingId(col.column_name)
     try {
-      await api.airtableFields.delete(col.def_id)
-      addToast({ message: 'Colonne supprimée', type: 'success' })
+      await api.customFields.delete(col.cf_id)
+      addToast({ message: 'Champ retiré', type: 'success' })
       await reload()
       if (erpTable) window.dispatchEvent(new CustomEvent('views:updated', { detail: { table: erpTable } }))
     } catch (e) {
@@ -556,7 +565,8 @@ export default function ProjectFields() {
                       <select
                         value={col.field_type}
                         onChange={e => handleTypeChange(col, e.target.value)}
-                        disabled={savingId === col.column_name}
+                        disabled={savingId === col.column_name || !!col.cf_id}
+                        title={col.cf_id ? 'Type figé après la première configuration — clic-droit sur la colonne dans le tableau pour ses réglages de rendu' : undefined}
                         className="block w-full min-w-[120px] rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 cursor-pointer hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400 disabled:opacity-50"
                       >
                         {TYPE_OPTIONS.map(t => (
@@ -576,9 +586,9 @@ export default function ProjectFields() {
                     <td className="px-2 py-2 align-top">
                       <button
                         onClick={() => handleDelete(col)}
-                        disabled={savingId === col.column_name || !col.def_id}
+                        disabled={savingId === col.column_name || !col.cf_id}
                         className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded disabled:opacity-30 disabled:cursor-not-allowed"
-                        title={!col.def_id ? 'Pas de def — non supprimable depuis ici' : 'Supprimer la colonne'}
+                        title={!col.cf_id ? 'Aucun champ configuré — rien à retirer' : 'Retirer le champ'}
                       >
                         <Trash2 size={14} />
                       </button>

@@ -43,7 +43,7 @@ describe('TableConfigModal — fermeture après création de vue', () => {
     await page.goto(URL + '/factures', { waitUntil: 'networkidle' })
 
     // Ouvre la modale de gestion des vues (icône Settings)
-    await page.locator('button[title="Gérer les vues de la table"]').click()
+    await page.locator('button[title="Gérer les vues"]').click()
     await page.waitForSelector('text=/^Vues —/', { timeout: 5000 })
 
     // Clique "Nouvelle vue", saisit un nom et clique "Créer"

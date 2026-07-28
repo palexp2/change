@@ -1,6 +1,19 @@
 import jwt from 'jsonwebtoken';
 import { JWT_SECRET } from '../config/secrets.js';
 import { requestContext } from '../utils/requestContext.js';
+import db from '../db/database.js';
+
+// Le rôle encodé dans le JWT (7 jours) devient périmé dès qu'on modifie le
+// compte : on relit donc le rôle courant en DB à chaque requête. Fallback sur
+// le payload si le user n'existe plus (tokens de test signés sans record).
+function currentRole(payload) {
+  try {
+    const row = db.prepare('SELECT role FROM users WHERE id = ?').get(payload.id);
+    return row?.role || payload.role;
+  } catch {
+    return payload.role;
+  }
+}
 
 export function requireAuth(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -18,7 +31,7 @@ export function requireAuth(req, res, next) {
     const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
     req.user = {
       id: payload.id,
-      role: payload.role,
+      role: currentRole(payload),
       name: payload.name,
     };
     // Propage l'utilisateur dans le contexte async de toute la suite de la requête

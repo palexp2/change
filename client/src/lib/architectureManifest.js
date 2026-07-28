@@ -2,13 +2,13 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-06-30T21:14:33.100Z",
+  "generatedAt": "2026-07-28T20:00:02.984Z",
   "stats": {
-    "routes": 71,
-    "pages": 67,
-    "groups": 5,
-    "api": 71,
-    "tables": 100,
+    "routes": 80,
+    "pages": 74,
+    "groups": 6,
+    "api": 76,
+    "tables": 114,
     "connectors": 5
   },
   "groups": [
@@ -122,9 +122,25 @@ export const architectureManifest = {
       "group": "Comptabilité",
       "items": [
         {
+          "to": "/comptabilite",
+          "label": "Dashboard comptabilité",
+          "component": "ComptaDashboard",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
+        },
+        {
           "to": "/factures",
           "label": "Factures clients",
           "component": "Factures",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
+        },
+        {
+          "to": "/paiements",
+          "label": "Paiements",
+          "component": "Paiements",
           "adminOnly": false,
           "hrOnly": false,
           "api": null
@@ -154,12 +170,28 @@ export const architectureManifest = {
           "api": null
         },
         {
-          "to": "/achats-fournisseurs",
-          "label": "Achats fournisseurs",
-          "component": "AchatsFournisseurs",
+          "to": "/fournisseurs",
+          "label": "Fournisseurs",
+          "component": "VendorProfiles",
           "adminOnly": false,
           "hrOnly": false,
-          "api": "/api/achats-fournisseurs"
+          "api": null
+        },
+        {
+          "to": "/comptes-prepayes",
+          "label": "Comptes prépayés",
+          "component": "PrepaidAccounts",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
+        },
+        {
+          "to": "/dettes-lt",
+          "label": "Dettes long terme",
+          "component": "DettesLT",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
         },
         {
           "to": "/sale-receipts",
@@ -284,6 +316,35 @@ export const architectureManifest = {
           "api": null
         }
       ]
+    },
+    {
+      "group": "Autres outils",
+      "items": [
+        {
+          "to": "/priorite-assemblage",
+          "label": "/priorite-assemblage",
+          "component": "PrioriteAssemblage",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
+        },
+        {
+          "to": "/automations",
+          "label": "Automatisations",
+          "component": "Automations",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": "/api/automations"
+        },
+        {
+          "to": "/public-files",
+          "label": "Fichiers publics",
+          "component": "PublicFiles",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": "/api/public-files"
+        }
+      ]
     }
   ],
   "flat": [
@@ -294,30 +355,6 @@ export const architectureManifest = {
       "adminOnly": false,
       "hrOnly": false,
       "api": "/api/dashboard"
-    },
-    {
-      "to": "/priorite-assemblage",
-      "label": "/priorite-assemblage",
-      "component": "PrioriteAssemblage",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": null
-    },
-    {
-      "to": "/public-files",
-      "label": "Fichiers publics",
-      "component": "PublicFiles",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/public-files"
-    },
-    {
-      "to": "/activity",
-      "label": "Feed des opérations",
-      "component": "ActivityFeed",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/activity"
     }
   ],
   "externals": [
@@ -472,6 +509,22 @@ export const architectureManifest = {
       "api": null
     },
     {
+      "to": "/fournisseurs/achats",
+      "label": "AchatsFournisseurs",
+      "component": "AchatsFournisseurs",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/fournisseurs/abonnements",
+      "label": "VendorSubscriptions",
+      "component": "VendorSubscriptions",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
       "to": "/sale-receipts/:id",
       "label": "SaleReceiptDetail",
       "component": "SaleReceiptDetail",
@@ -486,6 +539,14 @@ export const architectureManifest = {
       "adminOnly": false,
       "hrOnly": false,
       "api": "/api/stripe-payouts"
+    },
+    {
+      "to": "/depots-directs/:id",
+      "label": "DirectDepositDetail",
+      "component": "DirectDepositDetail",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
     },
     {
       "to": "/employees/:id",
@@ -528,6 +589,14 @@ export const architectureManifest = {
       "api": "/api/admin"
     },
     {
+      "to": "/activity",
+      "label": "ActivityFeed",
+      "component": "ActivityFeed",
+      "adminOnly": true,
+      "hrOnly": false,
+      "api": "/api/activity"
+    },
+    {
       "to": "/settings",
       "label": "Settings",
       "component": "Settings",
@@ -552,14 +621,6 @@ export const architectureManifest = {
       "api": null
     },
     {
-      "to": "/automations",
-      "label": "Automations",
-      "component": "Automations",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/automations"
-    },
-    {
       "to": "/automations/:id",
       "label": "AutomationDetail",
       "component": "AutomationDetail",
@@ -571,7 +632,7 @@ export const architectureManifest = {
       "to": "/agent",
       "label": "Agent",
       "component": "Agent",
-      "adminOnly": true,
+      "adminOnly": false,
       "hrOnly": false,
       "api": "/api/agent"
     },
@@ -590,7 +651,6 @@ export const architectureManifest = {
     "/api/activity-codes",
     "/api/admin",
     "/api/agent",
-    "/api/airtable-fields",
     "/api/attachments",
     "/api/auth",
     "/api/automations",
@@ -610,6 +670,7 @@ export const architectureManifest = {
     "/api/email-relance",
     "/api/email-tracking",
     "/api/employees",
+    "/api/field-overrides",
     "/api/field-visibility-rules",
     "/api/hooks",
     "/api/hour-bank",
@@ -617,6 +678,7 @@ export const architectureManifest = {
     "/api/interaction-files",
     "/api/interactions",
     "/api/journal-entries",
+    "/api/lt-debts",
     "/api/notifications",
     "/api/novoxpress",
     "/api/novoxpress/labels",
@@ -624,6 +686,7 @@ export const architectureManifest = {
     "/api/paies",
     "/api/payments",
     "/api/places",
+    "/api/prepaid",
     "/api/product-docs",
     "/api/product-images",
     "/api/products",
@@ -653,8 +716,11 @@ export const architectureManifest = {
     "/api/tickets",
     "/api/timesheets",
     "/api/track",
+    "/api/treasury",
     "/api/undo",
     "/api/vacations",
+    "/api/vendor-profiles",
+    "/api/vendor-subscriptions",
     "/api/views"
   ],
   "tables": [
@@ -665,6 +731,8 @@ export const architectureManifest = {
     "adresses",
     "agent_tasks",
     "airtable_field_defs",
+    "airtable_field_directions",
+    "airtable_field_mappings",
     "airtable_frozen_columns",
     "airtable_module_config",
     "airtable_orders_config",
@@ -702,6 +770,7 @@ export const architectureManifest = {
     "emails",
     "employees",
     "factures",
+    "field_overrides",
     "field_visibility_rules",
     "fx_rates",
     "gmail_sync_state",
@@ -709,6 +778,8 @@ export const architectureManifest = {
     "hubspot_push_failures",
     "interactions",
     "journal_entry_defaults",
+    "lt_debt_payments",
+    "lt_debts",
     "meetings",
     "notifications",
     "order_items",
@@ -717,6 +788,10 @@ export const architectureManifest = {
     "paies",
     "payments",
     "pending_invoices",
+    "prepaid_accounts",
+    "prepaid_amortizations",
+    "prepaid_expenses",
+    "prepaid_ledger_entries",
     "products",
     "projects",
     "public_files",
@@ -725,6 +800,7 @@ export const architectureManifest = {
     "qualification_calls",
     "rachat_detect_failures",
     "record_comments",
+    "recurring_outflows",
     "return_items",
     "returns",
     "revenue_recognition_queue",
@@ -754,8 +830,12 @@ export const architectureManifest = {
     "timesheet_days",
     "timesheet_entries",
     "transcription_jobs",
+    "treasury_balances",
     "users",
     "vacations",
+    "vendor_directory",
+    "vendor_profiles",
+    "vendor_subscriptions",
     "webhook_failure_throttle",
     "webhook_sync_retry"
   ],

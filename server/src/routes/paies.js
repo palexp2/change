@@ -4,6 +4,8 @@ import db from '../db/database.js'
 import { requireAuth, isHROrAdmin } from '../middleware/auth.js'
 import { importTimesheetsForPaie } from '../services/paieTimesheetImport.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
+import { writeBackRecord } from '../services/airtableWriteback.js'
+import { qbEntityUrl } from '../connectors/quickbooks.js'
 
 function myEmployeeId(userId) {
   const row = db.prepare('SELECT employee_id FROM users WHERE id = ?').get(userId)
@@ -36,7 +38,8 @@ function buildPaieListRow(id) {
     SELECT p.*,
       (SELECT COUNT(*) FROM paie_items WHERE paie_id = p.id) AS items_count,
       (SELECT SUM(regular_hours) FROM paie_items WHERE paie_id = p.id) AS total_regular_hours,
-      (SELECT SUM(COALESCE(regular_hours,0) * COALESCE(hourly_rate,0)) FROM paie_items WHERE paie_id = p.id) AS total_regular_amount
+      (SELECT SUM(COALESCE(regular_hours,0) * COALESCE(hourly_rate,0)) FROM paie_items WHERE paie_id = p.id) AS total_regular_amount,
+      (SELECT MAX(debited_date) FROM paie_items WHERE paie_id = p.id) AS debited_date
     FROM paies p
     WHERE p.id = ?
   `).get(id)
@@ -51,11 +54,6 @@ const ALLOWED = [
   'includes_expense_reimb', 'includes_paid_leave', 'includes_holiday_hours',
   'includes_sales_commissions',
 ]
-
-router.get('/sync-config', (req, res) => {
-  const cfg = db.prepare("SELECT module, base_id, table_id, field_map, last_synced_at FROM airtable_module_config WHERE module='paies'").get() || {}
-  res.json(cfg)
-})
 
 router.get('/', (req, res) => {
   const { q, page = 1, limit = 100 } = req.query
@@ -88,13 +86,18 @@ router.get('/', (req, res) => {
     SELECT p.*,
       (SELECT COUNT(*) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS items_count,
       (SELECT SUM(regular_hours) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS total_regular_hours,
-      (SELECT SUM(COALESCE(regular_hours,0) * COALESCE(hourly_rate,0)) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS total_regular_amount
+      (SELECT SUM(COALESCE(regular_hours,0) * COALESCE(hourly_rate,0)) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS total_regular_amount,
+      (SELECT MAX(debited_date) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS debited_date
     FROM paies p
     ${where}
     ORDER BY p.period_end DESC, p.number DESC
     LIMIT ? OFFSET ?
-  `).all(...itemParams, ...itemParams, ...itemParams, ...params, limitVal, offset)
+  `).all(...itemParams, ...itemParams, ...itemParams, ...itemParams, ...params, limitVal, offset)
 
+  for (const r of rows) {
+    r.salary_purchase_url = r.salary_purchase_id ? qbEntityUrl('expense', r.salary_purchase_id) : null
+    r.repartition_je_url = r.repartition_je_id ? qbEntityUrl('journal', r.repartition_je_id) : null
+  }
   res.json({ data: rows, total, page: parseInt(page), limit: limitVal })
 })
 
@@ -206,6 +209,14 @@ router.post('/', ensureHR, (req, res) => {
 
   const paie = db.prepare('SELECT * FROM paies WHERE id=?').get(id)
   emitEntity('paie', 'created', id, buildPaieListRow(id), req.user?.id)
+
+  // Push à Airtable en fire-and-forget (ne pas bloquer la réponse)
+  writeBackRecord('paies', id).catch(e => console.error('Paie write-back error:', e.message))
+  const paieItems = db.prepare('SELECT id FROM paie_items WHERE paie_id=?').all(id)
+  for (const item of paieItems) {
+    writeBackRecord('paie_items', item.id).catch(e => console.error('Paie item write-back error:', e.message))
+  }
+
   res.status(201).json({ ...paie, items_created: itemIds, timesheet_import: importResult })
 })
 
@@ -230,12 +241,23 @@ router.patch('/:id', ensureHR, (req, res) => {
   if (holidayError) return res.status(400).json({ error: holidayError })
   const fields = ["updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"]
   const params = []
+  const changedColumns = []
   for (const key of ALLOWED) {
-    if (key in req.body) { fields.push(`${key}=?`); params.push(req.body[key] ?? null) }
+    if (key in req.body) {
+      fields.push(`${key}=?`)
+      params.push(req.body[key] ?? null)
+      changedColumns.push(key)
+    }
   }
   db.prepare(`UPDATE paies SET ${fields.join(',')} WHERE id=?`).run(...params, req.params.id)
   const updated = db.prepare('SELECT * FROM paies WHERE id=?').get(req.params.id)
   emitEntity('paie', 'updated', req.params.id, buildPaieListRow(req.params.id), req.user?.id)
+
+  // Push à Airtable en fire-and-forget
+  if (changedColumns.length > 0) {
+    writeBackRecord('paies', req.params.id, changedColumns).catch(e => console.error('Paie write-back error:', e.message))
+  }
+
   res.json(updated)
 })
 
@@ -299,6 +321,123 @@ router.get('/items/list', (req, res) => {
     LIMIT ? OFFSET ?
   `).all(...params, limitVal, offset)
   res.json({ data: rows, total, page: parseInt(page), limit: limitVal })
+})
+
+// ── Répartition comptable de la paie (+ AGA) — RH/admin seulement ────────────
+
+// Aperçu de l'écriture de répartition (?phone=&meals= pour ajuster les ajouts).
+router.get('/:id/repartition-preview', ensureHR, async (req, res) => {
+  try {
+    const { computePaieRepartition } = await import('../services/paieRepartition.js')
+    const overrides = {}
+    if (req.query.phone !== undefined) overrides.phone = req.query.phone
+    if (req.query.meals !== undefined) overrides.meals = req.query.meals
+    res.json(computePaieRepartition(req.params.id, overrides))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Publication de l'écriture sur QuickBooks (idempotent par paie).
+router.post('/:id/repartition-push', ensureHR, async (req, res) => {
+  try {
+    const { pushPaieRepartitionJE } = await import('../services/paieRepartition.js')
+    res.json(await pushPaieRepartitionJE(req.params.id, {
+      phone: req.body?.phone, meals: req.body?.meals,
+    }))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// ── Comptabilisation de la paie (dépense QB « Salaires ») — RH/admin ─────────
+
+// Estimation du débit bancaire depuis les items de paie (pré-remplissage à
+// confirmer — les remises aux organismes sont estimées par ratio historique).
+router.get('/:id/salary-expense/estimate', ensureHR, async (req, res) => {
+  try {
+    const { estimatePaieBankAmount } = await import('../services/paieSalaryExpense.js')
+    res.json(estimatePaieBankAmount(req.params.id) || {})
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Aperçu : { bank_amount, phone?, txn_date? } → lignes de la dépense.
+router.post('/:id/salary-expense/preview', ensureHR, async (req, res) => {
+  try {
+    const { computePaieSalaryExpense } = await import('../services/paieSalaryExpense.js')
+    res.json(computePaieSalaryExpense(req.params.id, req.body || {}))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Réconciliation rétroactive : matche les dépenses QB dont le mémo est
+// « Paie – <début> au <fin> » (créées à la main ou avant l'ERP) aux paies dont
+// salary_purchase_id est vide, pour ne plus les proposer à la comptabilisation.
+router.post('/salary-expense/reconcile', ensureHR, async (req, res) => {
+  try {
+    const { qbGet } = await import('../connectors/quickbooks.js')
+    const unbooked = db.prepare(`
+      SELECT id, period_start, period_end FROM paies
+      WHERE salary_purchase_id IS NULL AND period_end IS NOT NULL AND period_end >= date('now', '-1 year')
+    `).all()
+    if (!unbooked.length) return res.json({ matched: 0 })
+    const minDate = unbooked.reduce((m, p) => p.period_end < m ? p.period_end : m, unbooked[0].period_end)
+    const q = encodeURIComponent(`SELECT Id, TxnDate, PrivateNote FROM Purchase WHERE TxnDate >= '${minDate}' MAXRESULTS 1000`)
+    const data = await qbGet('/query?query=' + q)
+    // Mémos historiques variés : « Paie – X au Y », « Salaires – X au Y »,
+    // parfois juste « X au Y » — on matche sur la présence d'une période.
+    const purchases = (data.QueryResponse?.Purchase || [])
+      .filter(p => /paie|salaire|\d{4}-\d{2}-\d{2}\s+au\s+\d{4}-\d{2}-\d{2}/i.test(p.PrivateNote || ''))
+    let matched = 0
+    for (const paie of unbooked) {
+      // period_start peut manquer sur de vieilles paies : on matche sur la fin seule.
+      const hit = purchases.find(p => {
+        const note = p.PrivateNote || ''
+        return note.includes(`au ${paie.period_end}`) || (paie.period_start && note.includes(`${paie.period_start} au`))
+      })
+      if (!hit) continue
+      db.prepare(`UPDATE paies SET salary_purchase_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND salary_purchase_id IS NULL`)
+        .run(String(hit.Id), paie.id)
+      matched++
+    }
+    res.json({ matched })
+  } catch (e) {
+    res.status(502).json({ error: e.message })
+  }
+})
+
+// Publication de la dépense sur QuickBooks (idempotent par paie).
+router.post('/:id/salary-expense/push', ensureHR, async (req, res) => {
+  try {
+    const { pushPaieSalaryExpense } = await import('../services/paieSalaryExpense.js')
+    const out = await pushPaieSalaryExpense(req.params.id, req.body || {})
+    emitEntity('paie', 'updated', req.params.id, buildPaieListRow(req.params.id), req.user?.id)
+    res.json(out)
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Assurance collective AGA : aperçu + publication (montant du paiement).
+router.post('/aga-repartition/preview', ensureHR, async (req, res) => {
+  try {
+    const { computeAgaRepartition } = await import('../services/paieRepartition.js')
+    res.json(computeAgaRepartition(req.body?.amount))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+router.post('/aga-repartition/push', ensureHR, async (req, res) => {
+  try {
+    const { pushAgaRepartitionJE } = await import('../services/paieRepartition.js')
+    res.json(await pushAgaRepartitionJE(req.body?.amount, req.body?.txn_date || null))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
 })
 
 export default router

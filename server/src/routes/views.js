@@ -7,15 +7,15 @@ const router = Router()
 
 const ALLOWED_TABLES = new Set([
   'companies', 'contacts', 'projects', 'products',
-  'orders', 'tickets', 'purchases', 'serial_numbers', 'interactions', 'shipments',
+  'orders', 'order_items', 'tickets', 'purchases', 'serial_numbers', 'interactions', 'shipments',
   'abonnements', 'abonnement_events', 'retours', 'factures', 'assemblages',
-  'achats_fournisseurs', 'tasks',
+  'achats_fournisseurs', 'vendor_subscriptions', 'tasks',
   'employees', 'paies', 'paie_items', 'bom_items', 'hour_bank',
   'company_serials', 'sale_receipts',
   'automations', 'catalog', 'discovery_forms', 'journal_entries',
   'public_files', 'qualification_calls', 'soumissions', 'stock_movements',
   'product_movements', 'sync_log',
-  'stripe_invoice_items', 'stripe_payouts', 'users',
+  'stripe_invoice_items', 'stripe_payouts', 'users', 'payments',
   // Vues dérivées (pas de table DB) — règles comptables des numéros de série.
   'serial_transitions', 'serial_accounting_rules', 'serial_missing_valuations',
 ])
@@ -49,6 +49,7 @@ function parsePill(p) {
     sort: JSON.parse(p.sort || '[]'),
     collapsed_groups: JSON.parse(p.collapsed_groups || '[]'),
     column_widths: JSON.parse(p.column_widths || '{}'),
+    color_rules: JSON.parse(p.color_rules || '[]'),
     group_by: parseMaybeArray(p.group_by),
     group_order: parseMaybeArray(p.group_order),
     locked: p.locked === 1,
@@ -65,29 +66,20 @@ router.get('/:table', requireAuth, (req, res) => {
   ).get(table)
 
   const pills = db.prepare(
-    'SELECT id, label, color, filters, visible_columns, sort, group_by, group_order, collapsed_groups, column_widths, sort_order, locked FROM table_view_pills WHERE table_name=? ORDER BY sort_order, created_at'
+    'SELECT id, label, color, filters, visible_columns, sort, group_by, group_order, collapsed_groups, column_widths, color_rules, sort_order, locked FROM table_view_pills WHERE table_name=? ORDER BY sort_order, created_at'
   ).all(table)
 
-  // Dynamic fields from Airtable auto-sync (deduplicate by label, prefer non-native over native)
+  // Colonnes dynamiques (champs custom kind='data', qu'ils portent une colonne
+  // cf_* auto-générée ou une colonne native adoptée depuis Airtable —
+  // ex-système `airtable_field_defs`, fusionné dans custom_fields).
   const rawFields = db.prepare(
-    'SELECT id, airtable_field_id, column_name, airtable_field_name, display_label, field_type, options, sort_order FROM airtable_field_defs WHERE erp_table=? ORDER BY sort_order'
+    "SELECT id, name, column_name, type, options, sort_order FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL AND kind='data' ORDER BY sort_order"
   ).all(table)
-  const seenLabels = new Map()
-  for (const f of rawFields) {
-    const effectiveLabel = f.display_label || f.airtable_field_name
-    const existing = seenLabels.get(effectiveLabel)
-    if (!existing) {
-      seenLabels.set(effectiveLabel, f)
-    } else if (existing.airtable_field_id.startsWith('native_') && !f.airtable_field_id.startsWith('native_')) {
-      f.sort_order = Math.min(existing.sort_order, f.sort_order)
-      seenLabels.set(effectiveLabel, f)
-    }
-  }
-  const dynamicFields = [...seenLabels.values()].map(f => ({
+  const dynamicFields = rawFields.map(f => ({
     id: f.column_name,
-    label: f.display_label || f.airtable_field_name,
+    label: f.name,
     field: f.column_name,
-    type: f.field_type,
+    type: f.type,
     options: JSON.parse(f.options || '{}'),
     sort_order: f.sort_order,
     dynamic: true,
@@ -263,6 +255,10 @@ router.put('/:table/pills/:id', requireAuth, (req, res) => {
     values.push(Array.isArray(v) ? JSON.stringify(v) : v)
   }
   if (body.collapsed_groups !== undefined){ updates.push('collapsed_groups = ?'); values.push(JSON.stringify(body.collapsed_groups)) }
+  if (body.color_rules !== undefined) {
+    if (!Array.isArray(body.color_rules)) return res.status(400).json({ error: 'color_rules doit être un tableau' })
+    updates.push('color_rules = ?'); values.push(JSON.stringify(body.color_rules))
+  }
   if (body.sort_order !== undefined)      { updates.push('sort_order = ?');      values.push(body.sort_order) }
 
   if (updates.length === 0) return res.status(400).json({ error: 'Aucun champ à modifier' })

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
 import { Plus, X, Building2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
@@ -10,9 +10,9 @@ import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import CompanyDetail from './CompanyDetail.jsx'
 
 const TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin',
   'Agriculture urbaine', 'Cannabis', 'Particulier', 'Distributeur', 'Partenaire',
@@ -147,6 +147,17 @@ export default function Companies() {
   const [showModal, setShowModal] = useState(false)
   const undoableDelete = useUndoableDelete()
 
+  // Ouverture du side-peek demandée par la fiche plein écran (« revenir au
+  // panneau latéral ») — l'id voyage via location.state.peekId. Consommée une
+  // fois le drawer ouvert, et le state d'historique est nettoyé pour qu'un
+  // refresh ne rouvre pas le drawer. Même pattern que Factures.jsx.
+  const location = useLocation()
+  const [peekOpenId, setPeekOpenId] = useState(() => location.state?.peekId ?? null)
+  const consumePeekOpen = useCallback(() => {
+    setPeekOpenId(null)
+    navigate(location.pathname + location.search, { replace: true, state: null })
+  }, [navigate, location.pathname, location.search])
+
   const load = useCallback(async () => {
     const extraParams = {}
     if (farmProvince) extraParams.farm_province = farmProvince
@@ -203,7 +214,6 @@ export default function Companies() {
             )}
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="companies" bulkDelete />
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouvelle entreprise
             </button>
@@ -212,10 +222,19 @@ export default function Companies() {
 
         <DataTable
           table="companies"
+          manageViews
           columns={COLUMNS}
           data={companies}
           loading={loading}
-          onRowClick={row => navigate(`/companies/${row.id}`)}
+          peek={{
+            title: row => row.name || 'Entreprise',
+            subtitle: row => [row.type, row.city].filter(Boolean).join(' · '),
+            to: row => `/companies/${row.id}`,
+            width: 720,
+            openId: peekOpenId,
+            onOpenConsumed: consumePeekOpen,
+            render: (row, { close }) => <CompanyDetail recordId={row.id} embedded onClose={close} />,
+          }}
           searchFields={['name', 'email', 'city', 'phone']}
           onBulkDelete={async (ids) => {
             await undoableDelete({

@@ -5,7 +5,6 @@ import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 
@@ -65,13 +64,11 @@ export default function StockMovements() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-slate-900">Mouvements d'inventaire</h1>
-          <div className="flex items-center gap-2">
-            <TableConfigModal table="stock_movements" />
-          </div>
         </div>
 
         <DataTable
           table="stock_movements"
+          manageViews
           columns={COLUMNS}
           data={rows}
           loading={loading}

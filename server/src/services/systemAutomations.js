@@ -21,6 +21,34 @@ export const MANUAL_RUNNERS = {
   sys_stripe_weekly_payout_push: async ({ dryRun }) => {
     return await syncAndPushStripePayouts({ dryRun })
   },
+  // Diagnostic de la connexion au Google Sheets CTB - Suivi : vérifie l'accès,
+  // localise la section « Programmation des factures à payer » et rapporte la
+  // prochaine ligne d'insertion. Jamais d'écriture (dry-run et run-now identiques).
+  sys_ctb_programmation_paiement: async () => {
+    const { diagnoseCtbSheet } = await import('./ctbSheet.js')
+    return await diagnoseCtbSheet()
+  },
+  // Alerte trésorerie : dry-run = projection + diagnostic sans envoi ;
+  // run-now = vérification réelle (envoie l'alerte Slack si sous le seuil).
+  sys_treasury_alert: async ({ dryRun }) => {
+    const { diagnoseTreasury, checkTreasuryAlert } = await import('./treasury.js')
+    if (dryRun) return await diagnoseTreasury()
+    return await checkTreasuryAlert({ force: true, trigger: 'manuel' })
+  },
+  // Répartition de la paie : diagnostic = aperçu de l'écriture de la dernière
+  // paie, sans publication (la publication se fait depuis la page Paie).
+  sys_paie_repartition: async () => {
+    const { computePaieRepartition } = await import('./paieRepartition.js')
+    const last = db.prepare('SELECT id, number FROM paies ORDER BY period_end DESC LIMIT 1').get()
+    if (!last) return { summary: 'Aucune paie en base' }
+    const p = computePaieRepartition(last.id)
+    const linesTxt = p.lines.map(l => `${l.type === 'Debit' ? 'Dt' : 'Ct'} ${l.acctnum} ${l.amount.toFixed(2)} $ (${l.label})`).join(' · ')
+    return {
+      summary: `Paie #${last.number ?? '?'} — total ${p.total.toFixed(2)} $, remb. ${p.reimb.toFixed(2)} $, base ${p.base.toFixed(2)} $ → ${linesTxt}` +
+        (p.warnings.length ? ` · ⚠️ ${p.warnings.join(' / ')}` : '') +
+        (p.paie.repartition_je_id ? ` · Déjà publiée (JE ${p.paie.repartition_je_id})` : ''),
+    }
+  },
 }
 
 // System automations: hard-coded triggers/actions that live in code, surfaced
@@ -243,6 +271,87 @@ export const SYSTEM_AUTOMATIONS = [
     default_active: 0,
   },
   {
+    id: 'sys_ctb_programmation_paiement',
+    name: 'CTB - Suivi : programmation des factures à payer (Google Sheets)',
+    description:
+      "Quand une facture à payer est ajoutée dans l'ERP — reçu publié sur QuickBooks en type « Facture (Bill) », achat fournisseur de type facture créé à la main ou publié sur QB — une ligne est ajoutée dans la section « PROGRAMMATION DES FACTURES À PAYER » de l'onglet Sommaire du Google Sheets « CTB - Suivi » : Fournisseur | $ | Dû le | Programmation du paiement. " +
+      "La programmation du paiement = le jour de paiement hebdomadaire (mardi par défaut) qui précède la date d'échéance ; si ce mardi est déjà passé, le prochain mardi à venir. Sans date d'échéance, « - » est inscrit. " +
+      "Dédup : une ligne déjà présente pour le même fournisseur et la même échéance n'est pas ré-ajoutée. " +
+      "Quand une facture fournisseur passe au statut « Payée » dans l'ERP, elle est aussi inscrite dans la section « FACTURES PAYÉES CETTE SEMAINE » (Fournisseur | $ | Déboursé le) et sa ligne est retirée de la Programmation. " +
+      "Le spreadsheet, l'onglet, le jour de paiement et le compte Google utilisés sont configurables ci-dessous. " +
+      "Le bouton « Exécuter » fait un diagnostic sans écriture (accès au fichier + localisation des sections). " +
+      "Prérequis : API Google Sheets activée dans le projet Cloud, et compte Google reconnecté depuis la page Connecteurs (scope Sheets ajouté).",
+    trigger_config: {
+      kind: 'app_event',
+      source: 'quickbooks.js pushSaleReceiptToQB(bill) · pushAchatToQB(bill) · POST /achats-fournisseurs (bill) · PUT/PATCH achat → statut Payée',
+      summary: "Déclenché à l'ajout d'une facture à payer (publication Bill QB ou création manuelle) et au passage d'une facture au statut « Payée »",
+    },
+    action_config: {
+      spreadsheet_id: '13rd8x_xy5AQJemDwE6yWp8ffvkj3bEo7kq3cuogRGyQ',
+      sheet_name: 'Sommaire',
+      section_header: 'PROGRAMMATION DES FACTURES À PAYER',
+      paid_section_header: 'FACTURES PAYÉES CETTE SEMAINE',
+      payment_weekday: '2',
+      google_account_email: 'pap@orisha.io',
+    },
+    configurable: true,
+  },
+  {
+    id: 'sys_treasury_alert',
+    name: 'Trésorerie BNC : alerte solde projeté sous le seuil',
+    description:
+      "Chaque matin (7h30) et à chaque saisie du solde disponible réel (page Trésorerie), projette le solde du compte BNC CAD sur l'horizon configuré : " +
+      "solde saisi + payouts Stripe à venir − factures fournisseurs CAD programmées (jour de paiement hebdomadaire avant l'échéance) − sorties récurrentes (paie, loyer, dettes…). " +
+      "Si le point bas projeté passe sous le seuil, une alerte Slack est envoyée (webhook configuré via une variable d'environnement, DM Antoine Lambert) avec le virement suggéré " +
+      "selon la procédure : virer via le compte VENN CAD (convertir des USD au besoin en gardant un minimum de 15 000 USD), virement Interac de préférence. " +
+      "Anti-spam : au plus une alerte par 20 h. Envoie aussi un rappel Slack si le solde n'a pas été noté depuis plus de balance_stale_days jours (projection périmée). " +
+      "Le bouton « Simuler » affiche la projection sans rien envoyer.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 30 7 * * * (index.js) + POST /api/treasury/balance',
+      summary: 'Vérification quotidienne à 7h30 et à chaque saisie de solde',
+    },
+    action_config: {
+      threshold: '5000',
+      horizon_days: '42',
+      balance_stale_days: '7',
+      slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_paie_repartition',
+    name: 'Paie : écriture de répartition par département (QuickBooks)',
+    description:
+      "Génère l'écriture de journal qui répartit chaque paie entre les départements, selon le processus de l'onglet Salaires du fichier CTB - Suivi : " +
+      "base = total de la paie (remises aux organismes incluses) − remboursements de dépenses − téléphone Martin (76000, 25 $ taxes incluses) − allocation repas (75930, 50 $/jour, saisie au besoin). " +
+      "La base est répartie selon les pourcentages configurés (défaut : Marketing 62100 33,6 %, Opérations 62200 5,1 %, Administration 62201 11,8 %, R&D 62300 49,5 % — fichier Prorata_Paie_2026-2027) ; " +
+      "le compte source (62200, où la paie est comptabilisée initialement) est crédité. " +
+      "Rien n'est publié automatiquement : la page Paies affiche l'aperçu et un bouton « Publier sur QB » (idempotent — une écriture par paie). " +
+      "Même mécanique pour l'assurance collective AGA (prorata en nb d'employés assurés par département), depuis le Dashboard comptabilité. " +
+      "Le Dashboard comptabilité offre aussi la comptabilisation de la paie : dépense QB (Cash, compte 10000, fournisseur « Salaires », taxes incluses) ventilée par département au même prorata, " +
+      "avec téléphone Martin (TPS/TVQ) et lignes « (rembourser à) » par employé — au modèle des transactions Salaires historiques, période de paie en mémo. " +
+      "Le bouton « Simuler » montre l'écriture de la dernière paie sans rien publier.",
+    trigger_config: {
+      kind: 'manual',
+      source: 'routes/paies.js (repartition-preview / repartition-push / aga-repartition)',
+      summary: 'Publication manuelle depuis la page Paies (aperçu puis clic) et le Dashboard comptabilité (AGA)',
+    },
+    action_config: {
+      splits: '62100:33.6, 62200:5.1, 62201:11.8, 62300:49.5',
+      source_acctnum: '62200',
+      phone_acctnum: '76000',
+      phone_amount: '25',
+      meals_acctnum: '75930',
+      reimb_acctnum: '',
+      aga_splits: '62100:2.6, 62200:0.9, 62201:0.8, 62300:3.7',
+      aga_source_acctnum: '',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
     id: 'sys_airtable_webhooks_init',
     name: 'Enregistrement webhooks Airtable (boot)',
     description:
@@ -277,6 +386,12 @@ function mergeMissingKeys(storedJson, defaults) {
   }
   return changed ? JSON.stringify(stored) : null
 }
+
+// Automations système abandonnées : leur row DB est soft-deletée au boot pour
+// qu'elles disparaissent de la page Automations (le seed ne les recrée plus).
+// - sys_ctb_abonnements : miroir de l'onglet Abonnements du sheet CTB - Suivi,
+//   abandonné — la page Abonnements fournisseurs de l'ERP est la référence.
+const RETIRED_SYSTEM_AUTOMATION_IDS = ['sys_ctb_abonnements']
 
 export function seedSystemAutomations() {
   // ON CONFLICT doesn't touch `active`, so user toggles persist across seeds.
@@ -330,6 +445,13 @@ export function seedSystemAutomations() {
       }
     }
   }
+  for (const id of RETIRED_SYSTEM_AUTOMATION_IDS) {
+    db.prepare(`
+      UPDATE automations SET active = 0, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ? AND deleted_at IS NULL
+    `).run(id)
+  }
+
   console.log(`✅ System automations seeded (${SYSTEM_AUTOMATIONS.length})`)
 
   seedSystemFieldRules()

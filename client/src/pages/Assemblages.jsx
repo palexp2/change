@@ -4,7 +4,6 @@ import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 
@@ -44,11 +43,11 @@ export default function Assemblages() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Assemblages</h1>
           </div>
-          <TableConfigModal table="assemblages" />
         </div>
 
         <DataTable
           table="assemblages"
+          manageViews
           columns={COLUMNS}
           data={assemblages}
           loading={loading}

@@ -20,6 +20,10 @@ export function getAuthUrl(state) {
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/gmail.send',
       'https://www.googleapis.com/auth/drive.readonly',
+      // Écriture Google Sheets (CTB - Suivi, programmation des factures à payer).
+      // Les comptes connectés avant l'ajout de ce scope doivent être reconnectés
+      // depuis la page Connecteurs pour que l'écriture Sheets fonctionne.
+      'https://www.googleapis.com/auth/spreadsheets',
       'https://www.googleapis.com/auth/userinfo.email',
     ],
     state,
@@ -61,4 +65,9 @@ export async function getGmailClient(connectorOAuthId) {
 export async function getDriveClient(connectorOAuthId) {
   const auth = await getOAuthClientForAccount(connectorOAuthId)
   return google.drive({ version: 'v3', auth })
+}
+
+export async function getSheetsClient(connectorOAuthId) {
+  const auth = await getOAuthClientForAccount(connectorOAuthId)
+  return google.sheets({ version: 'v4', auth })
 }

@@ -1,6 +1,7 @@
 // Vérifie que l'overlay « Connexion au serveur perdue » s'affiche quand
 // fetch() retourne une erreur réseau (simulée via route abort) et disparaît
-// (page reload) quand le serveur redevient joignable.
+// quand le serveur redevient joignable (sans reload si le boot_id n'a pas
+// changé — voir server-offline-modal-persists.test.js).
 
 const { test, describe, before, after } = require('node:test')
 const assert = require('node:assert/strict')
@@ -77,12 +78,12 @@ describe('Server offline overlay', () => {
     assert.match(countdownText, /Nouvelle tentative dans \d+/, 'countdown visible')
   })
 
-  test("l'overlay disparaît (via reload) quand le serveur redevient joignable", async () => {
+  test("l'overlay disparaît quand le serveur redevient joignable", async () => {
     // Lever la simulation de panne.
     await page.unroute('**/erp/api/**')
 
-    // L'overlay ping /api/auth/me toutes les 10s. Attendre jusqu'au prochain
-    // tick + reload (max ~12s + temps de navigation).
+    // L'overlay ping /api/health toutes les 10s. Attendre jusqu'au prochain
+    // tick (max ~12s).
     await page.waitForFunction(
       () => !document.body.textContent.includes('Connexion au serveur perdue'),
       { timeout: 20000 }

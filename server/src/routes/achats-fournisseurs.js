@@ -5,7 +5,7 @@ import fs from 'fs'
 import db from '../db/database.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
 import { requireAuth } from '../middleware/auth.js'
-import { qbGet, qbAttachmentDownloadUrl } from '../connectors/quickbooks.js'
+import { qbGet, qbAttachmentDownloadUrl, qbEntityUrl } from '../connectors/quickbooks.js'
 import { pushAchatToQB } from '../services/quickbooks.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 
@@ -18,6 +18,12 @@ const ACHAT_LIST_SELECT = `
 
 const router = Router()
 router.use(requireAuth)
+
+// Lien vers la transaction dans l'app QuickBooks (bill ou expense).
+const withQbUrl = row => ({
+  ...row,
+  qb_url: row.quickbooks_id ? qbEntityUrl(row.type === 'bill' ? 'bill' : 'expense', row.quickbooks_id) : null,
+})
 
 const UPLOADS_ROOT = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads')
 const QB_ATTACH_DIR = path.join(UPLOADS_ROOT, 'qb-attachments')
@@ -69,7 +75,7 @@ router.get('/', (req, res) => {
     LIMIT ? OFFSET ?
   `).all(...params, limitVal, offset)
 
-  res.json({ data: rows, total, page: parseInt(page), limit: parseInt(limit) })
+  res.json({ data: rows.map(withQbUrl), total, page: parseInt(page), limit: parseInt(limit) })
 })
 
 router.get('/:id', (req, res) => {
@@ -80,7 +86,7 @@ router.get('/:id', (req, res) => {
     WHERE a.id = ?
   `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json(row)
+  res.json(withQbUrl(row))
 })
 
 router.post('/', (req, res) => {
@@ -121,11 +127,32 @@ router.post('/', (req, res) => {
 
   const created = db.prepare(ACHAT_LIST_SELECT).get(id)
   emitEntity('achat_fournisseur', 'created', id, created, req.user?.id)
+
+  // CTB - Suivi : une facture fournisseur (Bill) ajoutée à la main est une
+  // « facture à payer » — on la programme dans le Google Sheets sans attendre
+  // le push QB (fire-and-forget ; dédup fournisseur+échéance côté service).
+  if (type === 'bill' && (status || defaultStatus) !== 'Brouillon') {
+    import('../services/ctbSheet.js').then(({ appendFactureAPayer }) => appendFactureAPayer({
+      vendor, total: tot, currency: req.body.currency || 'CAD',
+      dueDate: due_date || null, source: `achat ${id} (création manuelle)`,
+    })).catch(() => {})
+  }
+
   res.status(201).json(created)
 })
 
+// CTB - Suivi : quand un Bill passe à « Payée », l'inscrire dans « Factures
+// payées cette semaine » et retirer sa ligne de la Programmation (fire-and-forget).
+function notifyCtbFacturePayee(prevStatus, row, source) {
+  if (!row || row.type !== 'bill' || row.status !== 'Payée' || prevStatus === 'Payée') return
+  import('../services/ctbSheet.js').then(({ appendFacturePayee }) => appendFacturePayee({
+    vendor: row.vendor, total: row.total_cad, currency: row.currency || 'CAD',
+    dueDate: row.due_date || null, source,
+  })).catch(() => {})
+}
+
 router.put('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id, type FROM achats_fournisseurs WHERE id = ?').get(req.params.id)
+  const existing = db.prepare('SELECT id, type, status FROM achats_fournisseurs WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
 
   const body = { ...req.body }
@@ -155,17 +182,21 @@ router.put('/:id', (req, res) => {
   }
 
   const updated = db.prepare(ACHAT_LIST_SELECT).get(req.params.id)
-  if (setClause) emitEntity('achat_fournisseur', 'updated', req.params.id, updated, req.user?.id)
+  if (setClause) {
+    emitEntity('achat_fournisseur', 'updated', req.params.id, updated, req.user?.id)
+    notifyCtbFacturePayee(existing.status, updated, `achat ${req.params.id} (PUT)`)
+  }
   res.json(updated)
 })
 
 router.patch('/:id/status', (req, res) => {
-  const existing = db.prepare('SELECT id FROM achats_fournisseurs WHERE id = ?').get(req.params.id)
+  const existing = db.prepare('SELECT id, status FROM achats_fournisseurs WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
   db.prepare(`UPDATE achats_fournisseurs SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
     .run(req.body.status, req.params.id)
   const updated = db.prepare(ACHAT_LIST_SELECT).get(req.params.id)
   emitEntity('achat_fournisseur', 'updated', req.params.id, updated, req.user?.id)
+  notifyCtbFacturePayee(existing.status, updated, `achat ${req.params.id} (statut)`)
   res.json({ ok: true })
 })
 
@@ -210,7 +241,7 @@ router.post('/:id/push-to-qb', async (req, res) => {
     if (updated) emitEntity('achat_fournisseur', 'updated', req.params.id, updated, req.user?.id)
     res.json({ ok: true, quickbooks_id: qbId, data: updated })
   } catch (e) {
-    res.status(400).json({ error: e.message })
+    res.status(400).json({ error: e.message, field: e.field || null })
   }
 })
 

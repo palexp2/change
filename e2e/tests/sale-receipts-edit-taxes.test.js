@@ -30,7 +30,9 @@ describe('Extraction de données : édition manuelle des taxes et montants', () 
       headers: { Authorization: 'Bearer ' + token },
     })
     const body = await resp.json()
-    const candidate = body.data.find(r => r.status === 'done')
+    // Évite les reçus en mode « piloté par les codes » (tax_code_id défini) où TPS/TVQ
+    // sont en lecture seule : ce test édite les taxes manuellement.
+    const candidate = body.data.find(r => r.status === 'done' && !r.tax_code_id) || body.data.find(r => r.status === 'done')
     assert.ok(candidate, 'Préalable : au moins un reçu status=done est requis')
     receiptId = candidate.id
     original = {

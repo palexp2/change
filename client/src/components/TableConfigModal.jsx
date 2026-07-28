@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Settings, Plus, X, Pencil, Check, Lock, Unlock } from 'lucide-react'
+import { Plus, X, Pencil, Check, Lock, Unlock } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import api from '../lib/api.js'
 import { TABLE_LABELS } from '../lib/tableDefs.js'
@@ -94,12 +94,13 @@ export function TableConfigModal({ table, bulkDelete = false }) {
 
   return (
     <>
+      {/* Crayon sur la barre des vues (remplace l'ancienne roue dentelée en haut de page) */}
       <button
         onClick={() => setOpen(true)}
-        className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
-        title="Gérer les vues de la table"
+        className="self-center p-1.5 mx-1 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded transition-colors flex-shrink-0"
+        title="Gérer les vues"
       >
-        <Settings size={17} />
+        <Pencil size={14} />
       </button>
 
       <Modal

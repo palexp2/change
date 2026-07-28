@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Package } from 'lucide-react'
+import { Plus, Package, SlidersHorizontal } from 'lucide-react'
 import api from '../lib/api.js'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
@@ -8,7 +8,7 @@ import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import { AirtableCoreMapModal } from '../components/AirtableCoreMapModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 const PROCUREMENT_TYPES = ['Acheté', 'Fabriqué', 'Drop ship']
@@ -167,6 +167,7 @@ function StockAdjustModal({ product, onSave, onClose }) {
 export default function Products() {
   const navigate = useNavigate()
   const [showModal, setShowModal] = useState(false)
+  const [airtableMapOpen, setAirtableMapOpen] = useState(false)
   const [stockProduct, setStockProduct] = useState(null)
   const undoableDelete = useUndoableDelete()
 
@@ -177,7 +178,18 @@ export default function Products() {
   const products = useMemo(() => allProducts.filter(p => p.active !== 0), [allProducts])
   const loading = !isTableHydrated('products')
 
-  const COLUMNS = useMemo(() => TABLE_COLUMN_META.products, [])
+  // Vignette pour la colonne Image — les colonnes hardcodées ne passent pas
+  // par DynamicCell, le rendu custom vit ici (même pattern que Purchases).
+  const COLUMNS = useMemo(() => TABLE_COLUMN_META.products.map(meta => (
+    meta.id === 'image_url'
+      ? {
+          ...meta,
+          render: row => row.image_url
+            ? <img src={row.image_url} alt="" className="h-8 w-8 object-cover rounded border border-slate-200" loading="lazy" />
+            : <span className="text-slate-300">—</span>,
+        }
+      : meta
+  )), [])
 
   async function handleCreate(form) {
     await api.products.create(form)
@@ -193,7 +205,14 @@ export default function Products() {
             <h1 className="text-2xl font-bold text-slate-900">Inventaire</h1>
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="products" bulkDelete />
+            <button
+              onClick={() => setAirtableMapOpen(true)}
+              className="btn-secondary btn-sm flex items-center gap-1.5"
+              title="Choisir quels champs Airtable alimentent les produits"
+              data-testid="products-airtable-map-open"
+            >
+              <SlidersHorizontal size={13} /> Sync Airtable
+            </button>
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouveau produit
             </button>
@@ -202,6 +221,7 @@ export default function Products() {
 
         <DataTable
           table="products"
+          manageViews
           columns={COLUMNS}
           data={products}
           loading={loading}
@@ -223,6 +243,14 @@ export default function Products() {
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau produit" size="lg">
         <ProductForm onSave={handleCreate} onClose={() => setShowModal(false)} />
       </Modal>
+
+      <AirtableCoreMapModal
+        isOpen={airtableMapOpen}
+        onClose={() => setAirtableMapOpen(false)}
+        modules={[{ module: 'pieces', title: 'Produits' }]}
+        title="Mapping des champs Airtable"
+        onSaved={syncStore}
+      />
 
       <Modal isOpen={!!stockProduct} onClose={() => setStockProduct(null)} title="Ajustement de stock" size="sm">
         {stockProduct && (

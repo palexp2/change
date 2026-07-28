@@ -2,10 +2,19 @@ import { Router } from 'express'
 import { randomUUID } from 'crypto'
 import Stripe from 'stripe'
 import db from '../db/database.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
 import { upsertFromInvoiceLines } from '../services/stripeInvoiceItems.js'
+import {
+  STRIPE_FACTURE_FIELDS, STRIPE_FACTURE_FIXED, getCustomFieldSpecs,
+  getFactureFieldMap, saveFactureFieldMap, resolveStripeInvoiceFields,
+  applyStripeCustomFieldColumns,
+} from '../services/stripeFactureFieldMap.js'
+import {
+  STRIPE_SUBSCRIPTION_FIELDS, STRIPE_SUBSCRIPTION_FIXED,
+  getSubscriptionFieldMap, saveSubscriptionFieldMap,
+} from '../services/stripeSubscriptionFieldMap.js'
 
 function getStripeKey() {
   const row = db.prepare(
@@ -77,6 +86,59 @@ router.delete('/tax-mappings/:id', (req, res) => {
   res.json({ ok: true })
 })
 
+// ── Mapping configurable Stripe → factures (modale « Mapping Stripe » sur /factures)
+
+// GET /api/stripe-queue/facture-field-map — specs + mapping effectif + champs fixes
+router.get('/facture-field-map', (req, res) => {
+  res.json({
+    fields: [
+      ...STRIPE_FACTURE_FIELDS.map(({ key, label, hint, type, default: def, candidates }) => ({
+        key, label, hint: hint || null, type, default: def, candidates,
+      })),
+      // Champs personnalisés (kind='data') de factures — mappables sur tout le
+      // catalogue Stripe, non synchronisés par défaut.
+      ...getCustomFieldSpecs().map(({ key, label, fieldType, default: def, candidates }) => ({
+        key, label, hint: `Champ personnalisé (${fieldType})`, custom: true, default: def, candidates,
+      })),
+    ],
+    field_map: getFactureFieldMap(),
+    fixed: STRIPE_FACTURE_FIXED,
+  })
+})
+
+// PUT /api/stripe-queue/facture-field-map — body { field_map: { clé: cheminStripe } }
+router.put('/facture-field-map', requireAdmin, (req, res) => {
+  try {
+    const field_map = saveFactureFieldMap(req.body?.field_map)
+    res.json({ ok: true, field_map })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// ── Mapping configurable Stripe → subscriptions (modale « Sync Stripe » sur /abonnements)
+
+// GET /api/stripe-queue/subscription-field-map — specs + mapping effectif + champs fixes
+router.get('/subscription-field-map', (req, res) => {
+  res.json({
+    fields: STRIPE_SUBSCRIPTION_FIELDS.map(({ key, label, hint, type, default: def, candidates }) => ({
+      key, label, hint: hint || null, type, default: def, candidates,
+    })),
+    field_map: getSubscriptionFieldMap(),
+    fixed: STRIPE_SUBSCRIPTION_FIXED,
+  })
+})
+
+// PUT /api/stripe-queue/subscription-field-map — body { field_map: { clé: cheminStripe } }
+router.put('/subscription-field-map', requireAdmin, (req, res) => {
+  try {
+    const field_map = saveSubscriptionFieldMap(req.body?.field_map)
+    res.json({ ok: true, field_map })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 // POST /api/stripe-queue/batch-enrich — fetch all Stripe invoices, update factures table
 let batchRunning = false
 let batchProgress = { running: false, total: 0, processed: 0, updated: 0, created: 0, skipped: 0, errors: [] }
@@ -114,7 +176,7 @@ router.post('/batch-enrich', async (req, res) => {
         status=?, total_amount=?, amount_before_tax_cad=?, balance_due=?,
         currency=?, document_date=?, document_number=COALESCE(document_number,?),
         subscription_id=COALESCE(subscription_id,?), company_id=COALESCE(company_id,?),
-        montant_avant_taxes=?,
+        montant_avant_taxes=?, customer_email=COALESCE(?, customer_email), lien_stripe=?,
         sync_source='Factures Stripe', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE invoice_id=?
     `)
@@ -122,8 +184,8 @@ router.post('/batch-enrich', async (req, res) => {
     const insertStmt = db.prepare(`
       INSERT INTO factures (id, invoice_id, company_id, document_number, document_date,
         status, currency, amount_before_tax_cad, total_amount, balance_due,
-        subscription_id, sync_source, montant_avant_taxes, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,'Factures Stripe',?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        subscription_id, sync_source, montant_avant_taxes, customer_email, lien_stripe, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,'Factures Stripe',?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     `)
 
     const samples = [] // { factureId, invoiceNumber, action }
@@ -131,13 +193,15 @@ router.post('/batch-enrich', async (req, res) => {
       try {
         const invoiceId = inv.id
         const status = mapStripeStatus(inv.status)
-        const total = (inv.total || 0) / 100
-        // HT — voir stripe-webhooks.js / upsertFactureFromStripeInvoice.
-        const subtotal = (inv.subtotal_excluding_tax ?? inv.subtotal ?? 0) / 100
-        const balanceDue = (inv.amount_remaining || 0) / 100
+        // Champs configurables (modale « Mapping Stripe » sur /factures) —
+        // défauts = comportement historique, voir services/stripeFactureFieldMap.js.
+        const resolved = resolveStripeInvoiceFields(inv)
+        const total = resolved.total_amount
+        const subtotal = resolved.amount_before_tax
+        const balanceDue = resolved.balance_due
         const currency = (inv.currency || 'cad').toUpperCase()
-        const date = inv.created ? new Date(inv.created * 1000).toISOString().slice(0, 10) : null
-        const docNumber = inv.number || null
+        const date = resolved.document_date
+        const docNumber = resolved.document_number
 
         // Resolve subscription
         let subscriptionId = null
@@ -161,7 +225,8 @@ router.post('/batch-enrich', async (req, res) => {
         if (existing) {
           updateStmt.run(
             status, total, subtotal, balanceDue, currency, date, docNumber,
-            subscriptionId, companyId, String(subtotal), invoiceId
+            subscriptionId, companyId, String(subtotal), resolved.customer_email,
+            `https://dashboard.stripe.com/invoices/${invoiceId}`, invoiceId
           )
           batchProgress.updated++
           factureId = existing.id
@@ -171,13 +236,17 @@ router.post('/batch-enrich', async (req, res) => {
           const newId = randomUUID()
           insertStmt.run(
             newId, invoiceId, companyId, docNumber, date,
-            status, currency, subtotal, total, balanceDue, subscriptionId, String(subtotal)
+            status, currency, subtotal, total, balanceDue, subscriptionId, String(subtotal),
+            resolved.customer_email, `https://dashboard.stripe.com/invoices/${invoiceId}`
           )
           batchProgress.created++
           factureId = newId
           hasPdf = false
           if (samples.length < 10) samples.push({ factureId: newId, invoiceNumber: docNumber || invoiceId, action: 'créée' })
         }
+
+        // Champs personnalisés mappés via la modale « Mapping Stripe »
+        applyStripeCustomFieldColumns(factureId, inv)
 
         if (!hasPdf && inv.invoice_pdf) {
           try {

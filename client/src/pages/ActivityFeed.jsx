@@ -5,7 +5,6 @@ import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 
@@ -76,7 +75,7 @@ const RENDERS = {
 
 const COLUMNS = TABLE_COLUMN_META.activity_log.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
-export default function ActivityFeed() {
+export function ActivityContent() {
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
 
@@ -90,27 +89,33 @@ export default function ActivityFeed() {
   useEffect(() => { load() }, [load])
 
   return (
+    <div>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+            <Activity size={22} className="text-brand-600" /> Feed des opérations
+          </h1>
+          <p className="text-xs text-slate-400 mt-0.5">Qui a fait quoi, et quand</p>
+        </div>
+      </div>
+
+      <DataTable
+        table="activity_log"
+        manageViews
+        columns={COLUMNS}
+        data={rows}
+        loading={loading}
+        searchFields={['user_name', 'entity_type', 'action', 'detail', 'entity_id']}
+      />
+    </div>
+  )
+}
+
+export default function ActivityFeed() {
+  return (
     <Layout>
       <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-              <Activity size={22} className="text-brand-600" /> Feed des opérations
-            </h1>
-            <p className="text-xs text-slate-400 mt-0.5">Qui a fait quoi, et quand</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <TableConfigModal table="activity_log" />
-          </div>
-        </div>
-
-        <DataTable
-          table="activity_log"
-          columns={COLUMNS}
-          data={rows}
-          loading={loading}
-          searchFields={['user_name', 'entity_type', 'action', 'detail', 'entity_id']}
-        />
+        <ActivityContent />
       </div>
     </Layout>
   )

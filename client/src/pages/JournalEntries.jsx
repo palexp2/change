@@ -5,7 +5,6 @@ import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
@@ -1127,7 +1126,6 @@ export default function JournalEntries() {
             <button onClick={openCreate} className="btn-primary">
               <Plus size={14} /> Nouvelle écriture
             </button>
-            <TableConfigModal table="journal_entries" />
           </div>
         </div>
 
@@ -1139,6 +1137,7 @@ export default function JournalEntries() {
 
         <DataTable
           table="journal_entries"
+          manageViews
           columns={COLUMNS}
           data={entries}
           loading={loading}

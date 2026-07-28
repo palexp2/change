@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { ExternalLink, RefreshCw, CreditCard } from 'lucide-react'
+import { ExternalLink, RefreshCw, CreditCard, SlidersHorizontal } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
+import { StripeSubscriptionFieldMapModal } from '../components/StripeFieldMapModal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -104,11 +104,10 @@ const RENDERS = {
 
 
 export default function Abonnements() {
-  const { addToast } = useToast()
   const [abonnements, setAbonnements] = useState([])
   const [loading, setLoading] = useState(true)
   const [stripeConfigured, setStripeConfigured] = useState(false)
-  const [syncing, setSyncing] = useState(false)
+  const [stripeMapOpen, setStripeMapOpen] = useState(false)
   const [selected, setSelected] = useState(null)
 
   function handleRachatChange(id, val) {
@@ -134,25 +133,18 @@ export default function Abonnements() {
 
   useEntityListRealtime('subscription', setAbonnements)
 
+  // Sync manuelle (bouton « Synchroniser maintenant » de la modale Sync
+  // Stripe) : lance l'import puis attend la fin côté serveur (max 90 s) avant
+  // de recharger la liste. Les erreurs remontent à la modale qui les affiche.
   const syncStripe = async () => {
-    setSyncing(true)
-    try {
-      await api.stripe.sync()
-      // Poll until sync finishes, then reload
-      const poll = setInterval(async () => {
-        try {
-          const status = await api.connectors.syncStatus()
-          if (!status?.stripe?.running) {
-            clearInterval(poll)
-            await load()
-            setSyncing(false)
-          }
-        } catch { clearInterval(poll); setSyncing(false) }
-      }, 1500)
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-      setSyncing(false)
+    await api.stripe.sync()
+    const start = Date.now()
+    while (Date.now() - start < 90000) {
+      await new Promise(r => setTimeout(r, 1500))
+      const status = await api.connectors.syncStatus().catch(() => null)
+      if (!status?.stripe?.running) break
     }
+    await load()
   }
 
   return (
@@ -164,12 +156,15 @@ export default function Abonnements() {
           </div>
           <div className="flex items-center gap-2">
             {stripeConfigured && (
-              <button onClick={syncStripe} disabled={syncing} className="btn-secondary btn-sm text-xs">
-                <RefreshCw size={12} className={syncing ? 'animate-spin' : ''} />
-                {syncing ? 'Synchronisation…' : 'Sync Stripe'}
+              <button
+                onClick={() => setStripeMapOpen(true)}
+                className="btn-secondary btn-sm flex items-center gap-1.5"
+                title="Choisir quels champs Stripe alimentent les abonnements et lancer une synchronisation"
+                data-testid="abonnements-stripe-map-open"
+              >
+                <SlidersHorizontal size={13} /> Sync Stripe
               </button>
             )}
-            <TableConfigModal table="abonnements" />
           </div>
         </div>
 
@@ -185,6 +180,7 @@ export default function Abonnements() {
 
         <DataTable
           table="abonnements"
+          manageViews
           columns={COLUMNS}
           data={abonnements}
           loading={loading}
@@ -193,6 +189,13 @@ export default function Abonnements() {
           emptyState={{ icon: RefreshCw, title: 'Aucun abonnement', description: "Aucun abonnement Stripe actif ou passé. Les abonnements se synchronisent automatiquement depuis Stripe." }}
         />
       </div>
+
+      <StripeSubscriptionFieldMapModal
+        isOpen={stripeMapOpen}
+        onClose={() => setStripeMapOpen(false)}
+        onSaved={load}
+        onSyncNow={syncStripe}
+      />
 
       <AbonnementDetailModal abonnement={selected} onClose={() => setSelected(null)} />
     </Layout>

@@ -1,8 +1,8 @@
-// Raccourci de navigation admin-only vers l'onglet Agent des paramètres.
+// Raccourci de navigation vers la page Agent (visible par TOUS les utilisateurs).
 //
 // Lecture seule (rendu de la sidebar) — aucun record créé ni config mutée → pas
 // de cleanup nécessaire. Le test vérifie : le lien « Agent » apparaît dans la nav
-// du bas pour un admin, et un clic navigue bien vers /admin/agent.
+// du bas, et un clic navigue bien vers /agent.
 
 const { test, describe, before, after } = require('node:test')
 const assert = require('node:assert/strict')
@@ -35,23 +35,22 @@ describe('Nav — raccourci admin vers l\'onglet Agent', () => {
     await browser?.close()
   })
 
-  test('le lien Agent est présent dans la sidebar et navigue vers /admin/agent', async () => {
+  test('le lien Agent est présent dans la sidebar et navigue vers /agent', async () => {
     await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
 
-    // Le raccourci pointe vers /admin/agent (href avec basename /erp).
-    const link = page.locator('a[href$="/admin/agent"]')
+    // Le raccourci pointe vers /agent (href avec basename /erp).
+    const link = page.locator('a[href$="/agent"]:not([href*="admin"])')
     await link.first().waitFor({ state: 'visible', timeout: 10000 })
 
     // Libellé « Agent ».
     const text = await link.first().innerText()
     assert.ok(/Agent/.test(text), 'le lien doit afficher le libellé « Agent »')
 
-    // Clic → navigation réelle vers l'onglet Agent des paramètres.
+    // Clic → navigation réelle vers la page Agent.
     await link.first().click()
-    await page.waitForURL(u => u.toString().includes('/admin/agent'), { timeout: 10000 })
-    assert.ok(page.url().includes('/admin/agent'), 'le clic doit naviguer vers /admin/agent')
+    await page.waitForURL(u => u.toString().endsWith('/agent'), { timeout: 10000 })
 
-    // L'onglet Agent doit être actif dans la page Paramètres.
-    await page.waitForSelector('button:has-text("Agent")', { timeout: 10000 })
+    // La page Agent doit se rendre (header).
+    await page.waitForSelector('text=Agent autonome', { timeout: 10000 })
   })
 })

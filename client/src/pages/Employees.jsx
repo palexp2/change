@@ -4,7 +4,6 @@ import { Plus, RefreshCw, Database, ChevronDown, ChevronRight, Users } from 'luc
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -265,7 +264,6 @@ export default function Employees() {
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-slate-900">Employés</h1>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="employees" />
             <button onClick={() => setShowNew(true)} className="btn-primary flex items-center gap-2">
               <Plus size={15} /> Nouvel employé
             </button>
@@ -276,6 +274,7 @@ export default function Employees() {
 
         <DataTable
           table="employees"
+          manageViews
           columns={COLUMNS}
           data={employees}
           loading={loading}

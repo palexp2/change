@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, LifeBuoy, ShoppingCart, Undo2, Users, MapPin, Phone, ClipboardList } from 'lucide-react'
+import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, LifeBuoy, ShoppingCart, Undo2, Users, MapPin, Phone, ClipboardList, PanelRight } from 'lucide-react'
 import EmptyState from '../components/EmptyState.jsx'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import { CreateInvoiceModal } from '../components/CreateInvoiceModal.jsx'
@@ -752,8 +752,13 @@ function QualificationCallsPanel({ calls }) {
   )
 }
 
-export default function CompanyDetail() {
-  const { id } = useParams()
+// `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
+// (RecordPeekDrawer) d'une liste : pas de Layout, pas de bouton retour ni de
+// titre (le drawer fournit le sien). `onClose` ferme le drawer (utilisé quand
+// le record est supprimé pendant que le drawer est ouvert).
+export default function CompanyDetail({ recordId, embedded = false, onClose }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
   const { user: _user } = useAuth()
   const confirm = useConfirm()
@@ -821,7 +826,8 @@ export default function CompanyDetail() {
     if (msg.type === 'company:updated') {
       setCompany(c => c ? { ...c, ...msg.payload } : c)
     } else if (msg.type === 'company:deleted') {
-      navigate('/companies')
+      if (embedded) onClose?.()
+      else navigate('/companies')
     } else if (msg.type === 'company:contacts_changed') {
       // Re-fetch la fiche pour rafraîchir le sous-tableau `contacts`
       // (link/délink/rename d'un contact lié, depuis un autre onglet/user).
@@ -1086,29 +1092,34 @@ export default function CompanyDetail() {
     return () => clearTimeout(tid)
   }, [linkQuery, contactMode, id])
 
+  // En mode embedded (side-peek), pas de Layout : le drawer fournit le cadre.
+  const shell = (content) => (embedded ? content : <Layout>{content}</Layout>)
+
   if (loading) {
-    return <Layout><Spinner center /></Layout>
+    return shell(<Spinner center />)
   }
   if (loadError && !company) {
-    return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
+    return shell(<DetailLoadError message={loadError} onRetry={load} />)
   }
   if (!company) {
-    return <Layout><div className="p-6 text-slate-500">Entreprise introuvable.</div></Layout>
+    return shell(<div className="p-6 text-slate-500">Entreprise introuvable.</div>)
   }
 
   const tabs = ['info', 'contacts', 'interactions', 'projets', 'commandes', 'envois', 'retours', 'support', 'numéros de série', 'factures', 'abonnements', 'tâches', ...(company.quickbooks_vendor_id ? ['achats'] : []), ...(onboardingResponses.length > 0 ? ['onboarding'] : []), ...(qualificationCalls.length > 0 ? ['qualification'] : [])]
 
-  return (
-    <Layout>
-      <div className="p-6 max-w-5xl mx-auto">
+  return shell(
+    <>
+      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-5xl mx-auto'}>
         {/* Header */}
         <div className="flex items-start gap-4 mb-6">
-          <button onClick={() => navigate('/companies')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-            <ArrowLeft size={18} />
-          </button>
+          {!embedded && (
+            <button onClick={() => navigate('/companies')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div className="flex-1">
             <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-bold text-slate-900">{company.name}</h1>
+              {!embedded && <h1 className="text-2xl font-bold text-slate-900">{company.name}</h1>}
               {company.lifecycle_phase && (
                 <Badge color={phaseBadgeColor(company.lifecycle_phase)} size="md">{company.lifecycle_phase}</Badge>
               )}
@@ -1137,6 +1148,19 @@ export default function CompanyDetail() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {!embedded && (
+              /* Miroir du bouton « ouvrir en grand » du drawer : retourne à la
+                 liste avec cette entreprise ouverte en panneau latéral. */
+              <button
+                onClick={() => navigate('/companies', { state: { peekId: id } })}
+                className="p-1.5 text-slate-400 hover:text-brand-600 hover:bg-slate-100 rounded-lg"
+                title="Revenir à la liste avec cette entreprise en panneau latéral"
+                aria-label="Ouvrir en panneau latéral"
+                data-testid="company-open-as-peek"
+              >
+                <PanelRight size={16} />
+              </button>
+            )}
             <div className="relative">
               <button
                 onClick={() => setInvoiceMenuOpen(o => !o)}
@@ -1659,6 +1683,6 @@ export default function CompanyDetail() {
           </div>
         </form>
       </Modal>
-    </Layout>
+    </>
   )
 }

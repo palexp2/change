@@ -525,7 +525,7 @@ export async function drainDeferredCandidates({ maxAutomations = 100 } = {}) {
 
 function resolveAirtableFieldId(erpTable, column) {
   const row = db.prepare(`
-    SELECT airtable_field_id FROM airtable_field_defs
+    SELECT airtable_field_id FROM airtable_field_mappings
     WHERE erp_table=? AND column_name=? AND airtable_field_id NOT LIKE 'webhook_%'
     LIMIT 1
   `).get(erpTable, column)
@@ -580,8 +580,9 @@ function buildAllowedColumns(erpTable) {
   const s = new Set(ALWAYS_ALLOWED)
   for (const c of db.prepare(`PRAGMA table_info(${erpTable})`).all()) s.add(c.name)
   for (const r of db.prepare(
-    `SELECT column_name FROM airtable_field_defs WHERE erp_table=?`
-  ).all(erpTable)) s.add(r.column_name)
+    `SELECT column_name FROM airtable_field_mappings WHERE erp_table=?
+     UNION SELECT column_name FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL AND kind='data'`
+  ).all(erpTable, erpTable)) s.add(r.column_name)
   return s
 }
 

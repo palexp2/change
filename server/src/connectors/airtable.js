@@ -145,6 +145,39 @@ export async function airtablePatch(path, accessToken, body) {
 // AbortController transforme le hang en échec traçable et retryable.
 const AIRTABLE_FETCH_TIMEOUT_MS = 20000
 
+// ── Cache mémoire des métadonnées de tables (/meta/bases/:id/tables) ────────
+// L'endpoint meta d'Airtable est lent (plusieurs secondes sur une grosse base,
+// pire quand un 429 partagé avec les syncs déclenche les backoffs de
+// airtableFetch) : les modales de mapping de champs l'attendaient à chaque
+// ouverture. Stratégie stale-while-revalidate : frais (< 60s) → retour direct ;
+// périmé → retour immédiat de la version périmée + rafraîchissement en
+// arrière-plan ; vide → fetch réel. Les appels concurrents (ex. onglets Paies
+// + Items de paie de la même modale) partagent le même fetch en vol.
+const baseTablesCache = new Map() // baseId → { data, fetchedAt, inflight }
+const BASE_TABLES_FRESH_MS = 60_000
+
+export async function getBaseTablesCached(baseId) {
+  const entry = baseTablesCache.get(baseId) || {}
+  if (entry.data && Date.now() - entry.fetchedAt < BASE_TABLES_FRESH_MS) return entry.data
+  if (!entry.inflight) {
+    entry.inflight = (async () => {
+      const token = await getAccessToken()
+      const data = await airtableFetch(`/meta/bases/${baseId}/tables`, token)
+      baseTablesCache.set(baseId, { data, fetchedAt: Date.now(), inflight: null })
+      return data
+    })()
+    // Échec du refresh : libérer le verrou pour retenter au prochain appel.
+    // (Le rejet reste propagé aux appelants sans version périmée ci-dessous.)
+    entry.inflight.catch(() => {
+      const e = baseTablesCache.get(baseId)
+      if (e) e.inflight = null
+    })
+    baseTablesCache.set(baseId, entry)
+  }
+  if (entry.data) return entry.data // stale-while-revalidate
+  return entry.inflight
+}
+
 export async function airtableFetch(path, accessToken, retries = 3, timeoutMs = AIRTABLE_FETCH_TIMEOUT_MS) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController()

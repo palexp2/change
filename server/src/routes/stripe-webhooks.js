@@ -13,6 +13,8 @@ import {
 } from '../services/subscriptionItemsSnapshot.js'
 import { computeMonthlyNet } from '../services/subscriptionMonthly.js'
 import { recomputeFactureBalance } from '../services/factureBalance.js'
+import { resolveStripeInvoiceFields, applyStripeCustomFieldColumns } from '../services/stripeFactureFieldMap.js'
+import { resolveStripeSubscriptionFields } from '../services/stripeSubscriptionFieldMap.js'
 import { logSync } from '../services/syncLog.js'
 
 const router = Router()
@@ -87,9 +89,14 @@ async function handleSubscriptionWebhook(event) {
 
   const { amountMonthly, currency, intervalType } = computeMonthly(sub)
   const status = mapSubStatus(sub.status)
-  const startDate = sub.start_date ? new Date(sub.start_date * 1000).toISOString().split('T')[0] : null
-  const cancelDate = sub.canceled_at ? new Date(sub.canceled_at * 1000).toISOString().split('T')[0] : null
-  const trialEndDate = sub.trial_end ? new Date(sub.trial_end * 1000).toISOString().split('T')[0] : null
+  // Dates configurables via la modale « Sync Stripe » de /abonnements — même
+  // mapping que la sync polling (stripeSubscriptionFieldMap.js), sinon le
+  // prochain webhook écraserait les valeurs resynchronisées.
+  const {
+    start_date: startDate,
+    cancel_date: cancelDate,
+    trial_end_date: trialEndDate,
+  } = resolveStripeSubscriptionFields(sub)
   const stripeUrl = `https://dashboard.stripe.com/subscriptions/${sub.id}`
 
   const existing = db.prepare('SELECT * FROM subscriptions WHERE stripe_id=?').get(sub.id)
@@ -195,14 +202,17 @@ function mapStripeInvoiceStatus(s) {
 // matches by invoice_id. Updates status/totals/balance_due to reflect the
 // latest Stripe state. Downloads the Stripe PDF the first time it appears.
 async function upsertFactureFromStripeInvoice(invoice) {
-  const total = (invoice.total || 0) / 100
-  // HT — pour les prix Stripe avec tax_behavior="inclusive", `invoice.subtotal` est
-  // le TTC ; `subtotal_excluding_tax` est universellement le HT.
-  const subtotal = (invoice.subtotal_excluding_tax ?? invoice.subtotal ?? 0) / 100
-  const balanceDue = (invoice.amount_remaining ?? invoice.amount_due ?? 0) / 100
+  // Champs configurables via la modale « Mapping Stripe » sur /factures —
+  // défauts = comportement historique (ex. HT = subtotal_excluding_tax ?? subtotal,
+  // universellement hors taxes même en tax_behavior="inclusive").
+  // Voir services/stripeFactureFieldMap.js.
+  const resolved = resolveStripeInvoiceFields(invoice)
+  const total = resolved.total_amount
+  const subtotal = resolved.amount_before_tax
+  const balanceDue = resolved.balance_due
   const currency = (invoice.currency || 'cad').toUpperCase()
-  const invoiceDate = invoice.created ? new Date(invoice.created * 1000).toISOString().slice(0, 10) : null
-  const dueDate = invoice.due_date ? new Date(invoice.due_date * 1000).toISOString().slice(0, 10) : null
+  const invoiceDate = resolved.document_date
+  const dueDate = resolved.due_date
   const status = mapStripeInvoiceStatus(invoice.status)
 
   // Encaissement : on capture date / charge / payment_intent / montant du Stripe
@@ -262,13 +272,16 @@ async function upsertFactureFromStripeInvoice(invoice) {
         company_id=COALESCE(company_id, ?),
         kind=?,
         montant_avant_taxes=?,
+        customer_email=COALESCE(?, customer_email),
         paid_at=?, paid_amount=?, paid_charge_id=?, paid_payment_intent=?,
+        lien_stripe=?,
         sync_source='Factures Stripe',
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id=?
-    `).run(status, total, subtotal, balanceDue, currency, invoiceDate, invoice.number || null,
-      dueDate, subscriptionId, companyId, kind, String(subtotal),
-      paidAt, paidAmount, paidChargeId, paidPaymentIntent, existing.id)
+    `).run(status, total, subtotal, balanceDue, currency, invoiceDate, resolved.document_number,
+      dueDate, subscriptionId, companyId, kind, String(subtotal), resolved.customer_email,
+      paidAt, paidAmount, paidChargeId, paidPaymentIntent,
+      `https://dashboard.stripe.com/invoices/${invoice.id}`, existing.id)
     factureId = existing.id
     pdfAlreadyDownloaded = !!existing.airtable_pdf_path
     action = 'updated'
@@ -277,16 +290,20 @@ async function upsertFactureFromStripeInvoice(invoice) {
     db.prepare(`
       INSERT INTO factures (id, invoice_id, company_id, document_number, document_date, due_date,
         status, currency, amount_before_tax_cad, total_amount, balance_due,
-        subscription_id, kind, sync_source, montant_avant_taxes,
-        paid_at, paid_amount, paid_charge_id, paid_payment_intent,
+        subscription_id, kind, sync_source, montant_avant_taxes, customer_email,
+        paid_at, paid_amount, paid_charge_id, paid_payment_intent, lien_stripe,
         created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'Factures Stripe',?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    `).run(factureId, invoice.id, companyId, invoice.number || null, invoiceDate, dueDate,
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'Factures Stripe',?,?,?,?,?,?,?,strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    `).run(factureId, invoice.id, companyId, resolved.document_number, invoiceDate, dueDate,
       status, currency, subtotal, total, balanceDue, subscriptionId, kind, String(subtotal),
-      paidAt, paidAmount, paidChargeId, paidPaymentIntent)
+      resolved.customer_email, paidAt, paidAmount, paidChargeId, paidPaymentIntent,
+      `https://dashboard.stripe.com/invoices/${invoice.id}`)
     pdfAlreadyDownloaded = false
     action = 'created'
   }
+
+  // Champs personnalisés mappés via la modale « Mapping Stripe »
+  applyStripeCustomFieldColumns(factureId, invoice)
 
   if (!pdfAlreadyDownloaded && invoice.invoice_pdf) {
     const pdfT0 = Date.now()

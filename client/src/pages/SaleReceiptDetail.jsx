@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
   ArrowLeft, ChevronLeft, ChevronRight,
   RefreshCw, AlertCircle, CheckCircle, Clock, BookOpen, ReceiptText,
-  Plus, Trash2, Archive, ArchiveRestore, Pencil,
+  Plus, Trash2, Archive, ArchiveRestore, Pencil, Mail,
 } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
@@ -89,23 +89,25 @@ const TAX_SPLIT_BY_NAME = new Map([
   ['Hors champ', { tps: 0, tvq: 0 }],
 ])
 
+// Ventilation TPS/TVQ d'un code (Id QB ou sentinel NO_TAX). null si taux inconnu.
+function taxSplitForCode(codeId, taxNameById) {
+  if (!codeId) return undefined
+  if (codeId === NO_TAX) return { tps: 0, tvq: 0 }
+  const name = taxNameById.get(codeId)
+  return name != null ? TAX_SPLIT_BY_NAME.get(name) : undefined
+}
+
 // Recalcule TPS/TVQ à partir des codes : chaque ligne est taxée selon SON code, ou le
-// code par DÉFAUT du document (defaultCodeId) si la ligne n'a pas de code propre.
+// code du DOCUMENT (defaultCodeId) si la ligne n'a pas de code propre.
 // taxNameById : Map(Id QB → Nom). Retourne { tps, tvq } ou null si non calculable
 // (une ligne sans code et sans défaut, ou un code au taux inconnu) → l'appelant garde
 // alors les taxes manuelles.
 function computeTaxesFromCodes(items, defaultCodeId, taxNameById) {
-  const splitFor = codeId => {
-    if (codeId === NO_TAX) return { tps: 0, tvq: 0 }
-    const name = taxNameById.get(codeId)
-    return name != null ? TAX_SPLIT_BY_NAME.get(name) : undefined
-  }
   let tps = 0, tvq = 0
   for (const it of (items || [])) {
     const ht = Number(it && it.total) || 0
     const code = (it && it.tax_code_id != null && it.tax_code_id !== '') ? it.tax_code_id : defaultCodeId
-    if (!code) return null
-    const split = splitFor(code)
+    const split = taxSplitForCode(code, taxNameById)
     if (!split) return null
     tps += ht * split.tps / 100
     tvq += ht * split.tvq / 100
@@ -113,17 +115,30 @@ function computeTaxesFromCodes(items, defaultCodeId, taxNameById) {
   return { tps: round2(tps), tvq: round2(tvq) }
 }
 
-// Patch des montants après édition des lignes ou d'un code. Mode « piloté par les codes »
-// (un code par défaut du document est défini ET les taxes sont calculables) → TPS/TVQ
-// dérivées des codes, other_taxes remis à 0, total = sous-total + taxes. Sinon → retombe
-// sur le comportement manuel (mise à l'échelle proportionnelle).
+// Patch des montants après changement du code du document ou d'un code d'article.
+// Mode « piloté par les codes » (code du document défini ET taxes calculables) → TPS/TVQ
+// dérivées des codes, other_taxes remis à 0, total = sous-total + taxes. Deux cas :
+//  - lignes chiffrées → taxe par ligne (code de ligne sinon code document) ;
+//  - aucune ligne chiffrée → tout le sous-total au code du document.
+// Sinon → retombe sur le comportement manuel (mise à l'échelle proportionnelle).
 function recomputeAmounts(receipt, items, defaultCodeId, taxNameById) {
   const lineTotals = (items || []).map(it => it && it.total).filter(n => n != null)
-  if (lineTotals.length && defaultCodeId) {
-    const t = computeTaxesFromCodes(items, defaultCodeId, taxNameById)
-    if (t) {
-      const subtotal = round2(lineTotals.reduce((a, b) => a + (Number(b) || 0), 0))
-      return { subtotal, tps: t.tps, tvq: t.tvq, other_taxes: 0, total: round2(subtotal + t.tps + t.tvq) }
+  if (defaultCodeId) {
+    if (lineTotals.length) {
+      const t = computeTaxesFromCodes(items, defaultCodeId, taxNameById)
+      if (t) {
+        const subtotal = round2(lineTotals.reduce((a, b) => a + (Number(b) || 0), 0))
+        return { subtotal, tps: t.tps, tvq: t.tvq, other_taxes: 0, total: round2(subtotal + t.tps + t.tvq) }
+      }
+    } else {
+      // Aucune ligne chiffrée : taxer le sous-total saisi au code du document.
+      const split = taxSplitForCode(defaultCodeId, taxNameById)
+      const subtotal = round2(receipt.subtotal || 0)
+      if (split && subtotal > 0) {
+        const tps = round2(subtotal * split.tps / 100)
+        const tvq = round2(subtotal * split.tvq / 100)
+        return { subtotal, tps, tvq, other_taxes: 0, total: round2(subtotal + tps + tvq) }
+      }
     }
   }
   return recalcAmountsFromItems(items, receipt)
@@ -163,7 +178,7 @@ function impliedTaxFromLineCodes(receipt, taxNameById) {
 }
 
 
-function QBPublishForm({ receipt, onSuccess }) {
+function QBPublishForm({ receipt, onSuccess, onUpdate }) {
   const { addToast } = useToast()
   const [accounts, setAccounts] = useState([])
   const [vendors, setVendors] = useState([])
@@ -173,6 +188,12 @@ function QBPublishForm({ receipt, onSuccess }) {
   const [loading, setLoading] = useState(true)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState(null)
+  // Champ à corriger signalé par la validation (locale ou serveur) — la section
+  // correspondante est encadrée en rouge. Valeurs : vendor, expense_account,
+  // payment_account, transaction_type, tax_code, currency.
+  const [errorField, setErrorField] = useState(null)
+  const fail = (msg, field = null) => { setError(msg); setErrorField(field) }
+  const fieldFrame = f => (errorField === f ? 'ring-2 ring-red-400 rounded-lg bg-red-50 p-2 -m-2' : '')
 
   // Vérification du statut fiscal avant publication. transactionType détermine le
   // code de taxe QB attendu (cf. server/services/fiscalStatus.js). showConfirm ouvre
@@ -190,12 +211,14 @@ function QBPublishForm({ receipt, onSuccess }) {
   const [newVendorName, setNewVendorName] = useState(receipt.company || '')
   const [taxCodeId, setTaxCodeId] = useState(NO_TAX)
 
-  // Pré-remplissage auto depuis la dernière compta du même fournisseur.
+  // Pré-remplissage auto depuis le PROFIL fournisseur (défauts appris/édités —
+  // prioritaire) puis, à défaut, depuis la dernière compta du même fournisseur.
   // autoAppliedRef : applique une seule fois ; userTouchedRef : ne jamais écraser
   // une édition manuelle de type/dépense/paiement ; autoAppliedFrom : txn source (note).
   const autoAppliedRef = useRef(false)
   const userTouchedRef = useRef(false)
   const [autoAppliedFrom, setAutoAppliedFrom] = useState(null)
+  const [profileApplied, setProfileApplied] = useState(false)
   const markTouched = fn => v => { userTouchedRef.current = true; fn(v) }
 
   useEffect(() => {
@@ -205,25 +228,59 @@ function QBPublishForm({ receipt, onSuccess }) {
         setVendors(vends)
         setTaxCodes(codes)
         setTxTypes(types.data || [])
-        // Type de transaction : choix confirmé déjà en DB sinon suggestion serveur.
-        // L'utilisateur doit toujours confirmer (champ obligatoire à la publication).
-        setTransactionType(receipt.transaction_type || receipt.suggested_transaction_type || '')
-        if (receipt.company) {
-          // Rapproche le fournisseur extrait d'un vendor QB existant (match exact
-          // OU normalisé/flou) AVANT de proposer d'en créer un nouveau — évite les
-          // doublons (« Amazon.com.ca ULC » vs vendor « Amazon » déjà au plan).
-          const match = findBestVendorMatch(receipt.company, vends)
+        // Défauts du profil fournisseur, déjà résolus pour LA devise du reçu
+        // (vendor QB CAD vs USD, compte de paiement par devise, code de taxe par devise).
+        const defaults = receipt.vendor_defaults || null
+        // Type de transaction : choix confirmé déjà en DB, sinon défaut du profil,
+        // sinon suggestion serveur. Toujours à confirmer (obligatoire à la publication).
+        setTransactionType(receipt.transaction_type || defaults?.transaction_type || receipt.suggested_transaction_type || '')
+        // Fournisseur : le vendor QB du profil pour cette devise prime. Sinon,
+        // rapprochement flou DEVISE D'ABORD (un fournisseur bi-devise a deux vendors
+        // QB — on cherche parmi ceux de la devise du reçu avant les autres), et en
+        // dernier recours on propose d'en créer un nouveau — évite les doublons.
+        const recCur = (receipt.currency || 'CAD').toUpperCase()
+        const profileVendor = defaults?.qb_vendor_id && vends.find(v => v.Id === defaults.qb_vendor_id)
+        if (profileVendor) {
+          setVendorId(profileVendor.Id); setVendorMode('existing')
+        } else if (receipt.company) {
+          const sameCur = vends.filter(v => ((v.CurrencyRef?.value || 'CAD').toUpperCase()) === recCur)
+          const match = findBestVendorMatch(receipt.company, sameCur) || findBestVendorMatch(receipt.company, vends)
           if (match) { setVendorId(match.Id); setVendorMode('existing') }
           else setVendorMode('new')
         }
-        // Présélection du code de taxe : le code par défaut du document (choisi dans la
-        // section Montants) prime ; sinon la déduction automatique par les montants TPS/TVQ.
+        // Type d'entité + comptes : défauts du profil (le panneau « dernière compta »
+        // ne s'applique ensuite que si le profil n'avait pas de compte de dépense).
+        let fromProfile = false
+        if (defaults?.qb_type) { setType(defaults.qb_type); fromProfile = true }
+        if (defaults?.expense_account_id) { setExpenseAccountId(defaults.expense_account_id); fromProfile = true }
+        if (defaults?.payment_account_id) { setPaymentAccountId(defaults.payment_account_id); fromProfile = true }
+        // Échéance : extraite du document (ou calculée depuis ses termes), sinon
+        // recalculée depuis les termes par défaut du profil (Net N jours).
+        if (receipt.due_date) setDueDate(receipt.due_date)
+        else {
+          const terms = receipt.payment_terms_days ?? defaults?.payment_terms_days
+          if (terms > 0 && receipt.receipt_date) {
+            const d = new Date(receipt.receipt_date.slice(0, 10) + 'T00:00:00')
+            d.setDate(d.getDate() + Number(terms))
+            setDueDate(d.toISOString().slice(0, 10))
+          }
+        }
+        // Présélection du code de taxe : code du document (section Montants), sinon
+        // défaut du profil pour cette devise (sentinel __none__ = aucune taxe), sinon
+        // déduction automatique par les montants TPS/TVQ.
         if (receipt.tax_code_id) {
           setTaxCodeId(receipt.tax_code_id)
+        } else if (defaults?.tax_code_id && (defaults.tax_code_id === NO_TAX || codes.some(c => c.Id === defaults.tax_code_id))) {
+          setTaxCodeId(defaults.tax_code_id)
+          fromProfile = true
         } else {
           const wantName = deducedTaxName(receipt.tps || 0, receipt.tvq || 0)
           const taxMatch = wantName && codes.find(c => c.Name === wantName)
           if (taxMatch) setTaxCodeId(taxMatch.Id)
+        }
+        if (fromProfile && !receipt.quickbooks_id) {
+          setProfileApplied(true)
+          if (defaults?.expense_account_id) autoAppliedRef.current = true // court-circuite l'auto-apply « dernière compta »
         }
       })
       .catch(() => setError('Impossible de charger les données QuickBooks'))
@@ -245,13 +302,13 @@ function QBPublishForm({ receipt, onSuccess }) {
   // withTax=true (bouton « Utiliser » manuel) copie aussi le code de taxe + toast ;
   // withTax=false (auto-apply silencieux) laisse la déduction TPS/TVQ du reçu courant.
   function applyAccountingFields(txn, { withTax } = { withTax: true }) {
-    setType(txn.quickbooks_type === 'bill' ? 'bill' : 'purchase')
+    setType(['bill', 'cc_credit'].includes(txn.quickbooks_type) ? txn.quickbooks_type : 'purchase')
     if (txn.expense_account_id) setExpenseAccountId(txn.expense_account_id)
     if (txn.payment_account_id) setPaymentAccountId(txn.payment_account_id)
     if (withTax) {
       setTaxCodeId(txn.tax_code_id || NO_TAX)
       if (txn.transaction_type) setTransactionType(txn.transaction_type)
-      setError(null)
+      fail(null)
       addToast({ message: 'Réglages copiés depuis la transaction passée — vérifiez puis publiez.', type: 'success' })
     }
   }
@@ -276,7 +333,21 @@ function QBPublishForm({ receipt, onSuccess }) {
   const accountLabel = a => (a.AcctNum ? `${a.AcctNum} — ${a.Name}` : a.Name)
   const vendorOptions  = vendors.map(v => ({ value: v.Id, label: v.DisplayName }))
   const expenseOptions = expenseAccounts.map(a => ({ value: a.Id, label: accountLabel(a) }))
-  const paymentOptions = paymentAccounts.map(a => ({ value: a.Id, label: `${accountLabel(a)} (${a.AccountType})` }))
+  // La devise est affichée pour les comptes non-CAD : QB refuse un Purchase dont le
+  // compte de paiement n'est pas dans la devise de la transaction (fournisseur USD →
+  // compte USD obligatoire) — le badge évite de choisir un compte incompatible.
+  const paymentOptions = paymentAccounts.map(a => {
+    const cur = a.CurrencyRef?.value
+    return { value: a.Id, label: `${accountLabel(a)} (${a.AccountType}${cur && cur !== 'CAD' ? ` · ${cur}` : ''})` }
+  })
+  // Un crédit sur carte de crédit ne peut viser qu'un compte de type Carte de crédit
+  // (même filtre que QB côté serveur) — on masque les comptes bancaires.
+  const creditCardOptions = paymentAccounts
+    .filter(a => a.AccountType === 'Credit Card')
+    .map(a => {
+      const cur = a.CurrencyRef?.value
+      return { value: a.Id, label: `${accountLabel(a)}${cur && cur !== 'CAD' ? ` (${cur})` : ''}` }
+    })
   const taxCodeOptions = [{ value: NO_TAX, label: '— Aucune taxe —' }, ...taxCodes.map(c => ({ value: c.Id, label: c.Name }))]
   const accountById = new Map(accounts.map(a => [a.Id, a]))
   const taxNameById = new Map(taxCodes.map(c => [c.Id, c.Name]))
@@ -306,15 +377,19 @@ function QBPublishForm({ receipt, onSuccess }) {
       const [y, m, d] = receipt.receipt_date.slice(0, 10).split('-').map(Number)
       const rDate = new Date(y, (m || 1) - 1, d || 1)
       const diffDays = Math.round((today - rDate) / 86400000)
-      if (diffDays < 0) { setError('Impossible de publier une facture datée dans le futur.'); return }
-      if (diffDays > 30) { setError(`Impossible de publier une facture datée de plus de 30 jours dans le passé (${diffDays} jours).`); return }
+      if (diffDays < 0) { fail('Impossible de publier une facture datée dans le futur.'); return }
+      if (diffDays > 30) { fail(`Impossible de publier une facture datée de plus de 30 jours dans le passé (${diffDays} jours).`); return }
     }
-    if (!transactionType) { setError('Sélectionnez le type de transaction (statut fiscal)'); return }
-    if (!expenseAccountId) { setError('Sélectionnez un compte de dépense'); return }
-    if (type === 'purchase' && !paymentAccountId) { setError('Sélectionnez un compte de paiement'); return }
-    if (vendorMode === 'existing' && !vendorId) { setError('Sélectionnez un fournisseur'); return }
-    if (vendorMode === 'new' && !newVendorName.trim()) { setError('Entrez le nom du fournisseur'); return }
-    setError(null)
+    if (!transactionType) { fail('Sélectionnez le type de transaction (statut fiscal)', 'transaction_type'); return }
+    if (!expenseAccountId) { fail('Sélectionnez un compte de dépense', 'expense_account'); return }
+    if (type === 'purchase' && !paymentAccountId) { fail('Sélectionnez un compte de paiement', 'payment_account'); return }
+    if (type === 'cc_credit') {
+      if (!paymentAccountId) { fail('Sélectionnez un compte de carte de crédit', 'payment_account'); return }
+      if (!creditCardOptions.some(o => o.value === paymentAccountId)) { fail('Le compte sélectionné n\'est pas un compte de carte de crédit', 'payment_account'); return }
+    }
+    if (vendorMode === 'existing' && !vendorId) { fail('Sélectionnez un fournisseur', 'vendor'); return }
+    if (vendorMode === 'new' && !newVendorName.trim()) { fail('Entrez le nom du fournisseur', 'vendor'); return }
+    fail(null)
     if (fiscalOk) { doPublish(); return }
     setForceReason('')
     setShowConfirm(true)
@@ -324,12 +399,12 @@ function QBPublishForm({ receipt, onSuccess }) {
   // code de taxe ne correspond pas au statut fiscal attendu — échappatoire tracée.
   async function doPublish() {
     setSubmitting(true)
-    setError(null)
+    fail(null)
     try {
       await api.saleReceipts.pushToQb(receipt.id, {
         type,
         expenseAccountId,
-        paymentAccountId: type === 'purchase' ? paymentAccountId : undefined,
+        paymentAccountId: type !== 'bill' ? paymentAccountId : undefined,
         vendorId: vendorMode === 'existing' ? vendorId : undefined,
         newVendorName: vendorMode === 'new' ? newVendorName.trim() : undefined,
         dueDate: type === 'bill' && dueDate ? dueDate : undefined,
@@ -341,11 +416,42 @@ function QBPublishForm({ receipt, onSuccess }) {
       const updated = await api.saleReceipts.get(receipt.id)
       onSuccess(updated)
     } catch (e) {
-      setError(e.message)
+      fail(e.message, e.details?.field || null)
       setShowConfirm(false)
     } finally {
       setSubmitting(false)
     }
+  }
+
+  // Changement du code de taxe DU DOCUMENT : met à jour la sélection locale (pour la
+  // publication) ET persiste le code + recalcule les taxes du reçu en direct (chaque
+  // ligne suit son code, ou ce code par défaut). La section Montants se met ainsi à jour
+  // sans sélecteur séparé. NO_TAX (— Aucune taxe —) ⇒ pas de code document → taxes manuelles.
+  async function changeDocCode(val) {
+    setTaxCodeId(val)
+    const defaultCode = val === NO_TAX ? null : (val || null)
+    const taxNameById = new Map(taxCodes.map(c => [c.Id, c.Name]))
+    const patch = { tax_code_id: defaultCode }
+    if (defaultCode) Object.assign(patch, recomputeAmounts(receipt, receipt.items || [], defaultCode, taxNameById))
+    try {
+      const updated = await api.saleReceipts.update(receipt.id, patch)
+      onUpdate?.(updated)
+    } catch (e) {
+      addToast({ message: 'Erreur: ' + e.message, type: 'error' })
+    }
+  }
+
+  // Sélection du type de transaction : applique AUTOMATIQUEMENT le code de taxe QB
+  // recommandé pour ce type (fiscalStatus.recommendedCode → Détaxé, TPS/TVQ QC…),
+  // via changeDocCode qui persiste le code et recalcule les taxes du reçu. Si le code
+  // recommandé n'existe pas dans le fichier QB (taxIdByName vide), on laisse le code
+  // courant — l'UI signale alors l'écart et propose « Corriger ».
+  function changeTransactionType(key) {
+    setTransactionType(key)
+    const type = txTypes.find(t => t.key === key)
+    if (!type) return
+    const codeId = taxIdByName.get(type.recommendedCode)
+    if (codeId && codeId !== taxCodeId) changeDocCode(codeId)
   }
 
   if (loading) {
@@ -369,7 +475,18 @@ function QBPublishForm({ receipt, onSuccess }) {
             <input type="radio" data-testid="qb-type-bill" checked={type === 'bill'} onChange={() => markTouched(setType)('bill')} />
             <span>Facture à payer (Bill → Comptes fournisseurs)</span>
           </label>
+          <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+            <input type="radio" data-testid="qb-type-cc-credit" checked={type === 'cc_credit'} onChange={() => markTouched(setType)('cc_credit')} />
+            <span>Crédit sur carte de crédit (Credit Card Credit)</span>
+          </label>
         </div>
+        {profileApplied && (
+          <p data-testid="qb-profile-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 mt-1.5 leading-snug">
+            Pré-rempli depuis le <Link to="/fournisseurs" className="underline font-medium">profil fournisseur</Link>
+            {receipt.vendor_profile?.name ? ` « ${receipt.vendor_profile.name} »` : ''}
+            {(receipt.currency || 'CAD').toUpperCase() === 'USD' ? ' (défauts USD)' : ''}. Vérifiez puis publiez.
+          </p>
+        )}
         {autoAppliedFrom && !userTouchedRef.current && (
           <p data-testid="qb-prefill-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 mt-1.5 leading-snug">
             Pré-rempli depuis la dernière compta de ce fournisseur{autoAppliedFrom.receipt_date ? ` — ${fmtDate(autoAppliedFrom.receipt_date)}` : ''}. Vérifiez puis publiez.
@@ -378,7 +495,7 @@ function QBPublishForm({ receipt, onSuccess }) {
       </div>
 
       <div className="grid grid-cols-1 gap-4">
-        <div>
+        <div className={fieldFrame('vendor')}>
           <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Fournisseur</label>
           <div className="flex gap-3 mb-1.5">
             <label className="flex items-center gap-1 text-xs cursor-pointer">
@@ -401,7 +518,7 @@ function QBPublishForm({ receipt, onSuccess }) {
           )}
         </div>
 
-        <div>
+        <div className={fieldFrame('expense_account')}>
           <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Compte de dépense</label>
           <SearchableSelect
             testId="qb-expense-select"
@@ -412,28 +529,50 @@ function QBPublishForm({ receipt, onSuccess }) {
           />
         </div>
 
-        {type === 'purchase' ? (
-          <div>
-            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Compte de paiement</label>
+        {type !== 'bill' ? (
+          <div className={fieldFrame('payment_account')}>
+            <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">
+              {type === 'cc_credit' ? 'Compte de carte de crédit' : 'Compte de paiement'}
+            </label>
             <SearchableSelect
               testId="qb-payment-select"
               value={paymentAccountId}
-              options={paymentOptions}
+              options={type === 'cc_credit' ? creditCardOptions : paymentOptions}
               onChange={markTouched(setPaymentAccountId)}
               placeholder="— Sélectionner —"
             />
+            {type === 'cc_credit' && (
+              <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
+                Le montant sera crédité (remboursé) sur ce compte de carte de crédit — saisissez les montants du reçu en positif.
+              </p>
+            )}
           </div>
         ) : (
           <div>
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Échéance</label>
-            <input type="date" value={dueDate} onChange={e => setDueDate(e.target.value)} className="input-field text-xs w-full" />
+            <input
+              type="date"
+              value={dueDate}
+              onChange={e => {
+                const v = e.target.value
+                setDueDate(v)
+                // Autosave : l'échéance (extraite ou corrigée) est persistée sur le reçu.
+                api.saleReceipts.update(receipt.id, { due_date: v || null }).then(u => onUpdate?.(u)).catch(() => {})
+              }}
+              className="input-field text-xs w-full"
+            />
+            {receipt.payment_terms_days > 0 && (
+              <p className="text-[11px] text-slate-500 mt-1 leading-snug">
+                Termes détectés sur la facture : <strong>Net {receipt.payment_terms_days} jours</strong>.
+              </p>
+            )}
             <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
               Le crédit est posté automatiquement au compte <strong>Comptes fournisseurs</strong> du vendor — aucun compte de paiement à choisir.
             </p>
           </div>
         )}
 
-        <div>
+        <div className={fieldFrame('transaction_type')}>
           <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">
             Type de transaction <span className="text-red-500">*</span>
           </label>
@@ -441,7 +580,7 @@ function QBPublishForm({ receipt, onSuccess }) {
             testId="qb-txtype-select"
             value={transactionType}
             options={txTypeOptions}
-            onChange={setTransactionType}
+            onChange={changeTransactionType}
             placeholder="— Sélectionner le statut fiscal —"
           />
           {!transactionType && (
@@ -460,13 +599,13 @@ function QBPublishForm({ receipt, onSuccess }) {
           )}
         </div>
 
-        <div>
+        <div className={fieldFrame('tax_code')}>
           <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Code de taxe</label>
           <SearchableSelect
             testId="qb-taxcode-select"
             value={taxCodeId}
             options={taxCodeOptions}
-            onChange={setTaxCodeId}
+            onChange={changeDocCode}
             placeholder="— Aucune taxe —"
           />
           {selectedType ? (
@@ -508,8 +647,8 @@ function QBPublishForm({ receipt, onSuccess }) {
                 <li key={txn.id} className="flex items-center gap-2 text-xs bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
                   <span className="text-slate-500 w-24 shrink-0">{txn.receipt_date ? fmtDate(txn.receipt_date) : '—'}</span>
                   <span className="tabular-nums font-medium text-slate-700 w-20 shrink-0 text-right">{fmtCad(txn.total)}</span>
-                  <span className={`shrink-0 px-1.5 py-0.5 rounded-full ${txn.quickbooks_type === 'bill' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'}`}>
-                    {txn.quickbooks_type === 'bill' ? 'Facture' : 'Dépense'}
+                  <span className={`shrink-0 px-1.5 py-0.5 rounded-full ${txn.quickbooks_type === 'bill' ? 'bg-purple-100 text-purple-700' : txn.quickbooks_type === 'cc_credit' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'}`}>
+                    {txn.quickbooks_type === 'bill' ? 'Facture' : txn.quickbooks_type === 'cc_credit' ? 'Crédit CC' : 'Dépense'}
                   </span>
                   <span className="text-slate-500 truncate flex-1 min-w-0" title={acc ? accountLabel(acc) : ''}>
                     {acc ? accountLabel(acc) : <span className="text-slate-300">compte non enregistré</span>}
@@ -549,7 +688,9 @@ function QBPublishForm({ receipt, onSuccess }) {
               <li className="flex gap-2"><span className="text-slate-400">•</span>
                 {type === 'bill'
                   ? <span>Une <strong>facture fournisseur (Bill)</strong> sera créée dans QuickBooks (compte fournisseurs).</span>
-                  : <span>Une <strong>dépense (Purchase)</strong> sera enregistrée dans QuickBooks.</span>}
+                  : type === 'cc_credit'
+                    ? <span>Un <strong>crédit sur carte de crédit (Credit Card Credit)</strong> sera enregistré dans QuickBooks — le montant réduit le solde de la carte.</span>
+                    : <span>Une <strong>dépense (Purchase)</strong> sera enregistrée dans QuickBooks.</span>}
               </li>
               {vendorMode === 'new' && newVendorName.trim() && (
                 <li className="flex gap-2"><span className="text-slate-400">•</span>
@@ -585,7 +726,7 @@ function QBPublishForm({ receipt, onSuccess }) {
                     type="button"
                     data-testid="qb-fiscal-correct"
                     disabled={!recommendedCodeId}
-                    onClick={() => { if (recommendedCodeId) setTaxCodeId(recommendedCodeId) }}
+                    onClick={() => { if (recommendedCodeId) changeDocCode(recommendedCodeId) }}
                     className="text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 border border-green-300 rounded px-2.5 py-1 disabled:opacity-50"
                   >
                     Corriger → utiliser « {selectedType?.recommendedCode} »
@@ -785,12 +926,9 @@ function EditableTextField({ receipt, field, label, placeholder, onUpdate, testI
 function EditableMemoField({ receipt, onUpdate }) {
   const { addToast } = useToast()
   const [desc, setDesc] = useState(receipt.general_description || '')
-  const [memo, setMemo] = useState(receipt.memo || '')
   const [savingDesc, setSavingDesc] = useState(false)
-  const [savingMemo, setSavingMemo] = useState(false)
 
   useEffect(() => { setDesc(receipt.general_description || '') }, [receipt.id, receipt.general_description])
-  useEffect(() => { setMemo(receipt.memo || '') }, [receipt.id, receipt.memo])
 
   async function commitField(field, value, current, setSaving, reset) {
     const normalized = value.trim() || null
@@ -806,10 +944,6 @@ function EditableMemoField({ receipt, onUpdate }) {
       setSaving(false)
     }
   }
-
-  // Aperçu de ce qui partira dans le champ « Memo » de QuickBooks : la note perso
-  // éventuelle, puis la description générale. Plus jamais la liste des articles.
-  const memoPreview = [memo.trim(), desc.trim()].filter(Boolean).join('\n')
 
   return (
     <div className="space-y-4">
@@ -831,28 +965,6 @@ function EditableMemoField({ receipt, onUpdate }) {
         <p className="text-[11px] text-slate-400 mt-1.5 leading-snug">
           Envoyée comme « Memo » dans QuickBooks. Le détail des articles reste sur les lignes de la transaction, mais n'encombre plus le mémo.
         </p>
-      </div>
-
-      <div>
-        <div className="flex items-baseline justify-between mb-2">
-          <h3 className="text-sm font-semibold text-slate-700">Note personnalisée (optionnel)</h3>
-          {savingMemo && <RefreshCw size={11} className="animate-spin text-slate-400" />}
-        </div>
-        <textarea
-          data-testid="receipt-memo"
-          value={memo}
-          onChange={e => setMemo(e.target.value)}
-          onBlur={() => commitField('memo', memo, receipt.memo, setSavingMemo, () => setMemo(receipt.memo || ''))}
-          rows={2}
-          placeholder="Note ajoutée en tête du mémo QuickBooks (avant la description principale)"
-          disabled={savingMemo}
-          className="w-full text-sm text-slate-700 bg-white border border-slate-300 hover:border-slate-400 focus:border-brand-500 rounded px-3 py-2 outline-none resize-y placeholder:text-slate-300 whitespace-pre-wrap"
-        />
-        {memoPreview && (
-          <p className="text-[11px] text-slate-400 mt-1.5 leading-snug whitespace-pre-wrap">
-            Mémo QuickBooks : <span className="text-slate-500">{memoPreview}</span>
-          </p>
-        )}
       </div>
     </div>
   )
@@ -1272,54 +1384,6 @@ function DerivedTotalRow({ receipt }) {
   )
 }
 
-// Sélecteur du code de taxe PAR DÉFAUT du document : appliqué à toute ligne qui n'a pas
-// son propre code. Le choisir active le mode « piloté par les codes » → TPS/TVQ
-// recalculées automatiquement. Le retirer (« Taxes manuelles ») repasse en saisie libre
-// sans toucher aux montants courants.
-function DocumentTaxCodeRow({ receipt, taxCodes = [], onUpdate }) {
-  const { addToast } = useToast()
-  const [saving, setSaving] = useState(false)
-  const taxNameById = new Map((taxCodes || []).map(c => [c.Id, c.Name]))
-  const options = taxCodes.map(c => ({ value: c.Id, label: c.Name }))
-
-  async function change(val) {
-    const defaultCode = val || null
-    if ((receipt.tax_code_id || null) === defaultCode) return
-    setSaving(true)
-    try {
-      const patch = { tax_code_id: defaultCode }
-      if (defaultCode) Object.assign(patch, recomputeAmounts(receipt, receipt.items || [], defaultCode, taxNameById))
-      const updated = await api.saleReceipts.update(receipt.id, patch)
-      onUpdate?.(updated)
-    } catch (e) {
-      addToast({ message: 'Erreur: ' + e.message, type: 'error' })
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <div className="flex justify-between items-center gap-2">
-      <span className="text-sm text-slate-600">
-        Code de taxe <span className="text-[11px] text-slate-400">(défaut du document)</span>
-      </span>
-      <div className="flex items-center gap-1">
-        {saving && <RefreshCw size={11} className="animate-spin text-slate-400" />}
-        <div className="w-52">
-          <SearchableSelect
-            testId="receipt-doc-taxcode"
-            value={receipt.tax_code_id || ''}
-            options={options}
-            emptyOption="— Taxes manuelles —"
-            onChange={change}
-            placeholder="— Taxes manuelles —"
-          />
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // Indicateur de réconciliation (lecture seule) : compare la taxe IMPLIQUÉE par les codes
 // de taxe par ligne au total des taxes du document. Ne s'affiche que si au moins une ligne
 // porte un code explicite. Ne modifie jamais les taxes du document.
@@ -1518,6 +1582,23 @@ export default function SaleReceiptDetail() {
 
   useEffect(() => { load() }, [load])
 
+  // Ouvrir un reçu le marque lu (comme un courriel Gmail) — couvre aussi
+  // l'arrivée directe par URL et la navigation prev/next.
+  useEffect(() => {
+    if (id) api.saleReceipts.markRead(id).catch(() => {})
+  }, [id])
+
+  async function handleMarkUnread() {
+    if (!receipt) return
+    try {
+      await api.saleReceipts.markUnread(receipt.id)
+      addToast({ message: 'Marqué non lu', type: 'success' })
+      navigate('/sale-receipts')
+    } catch (e) {
+      addToast({ message: 'Erreur: ' + e.message, type: 'error' })
+    }
+  }
+
   useEffect(() => {
     // Priorité à l'ordre de la vue mémorisé dans sessionStorage (set par
     // SaleReceipts.jsx au clic sur une ligne). Fallback : ordre DB complet
@@ -1670,6 +1751,16 @@ export default function SaleReceiptDetail() {
             <div className="w-px h-5 bg-slate-200 mx-1" />
 
             <button
+              onClick={handleMarkUnread}
+              disabled={acting}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50"
+              data-testid="receipt-mark-unread"
+              title="Remettre en gras dans la liste et y retourner"
+            >
+              <Mail size={14} />
+              Marquer non lu
+            </button>
+            <button
               onClick={handleArchiveToggle}
               disabled={acting}
               className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50"
@@ -1740,6 +1831,7 @@ export default function SaleReceiptDetail() {
               {receipt.status === 'done' && !receipt.quickbooks_id && (
                 <QBPublishForm
                   receipt={receipt}
+                  onUpdate={setReceipt}
                   onSuccess={(updated) => {
                     setReceipt(updated)
                     addToast({ message: 'Reçu publié sur QuickBooks', type: 'success' })
@@ -1771,12 +1863,11 @@ export default function SaleReceiptDetail() {
                 <div className="flex items-baseline justify-between mb-2">
                   <h3 className="text-sm font-semibold text-slate-700">Montants</h3>
                   <p className="text-[11px] text-slate-400">
-                    {codeDriven ? 'Taxes calculées à partir des codes par ligne.' : 'Cliquez pour modifier — ou choisissez un code de taxe par défaut pour calculer les taxes.'}
+                    {codeDriven ? 'Taxes calculées d’après le code de taxe (document + exceptions par ligne).' : 'Cliquez pour modifier.'}
                   </p>
                 </div>
                 <div className="bg-slate-50 rounded-lg p-4 space-y-2">
                   <EditableAmountRow receipt={receipt} field="subtotal"    label="Sous-total (avant taxes)" onUpdate={setReceipt} readOnly={(receipt.items || []).some(it => it && it.total != null)} hint={(receipt.items || []).some(it => it && it.total != null) ? '(somme des lignes)' : undefined} />
-                  <DocumentTaxCodeRow receipt={receipt} taxCodes={taxCodes} onUpdate={setReceipt} />
                   <EditableAmountRow receipt={receipt} field="tps"         label="TPS / GST"                onUpdate={setReceipt} readOnly={codeDriven} hint={codeHint} />
                   <EditableAmountRow receipt={receipt} field="tvq"         label="TVQ / QST / PST"          onUpdate={setReceipt} readOnly={codeDriven} hint={codeHint} />
                   <EditableAmountRow receipt={receipt} field="other_taxes" label="Autres taxes"             onUpdate={setReceipt} readOnly={codeDriven} hint={codeHint} />

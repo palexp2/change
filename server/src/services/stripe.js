@@ -8,6 +8,7 @@ import {
   setCurrentItemsSnapshot,
 } from './subscriptionItemsSnapshot.js'
 import { computeMonthlyNet } from './subscriptionMonthly.js'
+import { resolveStripeSubscriptionFields } from './stripeSubscriptionFieldMap.js'
 
 function getStripeKey() {
   const row = db.prepare(
@@ -168,7 +169,6 @@ export async function syncStripeSubscriptions() {
   for (const sub of allSubs) {
     const customer = sub.customer
     const customerId = typeof customer === 'object' ? customer.id : customer
-    const customerEmail = typeof customer === 'object' ? (customer.email || null) : null
 
     // Resolve company — strictement par stripe_customer_id
     let companyId = customerId
@@ -190,15 +190,15 @@ export async function syncStripeSubscriptions() {
     const { amountMonthly, currency, intervalType } = computeMonthlyNet(sub)
 
     const status = mapStatus(sub.status)
-    const startDate = sub.start_date
-      ? new Date(sub.start_date * 1000).toISOString().split('T')[0]
-      : null
-    const cancelDate = sub.canceled_at
-      ? new Date(sub.canceled_at * 1000).toISOString().split('T')[0]
-      : null
-    const trialEndDate = sub.trial_end
-      ? new Date(sub.trial_end * 1000).toISOString().split('T')[0]
-      : null
+    // Dates + courriel client : champs configurables via la modale « Sync
+    // Stripe » de /abonnements (stripeSubscriptionFieldMap.js). Défauts =
+    // comportement historique (start_date, canceled_at, trial_end, customer.email).
+    const {
+      start_date: startDate,
+      cancel_date: cancelDate,
+      trial_end_date: trialEndDate,
+      customer_email: customerEmail,
+    } = resolveStripeSubscriptionFields(sub)
     const stripeUrl = `https://dashboard.stripe.com/subscriptions/${sub.id}`
 
     if (existingRow) {

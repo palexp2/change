@@ -139,12 +139,11 @@ const TABS = [
   { key: 'inventory', label: 'Inventaire technique', icon: Layers },
 ]
 
-export default function Architecture() {
+export function ArchitectureContent() {
   const [tab, setTab] = useState('map')
 
   return (
-    <Layout>
-      <div className="p-6 max-w-6xl mx-auto">
+    <div className="p-6 max-w-6xl mx-auto">
         <div className="flex items-start justify-between gap-3 mb-6 flex-wrap">
           <div className="flex items-start gap-3">
             <span className="w-11 h-11 rounded-xl bg-brand-50 ring-1 ring-brand-200 flex items-center justify-center flex-shrink-0">
@@ -272,6 +271,13 @@ export default function Architecture() {
           </div>
         )}
       </div>
+  )
+}
+
+export default function Architecture() {
+  return (
+    <Layout>
+      <ArchitectureContent />
     </Layout>
   )
 }

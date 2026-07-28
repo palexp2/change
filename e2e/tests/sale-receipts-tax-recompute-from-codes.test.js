@@ -72,14 +72,17 @@ describe('Extraction de données : recalcul des taxes depuis les codes', () => {
     })
 
     await page.goto(URL + '/sale-receipts/' + receiptId, { waitUntil: 'networkidle' })
-    const sel = page.getByTestId('receipt-doc-taxcode')
-    await sel.waitFor({ state: 'visible', timeout: 10000 })
+    // Le code du document se choisit dans le formulaire de publication (pas de sélecteur
+    // séparé dans les totaux). Changer ce code recalcule les taxes en direct.
+    const sel = page.getByTestId('qb-taxcode-select')
+    await sel.waitFor({ state: 'visible', timeout: 15000 })
+    await sel.scrollIntoViewIfNeeded()
     await sel.click()
-    const menu = page.getByTestId('receipt-doc-taxcode-menu')
+    const menu = page.getByTestId('qb-taxcode-select-menu')
     await menu.waitFor({ state: 'visible', timeout: 5000 })
     await menu.locator('input').fill('TPS/TVQ QC')
     await menu.getByText('TPS/TVQ QC - 9,975', { exact: false }).first().click()
-    await page.waitForTimeout(1000)
+    await page.waitForTimeout(1200)
 
     const r = await get()
     assert.equal(r.tax_code_id, qc.Id, 'le code par défaut doit être enregistré')

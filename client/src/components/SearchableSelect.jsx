@@ -56,6 +56,14 @@ export function SearchableSelect({
     [options, value, getOptionValue]
   )
 
+  // Tooltip natif avec le libellé complet quand il est tronqué (les libellés
+  // peuvent être du JSX via getOptionLabel custom — on ne met un title que sur
+  // les chaînes/nombres).
+  const titleOf = o => {
+    const l = getOptionLabel(o)
+    return typeof l === 'string' || typeof l === 'number' ? String(l) : undefined
+  }
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return options
@@ -126,6 +134,7 @@ export function SearchableSelect({
         data-testid={testId}
         onClick={() => !disabled && setOpen(o => !o)}
         onKeyDown={onKeyDown}
+        title={selected ? titleOf(selected) : undefined}
         className={`${className} flex items-center justify-between gap-1 text-left ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
       >
         <span className={`truncate ${selected ? 'text-slate-700' : 'text-slate-400'}`}>
@@ -181,6 +190,7 @@ export function SearchableSelect({
                   type="button"
                   onClick={() => commit(getOptionValue(o))}
                   onMouseEnter={() => setActiveIdx(idx)}
+                  title={titleOf(o)}
                   className={`w-full text-left px-3 py-2 ${txt} flex items-center gap-2 transition-colors ${idx === activeIdx ? 'bg-slate-50' : ''} ${isSel ? 'text-brand-600 font-medium' : 'text-slate-700'}`}
                 >
                   <Check size={13} className={`flex-shrink-0 ${isSel ? 'text-brand-600' : 'text-transparent'}`} />

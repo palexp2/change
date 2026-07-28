@@ -1,11 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Upload, RefreshCw, AlertCircle, CheckCircle, Clock, Camera, BookOpen, Trash2, Archive, ArchiveRestore, Receipt } from 'lucide-react'
+import { Upload, RefreshCw, AlertCircle, CheckCircle, Clock, Camera, BookOpen, Trash2, Archive, ArchiveRestore, Receipt, Mail, MailOpen } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -312,9 +311,46 @@ export default function SaleReceipts() {
     }
   }
 
+  // Lu / non lu à la Gmail : optimiste côté client (le gras disparaît tout de
+  // suite), l'écho realtime du serveur confirme.
+  const setReadState = useCallback((ids, readAt) => {
+    const idSet = new Set(ids.map(String))
+    setReceipts(rs => rs.map(r => idSet.has(String(r.id)) ? { ...r, read_at: readAt } : r))
+  }, [])
+
+  async function handleBulkMarkRead(ids) {
+    setReadState(ids, new Date().toISOString())
+    try { await Promise.all(ids.map(id => api.saleReceipts.markRead(id))) }
+    catch (err) { addToast({ message: 'Erreur: ' + err.message, type: 'error' }); load() }
+  }
+
+  async function handleBulkMarkUnread(ids) {
+    setReadState(ids, null)
+    try { await Promise.all(ids.map(id => api.saleReceipts.markUnread(id))) }
+    catch (err) { addToast({ message: 'Erreur: ' + err.message, type: 'error' }); load() }
+  }
+
   // Actions groupées : « Archiver » quand aucune des lignes sélectionnées n'est
   // archivée, « Désarchiver » quand elles le sont toutes (onglet Archivés).
   const BULK_ACTIONS = [
+    {
+      key: 'mark-read',
+      label: 'Marquer lu',
+      busyLabel: 'Marquage...',
+      icon: MailOpen,
+      className: 'inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-50 px-3 py-1.5 rounded transition-colors',
+      show: rows => rows.length > 0 && rows.some(r => !r.read_at),
+      onClick: handleBulkMarkRead,
+    },
+    {
+      key: 'mark-unread',
+      label: 'Marquer non lu',
+      busyLabel: 'Marquage...',
+      icon: Mail,
+      className: 'inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 disabled:opacity-50 px-3 py-1.5 rounded transition-colors',
+      show: rows => rows.length > 0 && rows.every(r => r.read_at),
+      onClick: handleBulkMarkUnread,
+    },
     {
       key: 'archive',
       label: 'Archiver',
@@ -360,9 +396,6 @@ export default function SaleReceipts() {
             <h1 className="text-2xl font-bold text-slate-900">Extraction de données</h1>
             <p className="text-xs text-slate-400 mt-0.5">Extraction automatique par IA</p>
           </div>
-          <div className="flex items-center gap-2">
-            <TableConfigModal table="sale_receipts" />
-          </div>
         </div>
 
         <div className="flex items-stretch gap-3 mb-4">
@@ -383,6 +416,7 @@ export default function SaleReceipts() {
 
         <DataTable
           table="sale_receipts"
+          manageViews
           columns={COLUMNS_WITH_ACTIONS}
           data={receipts}
           searchFields={['company', 'original_name', 'receipt_number', 'total']}
@@ -391,7 +425,13 @@ export default function SaleReceipts() {
           bulkActions={BULK_ACTIONS}
           bulkDeleteAlways
           onFilteredDataChange={rows => { displayedIdsRef.current = rows.map(r => String(r.id)) }}
+          rowClassName={row => row.read_at ? '' : 'font-semibold [&_.text-slate-500]:text-slate-700 [&_.text-slate-600]:text-slate-800'}
           onRowClick={row => {
+            // Ouvrir un reçu le marque lu (comme un courriel Gmail).
+            if (!row.read_at) {
+              setReadState([row.id], new Date().toISOString())
+              api.saleReceipts.markRead(row.id).catch(() => {})
+            }
             // Mémoriser l'ordre courant de la vue (filtrée/triée) pour la nav
             // prev/next dans la fiche détail. sessionStorage = scope onglet,
             // suffisant pour une session de navigation.

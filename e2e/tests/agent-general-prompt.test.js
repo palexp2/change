@@ -80,6 +80,12 @@ describe('Agent autonome — prompt général', () => {
 
     await page.goto(URL + '/agent', { waitUntil: 'networkidle' })
 
+    // 0. Les panneaux de prompt vivent dans la modale « Réglages de l'agent »
+    //    (bouton header).
+    await page.waitForSelector('[data-testid="agent-settings-button"]', { timeout: 10000 })
+    await page.click('[data-testid="agent-settings-button"]')
+    await page.waitForSelector('[role="dialog"]', { timeout: 5000 })
+
     // 1. Le panneau "Prompt général" est présent ; le déplier révèle le textarea
     //    contenant la valeur courante → consultable.
     await page.waitForSelector('text=Prompt général', { timeout: 10000 })
@@ -99,6 +105,9 @@ describe('Agent autonome — prompt général', () => {
 
     // 3. Recharger la page → le textarea ré-affiche la valeur enregistrée.
     await page.goto(URL + '/agent', { waitUntil: 'networkidle' })
+    await page.waitForSelector('[data-testid="agent-settings-button"]', { timeout: 10000 })
+    await page.click('[data-testid="agent-settings-button"]')
+    await page.waitForSelector('[role="dialog"]', { timeout: 5000 })
     await page.click('text=Prompt général')
     const ta2 = page.locator('[data-testid="prompt-textarea-general"]')
     await ta2.waitFor({ timeout: 5000 })

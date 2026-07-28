@@ -1,19 +1,50 @@
 import { useEffect, useState, useRef } from 'react'
 import { Loader2, ServerOff, RefreshCw, WifiOff } from 'lucide-react'
-import { subscribe, getIsOffline, getReason, getKnownBootId, markOnline, subscribeServerRestart } from '../lib/serverStatus.js'
+import { subscribe, getIsOffline, getReason, getKnownBootId, markOnline, subscribeServerRestart, acceptBootId } from '../lib/serverStatus.js'
+import { sync } from '../lib/dataSync.js'
+import { connect as reconnectRealtime } from '../lib/realtime.js'
 
 // Fullscreen overlay shown when the server is unreachable. Pings /api/health
 // every 10 s; on success, compare the returned boot_id with the one we saw
 // before the outage:
-//   - boot_id changed → pm2 a redémarré (typiquement un déploiement) → message
-//     "Mise à jour de l'app en cours" puis reload.
-//   - boot_id identique ou inconnu → simple blip réseau → reload silencieux.
+//   - boot_id identique ou inconnu → simple blip réseau → on masque l'overlay
+//     SANS recharger la page : un reload fermerait toute modale ouverte et
+//     perdrait les modifications en cours (ex. modale de modification d'une
+//     automation système). Les données sont rattrapées via un delta dataSync
+//     immédiat + reconnexion WS.
+//   - boot_id changé → pm2 a redémarré. On vérifie alors si le bundle JS
+//     servi a changé (hash Vite dans index.html) :
+//       - bundle identique (pm2 restart sans rebuild client — cas fréquent) →
+//         même traitement qu'un blip : pas de reload, resync en place.
+//       - bundle différent (vrai déploiement frontend) → message "Mise à jour
+//         de l'app en cours" puis reload pour charger le nouveau code.
 //
 // L'apparition est debouncée 400 ms côté serverStatus.js — les blips < 400 ms
 // (reconnexion WS, requête transiente) ne déclenchent jamais l'overlay.
 //
 // Triggered by lib/serverStatus → see realtime.js (WS abnormal close) and
 // api.js (network error / 502 / 503 / 504).
+
+// Compare le bundle JS actuellement chargé avec celui que le serveur sert.
+// Vite content-hash les assets (dist/assets/index-XXXX.js) : si le hash de
+// index.html correspond au <script> déjà chargé, un reload ne changerait
+// rien — on l'évite pour préserver l'état de la page (modales ouvertes,
+// champs en cours d'édition). En cas de doute (fetch raté, marqueur
+// introuvable), on retourne true → comportement historique (reload).
+async function bundleChanged() {
+  try {
+    const current = document.querySelector('script[src*="assets/index-"]')?.getAttribute('src')
+    if (!current) return true
+    const res = await fetch('/erp/', { cache: 'no-store' })
+    if (!res.ok) return true
+    const html = await res.text()
+    const m = html.match(/assets\/index-[^"']+\.js/)
+    if (!m) return true
+    return !current.includes(m[0])
+  } catch {
+    return true
+  }
+}
 
 function describeReason(reason) {
   if (!reason) return {
@@ -57,6 +88,7 @@ export default function ServerOfflineOverlay() {
   const [countdown, setCountdown] = useState(10)
   const [restartDetected, setRestartDetected] = useState(false)
   const pingingRef = useRef(false)
+  const bundleCheckRef = useRef(false)
 
   useEffect(() => subscribe((isOffline) => {
     setOffline(isOffline)
@@ -65,13 +97,27 @@ export default function ServerOfflineOverlay() {
 
   // Détection de redéploiement « à chaud » — quand le serveur redémarre assez
   // rapidement pour qu'aucune requête ne tombe (les nouvelles réponses
-  // arrivent avec un nouveau X-Boot-Id). Sans ça, le client reste indéfiniment
-  // sur l'ancien bundle JS jusqu'à une vraie déconnexion réseau.
-  useEffect(() => subscribeServerRestart(() => {
-    setRestartDetected(true)
-    // Laisse 1.2s pour que d'éventuelles requêtes en vol (autosave) puissent
-    // finir et afficher l'overlay « Mise à jour » avant le reload.
-    setTimeout(() => window.location.reload(), 1200)
+  // arrivent avec un nouveau X-Boot-Id). Sans ça, le client resterait
+  // indéfiniment sur l'ancien bundle JS après un déploiement frontend.
+  // Un pm2 restart sans rebuild client (cas fréquent) ne reload PAS : ça
+  // fermerait toute modale ouverte et perdrait l'état de la page.
+  useEffect(() => subscribeServerRestart((newBootId) => {
+    if (bundleCheckRef.current) return // check déjà en cours
+    bundleCheckRef.current = true
+    bundleChanged().then((changed) => {
+      if (!changed) {
+        // Même bundle → accepter le nouveau boot_id (sinon chaque réponse
+        // re-déclencherait ce handler) et rattraper les données manquées.
+        acceptBootId(newBootId)
+        sync()
+        reconnectRealtime()
+        return
+      }
+      setRestartDetected(true)
+      // Laisse 1.2s pour que d'éventuelles requêtes en vol (autosave) puissent
+      // finir et afficher l'overlay « Mise à jour » avant le reload.
+      setTimeout(() => window.location.reload(), 1200)
+    }).finally(() => { bundleCheckRef.current = false })
   }), [])
 
   useEffect(() => {
@@ -93,13 +139,31 @@ export default function ServerOfflineOverlay() {
           const previous = getKnownBootId()
           const restarted = previous && bootId && previous !== bootId
           if (restarted) {
-            // setRestartDetected DOIT précéder markOnline — sinon offline=false
-            // démonte le composant et l'écran "Mise à jour" ne s'affiche pas.
-            setRestartDetected(true)
-            setTimeout(() => { markOnline(); window.location.reload() }, 1200)
+            // Serveur redémarré pendant l'outage. Reload uniquement si le
+            // bundle client a changé (vrai déploiement frontend) — un pm2
+            // restart sans rebuild garde le même bundle et un reload ne
+            // ferait que fermer les modales ouvertes.
+            const changed = await bundleChanged()
+            if (changed) {
+              // setRestartDetected DOIT précéder markOnline — sinon offline=false
+              // démonte le composant et l'écran "Mise à jour" ne s'affiche pas.
+              setRestartDetected(true)
+              setTimeout(() => { markOnline(); window.location.reload() }, 1200)
+            } else {
+              acceptBootId(bootId)
+              markOnline()
+              sync()
+              reconnectRealtime()
+            }
           } else {
+            // Simple blip réseau (même serveur, même bundle) : masquer
+            // l'overlay en place — surtout PAS de window.location.reload(),
+            // qui fermerait les modales ouvertes et perdrait l'état de la
+            // page. On rattrape les changements manqués via un delta
+            // immédiat et on relance le WS sans attendre son backoff.
             markOnline()
-            window.location.reload()
+            sync()
+            reconnectRealtime()
           }
         })
         .catch(() => { /* still down — wait for next tick */ })
@@ -121,7 +185,7 @@ export default function ServerOfflineOverlay() {
 
   if (restartDetected) {
     return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/80 backdrop-blur-sm">
+      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/80">
         <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md mx-4 text-center">
           <div className="w-14 h-14 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-4">
             <RefreshCw size={26} className="text-emerald-600 animate-spin" style={{ animationDuration: '1.6s' }} />
@@ -140,7 +204,7 @@ export default function ServerOfflineOverlay() {
   const { icon: Icon, title, body } = describeReason(reason)
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/80 backdrop-blur-sm">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/80">
       <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md mx-4 text-center">
         <div className="w-14 h-14 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-4">
           <Icon size={26} className="text-slate-600" />

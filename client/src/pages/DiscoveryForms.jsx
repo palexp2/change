@@ -6,7 +6,6 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -107,7 +106,6 @@ export default function DiscoveryForms() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="discovery_forms" bulkDelete />
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouveau formulaire
             </button>
@@ -116,6 +114,7 @@ export default function DiscoveryForms() {
 
         <DataTable
           table="discovery_forms"
+          manageViews
           columns={COLUMNS}
           data={forms}
           loading={loading}

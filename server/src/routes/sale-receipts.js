@@ -10,12 +10,15 @@ import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { runExtractionAndUpdate } from '../services/saleReceiptExtraction.js'
 import { listTransactionTypes, suggestTransactionType } from '../services/fiscalStatus.js'
+import { findVendorProfile, serializeProfile, profileDefaultsForCurrency } from '../services/vendorProfiles.js'
 
 // Construit l'URL QB d'un reçu poussé. Les rangées antérieures au toggle
 // Purchase/Bill n'ont pas de quickbooks_type ; on les traite comme 'purchase'.
 function buildQbUrl(row) {
   if (!row.quickbooks_id) return null
-  const entity = row.quickbooks_type === 'bill' ? 'bill' : 'expense'
+  const entity = row.quickbooks_type === 'bill' ? 'bill'
+    : row.quickbooks_type === 'cc_credit' ? 'creditcardcredit'
+    : 'expense'
   return qbEntityUrl(entity, row.quickbooks_id)
 }
 
@@ -44,6 +47,23 @@ function serializeRow(row) {
     { file_type: row.file_type, original_name: row.original_name },
     ...extraPages.map(p => ({ file_type: p.file_type, original_name: p.original_name })),
   ]
+  // Profil fournisseur : défauts comptables par fournisseur (services/vendorProfiles.js).
+  // Rattaché à l'extraction (vendor_profile_id), sinon résolu à la volée par nom —
+  // et alors persisté (backfill) pour les prochains chargements. `vendor_defaults`
+  // expose les défauts résolus pour LA devise du reçu (vendor QB, comptes, code…).
+  let vendor_profile = null
+  try {
+    if (row.vendor_profile_id) {
+      const p = db.prepare('SELECT * FROM vendor_profiles WHERE id=? AND deleted_at IS NULL').get(row.vendor_profile_id)
+      vendor_profile = serializeProfile(p)
+    }
+    if (!vendor_profile && row.company) {
+      vendor_profile = findVendorProfile(row.company)
+      if (vendor_profile) {
+        db.prepare('UPDATE sale_receipts SET vendor_profile_id=? WHERE id=?').run(vendor_profile.id, row.id)
+      }
+    }
+  } catch (e) { console.error(`vendor profile lookup failed for id=${row.id}: ${e.message}`) }
   return {
     ...row,
     items,
@@ -51,6 +71,8 @@ function serializeRow(row) {
     page_count: pages.length,
     suggested_transaction_type,
     quickbooks_url: buildQbUrl(row),
+    vendor_profile,
+    vendor_defaults: vendor_profile ? profileDefaultsForCurrency(vendor_profile, row.currency) : null,
   }
 }
 
@@ -79,6 +101,7 @@ const FIELD_LABELS = {
   total: 'Total', items: 'Articles', memo: 'Mémo', general_description: 'Description générale',
   quickbooks_id: 'Lien QuickBooks', quickbooks_type: 'Type QuickBooks',
   transaction_type: 'Type de transaction', fiscal_force_reason: 'Justification écart fiscal',
+  due_date: 'Échéance', payment_terms_days: 'Termes de paiement (jours)',
 }
 
 const router = Router()
@@ -138,7 +161,7 @@ router.patch('/:id', (req, res) => {
   const row = db.prepare('SELECT id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
-  const editable = ['company', 'address', 'receipt_number', 'general_description', 'payment_method', 'receipt_date', 'currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'memo', 'quickbooks_id', 'quickbooks_type', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'transaction_type']
+  const editable = ['company', 'address', 'receipt_number', 'general_description', 'payment_method', 'receipt_date', 'currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'memo', 'quickbooks_id', 'quickbooks_type', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'transaction_type', 'due_date', 'payment_terms_days']
   const numericFields = new Set(['subtotal', 'tps', 'tvq', 'other_taxes', 'total'])
   // expense_account_id/payment_account_id/tax_code_id : modèle de comptabilisation
   // mémorisé par fournisseur — éditables à la main pour corriger un modèle erroné.
@@ -151,10 +174,16 @@ router.patch('/:id', (req, res) => {
       let v = req.body[key]
       if (textFields.has(key)) {
         v = v == null ? null : String(v).trim() || null
-      } else if (key === 'receipt_date') {
-        // Date métier date-only (YYYY-MM-DD) — pas de composante horaire/UTC.
+      } else if (key === 'receipt_date' || key === 'due_date') {
+        // Dates métier date-only (YYYY-MM-DD) — pas de composante horaire/UTC.
         v = v == null ? null : String(v).trim() || null
-        if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return res.status(400).json({ error: 'receipt_date: format YYYY-MM-DD attendu' })
+        if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return res.status(400).json({ error: `${key}: format YYYY-MM-DD attendu` })
+      } else if (key === 'payment_terms_days') {
+        if (v === '' || v == null) v = null
+        else {
+          v = Number(v)
+          if (!Number.isInteger(v) || v < 0 || v > 365) return res.status(400).json({ error: 'payment_terms_days: entier 0-365 attendu' })
+        }
       } else if (key === 'currency') {
         v = v == null ? null : String(v).trim().toUpperCase() || null
         if (v && !/^[A-Z]{3}$/.test(v)) return res.status(400).json({ error: 'currency: code ISO 3 lettres attendu' })
@@ -168,8 +197,8 @@ router.patch('/:id', (req, res) => {
         }
       } else if (key === 'quickbooks_id' || key === 'quickbooks_type') {
         v = v == null || v === '' ? null : String(v)
-        if (key === 'quickbooks_type' && v != null && !['purchase', 'bill'].includes(v)) {
-          return res.status(400).json({ error: 'quickbooks_type: purchase|bill|null attendu' })
+        if (key === 'quickbooks_type' && v != null && !['purchase', 'bill', 'cc_credit'].includes(v)) {
+          return res.status(400).json({ error: 'quickbooks_type: purchase|bill|cc_credit|null attendu' })
         }
       } else if (key === 'items') {
         if (!Array.isArray(v)) return res.status(400).json({ error: 'items: tableau attendu' })
@@ -203,6 +232,10 @@ router.patch('/:id', (req, res) => {
     }
   }
   if (!sets.length) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
+
+  // Nom de fournisseur modifié → le rattachement au profil est invalidé ; il sera
+  // re-résolu (et re-persisté) au prochain serializeRow avec le nouveau nom.
+  if ('company' in req.body) sets.push('vendor_profile_id=NULL')
 
   sets.push(`updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
   values.push(req.params.id)
@@ -373,7 +406,7 @@ router.post('/:id/push-to-qb', async (req, res) => {
   try {
     const { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate, taxCodeId, transactionType, forceReason } = req.body
     const qbId = await pushSaleReceiptToQB(req.params.id, { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate, taxCodeId, transactionType, forceReason })
-    logReceiptEvent(req.params.id, req.user?.id, 'published', `QuickBooks #${qbId} (${type === 'bill' ? 'facture' : 'dépense'})`)
+    logReceiptEvent(req.params.id, req.user?.id, 'published', `QuickBooks #${qbId} (${type === 'bill' ? 'facture' : type === 'cc_credit' ? 'crédit carte de crédit' : 'dépense'})`)
     // Trace distincte quand l'opérateur a forcé la publication malgré un écart de statut fiscal.
     if (forceReason && forceReason.trim()) {
       logReceiptEvent(req.params.id, req.user?.id, 'fiscal_override', `Écart fiscal forcé : ${forceReason.trim()}`)
@@ -382,7 +415,7 @@ router.post('/:id/push-to-qb', async (req, res) => {
     if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
     res.json({ ok: true, quickbooks_id: qbId })
   } catch (e) {
-    res.status(400).json({ error: e.message })
+    res.status(400).json({ error: e.message, field: e.field || null })
   }
 })
 
@@ -419,6 +452,29 @@ router.post('/:id/unarchive', (req, res) => {
   db.prepare("UPDATE sale_receipts SET archived_at=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
     .run(req.params.id)
   logReceiptEvent(req.params.id, req.user?.id, 'unarchived')
+  const updated = fetchSaleReceiptRow(req.params.id)
+  if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
+})
+
+// Lu / non lu — à la Gmail : read_at NULL = non lu (ligne en gras dans la liste).
+// Marqué lu à l'ouverture du reçu, remis non lu manuellement par l'utilisateur.
+router.post('/:id/read', (req, res) => {
+  const row = db.prepare('SELECT id, read_at FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  if (!row.read_at) {
+    db.prepare("UPDATE sale_receipts SET read_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?").run(req.params.id)
+    const updated = fetchSaleReceiptRow(req.params.id)
+    if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
+    return res.json(updated)
+  }
+  res.json(fetchSaleReceiptRow(req.params.id))
+})
+
+router.post('/:id/unread', (req, res) => {
+  const row = db.prepare('SELECT id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  db.prepare('UPDATE sale_receipts SET read_at=NULL WHERE id=?').run(req.params.id)
   const updated = fetchSaleReceiptRow(req.params.id)
   if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
   res.json(updated)

@@ -336,6 +336,31 @@ router.get('/factures', (req, res) => {
   const facturesRows = db.prepare(`
     SELECT f.*, co.name as company_name, p.name as project_name, o.order_number,
            'stripe' AS source,
+           -- Date de paiement effective : paid_at (posé par Stripe à
+           -- l'encaissement, couvre la majorité des factures) ; à défaut, dernier
+           -- encaissement manuel enregistré dans payments (chèque, virement…).
+           -- Un rollup custom sur payments seul rate les paiements Stripe, qui
+           -- ne créent pas de ligne payments 'in' → cette colonne les couvre.
+           COALESCE(
+             f.paid_at,
+             (SELECT MAX(pm2.received_at) FROM payments pm2
+               WHERE pm2.facture_id = f.id AND pm2.direction = 'in')
+           ) AS payment_date,
+           -- Référence de paiement effective. Comme payment_date, ce champ
+           -- couvre les encaissements Stripe qu'un rollup custom sur la table
+           -- payments rate (Stripe ne crée pas de ligne payments 'in') :
+           -- l'identifiant du paiement Stripe (payment intent, à défaut charge)
+           -- vit directement sur la facture. Priorité : payment intent Stripe →
+           -- charge Stripe → identifiants des encaissements manuels (payments
+           -- 'in') → facture Stripe (in_…) en dernier recours.
+           COALESCE(
+             f.paid_payment_intent,
+             f.paid_charge_id,
+             (SELECT group_concat(COALESCE(pm3.stripe_charge_id, pm3.stripe_balance_tx_id, pm3.id), ', ')
+                FROM payments pm3
+               WHERE pm3.facture_id = f.id AND pm3.direction = 'in'),
+             f.invoice_id
+           ) AS payment_reference,
            EXISTS (
              SELECT 1
              FROM shipments sh
@@ -383,6 +408,8 @@ router.get('/factures', (req, res) => {
            NULL AS generated_pdf_path, NULL AS shipping_country, NULL AS subscription_id, NULL AS airtable_pdf_path,
            co.name AS company_name, NULL AS project_name, NULL AS order_number,
            'pending' AS source,
+           NULL AS payment_date,
+           NULL AS payment_reference,
            0 AS refund_amount
     FROM pending_invoices pi
     LEFT JOIN companies co ON pi.company_id = co.id
@@ -1160,12 +1187,14 @@ router.get('/abonnements', (req, res) => {
 })
 
 router.get('/abonnements/:id', (req, res) => {
+  // Accepte l'id local OU le stripe_id (sub_xxx) : factures.subscription_id
+  // mélange les deux formats selon la source de sync.
   const row = db.prepare(`
     SELECT s.*, co.name as company_name
     FROM subscriptions s
     LEFT JOIN companies co ON s.company_id = co.id
-    WHERE s.id = ?
-  `).get(req.params.id)
+    WHERE s.id = ? OR s.stripe_id = ?
+  `).get(req.params.id, req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
 })

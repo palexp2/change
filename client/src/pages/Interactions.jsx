@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { Phone, Mail, MessageSquare, Users, FileText, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
@@ -7,7 +7,8 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
+import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
+import ContactDetail from './ContactDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDateTime } from '../lib/formatDate.js'
@@ -34,7 +35,7 @@ function fmtDuration(s) {
 
 // ─── Panneau de détail ────────────────────────────────────────────────────────
 
-function InteractionDetail({ item: stub, onNavigate, onDelete }) {
+function InteractionDetail({ item: stub, onNavigate, onPeekContact, onDelete }) {
   // The list endpoint omits heavy fields (body_text, transcript_formatted,
   // meeting_notes). Fetch the full record when the panel opens so the detail
   // view has everything it needs.
@@ -80,7 +81,7 @@ function InteractionDetail({ item: stub, onNavigate, onDelete }) {
             <div>
               <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-0.5">Contact</div>
               {item.contact_id
-                ? <button onClick={() => onNavigate(`/contacts/${item.contact_id}`)} className="text-blue-600 hover:underline text-left">{item.contact_name.trim()}</button>
+                ? <button onClick={() => onPeekContact(item)} className="text-blue-600 hover:underline text-left">{item.contact_name.trim()}</button>
                 : <div className="text-slate-800">{item.contact_name.trim()}</div>
               }
             </div>
@@ -244,6 +245,9 @@ export default function Interactions() {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null)
+  // Contact ouvert dans le side-peek (clic sur un nom de contact) :
+  // { id, name, company } — la fiche ContactDetail est montée en mode embedded.
+  const [peekContact, setPeekContact] = useState(null)
   const navigate = useNavigate()
   const confirm = useConfirm()
   const undoableDelete = useUndoableDelete()
@@ -290,7 +294,10 @@ export default function Interactions() {
         : <span className="text-slate-300">—</span> :
       meta.id === 'contact_name' ? row =>
         row.contact_id && row.contact_name?.trim()
-          ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.contact_name.trim()}</Link>
+          ? <button
+              onClick={e => { e.stopPropagation(); setPeekContact({ id: row.contact_id, name: row.contact_name.trim(), company: row.company_name || '' }) }}
+              className="text-brand-600 hover:underline text-left"
+            >{row.contact_name.trim()}</button>
           : <span className="text-slate-700">{row.contact_name?.trim() || <span className="text-slate-300">—</span>}</span> :
       meta.id === 'phone_number' ? row =>
         row.phone_number
@@ -314,11 +321,11 @@ export default function Interactions() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Interactions</h1>
           </div>
-          <TableConfigModal table="interactions" bulkDelete />
         </div>
 
         <DataTable
           table="interactions"
+          manageViews
           columns={COLUMNS}
           data={items}
           loading={loading}
@@ -342,8 +349,28 @@ export default function Interactions() {
         title={selected ? (TYPE_LABELS[selected.type] || selected.type) : ''}
         size="lg"
       >
-        {selected && <InteractionDetail item={selected} onNavigate={path => { setSelected(null); navigate(path) }} onDelete={handleDelete} />}
+        {selected && (
+          <InteractionDetail
+            item={selected}
+            onNavigate={path => { setSelected(null); navigate(path) }}
+            onPeekContact={item => setPeekContact({ id: item.contact_id, name: item.contact_name?.trim() || 'Contact', company: item.company_name || '' })}
+            onDelete={handleDelete}
+          />
+        )}
       </Modal>
+
+      {/* Side-peek de la fiche contact (clic sur un nom de contact, dans la
+          table ou le panneau de détail). Porté sur document.body → s'affiche
+          par-dessus la modale d'interaction sans la fermer. */}
+      <RecordPeekDrawer
+        open={!!peekContact}
+        onClose={() => setPeekContact(null)}
+        title={peekContact?.name || 'Contact'}
+        subtitle={peekContact?.company || ''}
+        to={peekContact ? `/contacts/${peekContact.id}` : undefined}
+      >
+        {peekContact && <ContactDetail recordId={peekContact.id} embedded />}
+      </RecordPeekDrawer>
     </Layout>
   )
 }

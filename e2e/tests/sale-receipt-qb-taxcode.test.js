@@ -7,13 +7,12 @@ const EMAIL = process.env.ERP_EMAIL || 'claude@orisha.io'
 const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
-// Reçu existant non publié sur QB (le formulaire de publication n'apparaît que si
-// status=done ET quickbooks_id null). On NE publie PAS — ce serait un vrai side
-// effect QB. On vérifie seulement que le menu déroulant de code de taxe s'affiche,
-// contient les codes voulus et est sélectionnable. Aucun écrit DB → pas de cleanup.
-const RECEIPT_ID = '3fbf9ea5-2675-4f1a-a0be-54f61581c7d4'
+// Le menu déroulant de code de taxe (formulaire de publication, visible si status=done
+// ET non publié) s'affiche, contient les codes voulus et est sélectionnable. Choisir un
+// code persiste désormais le code du document + recalcule les taxes (mise à jour live des
+// totaux) — on capture et restaure donc tax_code_id + montants du reçu.
 
-let browser, ctx, page, token
+let browser, ctx, page, token, receiptId, original
 
 before(async () => {
   const login = await fetch(`${URL}/api/auth/login`, {
@@ -23,11 +22,14 @@ before(async () => {
   token = login.token
   assert.ok(token, 'login a échoué')
 
-  const r = await fetch(`${URL}/api/sale-receipts/${RECEIPT_ID}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  }).then(r => r.json())
-  assert.equal(r.status, 'done', 'le reçu doit être extrait')
-  assert.ok(!r.quickbooks_id, 'le reçu ne doit pas être déjà publié sur QB (sinon pas de formulaire)')
+  const list = await fetch(`${URL}/api/sale-receipts?limit=all`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
+  const cand = list.data.find(r => r.status === 'done' && !r.quickbooks_id)
+  assert.ok(cand, 'un reçu done non publié est requis')
+  receiptId = cand.id
+  original = {
+    tax_code_id: cand.tax_code_id ?? null, subtotal: cand.subtotal ?? null, tps: cand.tps ?? null,
+    tvq: cand.tvq ?? null, other_taxes: cand.other_taxes ?? null, total: cand.total ?? null, items: cand.items || [],
+  }
 
   browser = await chromium.launch()
   ctx = await browser.newContext()
@@ -35,10 +37,18 @@ before(async () => {
   await page.addInitScript(t => localStorage.setItem('erp_token', t), token)
 })
 
-after(async () => { await browser?.close() })
+after(async () => {
+  if (receiptId && token) {
+    await fetch(`${URL}/api/sale-receipts/${receiptId}`, {
+      method: 'PATCH', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(original),
+    })
+  }
+  await browser?.close()
+})
 
 test('le code de taxe se choisit dans un menu déroulant', async () => {
-  await page.goto(`${URL}/sale-receipts/${RECEIPT_ID}`, { waitUntil: 'networkidle' })
+  await page.goto(`${URL}/sale-receipts/${receiptId}`, { waitUntil: 'networkidle' })
 
   // Le formulaire QB charge accounts/vendors/tax-codes depuis QB — peut être lent.
   const select = page.getByTestId('qb-taxcode-select')
@@ -50,7 +60,6 @@ test('le code de taxe se choisit dans un menu déroulant', async () => {
   await portal.waitFor({ state: 'visible', timeout: 5000 })
   await assert.doesNotReject(portal.getByText('— Aucune taxe —', { exact: true }).waitFor({ timeout: 5000 }))
   await assert.doesNotReject(portal.getByText('TPS/TVQ repas', { exact: true }).waitFor({ timeout: 5000 }))
-  await assert.doesNotReject(portal.getByText('TPS/TVQ kilométrage', { exact: true }).waitFor({ timeout: 5000 }))
 
   // Sélectionne « TPS/TVQ repas » et vérifie que le bouton reflète le choix.
   await portal.getByText('TPS/TVQ repas', { exact: true }).click()

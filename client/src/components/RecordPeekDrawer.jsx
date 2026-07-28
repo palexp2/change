@@ -1,13 +1,19 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { X, Maximize2 } from 'lucide-react'
+import api from '../lib/api.js'
 
 // Drawer latéral (side-peek à la Airtable) : ouvre l'aperçu/édition d'un
 // enregistrement par-dessus la liste, sans quitter le contexte de la table.
 // Le contenu (`children`) est typiquement une page *Detail.jsx rendue en mode
 // `embedded` — l'autosave, le realtime et le chargement restent gérés par la
 // fiche elle-même.
+//
+// Largeur redimensionnable : l'utilisateur tire la frontière gauche du panneau
+// pour l'élargir/rétrécir. La largeur choisie est persistée comme préférence
+// par utilisateur (PATCH /auth/preferences → peek_width) et réutilisée à la
+// prochaine ouverture, sur tous les side-peek de l'app.
 //
 // Props :
 //  - open        : bool — visibilité.
@@ -16,11 +22,56 @@ import { X, Maximize2 } from 'lucide-react'
 //  - subtitle    : string | undefined — sous-titre discret (entreprise, courriel…).
 //  - to          : string | undefined — route de la fiche complète ; affiche le
 //                  bouton « ouvrir en grand » qui navigue et ferme le drawer.
-//  - width       : number — largeur en px (défaut 560), bornée à la largeur écran.
+//  - width       : number — largeur par défaut en px (défaut 560), utilisée tant
+//                  que l'utilisateur n'a pas défini de préférence.
 //  - children    : contenu du corps (scrollable).
+
+const MIN_WIDTH = 360
+// Marge minimale (px) laissée visible à gauche du panneau pour garder l'accès à
+// la liste sous-jacente / l'overlay.
+const EDGE_MARGIN = 80
+
+// Cache module : la préférence de largeur est partagée par toutes les instances
+// et mémorisée entre ouvertures pour éviter de re-fetch et pour un rendu instant.
+const prefCache = { loaded: false, width: null }
+
+function maxWidth() {
+  return Math.max(MIN_WIDTH, window.innerWidth - EDGE_MARGIN)
+}
+
+function clampWidth(w) {
+  return Math.min(Math.max(w, MIN_WIDTH), maxWidth())
+}
+
 export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, width = 560, children }) {
   const navigate = useNavigate()
   const panelRef = useRef(null)
+  const [panelWidth, setPanelWidth] = useState(() => clampWidth(prefCache.width ?? width))
+  const [resizing, setResizing] = useState(false)
+
+  // Charge la préférence de largeur persistée (une seule fois par session).
+  useEffect(() => {
+    if (!open || prefCache.loaded) return
+    let cancelled = false
+    api.auth.getPreferences()
+      .then((d) => {
+        prefCache.loaded = true
+        const w = Number(d?.peek_width)
+        if (Number.isFinite(w) && w > 0) {
+          prefCache.width = w
+          if (!cancelled) setPanelWidth(clampWidth(w))
+        }
+      })
+      .catch(() => { prefCache.loaded = true })
+    return () => { cancelled = true }
+  }, [open])
+
+  // Applique la préférence en cache à chaque (ré)ouverture, et re-borne si la
+  // fenêtre a été redimensionnée entre-temps.
+  useEffect(() => {
+    if (!open) return
+    setPanelWidth(clampWidth(prefCache.width ?? width))
+  }, [open, width])
 
   // Verrou du scroll du body tant que le drawer est ouvert.
   useEffect(() => {
@@ -39,6 +90,38 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, w
     return () => document.removeEventListener('keydown', onKey)
   }, [open, onClose])
 
+  const persistWidth = useCallback((w) => {
+    const rounded = Math.round(w)
+    if (prefCache.width === rounded) return
+    prefCache.width = rounded
+    prefCache.loaded = true
+    api.auth.updatePreferences({ peek_width: rounded })
+      .catch((err) => console.error('[peekDrawer] échec sauvegarde largeur:', err))
+  }, [])
+
+  // Drag de la poignée gauche : la largeur = distance du bord droit de l'écran
+  // au curseur. Persistée au relâchement.
+  const startResize = useCallback((e) => {
+    e.preventDefault()
+    setResizing(true)
+    const onMove = (ev) => {
+      const clientX = ev.touches ? ev.touches[0].clientX : ev.clientX
+      setPanelWidth(clampWidth(window.innerWidth - clientX))
+    }
+    const onUp = () => {
+      setResizing(false)
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.removeEventListener('touchmove', onMove)
+      document.removeEventListener('touchend', onUp)
+      setPanelWidth((w) => { persistWidth(w); return w })
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    document.addEventListener('touchmove', onMove, { passive: false })
+    document.addEventListener('touchend', onUp)
+  }, [persistWidth])
+
   if (!open) return null
 
   function openFull() {
@@ -49,12 +132,25 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, w
 
   return createPortal(
     <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" data-testid="record-peek-drawer">
-      <div className="fixed inset-0 bg-black/40 backdrop-blur-sm animate-fade-in" onClick={onClose} />
+      <div className="fixed inset-0 bg-black/40 animate-fade-in" onClick={onClose} />
       <div
         ref={panelRef}
-        className="fixed top-0 right-0 bottom-0 bg-slate-50 shadow-2xl flex flex-col animate-slide-in-right"
-        style={{ width: `min(${width}px, 100vw)` }}
+        className={`fixed top-0 right-0 bottom-0 bg-slate-50 shadow-2xl flex flex-col ${resizing ? 'select-none' : 'animate-slide-in-right'}`}
+        style={{ width: `${panelWidth}px`, maxWidth: '100vw' }}
       >
+        {/* Poignée de redimensionnement sur la frontière gauche du panneau. */}
+        <div
+          onMouseDown={startResize}
+          onTouchStart={startResize}
+          data-testid="record-peek-resizer"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Redimensionner le panneau"
+          title="Glisser pour redimensionner"
+          className="group absolute top-0 left-0 bottom-0 w-2 -ml-1 cursor-col-resize z-10 flex items-center justify-center"
+        >
+          <div className={`h-full w-px transition-colors ${resizing ? 'bg-brand-500' : 'bg-transparent group-hover:bg-brand-400'}`} />
+        </div>
         <div className="flex items-center gap-1.5 px-4 py-3 border-b border-slate-200 bg-white flex-shrink-0">
           <div className="flex-1 min-w-0">
             <div className="text-sm font-semibold text-slate-900 truncate" data-testid="record-peek-title">{title}</div>
@@ -80,6 +176,9 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, w
             <X size={18} />
           </button>
         </div>
+        {/* Overlay transparent pendant le drag : capte les events pour que le
+            survol d'un iframe/embed ne coupe pas le mousemove. */}
+        {resizing && <div className="absolute inset-0 z-20 cursor-col-resize" />}
         <div className="overflow-y-auto flex-1" data-testid="record-peek-body">
           {children}
         </div>

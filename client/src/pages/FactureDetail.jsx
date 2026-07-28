@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, X, Download, ExternalLink, Send, Hourglass, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
+import { ArrowLeft, X, Download, ExternalLink, Send, Hourglass, ChevronLeft, ChevronRight, Trash2, PanelRight } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
@@ -25,6 +25,7 @@ import { DetailLoadError } from '../components/DetailLoadError.jsx'
 const FACTURE_RULE_FIELDS = [
   { id: 'company_id',          field: 'company_id',          label: 'Entreprise (id)' },
   { id: 'company_name',        field: 'company_name',        label: 'Entreprise (nom)' },
+  { id: 'customer_email',      field: 'customer_email',      label: 'Courriel client (Stripe)' },
   { id: 'project_id',          field: 'project_id',          label: 'Projet (id)' },
   { id: 'project_name',        field: 'project_name',        label: 'Projet (nom)' },
   { id: 'order_id',            field: 'order_id',            label: 'Commande (id)' },
@@ -126,8 +127,13 @@ function FactureNotesField({ value, onSave }) {
   )
 }
 
-export default function FactureDetail() {
-  const { id } = useParams()
+// `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
+// (RecordPeekDrawer) sans le chrome de page (Layout, bouton retour, nav
+// clavier prev/next). En mode route normale, l'`id` vient de l'URL.
+// `onClose` ferme le drawer (utilisé après suppression du record).
+export default function FactureDetail({ recordId, embedded = false, onClose }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
   const { user } = useAuth()
   const [facture, setFacture] = useState(null)
@@ -156,7 +162,8 @@ export default function FactureDetail() {
     setDeleteError(null)
     try {
       await api.factures.delete(id)
-      navigate('/factures')
+      if (embedded) { setDeleteModalOpen(false); onClose?.() }
+      else navigate('/factures')
     } catch (e) {
       setDeleteError(e?.message || 'Erreur lors de la suppression')
       setDeleting(false)
@@ -244,7 +251,7 @@ export default function FactureDetail() {
 
   useRealtimeChannel(id ? `facture:${id}` : null, (msg) => {
     if (msg.type === 'facture:updated') setFacture(f => f ? { ...f, ...msg.payload } : f)
-    else if (msg.type === 'facture:deleted') navigate('/factures')
+    else if (msg.type === 'facture:deleted') { if (embedded) onClose?.(); else navigate('/factures') }
   })
 
   useEffect(() => {
@@ -262,9 +269,10 @@ export default function FactureDetail() {
   const nextId = neighbors.next
 
   // Navigation clavier entre factures (j/↓ suivante · k/↑ précédente).
+  // Désactivée en mode embarqué : naviguer quitterait le drawer.
   useRecordKeyNav({
-    prev: prevId ? `/factures/${prevId}` : null,
-    next: nextId ? `/factures/${nextId}` : null,
+    prev: !embedded && prevId ? `/factures/${prevId}` : null,
+    next: !embedded && nextId ? `/factures/${nextId}` : null,
   })
 
   async function handleProjectChange(newProjectId) {
@@ -310,28 +318,30 @@ export default function FactureDetail() {
     }
   }
 
-  if (loading) {
-    return (
-      <Layout>
-        <Spinner center />
-      </Layout>
-    )
-  }
-  if (loadError && !facture) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
-  if (!facture) return <Layout><div className="p-6 text-slate-500">Facture introuvable.</div></Layout>
+  // En mode embarqué (side-peek), pas de Layout — le drawer fournit son propre
+  // chrome. Sinon, page pleine classique.
+  const shell = (content) => (embedded ? content : <Layout>{content}</Layout>)
 
-  return (
-    <Layout>
-      <FieldGuardProvider context="facture" record={facture} fields={FACTURE_RULE_FIELDS}>
-      <div className="p-6 max-w-4xl mx-auto">
+  if (loading) {
+    return shell(<Spinner center />)
+  }
+  if (loadError && !facture) return shell(<DetailLoadError message={loadError} onRetry={load} />)
+  if (!facture) return shell(<div className="p-6 text-slate-500">Facture introuvable.</div>)
+
+  return shell(
+    <FieldGuardProvider context="facture" record={facture} fields={FACTURE_RULE_FIELDS}>
+      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-4xl mx-auto'}>
         {/* Header */}
         <div className="flex items-start gap-4 mb-6">
-          <button onClick={() => navigate('/factures')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-            <ArrowLeft size={18} />
-          </button>
+          {!embedded && (
+            <button onClick={() => navigate('/factures')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div className="flex-1">
             <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-bold text-slate-900">{facture.document_number || `Facture #${id}`}</h1>
+              {/* En embarqué, le titre est déjà dans le header du drawer — on ne garde que les badges/actions. */}
+              {!embedded && <h1 className="text-2xl font-bold text-slate-900">{facture.document_number || `Facture #${id}`}</h1>}
               {facture.status && (
                 <Badge color={STATUS_COLORS[facture.status] || 'gray'} size="md">
                   {facture.status}
@@ -413,7 +423,19 @@ export default function FactureDetail() {
               </div>
             )}
           </div>
+          {!embedded && (
           <div className="flex items-center gap-1">
+            {/* Miroir du bouton « ouvrir en grand » du drawer : retourne à la
+                liste avec cette facture ouverte en panneau latéral. */}
+            <button
+              onClick={() => navigate('/factures', { state: { peekId: id } })}
+              className="p-1.5 text-slate-400 hover:text-brand-600 hover:bg-slate-100 rounded-lg"
+              title="Revenir à la liste avec cette facture en panneau latéral"
+              aria-label="Ouvrir en panneau latéral"
+              data-testid="facture-open-as-peek"
+            >
+              <PanelRight size={16} />
+            </button>
             <button
               onClick={() => prevId && navigate(`/factures/${prevId}`)}
               disabled={!prevId}
@@ -433,6 +455,7 @@ export default function FactureDetail() {
               <ChevronRight size={16} />
             </button>
           </div>
+          )}
         </div>
 
         <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
@@ -450,6 +473,15 @@ export default function FactureDetail() {
                 saving={saving}
                 onChange={handleCompanyChange}
               />
+              {/* Courriel du client Stripe (mapping configurable) — surtout utile
+                  quand la facture n'est rattachée à aucune entreprise ERP. */}
+              {facture.customer_email && (
+                <p className="text-xs text-slate-500 mt-1" data-testid="facture-customer-email">
+                  <a href={`mailto:${facture.customer_email}`} className="hover:underline hover:text-brand-600">
+                    {facture.customer_email}
+                  </a>
+                </p>
+              )}
             </div>
             <div>
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Projet</p>
@@ -839,7 +871,6 @@ export default function FactureDetail() {
           </div>
         </div>
       </Modal>
-      </FieldGuardProvider>
-    </Layout>
+    </FieldGuardProvider>
   )
 }

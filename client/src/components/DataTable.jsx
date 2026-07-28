@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ChevronRight, ChevronDown, Trash2, Plus, Edit2, Layers, Filter, ArrowUp, ArrowDown, EyeOff, RotateCcw, Inbox, Sigma, Check, HelpCircle } from 'lucide-react'
+import { ChevronRight, ChevronDown, Trash2, Plus, Edit2, Layers, Filter, ArrowUp, ArrowDown, EyeOff, RotateCcw, Inbox, Sigma, Check, HelpCircle, GripVertical } from 'lucide-react'
 import EmptyState from './EmptyState.jsx'
 import { useTableView } from '../lib/useTableView.js'
-import { ViewToolbar } from './ViewToolbar.jsx'
+import { applyFilter, applyFilterGroup, countFilterRules } from '../lib/tableFilters.js'
+import { ViewToolbar, ROW_COLOR_STYLES } from './ViewToolbar.jsx'
 import { defaultOpForType } from './FilterRow.jsx'
 import api from '../lib/api.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -12,7 +13,11 @@ import { getRecord } from '../lib/dataStore.js'
 import { getUser } from '../lib/auth.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
-import AirtableFieldEditModal from './AirtableFieldEditModal.jsx'
+import { CustomFieldModal } from './CustomFieldModal.jsx'
+import { useCustomFields } from '../lib/useCustomFields.js'
+import { customFieldToColumn, CUSTOM_FIELD_TABLES } from '../lib/customFieldDisplay.jsx'
+import { summarizeDependents } from '../lib/customFieldDeps.js'
+import { useFieldOverrides, applyFieldOverrides } from '../lib/fieldOverrides.jsx'
 import RecordPeekDrawer from './RecordPeekDrawer.jsx'
 import { useDecimalPrefs, formatDecimals } from '../lib/decimalPrefs.jsx'
 import { parseDurationToSeconds, formatDurationSeconds } from '../lib/duration.js'
@@ -413,9 +418,11 @@ export function DataTable({
   onBulkDelete,
   bulkActions = [],         // actions groupées custom : [{ key, label, icon, className, busyLabel, show?(rows), onClick(ids) }]
   bulkDeleteAlways = false, // affiche les cases de sélection sans dépendre du toggle admin de config
+  manageViews = false,      // affiche le crayon « Gérer les vues » (admin) en bout de barre des vues
   disabledColumns = null, // Map<column_name, { airtable_field_name }> | null
   onAddCustomField,       // () => void — affiche le bouton "+" en bout de header
   customFieldsByColumn,   // Map<column_name, { id, name, type, decimals }> — pour right-click menu
+  customFieldsLoaded,     // bool — les champs custom fournis ont-ils fini de charger ? (voir cfLoaded / auto-affichage). À fournir dès que customFieldsByColumn l'est.
   onEditCustomField,      // (field) => void
   onDeleteCustomField,    // (field) => void
   onFilteredDataChange,   // (rows) => void — notifie le parent à chaque update de la vue filtrée
@@ -426,6 +433,8 @@ export function DataTable({
   onToggleExpand,         // (item, willExpand) => void — notifié à chaque (dé)pliage, utile pour charger les détails à la demande.
   onCellEdit,             // (row, col, value) => void|Promise — si fourni, active le mode « tableur » : navigation cellule, sélection multi-cellules, copier/coller (Ctrl+C/V), remplissage vers le bas (Ctrl+D) et édition inline. Les colonnes éditables doivent porter `editable: true`. La navigation de ligne (`onRowClick`) passe alors au double-clic.
   peek,                   // { title, subtitle?, to?, width?, render } — si fourni, un clic sur une ligne ouvre un drawer latéral (side-peek à la Airtable) au lieu de naviguer. Chaque champ est soit une valeur, soit une fonction (item) => valeur ; `render(item, { close })` retourne le corps du drawer (typiquement une page *Detail.jsx en mode `embedded`). `to(item)` active le bouton « ouvrir en grand ». Prend le pas sur `onRowClick` pour le clic simple.
+  onRowReorder,           // (orderedIds) => void — active une poignée de drag & drop en tête de chaque ligne pour réordonner manuellement (ordre custom persisté par le parent, ex. sort_order). Actif seulement quand l'ordre affiché == l'ordre réel des données : sans tri, groupage, recherche ni filtre.
+  rowClassName,           // (item) => string — classes CSS additionnelles par ligne (ex. font-semibold pour un reçu non lu).
 }) {
   const [visibleCols, setVisibleCols] = useState([])
   // groupBy : tableau de field names. Hérité du legacy : accepte aussi null /
@@ -439,6 +448,10 @@ export function DataTable({
     return Array.isArray(initialGroupOrder) ? initialGroupOrder : [initialGroupOrder]
   })
   const [collapsedGroups, setCollapsedGroups] = useState(new Set())
+  // Formatage conditionnel par vue : [{ id, color, filters }] — première règle
+  // qui matche colore la ligne. Chargé depuis la pill active, persisté par
+  // l'autosave de ViewToolbar (color_rules).
+  const [colorRules, setColorRules] = useState([])
   const [colWidths, setColWidths] = useState({})
   // Barre de totaux en pied : { [colId]: 'sum'|'avg'|'count'|'empty'|'min'|'max' }
   const [footerAggs, setFooterAggs] = useState({})
@@ -446,12 +459,25 @@ export function DataTable({
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const [deleting, setDeleting] = useState(false)
   const [busyAction, setBusyAction] = useState(null) // key de l'action groupée custom en cours
-  const [colMenu, setColMenu] = useState(null) // { x, y, source: 'custom'|'airtable', field } pour right-click menu
+  const [colMenu, setColMenu] = useState(null) // { x, y, source: 'native'|'airtable', field } pour right-click menu
   const [expandedKeys, setExpandedKeys] = useState(() => new Set()) // rowKey des lignes dépliées (si renderExpanded)
   const expandable = typeof renderExpanded === 'function'
-  const [airtableEditField, setAirtableEditField] = useState(null) // field passé à AirtableFieldEditModal
   const [peekItem, setPeekItem] = useState(null) // ligne ouverte dans le side-peek (si `peek` fourni)
   const peekEnabled = peek && typeof peek.render === 'function'
+  // Ouverture programmée du side-peek : `peek.openId` demande l'ouverture du
+  // drawer sur la ligne correspondante dès qu'elle apparaît dans `data` (ex.:
+  // bouton « revenir au panneau latéral » d'une fiche plein écran, qui navigue
+  // vers la liste avec l'id en state). `peek.onOpenConsumed` est appelé une
+  // fois la demande honorée pour que le parent l'efface (sinon rouvrirait).
+  const peekOpenId = peekEnabled ? peek.openId : undefined
+  const peekOnOpenConsumed = peekEnabled ? peek.onOpenConsumed : undefined
+  useEffect(() => {
+    if (peekOpenId == null) return
+    const item = (data || []).find(d => String(d?.[rowKey]) === String(peekOpenId))
+    if (!item) return
+    setPeekItem(item)
+    peekOnOpenConsumed?.()
+  }, [peekOpenId, data, rowKey, peekOnOpenConsumed])
   // Résout un champ de config `peek` qui peut être une valeur littérale ou une
   // fonction (item) => valeur.
   const resolvePeek = useCallback((key, item) => {
@@ -479,8 +505,90 @@ export function DataTable({
   const { addToast } = useToast()
   const { getDecimals } = useDecimalPrefs()
 
-  const view = useTableView({ table, columns, data, searchFields, forceAllView })
-  const { filteredData, configReady, allColumns, bulkDeleteEnabled, airtableFieldsByColumn, search, setSearch, filters, setFilters } = view
+  // ── Champs custom auto-gérés ──────────────────────────────────────────────
+  // Quand la table supporte les champs custom (miroir client de ALLOWED_TABLES
+  // serveur) et que la page n'a pas branché son propre câblage
+  // (onAddCustomField), DataTable devient autonome : bouton « + » en bout
+  // d'en-tête, CustomFieldModal interne, colonnes custom fusionnées et menu
+  // contextuel Modifier / Supprimer. Les pages déjà câblées (Factures,
+  // Pipeline) gardent leur comportement — leurs props ont priorité.
+  const selfManagedCF = !onAddCustomField && CUSTOM_FIELD_TABLES.has(table)
+  const { fields: ownCustomFields, loaded: ownCfLoaded, reload: reloadOwnCustomFields } = useCustomFields(selfManagedCF ? table : null)
+  const [ownCfModal, setOwnCfModal] = useState(null) // { editing: field|null }
+  const columnsWithOwnCf = useMemo(() => {
+    if (!selfManagedCF || ownCustomFields.length === 0) return columns
+    // Une colonne fournie par la page (via `columns`) portant le même id/field
+    // qu'un champ custom auto-géré REMPLACE ce dernier : la page peut ainsi
+    // donner un render sur-mesure à un champ custom (ex. le champ Airtable
+    // « # de série » d'order_items, rendu en liens vers les fiches série plutôt
+    // qu'en recordID bruts). Sans cet override, on aurait une colonne dupliquée.
+    const pageColIds = new Set(columns.map(c => c.id ?? c.field))
+    // editable: false — l'édition inline exige un onCellEdit page + une route
+    // PATCH qui whiteliste les colonnes cf_ (branché seulement sur projects).
+    const autoCfCols = ownCustomFields
+      .filter(f => !pageColIds.has(f.column_name))
+      .map(f => ({ ...customFieldToColumn(f), editable: false }))
+    return [...columns, ...autoCfCols]
+  }, [selfManagedCF, columns, ownCustomFields])
+  const ownCfByColumn = useMemo(() => {
+    if (!selfManagedCF) return null
+    const m = new Map()
+    for (const f of ownCustomFields) m.set(f.column_name, f)
+    return m
+  }, [selfManagedCF, ownCustomFields])
+  // Versions effectives (prop page > interne auto-géré) utilisées partout plus bas.
+  const cfByColumn = customFieldsByColumn || ownCfByColumn
+  // Les champs custom ont-ils fini de charger ? Load-bearing pour l'auto-affichage
+  // ci-dessous : quand la page fournit customFieldsByColumn (Map dérivée d'un
+  // useCustomFields asynchrone), elle doit AUSSI fournir customFieldsLoaded, sinon
+  // la Map vide initiale serait prise pour la baseline et ré-afficherait tous les
+  // champs masqués au (re)chargement. Chemin auto-géré : on connaît le flag en interne.
+  const cfLoaded = customFieldsByColumn
+    ? customFieldsLoaded === true
+    : (selfManagedCF ? ownCfLoaded : true)
+  // useMemo : identité stable exigée par le memo de gridTemplate plus bas.
+  const addCustomField = useMemo(
+    () => onAddCustomField || (selfManagedCF ? () => setOwnCfModal({ editing: null }) : null),
+    [onAddCustomField, selfManagedCF]
+  )
+  const editCustomField = onEditCustomField || (selfManagedCF ? (f) => setOwnCfModal({ editing: f }) : null)
+  const deleteCustomField = onDeleteCustomField || (!selfManagedCF ? null : async (field) => {
+    // Rapport d'usage : liste les dépendances (champs calculés, automations,
+    // vues, règles de visibilité) que la suppression va affecter, avant de les
+    // casser en silence (#ERROR). Même logique que Factures/Pipeline.
+    let dependents = []
+    try { dependents = (await api.customFields.dependents(field.id))?.dependents || [] } catch {}
+    const depMsg = summarizeDependents(dependents)
+    if (!(await confirm({
+      title: 'Supprimer le champ',
+      message: `Supprimer le champ "${field.name}" ? Restaurable depuis la corbeille.${depMsg}`,
+      confirmLabel: dependents.length ? 'Supprimer quand même' : 'Supprimer',
+    }))) return
+    try {
+      await api.customFields.delete(field.id)
+      addToast({ message: 'Champ supprimé', type: 'success' })
+      await reloadOwnCustomFields()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  })
+
+  // ── Overrides de champs natifs (renommage / changement de type) ──────────
+  // Les colonnes définies en dur dans tableDefs.js deviennent éditables via le
+  // menu contextuel d'en-tête (« Modifier le champ ») → CustomFieldModal (mode natif).
+  // L'override (persisté serveur, table field_overrides) remplace le label
+  // et/ou le type d'affichage/tri/filtre — les colonnes SQL et syncs ne
+  // bougent pas. Appliqué AVANT useTableView pour que les panneaux Champs /
+  // Filtres / Grouper voient les libellés et types overridés.
+  const { overrides: fieldOverrides, reload: reloadFieldOverrides } = useFieldOverrides(table)
+  const [fieldOverrideModal, setFieldOverrideModal] = useState(null) // { col } | null — col = définition d'origine
+  const columnsWithOverrides = useMemo(
+    () => applyFieldOverrides(columnsWithOwnCf, fieldOverrides),
+    [columnsWithOwnCf, fieldOverrides]
+  )
+
+  const view = useTableView({ table, columns: columnsWithOverrides, data, searchFields, forceAllView })
+  const { filteredData, configReady, allColumns, bulkDeleteEnabled, search, setSearch, filters, setFilters } = view
 
   useEffect(() => {
     if (typeof onFilteredDataChange === 'function') onFilteredDataChange(filteredData)
@@ -488,7 +596,7 @@ export function DataTable({
   const hasBulkActions = Array.isArray(bulkActions) && bulkActions.length > 0
   const selectionActive = (bulkDeleteEnabled || bulkDeleteAlways) && (typeof onBulkDelete === 'function' || hasBulkActions)
   // Use allColumns (hardcoded + dynamic Airtable fields) everywhere
-  const mergedColumns = allColumns || columns
+  const mergedColumns = allColumns || columnsWithOverrides
   // Helper passé aux consumers pour savoir si une colonne est désactivée
   // (import Airtable coupé via la modale de sync). Comparaison sur field OU id.
   const isDisabled = useCallback((c) => {
@@ -628,6 +736,8 @@ export function DataTable({
   useEffect(() => {
     if (!view.configReady) return
     setVisibleCols(view.viewVisibleColumns)
+    const rules = view.activeView?.color_rules
+    setColorRules(Array.isArray(rules) ? rules : [])
     if (!forceAllView) {
       const newGroupBy = normalizeGroupBy(view.viewGroupBy)
       setGroupByRaw(newGroupBy)
@@ -666,10 +776,19 @@ export function DataTable({
   // clés de customFieldsByColumn entre renders ; toute nouvelle clé est
   // ajoutée à visibleCols (l'autosave de ViewToolbar persiste). Skippé au
   // premier render pour ne pas clobber la liste initiale chargée du serveur.
+  //
+  // Garde `cfLoaded` : tant que les champs custom ne sont pas chargés, cfByColumn
+  // est une Map vide TRANSITOIRE. Sans cette garde, cette Map vide était capturée
+  // comme baseline puis, à l'arrivée des champs, TOUTES les clés paraissaient
+  // « nouvelles » et étaient ré-ajoutées à visibleCols — écrasant silencieusement
+  // les colonnes que l'utilisateur venait de masquer (bug : masquage non persistant
+  // au rechargement). En attendant le chargement, la baseline est établie à partir
+  // de l'ensemble RÉEL des champs, donc seule une création ultérieure déclenche l'ajout.
   useEffect(() => {
     if (!view.configReady) return
-    if (!customFieldsByColumn) return
-    const currentKeys = new Set(customFieldsByColumn.keys())
+    if (!cfByColumn) return
+    if (!cfLoaded) return
+    const currentKeys = new Set(cfByColumn.keys())
     const prev = prevCustomFieldKeys.current
     if (prev) {
       const newOnes = [...currentKeys].filter(k => !prev.has(k))
@@ -682,7 +801,7 @@ export function DataTable({
       }
     }
     prevCustomFieldKeys.current = currentKeys
-  }, [customFieldsByColumn, view.configReady])
+  }, [cfByColumn, cfLoaded, view.configReady])
 
   const visibleColumns = useMemo(
     () => visibleCols
@@ -732,15 +851,37 @@ export function DataTable({
     setDragOverSide(null)
   }
 
+  // ── Réordonnancement manuel de lignes (drag & drop, opt-in) ───────────────
+  // Actif seulement quand l'ordre affiché correspond à l'ordre réel des données
+  // (aucun tri, groupage, recherche ni filtre) — sinon la position cible serait
+  // ambiguë pour les lignes masquées/re-triées.
+  const reorderFiltersActive = Array.isArray(filters) ? filters.length > 0 : !!(filters?.rules?.length)
+  const reorderActive = typeof onRowReorder === 'function' && groupBy.length === 0
+    && (view.sorts?.length || 0) === 0 && !search && !reorderFiltersActive
+  const [dragRowId, setDragRowId] = useState(null)
+  const [dragOverRowId, setDragOverRowId] = useState(null)
+  function handleRowDrop(targetId) {
+    const src = dragRowId
+    setDragRowId(null); setDragOverRowId(null)
+    if (!src || src === targetId) return
+    const ids = filteredData.map(r => r.id)
+    const from = ids.indexOf(src), to = ids.indexOf(targetId)
+    if (from === -1 || to === -1) return
+    ids.splice(from, 1); ids.splice(to, 0, src)
+    onRowReorder(ids)
+  }
+
   const gridTemplate = useMemo(() => {
     const cols = visibleColumns.map(c => colWidths[c.id] ? `${colWidths[c.id]}px` : 'minmax(120px, 1fr)').join(' ')
-    // Si on a un onAddCustomField, on réserve une colonne `auto` à la fin pour
-    // le bouton "+" — les rows de données auront simplement une cellule vide.
-    const withAdd = onAddCustomField ? `${cols} 36px` : cols
+    // Si on a un bouton d'ajout de champ, on réserve une colonne `auto` à la
+    // fin pour le "+" — les rows de données auront simplement une cellule vide.
+    const withAdd = addCustomField ? `${cols} 36px` : cols
     // Colonne chevron d'expansion en tête (après la case de sélection si présente).
     const withExpand = expandable ? `34px ${withAdd}` : withAdd
-    return selectionActive ? `40px ${withExpand}` : withExpand
-  }, [visibleColumns, colWidths, selectionActive, onAddCustomField, expandable])
+    const withSelect = selectionActive ? `40px ${withExpand}` : withExpand
+    // Poignée de réordonnancement tout à gauche.
+    return reorderActive ? `28px ${withSelect}` : withSelect
+  }, [visibleColumns, colWidths, selectionActive, addCustomField, expandable, reorderActive])
 
   // Reset selection when data changes (e.g., after delete, filter)
   const visibleIds = useMemo(() => filteredData.map(r => r.id).filter(Boolean), [filteredData])
@@ -899,6 +1040,30 @@ export function DataTable({
     }
     return m
   }, [hasFooter, visibleColumns, footerAggs, filteredData])
+
+  // Formatage conditionnel : résout la couleur de chaque ligne visible. Les
+  // règles sont évaluées dans l'ordre — la première qui matche gagne (sémantique
+  // Airtable). Réutilise le moteur de filtres des vues (applyFilterGroup), donc
+  // mêmes opérateurs, y compris is_me/is_not_me via le contexte utilisateur.
+  const currentUserName = useMemo(() => getUser()?.name || null, [])
+  const rowColorById = useMemo(() => {
+    const m = new Map()
+    if (!Array.isArray(colorRules) || colorRules.length === 0) return m
+    const active = colorRules.filter(r => r && ROW_COLOR_STYLES[r.color] && countFilterRules(r.filters) > 0)
+    if (active.length === 0) return m
+    const ctx = { userName: currentUserName }
+    for (const row of filteredData) {
+      if (row?.id == null) continue
+      for (const rule of active) {
+        const f = rule.filters
+        const match = Array.isArray(f)
+          ? f.every(x => applyFilter(row, x, ctx))
+          : applyFilterGroup(row, f, ctx)
+        if (match) { m.set(row.id, rule.color); break }
+      }
+    }
+    return m
+  }, [filteredData, colorRules, currentUserName])
 
   const virtualItems = useMemo(() => {
     if (!groupBy.length) return filteredData
@@ -1268,9 +1433,12 @@ export function DataTable({
         visibleCols={visibleCols} setVisibleCols={setVisibleCols}
         groupBy={groupBy} setGroupBy={setGroupBy}
         groupOrder={groupOrder} setGroupOrder={setGroupOrder}
+        colorRules={colorRules} setColorRules={setColorRules}
         onCollapseAll={collapseAll} onExpandAll={expandAll}
         data={data}
         disabledColumns={disabledColumns}
+        manageViews={manageViews}
+        manageViewsBulkDelete={typeof onBulkDelete === 'function' && !bulkDeleteAlways}
       />
 
       {selectionActive && selectedIds.size > 0 && (
@@ -1336,6 +1504,7 @@ export function DataTable({
             className="group/header grid border-b border-slate-200 bg-slate-50 sticky top-0 z-10"
             style={{ gridTemplateColumns: gridTemplate }}
           >
+            {reorderActive && <div aria-hidden />}
             {selectionActive && (
               <div className="flex items-center justify-center px-2">
                 <input
@@ -1350,9 +1519,7 @@ export function DataTable({
             )}
             {expandable && <div aria-hidden />}
             {visibleColumns.map(col => {
-              const customField = customFieldsByColumn?.get(col.field) || customFieldsByColumn?.get(col.id)
-              const airtableField = !customField && (airtableFieldsByColumn?.get(col.field) || airtableFieldsByColumn?.get(col.id))
-              const editable = customField || airtableField
+              const customField = cfByColumn?.get(col.field) || cfByColumn?.get(col.id)
               return (
                 <div
                   key={col.id}
@@ -1368,12 +1535,11 @@ export function DataTable({
                       x: e.clientX,
                       y: e.clientY,
                       col,
-                      source: customField ? 'custom' : (airtableField ? 'airtable' : null),
-                      field: editable || null,
+                      source: customField ? (customField.source || 'native') : null,
+                      field: customField || null,
                     })
                   }}
                   className="relative px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide leading-tight break-words select-none cursor-grab active:cursor-grabbing"
-                  title="Clic-droit pour grouper, filtrer, trier ou cacher"
                 >
                   <span className="inline-flex items-baseline gap-1">
                     {col.label}
@@ -1388,11 +1554,11 @@ export function DataTable({
                 </div>
               )
             })}
-            {onAddCustomField && (
+            {addCustomField && (
               <div className="flex items-center justify-center">
                 <button
                   type="button"
-                  onClick={onAddCustomField}
+                  onClick={addCustomField}
                   className="p-1 rounded text-slate-400 hover:text-brand-600 hover:bg-brand-50 transition-colors"
                   title="Ajouter un champ"
                   aria-label="Ajouter un champ"
@@ -1458,37 +1624,44 @@ export function DataTable({
                   >
                     <EyeOff size={13} /> Cacher cette colonne
                   </button>
+                  {/* Champ natif (défini dans tableDefs, pas un champ custom/Airtable) :
+                      renommage + changement de type via la modale commune
+                      (CustomFieldModal en mode natif). */}
+                  {!colMenu.source && table && columnsWithOwnCf.some(x => x.id === c.id) && (
+                    <>
+                      <div className="my-1 border-t border-slate-100" />
+                      <button
+                        onClick={() => {
+                          // La modale attend la définition D'ORIGINE (pré-override)
+                          // pour afficher « nom/type d'origine » et détecter un reset.
+                          const orig = columnsWithOwnCf.find(x => x.id === c.id) || c
+                          setFieldOverrideModal({ col: orig })
+                          setColMenu(null)
+                        }}
+                        className={itemCls}
+                        data-testid="colmenu-edit-native-field"
+                      >
+                        <Edit2 size={13} /> Modifier le champ
+                      </button>
+                    </>
+                  )}
                   {colMenu.source && (
                     <>
                       <div className="my-1 border-t border-slate-100" />
                       <button
                         onClick={() => {
-                          if (colMenu.source === 'airtable') setAirtableEditField(colMenu.field)
-                          else onEditCustomField?.(colMenu.field)
+                          editCustomField?.(colMenu.field)
                           setColMenu(null)
                         }}
                         className={itemCls}
                       >
-                        <Edit2 size={13} /> {colMenu.source === 'airtable' ? 'Modifier le type' : 'Modifier le champ'}
+                        <Edit2 size={13} /> Modifier le champ
                       </button>
                       <button
-                        onClick={async () => {
+                        onClick={() => {
                           const f = colMenu.field
-                          const src = colMenu.source
                           setColMenu(null)
-                          if (src === 'airtable') {
-                            const ok = await confirm(`Supprimer la colonne "${f.label}" ? Cette action est irréversible — la colonne et toutes ses données seront perdues.`)
-                            if (!ok) return
-                            try {
-                              await api.airtableFields.delete(f.id)
-                              addToast({ message: 'Colonne supprimée', type: 'success' })
-                              window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
-                            } catch (e) {
-                              addToast({ message: e.message || 'Erreur', type: 'error' })
-                            }
-                          } else {
-                            onDeleteCustomField?.(f)
-                          }
+                          deleteCustomField?.(f)
                         }}
                         className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 text-left"
                       >
@@ -1501,16 +1674,24 @@ export function DataTable({
             )
           })()}
 
-          <AirtableFieldEditModal
-            isOpen={!!airtableEditField}
-            field={airtableEditField}
-            onClose={() => setAirtableEditField(null)}
-            onSaved={() => {
-              // Autosave : on rafraîchit les vues à chaque sauvegarde mais on
-              // laisse la modale ouverte — elle se ferme via « Fermer » (onClose).
-              window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
-            }}
+          {/* Modale UNIQUE de modification de champ — commune aux champs custom
+              auto-gérés (création/édition) et aux champs natifs (renommage /
+              changement de type via field_overrides). Les valeurs calculées
+              (formule/lookup) d'un nouveau champ apparaissent au prochain
+              rechargement des données de la page ; un champ data neuf est vide
+              de toute façon. */}
+          <CustomFieldModal
+            isOpen={!!ownCfModal || !!fieldOverrideModal}
+            onClose={() => { setOwnCfModal(null); setFieldOverrideModal(null) }}
+            erpTable={table}
+            editing={ownCfModal?.editing || null}
+            native={fieldOverrideModal?.col
+              ? { column: fieldOverrideModal.col, override: fieldOverrides.get(fieldOverrideModal.col.id) || null }
+              : null}
+            onSaved={() => { fieldOverrideModal ? reloadFieldOverrides() : reloadOwnCustomFields() }}
+            onDeleted={() => { reloadOwnCustomFields() }}
           />
+
 
           {loading ? (
             <div className="flex items-center justify-center text-slate-400 text-sm py-12">
@@ -1600,6 +1781,7 @@ export function DataTable({
                     className={`${groupBg} border-b border-slate-200 cursor-pointer transition-colors select-none`}
                     onClick={() => toggleGroup(item.__pathKey)}
                   >
+                    {reorderActive && <div />}
                     {selectionActive && <div />}
                     {expandable && <div />}
                     <div className="flex items-center gap-2 px-3" style={{ paddingLeft: `${12 + lvl * 16}px` }}>
@@ -1627,11 +1809,14 @@ export function DataTable({
               // Pendant le flash, on affiche les nouvelles valeurs venues du
               // payload realtime (le store, lui, ne rattrape qu'au prochain poll).
               const renderItem = rowFlash ? { ...item, ...rowFlash.values } : item
+              const rowColor = rowColorById.size > 0 ? rowColorById.get(item.id) : undefined
+              const rowColorStyle = rowColor ? ROW_COLOR_STYLES[rowColor] : null
 
               return (
                 <div
                   key={vItem.key}
                   data-row-id={item.id}
+                  data-row-color={rowColor}
                   style={{
                     position: 'absolute',
                     top: vItem.start,
@@ -1641,11 +1826,31 @@ export function DataTable({
                     display: 'grid',
                     gridTemplateColumns: gridTemplate,
                     alignItems: 'center',
+                    ...(rowColorStyle ? { background: rowColorStyle.bg, boxShadow: `inset 3px 0 0 0 ${rowColorStyle.bar}` } : {}),
                   }}
                   onClick={() => { if (gridMode) return; if (peekEnabled) setPeekItem(item); else if (onRowClick) onRowClick(item); else if (expandable) toggleExpand(item) }}
                   onDoubleClick={gridMode ? (peekEnabled ? () => setPeekItem(item) : (onRowClick ? () => onRowClick(item) : undefined)) : undefined}
-                  className={`border-b border-slate-100 hover:bg-slate-50${gridMode ? '' : ' cursor-pointer'}`}
+                  onDragOver={reorderActive && dragRowId ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOverRowId !== item.id) setDragOverRowId(item.id) } : undefined}
+                  onDrop={reorderActive && dragRowId ? (e) => { e.preventDefault(); handleRowDrop(item.id) } : undefined}
+                  className={`border-b border-slate-100 hover:bg-slate-50${gridMode ? '' : ' cursor-pointer'}${reorderActive && dragRowId === item.id ? ' opacity-40' : ''}${reorderActive && dragOverRowId === item.id && dragRowId && dragRowId !== item.id ? ' bg-brand-50 border-t-2 border-t-brand-400' : ''}${rowClassName ? ` ${rowClassName(item) || ''}` : ''}`}
                 >
+                  {reorderActive && (
+                    <div
+                      draggable
+                      data-testid={`datatable-row-drag-${item.id}`}
+                      onDragStart={e => {
+                        setDragRowId(item.id)
+                        e.dataTransfer.effectAllowed = 'move'
+                        try { e.dataTransfer.setData('text/plain', String(item.id)) } catch {}
+                      }}
+                      onDragEnd={() => { setDragRowId(null); setDragOverRowId(null) }}
+                      onMouseDown={e => e.stopPropagation()}
+                      onClick={e => e.stopPropagation()}
+                      className="flex items-center justify-center h-full text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing"
+                    >
+                      <GripVertical size={13} />
+                    </div>
+                  )}
                   {selectionActive && (
                     <div className="flex items-center justify-center px-2" onClick={e => e.stopPropagation()}>
                       <input
@@ -1767,6 +1972,7 @@ export function DataTable({
               className="grid border-t border-slate-200 bg-slate-50/95 backdrop-blur-sm sticky bottom-0 z-10"
               style={{ gridTemplateColumns: gridTemplate }}
             >
+              {reorderActive && <div aria-hidden />}
               {selectionActive && <div aria-hidden />}
               {expandable && <div aria-hidden />}
               {visibleColumns.map(col => {
@@ -1794,7 +2000,7 @@ export function DataTable({
                   </div>
                 )
               })}
-              {onAddCustomField && <div aria-hidden />}
+              {addCustomField && <div aria-hidden />}
             </div>
           )}
 

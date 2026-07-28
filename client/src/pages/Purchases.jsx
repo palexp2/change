@@ -5,7 +5,6 @@ import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 
@@ -75,11 +74,11 @@ export default function Purchases() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Achats</h1>
           </div>
-          <TableConfigModal table="purchases" />
         </div>
 
         <DataTable
           table="purchases"
+          manageViews
           columns={COLUMNS}
           data={purchases}
           loading={loading}

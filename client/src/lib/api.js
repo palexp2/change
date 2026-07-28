@@ -105,6 +105,9 @@ function request(method, path, body) {
 const get = (path) => request('GET', path)
 // Variante annulable — bypasse le cache (un fetch annulé ne doit pas y rester piégé).
 const getAbortable = (path, signal) => rawRequest('GET', path, undefined, signal)
+// GET sans cache — pour les endpoints de statut pollés (sync/batch en cours) :
+// le cache prefetch (TTL 30 s) rendrait le poll aveugle aux transitions.
+const getFresh = (path) => rawRequest('GET', path)
 const post = (path, body) => request('POST', path, body)
 const put = (path, body) => request('PUT', path, body)
 const patch = (path, body) => request('PATCH', path, body)
@@ -257,6 +260,7 @@ export const api = {
     topProducts: (params = {}) => get('/dashboard/top-products?' + new URLSearchParams(params)),
     balanceSheet: (params = {}) => get('/dashboard/balance-sheet?' + new URLSearchParams(params)),
     bankAccounts: (params = {}) => get('/dashboard/bank-accounts?' + new URLSearchParams(params)),
+    deferredRevenue: () => get('/dashboard/deferred-revenue'),
     agingReceivables: () => get('/dashboard/aging-receivables'),
   },
 
@@ -297,6 +301,14 @@ export const api = {
     delete: (id) => del(`/field-visibility-rules/${id}`),
   },
 
+  // Overrides de champs natifs (renommage / type d'affichage) par table —
+  // menu contextuel « Modifier le champ » des colonnes non-custom de DataTable.
+  fieldOverrides: {
+    list: (table) => get(`/field-overrides/${encodeURIComponent(table)}`),
+    save: (table, fieldId, data) => put(`/field-overrides/${encodeURIComponent(table)}/${encodeURIComponent(fieldId)}`, data),
+    reset: (table, fieldId) => del(`/field-overrides/${encodeURIComponent(table)}/${encodeURIComponent(fieldId)}`),
+  },
+
   // Interactions
   interactions: {
     list: (params = {}, signal) => signal
@@ -327,7 +339,7 @@ export const api = {
     syncDrive: () => post('/connectors/sync/drive'),
     fixFtpTimestamps: () => post('/connectors/fix-ftp-timestamps'),
     deduplicateFtpCalls: () => post('/connectors/deduplicate-ftp-calls'),
-    syncStatus: () => get('/connectors/sync/status'),
+    syncStatus: () => getFresh('/connectors/sync/status'),
     importQB: () => post('/connectors/sync/qb-import'),
     ftpInfo: () => get('/connectors/ftp'),
     ftpAddPhone: (data) => post('/connectors/ftp/phones', data),
@@ -413,6 +425,13 @@ export const api = {
       post(`/connectors/airtable/module-fields/${module}/airtable-field-mapping`, data),
     setModuleFieldDisabled: (module, airtable_field_name, disabled) =>
       post(`/connectors/airtable/module-fields/${module}/airtable-field-disabled`, { airtable_field_name, disabled }),
+    // Mapping des champs « cœur » (field_map de airtable_module_config) —
+    // modale AirtableCoreMapModal (/comptabilite/regles-serials).
+    moduleCoreMap: (module) => get(`/connectors/airtable/module-fields/${module}/core-map`),
+    saveModuleCoreMap: (module, field_map) => put(`/connectors/airtable/module-fields/${module}/core-map`, { field_map }),
+    // Choix du sens de synchronisation d'un champ (pull / push / both).
+    setModuleFieldDirection: (module, field_key, direction) =>
+      put(`/connectors/airtable/module-fields/${module}/field-direction`, { field_key, direction }),
   },
 
   // Custom fields (utilisateur peut ajouter / supprimer ses propres champs sur certaines tables)
@@ -430,15 +449,9 @@ export const api = {
     delete: (id) => del(`/custom-fields/${id}`),
     dependents: (id) => get(`/custom-fields/${id}/dependents`),
     lookupMeta: (erpTable) => get(`/custom-fields/_meta/${erpTable}`),
-  },
-
-  // Airtable field defs (modification du type & suppression de la colonne via clic-droit)
-  airtableFields: {
-    update: (id, data) => patch(`/airtable-fields/${id}`, data),
-    delete: (id) => del(`/airtable-fields/${id}`),
-    // Upsert par (erpTable, columnName) — utile pour les colonnes orphelines
-    // (sans def existante) sur la page de gestion des champs.
-    upsertByColumn: (erpTable, colName, data) => put(`/airtable-fields/by-column/${erpTable}/${encodeURIComponent(colName)}`, data),
+    // Adopte une colonne physique déjà existante (mapping Airtable, ou
+    // orpheline) plutôt que d'en créer une nouvelle — pas d'ALTER TABLE.
+    adopt: (erpTable, data) => post(`/custom-fields/${erpTable}/adopt`, data),
   },
 
   // Views (config + pills)
@@ -535,8 +548,13 @@ export const api = {
 
   // Paiements / remboursements (Stripe et hors-Stripe) attachés aux factures
   payments: {
+    list: (params = {}) => get('/payments?' + new URLSearchParams(params)),
     listForFacture: (factureId) => get(`/payments/facture/${factureId}`),
+    directDeposits: () => get('/payments/direct-deposits'),
+    directDeposit: (id) => get(`/payments/direct-deposits/${id}`),
+    previewDeposit: (data) => post('/payments/preview-deposit', data),
     create: (data) => post('/payments', data),
+    update: (id, data) => patch(`/payments/${id}`, data),
     retryQb: (id) => post(`/payments/${id}/retry-qb`, {}),
     qbLinkSuggestions: (id) => get(`/payments/${id}/qb-link-suggestions`),
     qbCreditAccount: (id) => get(`/payments/${id}/qb-credit-account`),
@@ -664,7 +682,14 @@ export const api = {
     update: (id, data) => patch(`/paies/${id}`, data),
     delete: (id) => del(`/paies/${id}`),
     items: (params = {}) => get('/paies/items/list?' + new URLSearchParams(params)),
-    syncConfig: () => get('/paies/sync-config'),
+    repartitionPreview: (id, params = {}) => get(`/paies/${id}/repartition-preview?` + new URLSearchParams(params)),
+    repartitionPush: (id, data = {}) => post(`/paies/${id}/repartition-push`, data),
+    salaryExpenseReconcile: () => post('/paies/salary-expense/reconcile', {}),
+    salaryExpenseEstimate: (id) => get(`/paies/${id}/salary-expense/estimate`),
+    salaryExpensePreview: (id, data = {}) => post(`/paies/${id}/salary-expense/preview`, data),
+    salaryExpensePush: (id, data = {}) => post(`/paies/${id}/salary-expense/push`, data),
+    agaRepartitionPreview: (amount) => post('/paies/aga-repartition/preview', { amount }),
+    agaRepartitionPush: (amount, txn_date = null) => post('/paies/aga-repartition/push', { amount, txn_date }),
     saveSyncConfig: (data) => put('/connectors/airtable/module-config/paies', data),
     sync: () => post('/connectors/sync/paies'),
     syncItems: () => post('/connectors/sync/paie_items'),
@@ -740,6 +765,89 @@ export const api = {
     },
   },
 
+  // Trésorerie BNC (projection + saisie du solde réel + sorties récurrentes)
+  treasury: {
+    projection: (params = {}) => get('/treasury/projection?' + new URLSearchParams(params)),
+    balances: () => get('/treasury/balances'),
+    noteBalance: (balance) => post('/treasury/balance', { balance }),
+    recurring: {
+      list: () => get('/treasury/recurring'),
+      create: (data) => post('/treasury/recurring', data),
+      update: (id, data) => put(`/treasury/recurring/${id}`, data),
+      delete: (id) => del(`/treasury/recurring/${id}`),
+    },
+  },
+
+  // Comptes prépayés : ledger fournisseurs prépayés + cédule FPA #13000
+  prepaid: {
+    accounts: {
+      list: () => get('/prepaid/accounts'),
+      create: (data) => post('/prepaid/accounts', data),
+      update: (id, data) => put(`/prepaid/accounts/${id}`, data),
+      delete: (id) => del(`/prepaid/accounts/${id}`),
+      entries: (id) => get(`/prepaid/accounts/${id}/entries`),
+      addEntry: (id, data) => post(`/prepaid/accounts/${id}/entries`, data),
+      syncQb: (id) => post(`/prepaid/accounts/${id}/sync-qb`, {}),
+      auditQb: (id, apply) => post(`/prepaid/accounts/${id}/audit-qb`, { apply: apply === true }),
+      providerBalance: (id) => get(`/prepaid/accounts/${id}/provider-balance`),
+    },
+    entries: {
+      update: (id, data) => put(`/prepaid/entries/${id}`, data),
+      delete: (id) => del(`/prepaid/entries/${id}`),
+    },
+    expenses: {
+      list: (fy) => get('/prepaid/expenses' + (fy ? `?fy=${fy}` : '')),
+      create: (data) => post('/prepaid/expenses', data),
+      update: (id, data) => put(`/prepaid/expenses/${id}`, data),
+      delete: (id) => del(`/prepaid/expenses/${id}`),
+      addAmortization: (id, data) => post(`/prepaid/expenses/${id}/amortizations`, data),
+    },
+    amortizations: {
+      update: (id, data) => put(`/prepaid/amortizations/${id}`, data),
+      delete: (id) => del(`/prepaid/amortizations/${id}`),
+    },
+    fpaMonth: (month) => get(`/prepaid/fpa/month/${month}`),
+    fpaPublish: (month) => post(`/prepaid/fpa/month/${month}/publish`, {}),
+  },
+
+  // Dettes à long terme : cédules de remboursement + comptabilisation QB
+  ltDebts: {
+    list: () => get('/lt-debts'),
+    create: (data) => post('/lt-debts', data),
+    update: (id, data) => put(`/lt-debts/${id}`, data),
+    delete: (id) => del(`/lt-debts/${id}`),
+    payments: (id) => get(`/lt-debts/${id}/payments`),
+    addPayment: (id, data) => post(`/lt-debts/${id}/payments`, data),
+    importPayments: (id, rows, replace) => post(`/lt-debts/${id}/payments/import`, { rows, replace: replace === true }),
+    updatePayment: (id, data) => put(`/lt-debts/payments/${id}`, data),
+    deletePayment: (id) => del(`/lt-debts/payments/${id}`),
+    markBooked: (id) => post(`/lt-debts/payments/${id}/mark-booked`, {}),
+    unmarkBooked: (id) => post(`/lt-debts/payments/${id}/unmark-booked`, {}),
+    publishPayment: (id) => post(`/lt-debts/payments/${id}/publish`, {}),
+  },
+
+  // Abonnements fournisseurs (registre des charges récurrentes attendues)
+  vendorSubscriptions: {
+    list: (params = {}) => get('/vendor-subscriptions?' + new URLSearchParams(params)),
+    get: (id) => get(`/vendor-subscriptions/${id}`),
+    create: (data) => post('/vendor-subscriptions', data),
+    update: (id, data) => put(`/vendor-subscriptions/${id}`, data),
+    delete: (id) => del(`/vendor-subscriptions/${id}`),
+    missingReceipts: () => get('/vendor-subscriptions/missing-receipts'),
+  },
+
+  // Profils fournisseurs — défauts comptables par fournisseur (vendor QB par devise,
+  // comptes, statut fiscal, code de taxe, termes de paiement), appris à chaque push QB.
+  vendorProfiles: {
+    list: () => get('/vendor-profiles'),
+    create: (data) => post('/vendor-profiles', data),
+    update: (id, data) => patch(`/vendor-profiles/${id}`, data),
+    delete: (id) => del(`/vendor-profiles/${id}`),
+    seed: () => post('/vendor-profiles/seed', {}),
+    duplicates: () => get('/vendor-profiles/duplicates'),
+    merge: (targetId, sourceIds) => post(`/vendor-profiles/${targetId}/merge`, { sourceIds }),
+  },
+
   // Pièces jointes polymorphes — attachables à n'importe quelle entité
   // (entityType ∈ companies|contacts|orders|tickets|projects|products|…).
   attachments: {
@@ -811,7 +919,8 @@ export const api = {
     runDateRule: (id) => post(`/automations/${id}/run-date-rule`, {}),
     rotateToken: (id) => post(`/automations/${id}/rotate-token`, {}),
     fieldRuleTables: () => get('/automations/field-rule/tables'),
-    ruleFieldDefs: (erpTable) => get(`/automations/field-defs?erp_table=${encodeURIComponent(erpTable)}`),
+    ruleFieldDefs: (erpTable, { includeCustom = false } = {}) =>
+      get(`/automations/field-defs?erp_table=${encodeURIComponent(erpTable)}${includeCustom ? '&include_custom=1' : ''}`),
     retryQueue: (id) => get(`/automations/${id}/retry-queue`),
     retryNow: (id, retryId) => post(`/automations/${id}/retry-queue/${retryId}/retry`, {}),
     deferredQueue: (id) => get(`/automations/${id}/deferred-queue`),
@@ -856,6 +965,7 @@ export const api = {
 
   agent: {
     listTasks:    ()         => get('/agent/tasks'),
+    getUsage:     ()         => get('/agent/usage'),
     createTask:   (data)     => post('/agent/tasks', data),
     updateTask:   (id, data) => patch(`/agent/tasks/${id}`, data),
     deleteTask:   (id)       => del(`/agent/tasks/${id}`),
@@ -865,9 +975,10 @@ export const api = {
     readClaudeMd: ()         => get('/agent/claude-md'),
     saveClaudeMd: (content)  => put('/agent/claude-md', { content }),
     listBacklog:  ()         => get('/agent/backlog'),
-    addBacklog:   (text)     => post('/agent/backlog', { text }),
+    addBacklog:   (text, opts = {}) => post('/agent/backlog', { text, ...opts }),
+    retryBacklog: (id)       => post(`/agent/backlog/${id}/retry`, {}),
+    approveBacklog:(id, comment) => post(`/agent/backlog/${id}/approve`, { comment }),
     deleteBacklog:(id)       => del(`/agent/backlog/${id}`),
-    generate:     ()         => post('/agent/generate', {}),
   },
 
   // QuickBooks journal entries (proxy — no local copy)
@@ -889,6 +1000,8 @@ export const api = {
     delete: (id) => del(`/sale-receipts/${id}`),
     archive: (id) => post(`/sale-receipts/${id}/archive`),
     unarchive: (id) => post(`/sale-receipts/${id}/unarchive`),
+    markRead: (id) => post(`/sale-receipts/${id}/read`),
+    markUnread: (id) => post(`/sale-receipts/${id}/unread`),
     history: (id) => get(`/sale-receipts/${id}/history`),
     vendorHistory: (id) => get(`/sale-receipts/${id}/vendor-history`),
     pushToQb: (id, params) => post(`/sale-receipts/${id}/push-to-qb`, params),
@@ -960,7 +1073,13 @@ export const api = {
     saveTaxMapping: (data) => post('/stripe-queue/tax-mappings', data),
     deleteTaxMapping: (id) => del(`/stripe-queue/tax-mappings/${id}`),
     batchEnrich: () => post('/stripe-queue/batch-enrich'),
-    batchStatus: () => get('/stripe-queue/batch-enrich/status'),
+    batchStatus: () => getFresh('/stripe-queue/batch-enrich/status'),
+    // Mapping configurable Stripe → factures (modale « Mapping Stripe » sur /factures)
+    factureFieldMap: () => get('/stripe-queue/facture-field-map'),
+    saveFactureFieldMap: (field_map) => put('/stripe-queue/facture-field-map', { field_map }),
+    // Mapping configurable Stripe → subscriptions (modale « Sync Stripe » sur /abonnements)
+    subscriptionFieldMap: () => get('/stripe-queue/subscription-field-map'),
+    saveSubscriptionFieldMap: (field_map) => put('/stripe-queue/subscription-field-map', { field_map }),
   },
 
   stripeInvoices: {

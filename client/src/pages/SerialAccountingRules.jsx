@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Plus, Trash2, AlertCircle, CheckCircle2, Ban } from 'lucide-react'
+import { Plus, Trash2, AlertCircle, CheckCircle2, Ban, SlidersHorizontal } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { AirtableCoreMapModal } from '../components/AirtableCoreMapModal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -228,6 +229,7 @@ export default function SerialAccountingRules() {
   const [loading, setLoading] = useState(true)
   const [accountsError, setAccountsError] = useState('')
   const [modal, setModal] = useState(null) // { rule, transition }
+  const [showFieldMap, setShowFieldMap] = useState(false)
   const [windowDays, setWindowDays] = useState(90)
   const confirm = useConfirm()
 
@@ -406,10 +408,21 @@ export default function SerialAccountingRules() {
   return (
     <Layout>
       <div className="p-6 max-w-6xl mx-auto">
-        <h1 className="text-xl font-bold text-slate-900 mb-1">Mouvements numéros de série</h1>
-        <p className="text-sm text-slate-500 mb-4">
-          Chaque transition d'état produit une ligne débit/crédit. L'agrégation hebdomadaire poussera une écriture de journal QuickBooks combinant toutes les transitions de la semaine.
-        </p>
+        <div className="flex items-start justify-between gap-3 mb-4">
+          <div>
+            <h1 className="text-xl font-bold text-slate-900 mb-1">Mouvements numéros de série</h1>
+            <p className="text-sm text-slate-500">
+              Chaque transition d'état produit une ligne débit/crédit. L'agrégation hebdomadaire poussera une écriture de journal QuickBooks combinant toutes les transitions de la semaine.
+            </p>
+          </div>
+          <button
+            onClick={() => setShowFieldMap(true)}
+            className="btn-secondary btn-sm py-1 flex-shrink-0 flex items-center gap-1.5"
+            title="Choisir quels champs Airtable alimentent les changements d'état et les numéros de série"
+          >
+            <SlidersHorizontal size={13} /> Sync Airtable
+          </button>
+        </div>
 
         {accountsError && (
           <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800 flex items-start gap-2">
@@ -511,6 +524,16 @@ export default function SerialAccountingRules() {
           />
         )}
       </Modal>
+
+      <AirtableCoreMapModal
+        isOpen={showFieldMap}
+        onClose={() => setShowFieldMap(false)}
+        modules={[
+          { module: 'serial_changes', title: "Changements d'état" },
+          { module: 'serials', title: 'Numéros de série' },
+        ]}
+        onSaved={reload}
+      />
     </Layout>
   )
 }

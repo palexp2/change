@@ -5,7 +5,6 @@ import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 
@@ -53,11 +52,11 @@ export default function Retours() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Retours</h1>
           </div>
-          <TableConfigModal table="retours" />
         </div>
 
         <DataTable
           table="retours"
+          manageViews
           columns={COLUMNS}
           data={retours}
           loading={loading}

@@ -54,17 +54,16 @@ describe('ConfirmModal globale — remplace window.confirm', () => {
     await page.goto(`${URL}/tasks`, { waitUntil: 'networkidle' })
 
     // Ouvrir le modal de config des vues (bouton Settings dans la barre d'outils)
-    await page.click('button[title="Gérer les vues de la table"]')
+    await page.click('button[title="Gérer les vues"]')
 
-    // Trouver notre vue de test et cliquer la poubelle adjacente
-    const viewRow = page.locator(`text=__confirm_test_`).first()
-    await viewRow.waitFor({ state: 'visible', timeout: 3000 })
-
-    // Le bouton de suppression est le frère du label — on cible le bouton poubelle
-    // dans la même ligne
-    const row = viewRow.locator('..').locator('..')
-    const deleteBtn = row.locator('button').last()
-    await deleteBtn.click()
+    // Trouver notre vue de test DANS la modale (le label apparaît aussi comme
+    // onglet dans la barre des vues, rendue avant la modale dans le DOM) et
+    // cliquer son bouton Supprimer
+    const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Vues —' })
+    const row = dialog.locator('.group', { hasText: '__confirm_test_' }).first()
+    await row.waitFor({ state: 'visible', timeout: 3000 })
+    await row.hover()
+    await row.locator('button[title="Supprimer"]').click()
 
     // La ConfirmModal doit apparaître — texte "Supprimer cette vue ?"
     const modal = page.locator('.fixed.inset-0.z-50 .bg-white.rounded-2xl').filter({
@@ -110,11 +109,12 @@ describe('ConfirmModal globale — remplace window.confirm', () => {
     })
 
     await page.goto(`${URL}/tasks`, { waitUntil: 'networkidle' })
-    await page.click('button[title="Gérer les vues de la table"]')
-    const viewRow = page.locator(`text=__cancel_test_`).first()
-    await viewRow.waitFor({ state: 'visible', timeout: 3000 })
-    const row = viewRow.locator('..').locator('..')
-    await row.locator('button').last().click()
+    await page.click('button[title="Gérer les vues"]')
+    const dialog = page.locator('[role="dialog"]').filter({ hasText: 'Vues —' })
+    const row = dialog.locator('.group', { hasText: '__cancel_test_' }).first()
+    await row.waitFor({ state: 'visible', timeout: 3000 })
+    await row.hover()
+    await row.locator('button[title="Supprimer"]').click()
 
     const modal = page.locator('.fixed.inset-0.z-50 .bg-white.rounded-2xl').filter({
       hasText: 'Supprimer cette vue',

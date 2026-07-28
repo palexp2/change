@@ -5,9 +5,8 @@ import { Zap, Plus, Lock, Webhook } from 'lucide-react'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { api } from '../lib/api.js'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { fmtDate } from '../lib/formatDate.js'
+import { fmtDateTime } from '../lib/formatDate.js'
 
 const TRIGGER_LABELS = {
   record_created: 'Record créé',
@@ -72,7 +71,7 @@ const RENDERS = {
     </span>
   ),
   last_run_at: row => row.last_run_at
-    ? <span className="text-slate-500 text-xs">{fmtDate(row.last_run_at)}</span>
+    ? <span className="text-slate-500 text-xs">{fmtDateTime(row.last_run_at)}</span>
     : <span className="text-slate-300">—</span>,
   runs_30d: row => {
     const n = row.runs_30d ?? 0
@@ -140,7 +139,6 @@ export function AutomationsContent() {
           <Zap size={22} /> Automations
         </h1>
         <div className="flex items-center gap-2">
-          <TableConfigModal table="automations" />
           <button onClick={() => navigate('/automations/new?kind=field_rule')}
             className="flex items-center gap-1.5 px-4 py-2 text-sm bg-white border border-brand-200 text-brand-700 rounded-lg hover:bg-brand-50">
             <Zap size={14} /> Nouvelle règle de champ
@@ -158,6 +156,7 @@ export function AutomationsContent() {
 
       <DataTable
         table="automations"
+        manageViews
         columns={COLUMNS}
         data={automations}
         loading={loading}

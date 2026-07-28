@@ -9,7 +9,7 @@ import { broadcastAll } from './realtime.js'
 import { emitCompany, emitOrder } from './realtimeEmitters.js'
 import { evaluateFieldRules } from './fieldRuleEngine.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
-import { consumeWritebackEcho } from './airtableWriteback.js'
+import { consumeWritebackEcho, fieldMapDirection } from './airtableWriteback.js'
 import { reconcileFacturesForOrder } from './quickbooks.js'
 import { logSystemRun } from './systemAutomations.js'
 
@@ -323,12 +323,19 @@ export async function syncOrders(changes = null) {
     let fm = config.field_map_orders ? JSON.parse(config.field_map_orders) : null
     let imported = 0, updated = 0
     const touchedOrderIds = []
+    // Sens de sync du champ Notes : si 'push' (ERP → Airtable seulement), on ne
+    // ré-importe pas la valeur Airtable pour ne pas écraser une note éditée dans l'ERP.
+    const notesDir = fieldMapDirection('orders', 'notes')
 
     // Max order_number for auto-increment
     const maxNum = () => (db.prepare('SELECT MAX(order_number) as m FROM orders').get()?.m || 0)
 
     db.transaction((recs) => {
       for (const rec of recs) {
+        // Garde anti-boucle : si ce record est l'echo d'un write-back ERP récent
+        // (mêmes valeurs), ne pas le ré-importer — évite la boucle avec le webhook.
+        if (consumeWritebackEcho(rec.id, rec.fields)) continue
+
         if (!fm && rec.fields) {
           fm = {
             order_number:    autoMapField(rec.fields, 'numéro', 'numero', 'order number', 'commande', '#'),
@@ -400,10 +407,13 @@ export async function syncOrders(changes = null) {
           }
         }
 
-        const existing = db.prepare('SELECT id FROM orders WHERE airtable_id=?').get(rec.id)
+        const existing = db.prepare('SELECT id, notes FROM orders WHERE airtable_id=?').get(rec.id)
         if (existing) {
+          // Notes en sens 'push' (ERP → Airtable) : conserver la valeur ERP, ne pas
+          // l'écraser avec Airtable. Sinon (pull/both) : importer la valeur Airtable.
+          const notesToStore = notesDir === 'push' ? existing.notes : notes
           db.prepare(`UPDATE orders SET company_id=?, project_id=?, status=?, priority=?, notes=?, address_id=COALESCE(?,address_id), is_subscription=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-            .run(companyId, projectId, status, priority, notes, addressId, isSubscription, existing.id)
+            .run(companyId, projectId, status, priority, notesToStore, addressId, isSubscription, existing.id)
           emitOrder('updated', existing.id, null)
           touchedOrderIds.push(existing.id)
           updated++
@@ -1263,8 +1273,15 @@ function upsertProjectRecord(rec, fmap, frozenSet, allowMissingCompany = false) 
     ['close_date', closeDate],
     ['notes', notes],
   ]
+  // Colonnes dont la valeur dérivée d'un champ NON mappé serait destructrice à
+  // l'UPDATE : sans mapping `status`, rawStatus='' → 'Ouvert' blanchissait tous
+  // les Gagné/Perdu à chaque sync (le graphique « Taux de closing » du dashboard
+  // se vidait). Idem close_date → null. On ne les écrit que si le champ est mappé.
+  const unmappedDerived = new Set()
+  if (!fmap?.status) unmappedDerived.add('status')
+  if (!fmap?.close_date) unmappedDerived.add('close_date')
   if (existing) {
-    const writable = allPairs.filter(([c]) => !frozenSet.has(c))
+    const writable = allPairs.filter(([c]) => !frozenSet.has(c) && !unmappedDerived.has(c))
     if (!writable.length) return 'skipped'
     const setClause = writable.map(([c]) => `${c}=?`).join(', ')
     db.prepare(`UPDATE projects SET ${setClause}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
@@ -2100,16 +2117,42 @@ export async function syncPaies(changes = null) {
       }
       db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='paies'").run(JSON.stringify(fm))
     }
+    // Champs ajoutés après coup — compléter un field_map déjà persisté.
+    // Le champ currency « Total … incluant … les remboursements » n'est rempli
+    // qu'au write-back de la comptabilisation : avant la publication, le total
+    // attendu se reconstitue depuis la formule « …excluant les remboursements »
+    // + le rollup « Remboursements de dépenses ». « Période de paie » fournit
+    // le début de période (« YYYY-MM-DD au YYYY-MM-DD »).
+    if (fm) {
+      let fmDirty = false
+      for (const [key, candidates] of Object.entries({
+        total_excl_reimb: ['total de la paie incluant les remises aux organismes et excluant les remboursements de dépenses'],
+        expense_reimb_total: ['remboursements de dépenses'],
+        period_range: ['période de paie', 'periode de paie'],
+      })) {
+        if (!(key in fm)) { fm[key] = autoMapField(fieldUnion, ...candidates); fmDirty = true }
+      }
+      if (fmDirty) db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='paies'").run(JSON.stringify(fm))
+    }
     let imported = 0, updated = 0
     db.transaction((recs) => {
       for (const rec of recs) {
+        const totalIncl = empNum(rec.fields, fm?.total_with_charges_and_reimb)
+        const totalExcl = empNum(rec.fields, fm?.total_excl_reimb)
+        const reimbTotal = empNum(rec.fields, fm?.expense_reimb_total)
+        const totalFallback = totalExcl != null ? Math.round((totalExcl + (reimbTotal || 0)) * 100) / 100 : null
+        const periodRange = String(getVal(rec.fields, fm?.period_range) || '')
+        const periodStartMatch = periodRange.match(/^(\d{4}-\d{2}-\d{2})\s+au\b/)
         const row = {
           number: empNum(rec.fields, fm?.number),
+          period_start: periodStartMatch ? periodStartMatch[1] : null,
           period_end: getVal(rec.fields, fm?.period_end),
           status: getVal(rec.fields, fm?.status),
           csv: getVal(rec.fields, fm?.csv),
           nb_holiday_days: empNum(rec.fields, fm?.nb_holiday_days),
-          total_with_charges_and_reimb: empNum(rec.fields, fm?.total_with_charges_and_reimb),
+          // Fallback ignoré tant que la paie est incomplète côté Airtable (remises
+          // aux organismes pas encore saisies → formule ≤ 0).
+          total_with_charges_and_reimb: totalIncl != null ? totalIncl : (totalFallback > 0 ? totalFallback : null),
           timesheets_deadline: getVal(rec.fields, fm?.timesheets_deadline),
           includes_hourly: empBool(rec.fields, fm?.includes_hourly),
           includes_mileage: empBool(rec.fields, fm?.includes_mileage),
@@ -2122,7 +2165,8 @@ export async function syncPaies(changes = null) {
         const existing = db.prepare('SELECT id FROM paies WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE paies SET
-            number=@number, period_end=@period_end, status=@status, csv=@csv,
+            number=@number, period_start=COALESCE(@period_start, period_start),
+            period_end=@period_end, status=@status, csv=@csv,
             nb_holiday_days=@nb_holiday_days, total_with_charges_and_reimb=@total_with_charges_and_reimb,
             timesheets_deadline=@timesheets_deadline, includes_hourly=@includes_hourly,
             includes_mileage=@includes_mileage, includes_expense_reimb=@includes_expense_reimb,
@@ -2132,12 +2176,12 @@ export async function syncPaies(changes = null) {
           updated++
         } else {
           db.prepare(`INSERT INTO paies (
-            id, airtable_id, number, period_end, status, csv, nb_holiday_days,
+            id, airtable_id, number, period_start, period_end, status, csv, nb_holiday_days,
             total_with_charges_and_reimb, timesheets_deadline, includes_hourly, includes_mileage,
             includes_expense_reimb, includes_paid_leave, includes_holiday_hours,
             includes_sales_commissions, timesheets_sent
           ) VALUES (
-            @id, @airtable_id, @number, @period_end, @status, @csv, @nb_holiday_days,
+            @id, @airtable_id, @number, @period_start, @period_end, @status, @csv, @nb_holiday_days,
             @total_with_charges_and_reimb, @timesheets_deadline, @includes_hourly, @includes_mileage,
             @includes_expense_reimb, @includes_paid_leave, @includes_holiday_hours,
             @includes_sales_commissions, @timesheets_sent
@@ -2191,6 +2235,19 @@ export async function syncPaieItems(changes = null) {
       }
       db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='paie_items'").run(JSON.stringify(fm))
     }
+    // Champ ajouté après coup — compléter un field_map déjà persisté. La formule
+    // Airtable « Paie avec remb. dépenses » = total de paie de l'item (salaire +
+    // vacances + commission + remb.), sans les remises aux organismes.
+    if (fm && !('total_pay' in fm)) {
+      fm.total_pay = autoMapField(fieldUnion, 'paie avec remb. dépenses', 'paie avec remb depenses', 'total')
+      db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='paie_items'").run(JSON.stringify(fm))
+    }
+    // Champ ajouté après coup — date « Débité » (formule) : jour du débit BNC,
+    // utilisée pour pré-remplir la date de la comptabilisation de la paie.
+    if (fm && !('debited_date' in fm)) {
+      fm.debited_date = autoMapField(fieldUnion, 'débité', 'debite', 'debited')
+      db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='paie_items'").run(JSON.stringify(fm))
+    }
     let imported = 0, updated = 0
     db.transaction((recs) => {
       for (const rec of recs) {
@@ -2219,6 +2276,8 @@ export async function syncPaieItems(changes = null) {
           holiday_1_20: empNum(rec.fields, fm?.holiday_1_20),
           paid_leave: getVal(rec.fields, fm?.paid_leave),
           notes: getVal(rec.fields, fm?.notes),
+          total_pay: empNum(rec.fields, fm?.total_pay),
+          debited_date: getVal(rec.fields, fm?.debited_date),
         }
         const existing = db.prepare('SELECT id FROM paie_items WHERE airtable_id=?').get(rec.id)
         if (existing) {
@@ -2228,18 +2287,19 @@ export async function syncPaieItems(changes = null) {
             start_date=@start_date, hourly_rate=@hourly_rate, regular_hours=@regular_hours,
             holiday_hours=@holiday_hours, vacation=@vacation, commission=@commission,
             expense_reimb=@expense_reimb, rsde_pct=@rsde_pct, insurance_gains=@insurance_gains,
-            holiday_1_20=@holiday_1_20, paid_leave=@paid_leave, notes=@notes,
+            holiday_1_20=@holiday_1_20, paid_leave=@paid_leave, notes=@notes, total_pay=@total_pay,
+            debited_date=@debited_date,
             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=@id`).run({ ...row, id: existing.id })
           updated++
         } else {
           db.prepare(`INSERT INTO paie_items (
             id, airtable_id, paie_id, paie_airtable_id, employee_id, employee_airtable_id,
             start_date, hourly_rate, regular_hours, holiday_hours, vacation, commission,
-            expense_reimb, rsde_pct, insurance_gains, holiday_1_20, paid_leave, notes
+            expense_reimb, rsde_pct, insurance_gains, holiday_1_20, paid_leave, notes, total_pay, debited_date
           ) VALUES (
             @id, @airtable_id, @paie_id, @paie_airtable_id, @employee_id, @employee_airtable_id,
             @start_date, @hourly_rate, @regular_hours, @holiday_hours, @vacation, @commission,
-            @expense_reimb, @rsde_pct, @insurance_gains, @holiday_1_20, @paid_leave, @notes
+            @expense_reimb, @rsde_pct, @insurance_gains, @holiday_1_20, @paid_leave, @notes, @total_pay, @debited_date
           )`).run({ ...row, id: uuid(), airtable_id: rec.id })
           imported++
         }

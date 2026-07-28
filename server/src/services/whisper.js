@@ -27,9 +27,10 @@ export async function enqueueTranscription(callId, filePath, trigger = 'manual')
 
 // Generate { summary, next_steps } from a formatted transcript using GPT-4o-mini.
 // Returns null on any failure (caller decides what to do).
-export async function generateCallSummary({ transcript, agent, client, apiKey = process.env.OPENAI_API_KEY }) {
+export async function generateCallSummary({ transcript, agent, client, direction = 'in', apiKey = process.env.OPENAI_API_KEY }) {
   if (!apiKey || !transcript) return null
   try {
+    const hints = buildSpeakerHints({ agent, client, direction })
     const resp = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -37,7 +38,7 @@ export async function generateCallSummary({ transcript, agent, client, apiKey = 
         model: 'gpt-4o-mini',
         response_format: { type: 'json_object' },
         messages: [
-          { role: 'system', content: `Tu analyses la transcription d'un appel téléphonique entre "${agent}" (employé) et "${client}" (interlocuteur externe). Réponds en JSON strict avec deux clés : "summary" (string, 2-4 phrases en français résumant l'objet de l'appel et les points abordés) et "next_steps" (tableau de strings, chaque entrée étant une action concrète à faire après l'appel — qui fait quoi ; vide si rien à faire). Ne pas inventer d'information non présente dans la transcription.` },
+          { role: 'system', content: `Tu analyses la transcription d'un appel téléphonique entre "${agent}" (employé Orisha) et "${client}" (interlocuteur externe).\n\n${hints}\n\nRéponds en JSON strict avec deux clés : "summary" (string, 2-4 phrases en français résumant l'objet de l'appel et les points abordés) et "next_steps" (tableau de strings, chaque entrée étant une action concrète à faire après l'appel — qui fait quoi ; vide si rien à faire). Ne pas inventer d'information non présente dans la transcription.` },
           { role: 'user', content: transcript },
         ],
         max_tokens: 600,
@@ -64,7 +65,8 @@ export function resolveSpeakerNames(callId) {
   const row = db.prepare(`
     SELECT u.name AS agent_name,
            ct.first_name AS contact_first, ct.last_name AS contact_last,
-           co.name AS company_name
+           co.name AS company_name,
+           i.direction AS direction
     FROM calls ca
     JOIN interactions i ON i.id = ca.interaction_id
     LEFT JOIN users u ON u.id = i.user_id
@@ -75,7 +77,26 @@ export function resolveSpeakerNames(callId) {
   const agent = row?.agent_name || 'Agent'
   const contactName = [row?.contact_first, row?.contact_last].filter(Boolean).join(' ').trim()
   const client = contactName || row?.company_name || 'Client'
-  return { agent, client }
+  // 'out'/'outbound' = Orisha appelle le client ; 'in'/'inbound' = le client appelle Orisha
+  const direction = /^out/i.test(row?.direction || '') ? 'out' : 'in'
+  return { agent, client, direction }
+}
+
+// Bloc d'indices injecté dans le prompt de formatage ET de résumé pour aider le
+// modèle à ne pas inverser les rôles (Whisper ne fournit aucune diarisation acoustique,
+// c'est le LLM qui doit inférer qui parle à partir du contenu seul).
+function buildSpeakerHints({ agent, client, direction }) {
+  const dirLine = direction === 'out'
+    ? `- Appel SORTANT : c'est "${agent}" (Orisha) qui a composé le numéro. En général, "${agent}" prend la parole en premier pour se présenter au nom d'Orisha.`
+    : `- Appel ENTRANT : c'est "${client}" qui a appelé Orisha. En général, "${agent}" répond en premier en se présentant au nom d'Orisha ("Orisha bonjour", "ici ${agent}…").`
+  return [
+    `Contexte pour distinguer les deux locuteurs (aucune étiquette de locuteur n'est fournie, tu dois déduire) :`,
+    dirLine,
+    `- "${agent}" est l'employé d'Orisha (fabricant de contrôleurs climatiques pour serres) : il se présente au nom de l'entreprise, parle des produits, prix, commandes, livraisons, support technique, et pose les questions de qualification.`,
+    `- "${client}" est l'interlocuteur externe : il pose des questions sur les produits, décrit son besoin/sa serre, ou appelle pour un problème.`,
+    `- Attribue les répliques de façon cohérente sur TOUT l'appel : ne bascule pas les noms au milieu. Décide d'abord qui est qui, puis reste constant.`,
+    `- Si tu ne peux VRAIMENT pas déterminer qui est l'employé et qui est le client, utilise les libellés neutres "Interlocuteur A" et "Interlocuteur B" plutôt que de deviner au hasard.`,
+  ].join('\n')
 }
 
 async function runTranscription(callId, filePath, trigger = 'manual') {
@@ -113,7 +134,8 @@ async function runTranscription(callId, filePath, trigger = 'manual') {
     const { text } = await resp.json()
 
     // Format with GPT-4o-mini
-    const { agent, client } = resolveSpeakerNames(callId)
+    const { agent, client, direction } = resolveSpeakerNames(callId)
+    const hints = buildSpeakerHints({ agent, client, direction })
     let formatted = text
     try {
       const fmt = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -122,7 +144,7 @@ async function runTranscription(callId, filePath, trigger = 'manual') {
         body: JSON.stringify({
           model: 'gpt-4o-mini',
           messages: [
-            { role: 'system', content: `Tu es un assistant qui formate des transcriptions d'appels téléphoniques. Formate le texte brut comme un dialogue entre "${agent}" (l'employé) et "${client}" (le client/interlocuteur externe), avec des sauts de ligne entre les répliques. Préfixe chaque réplique avec le nom suivi de deux-points (ex. "${agent} :"). Garde seulement le contenu, pas d'intro ni de conclusion.` },
+            { role: 'system', content: `Tu es un assistant qui formate des transcriptions d'appels téléphoniques. Formate le texte brut comme un dialogue entre "${agent}" (l'employé Orisha) et "${client}" (le client/interlocuteur externe), avec des sauts de ligne entre les répliques. Préfixe chaque réplique avec le nom suivi de deux-points (ex. "${agent} :"). Garde seulement le contenu, pas d'intro ni de conclusion.\n\n${hints}` },
             { role: 'user', content: text },
           ],
           max_tokens: 2000,
@@ -134,7 +156,7 @@ async function runTranscription(callId, filePath, trigger = 'manual') {
       }
     } catch {}
 
-    const sum = await generateCallSummary({ transcript: formatted, agent, client, apiKey })
+    const sum = await generateCallSummary({ transcript: formatted, agent, client, direction, apiKey })
     db.prepare(`
       UPDATE calls SET transcript=?, transcript_formatted=?, summary=?, next_steps=?, transcription_status='done' WHERE id=?
     `).run(text, formatted, sum?.summary || null, sum?.next_steps || null, callId)

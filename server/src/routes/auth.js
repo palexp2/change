@@ -119,6 +119,12 @@ function readDecimalPreferences(userId) {
 
 // Valide un objet { "<table>::<field>": <0-5> }. Les entrées invalides sont
 // rejetées (réponse 400) plutôt que silencieusement ignorées.
+function readPeekWidth(userId) {
+  const row = db.prepare('SELECT peek_width FROM users WHERE id = ?').get(userId);
+  const w = row?.peek_width;
+  return Number.isInteger(w) && w > 0 ? w : null;
+}
+
 function validDecimalPreferences(obj) {
   if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return false;
   return Object.entries(obj).every(([k, v]) => (
@@ -132,12 +138,13 @@ router.get('/preferences', requireAuth, (req, res) => {
   res.json({
     nav_hidden: readNavHidden(req.user.id),
     decimal_preferences: readDecimalPreferences(req.user.id),
+    peek_width: readPeekWidth(req.user.id),
   });
 });
 
-// PATCH /api/auth/preferences — maj des préférences UI (menu de gauche, décimales, etc.)
+// PATCH /api/auth/preferences — maj des préférences UI (menu de gauche, décimales, largeur side-peek, etc.)
 router.patch('/preferences', requireAuth, (req, res) => {
-  const { nav_hidden, decimal_preferences } = req.body || {};
+  const { nav_hidden, decimal_preferences, peek_width } = req.body || {};
   if (nav_hidden !== undefined) {
     if (!Array.isArray(nav_hidden) || !nav_hidden.every((k) => typeof k === 'string')) {
       return res.status(400).json({ error: 'nav_hidden doit être un tableau de chaînes' });
@@ -150,9 +157,17 @@ router.patch('/preferences', requireAuth, (req, res) => {
     }
     db.prepare('UPDATE users SET decimal_preferences = ? WHERE id = ?').run(JSON.stringify(decimal_preferences), req.user.id);
   }
+  if (peek_width !== undefined) {
+    const w = Math.round(Number(peek_width));
+    if (!Number.isFinite(w) || w < 320 || w > 2000) {
+      return res.status(400).json({ error: 'peek_width doit être un entier de pixels entre 320 et 2000' });
+    }
+    db.prepare('UPDATE users SET peek_width = ? WHERE id = ?').run(w, req.user.id);
+  }
   res.json({
     nav_hidden: readNavHidden(req.user.id),
     decimal_preferences: readDecimalPreferences(req.user.id),
+    peek_width: readPeekWidth(req.user.id),
   });
 });
 

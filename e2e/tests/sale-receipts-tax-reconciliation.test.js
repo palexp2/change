@@ -35,7 +35,10 @@ describe('Extraction de données : réconciliation des taxes par ligne', () => {
 
     const resp = await page.request.get(URL + '/api/sale-receipts?limit=all', { headers: { Authorization: 'Bearer ' + token } })
     const body = await resp.json()
-    const candidate = body.data.find(r => r.status === 'done' && !r.quickbooks_id) || body.data.find(r => r.status === 'done')
+    // Reçu en mode manuel (pas de code par défaut du document) : l'indicateur de
+    // réconciliation n'apparaît qu'hors du mode « piloté par les codes ».
+    const candidate = body.data.find(r => r.status === 'done' && !r.quickbooks_id && !r.tax_code_id)
+      || body.data.find(r => r.status === 'done' && !r.tax_code_id)
     assert.ok(candidate, 'Préalable : un reçu status=done est requis')
     receiptId = candidate.id
     originalItems = candidate.items || []

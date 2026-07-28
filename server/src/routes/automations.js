@@ -4,7 +4,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { newId } from '../utils/ids.js'
 import { runAutomation } from '../services/automationEngine.js'
 import { scheduleAutomation, unscheduleAutomation } from '../services/automationScheduler.js'
-import { MANUAL_RUNNERS, logSystemRun } from '../services/systemAutomations.js'
+import { MANUAL_RUNNERS, logSystemRun, CONFIGURABLE_SYSTEM_AUTOMATIONS } from '../services/systemAutomations.js'
 import { sendInstallationTestEmail, buildInstallationEmailHtml, selectEligibleCompanies } from '../services/installationFollowup.js'
 import { dryRunFieldRule, runDateOffsetRuleNow, previewRuleForRecord, drainDeferredForAutomation, CANDIDATE_CAP } from '../services/fieldRuleEngine.js'
 import { getAutomationFrom, listFromAddresses } from '../services/postmarkConfig.js'
@@ -138,6 +138,154 @@ const SYSTEM_EMAIL_AUTOMATIONS = new Set([
   'sys_shipment_tracking_email',
 ])
 
+// Clés d'action_config éditables par automation système configurable, et tables
+// autorisées pour la condition de déclenchement (la première est le défaut).
+// Miroir de REVREC_ACCOUNT_OVERRIDES (quickbooks.js) pour les clés de comptes.
+const CONFIGURABLE_SYSTEM_SPECS = {
+  sys_revenue_recognition: {
+    allowedTables: ['shipments', 'factures'],
+    actionKeys: new Set(['deferred_acctnum', 'sale_acctnum', 'ar_cad_acctnum', 'ar_usd_acctnum']),
+  },
+  // CTB - Suivi (Google Sheets) : seule l'action est configurable — le
+  // déclencheur (publication d'un Bill QB / création d'une facture fournisseur)
+  // vit dans le code. validateKey remplace la validation AcctNum par défaut.
+  sys_ctb_programmation_paiement: {
+    actionKeys: new Set(['spreadsheet_id', 'sheet_name', 'section_header', 'paid_section_header', 'payment_weekday', 'google_account_email']),
+    validateKey: validateCtbSheetKey,
+  },
+  // Répartition de la paie : pourcentages, comptes et ajouts standards.
+  sys_paie_repartition: {
+    actionKeys: new Set(['splits', 'source_acctnum', 'phone_acctnum', 'phone_amount',
+      'meals_acctnum', 'reimb_acctnum', 'aga_splits', 'aga_source_acctnum',
+      'bank_acctnum', 'salary_vendor_name', 'salary_taxcode', 'phone_taxcode']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'salary_vendor_name' || key === 'salary_taxcode' || key === 'phone_taxcode') {
+        if (v.length > 120) throw new Error(`${key} trop long (max 120 caractères)`)
+        return
+      }
+      if (key === 'splits' || key === 'aga_splits') {
+        if (!/^[0-9A-Za-z.-]{1,20}\s*:\s*[0-9]+([.,][0-9]+)?(\s*[,;]\s*[0-9A-Za-z.-]{1,20}\s*:\s*[0-9]+([.,][0-9]+)?)*$/.test(v.trim())) {
+          throw new Error(`${key} : format attendu « compte:poids, compte:poids, … »`)
+        }
+        return
+      }
+      if (key === 'phone_amount') {
+        if (!/^[0-9]+([.,][0-9]+)?$/.test(v)) throw new Error('phone_amount doit être un montant')
+        return
+      }
+      if (!ACCTNUM_RE.test(v)) throw new Error(`${key} : numéro de compte invalide`)
+    },
+  },
+  // Alerte trésorerie BNC : seuil, horizon et canal Slack.
+  sys_treasury_alert: {
+    actionKeys: new Set(['threshold', 'horizon_days', 'balance_stale_days', 'slack_webhook_env']),
+    validateKey(key, v) {
+      if (!v) return
+      if ((key === 'threshold' || key === 'horizon_days' || key === 'balance_stale_days') && !/^\d{1,7}$/.test(v)) {
+        throw new Error(`${key} doit être un entier positif`)
+      }
+      if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
+        throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
+      }
+    },
+  },
+}
+
+function validateCtbSheetKey(key, v) {
+  if (!v) return // vide = retomber sur le défaut du service
+  if (key === 'spreadsheet_id' && !/^[A-Za-z0-9_-]{20,80}$/.test(v)) {
+    throw new Error("spreadsheet_id invalide — coller l'ID du fichier (entre /d/ et /edit dans l'URL)")
+  }
+  if ((key === 'sheet_name' || key === 'section_header' || key === 'paid_section_header') && v.length > 120) {
+    throw new Error(`${key} trop long (max 120 caractères)`)
+  }
+  if (key === 'payment_weekday' && !/^[1-7]$/.test(v)) {
+    throw new Error('payment_weekday doit être 1 (lundi) à 7 (dimanche)')
+  }
+  if (key === 'google_account_email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
+    throw new Error('google_account_email invalide')
+  }
+}
+
+// Colonnes utilisables dans la condition d'une automation système configurable :
+// colonnes physiques + champs personnalisés actifs (matérialisés dans la vue
+// <table>_v, que le watcher interroge quand la condition en référence un).
+function configurableTriggerColumns(erpTable) {
+  const physical = db.prepare(`PRAGMA table_info(${erpTable})`).all().map(c => c.name)
+  const custom = db.prepare(
+    'SELECT column_name FROM custom_fields WHERE erp_table = ? AND deleted_at IS NULL'
+  ).all(erpTable).map(r => r.column_name)
+  return new Set([...physical, ...custom])
+}
+
+// AcctNum QB : chiffres/lettres/point/tiret, 1 à 20 caractères. Vide = défaut.
+const ACCTNUM_RE = /^[0-9A-Za-z.-]{1,20}$/
+
+// Valide et fusionne l'édition (trigger_config / action_config) d'une automation
+// système configurable. Seule la condition (colonne/op/valeur sur la table
+// verrouillée) et les clés d'action whitelistées sont modifiables — kind, source
+// et les clés inconnues du row courant sont préservés. Lève sur config invalide.
+// Retourne { tcJson, acJson } (null quand la portion n'a pas été soumise).
+function validateConfigurableSystemPatch(automation, { trigger_config, action_config }) {
+  const spec = CONFIGURABLE_SYSTEM_SPECS[automation.id]
+  if (!spec) throw new Error('Automation système — lecture seule')
+
+  let tcJson = null
+  if (trigger_config !== undefined) {
+    if (!spec.allowedTables) throw new Error('Déclencheur non modifiable pour cette automation système')
+    const incoming = typeof trigger_config === 'string' ? JSON.parse(trigger_config) : (trigger_config || {})
+    const current = (() => { try { return JSON.parse(automation.trigger_config || '{}') } catch { return {} } })()
+    const erpTable = incoming.erp_table ?? current.erp_table ?? spec.allowedTables[0]
+    if (!spec.allowedTables.includes(erpTable)) {
+      throw new Error(`Table de déclenchement non autorisée: ${erpTable} (choix : ${spec.allowedTables.join(', ')})`)
+    }
+    validateCondition(
+      { column: incoming.column, op: incoming.op || 'eq', value: incoming.value },
+      'Condition de déclenchement'
+    )
+    if (!configurableTriggerColumns(erpTable).has(incoming.column)) {
+      throw new Error(`Colonne inexistante sur ${erpTable} (colonnes physiques et champs personnalisés): ${incoming.column}`)
+    }
+    const op = incoming.op || 'eq'
+    const subject = erpTable === 'factures'
+      ? "d'une facture (réévaluée aussi quand sa commande ou un envoi lié change)"
+      : "d'un shipment"
+    const merged = {
+      ...current,
+      erp_table: erpTable,
+      column: incoming.column,
+      op,
+      value: op === 'not_null' ? undefined : incoming.value,
+      summary: `Déclenché à l'écriture DB ${subject} : ${incoming.column} ${op} ${
+        op === 'not_null' ? '' : JSON.stringify(incoming.value)
+      } (toute origine : UI, Novoxpress, sync Airtable)`.replace(/\s+/g, ' '),
+    }
+    if (merged.value === undefined) delete merged.value
+    tcJson = JSON.stringify(merged)
+  }
+
+  let acJson = null
+  if (action_config !== undefined) {
+    const incoming = typeof action_config === 'string' ? JSON.parse(action_config) : (action_config || {})
+    const current = (() => { try { return JSON.parse(automation.action_config || '{}') } catch { return {} } })()
+    const merged = { ...current }
+    for (const key of spec.actionKeys) {
+      if (!(key in incoming)) continue
+      const v = String(incoming[key] ?? '').trim()
+      if (spec.validateKey) {
+        spec.validateKey(key, v)
+      } else if (v && !ACCTNUM_RE.test(v)) {
+        throw new Error(`Numéro de compte invalide pour ${key}: « ${v} »`)
+      }
+      merged[key] = v
+    }
+    acJson = JSON.stringify(merged)
+  }
+
+  return { tcJson, acJson }
+}
+
 // ── Historique de versions ────────────────────────────────────────────────
 // Chaque édition sauvegardée (POST create, PATCH update, restore) capture un
 // snapshot complet de l'automation + qui/quand → audit + rollback. Les éditions
@@ -263,6 +411,74 @@ router.get('/', (req, res) => {
   res.json(automations)
 })
 
+// GET /api/automations/field-defs?erp_table=tickets
+// Returns columns available for field-rule templating (native + airtable_field_defs).
+// ⚠️ Doit être déclarée AVANT GET /:id, sinon le paramètre :id avale « field-defs »
+// et la route répond 404 « Introuvable ».
+router.get('/field-defs', (req, res) => {
+  const erpTable = req.query.erp_table
+  if (!erpTable || !IDENT_RE.test(erpTable)) {
+    return res.status(400).json({ error: 'erp_table invalide' })
+  }
+  let native
+  try {
+    native = db.prepare(`PRAGMA table_info(${erpTable})`).all()
+  } catch {
+    return res.status(400).json({ error: `Table inconnue: ${erpTable}` })
+  }
+  if (!native.length) return res.status(400).json({ error: `Table inconnue: ${erpTable}` })
+  // Champs de rendu kind='data' (fusion avec l'ex-airtable_field_defs — colonne
+  // cf_* auto-générée OU colonne native adoptée) + mappings natifs sans rendu
+  // (jamais adoptés dans custom_fields — whitelisting interne, cf. schema.js).
+  const defs = db.prepare(`
+    SELECT column_name, name AS airtable_field_name, type AS field_type
+    FROM custom_fields WHERE erp_table = ? AND deleted_at IS NULL AND kind='data'
+    UNION
+    SELECT m.column_name, m.airtable_field_name, 'text' AS field_type
+    FROM airtable_field_mappings m
+    WHERE m.erp_table = ? AND m.column_name NOT IN (
+      SELECT column_name FROM custom_fields WHERE erp_table = ? AND deleted_at IS NULL AND kind='data'
+    )
+    ORDER BY column_name
+  `).all(erpTable, erpTable, erpTable)
+  const nativeNames = new Set(native.map(c => c.name))
+  const defColumns = new Set(defs.map(d => d.column_name))
+  // Native columns that have no def/mapping row (id, created_at, etc.)
+  const nativeOnly = native
+    .filter(c => !defColumns.has(c.name))
+    .map(c => ({ column_name: c.name, airtable_field_name: null, field_type: c.type?.toLowerCase() || 'text' }))
+  const columns = [...defs, ...nativeOnly]
+  // include_custom=1 : ajoute les champs personnalisés virtuels (lookup, rollup,
+  // formule…) matérialisés dans la vue <table>_v. Utilisé par l'éditeur de
+  // condition des automations système configurables — PAS par les field rules,
+  // dont le moteur interroge la table physique uniquement.
+  if (req.query.include_custom === '1') {
+    const seen = new Set(columns.map(c => c.column_name))
+    for (const cf of db.prepare(
+      `SELECT column_name, name, kind, COALESCE(result_type, type) AS field_type
+       FROM custom_fields WHERE erp_table = ? AND deleted_at IS NULL ORDER BY name`
+    ).all(erpTable)) {
+      if (seen.has(cf.column_name) || nativeNames.has(cf.column_name)) continue
+      columns.push({
+        column_name: cf.column_name,
+        airtable_field_name: `${cf.name} (champ personnalisé)`,
+        field_type: cf.field_type || cf.kind || 'text',
+        custom: true,
+      })
+    }
+  }
+  res.json({ columns, native_names: [...nativeNames] })
+})
+
+// GET /api/automations/field-rule/tables — list of erp_tables that have rules or
+// field defs. ⚠️ Même contrainte d'ordre que /field-defs (avant GET /:id).
+router.get('/field-rule/tables', (req, res) => {
+  const rows = db.prepare(
+    `SELECT DISTINCT erp_table FROM airtable_field_mappings ORDER BY erp_table`
+  ).all()
+  res.json(rows.map(r => r.erp_table))
+})
+
 // GET /api/automations/:id
 router.get('/:id', (req, res) => {
   const automation = db.prepare(
@@ -327,6 +543,30 @@ router.patch('/:id', (req, res) => {
   if (!automation) return res.status(404).json({ error: 'Introuvable' })
 
   const { name, description, trigger_type, trigger_config, script, active, action_type, action_config } = req.body
+
+  // Automations système configurables (ex. sys_revenue_recognition) : la condition
+  // de déclenchement et les clés d'action whitelistées sont éditables, en plus du
+  // toggle actif. Nom, description et comportement restent verrouillés.
+  if (automation.system && CONFIGURABLE_SYSTEM_AUTOMATIONS.has(automation.id)) {
+    let patch
+    try {
+      patch = validateConfigurableSystemPatch(automation, { trigger_config, action_config })
+    } catch (e) {
+      return res.status(400).json({ error: e.message })
+    }
+    ensureBaselineVersion(automation)
+    db.prepare(`
+      UPDATE automations SET
+        active = COALESCE(?, active),
+        trigger_config = COALESCE(?, trigger_config),
+        action_config = COALESCE(?, action_config),
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id = ?
+    `).run(active ?? null, patch.tcJson, patch.acJson, req.params.id)
+    const updated = db.prepare('SELECT * FROM automations WHERE id = ?').get(req.params.id)
+    recordAutomationVersion(updated.id, snapshotFromRow(updated), req)
+    return res.json(updated)
+  }
 
   // System scripted automations are read-only except for the `active` toggle
   // and — for email-sending ones — a `from` override in action_config.
@@ -775,41 +1015,6 @@ router.post('/:id/retry-queue/:retryId/retry', async (req, res) => {
     ORDER BY next_retry_at ASC
   `).all()
   res.json({ items, max_attempts: WEBHOOK_RETRY_MAX_ATTEMPTS })
-})
-
-// GET /api/automations/field-defs?erp_table=tickets
-// Returns columns available for field-rule templating (native + airtable_field_defs)
-router.get('/field-defs', (req, res) => {
-  const erpTable = req.query.erp_table
-  if (!erpTable || !IDENT_RE.test(erpTable)) {
-    return res.status(400).json({ error: 'erp_table invalide' })
-  }
-  let native
-  try {
-    native = db.prepare(`PRAGMA table_info(${erpTable})`).all()
-  } catch {
-    return res.status(400).json({ error: `Table inconnue: ${erpTable}` })
-  }
-  if (!native.length) return res.status(400).json({ error: `Table inconnue: ${erpTable}` })
-  const defs = db.prepare(
-    `SELECT column_name, airtable_field_name, field_type
-     FROM airtable_field_defs WHERE erp_table = ? ORDER BY column_name`
-  ).all(erpTable)
-  const nativeNames = new Set(native.map(c => c.name))
-  const defColumns = new Set(defs.map(d => d.column_name))
-  // Native columns that have no airtable_field_defs row (id, created_at, etc.)
-  const nativeOnly = native
-    .filter(c => !defColumns.has(c.name))
-    .map(c => ({ column_name: c.name, airtable_field_name: null, field_type: c.type?.toLowerCase() || 'text' }))
-  res.json({ columns: [...defs, ...nativeOnly], native_names: [...nativeNames] })
-})
-
-// GET /api/automations/field-rule/tables — list of erp_tables that have rules or field defs
-router.get('/field-rule/tables', (req, res) => {
-  const rows = db.prepare(
-    `SELECT DISTINCT erp_table FROM airtable_field_defs ORDER BY erp_table`
-  ).all()
-  res.json(rows.map(r => r.erp_table))
 })
 
 // GET /api/automations/:id/email-preview?language=French

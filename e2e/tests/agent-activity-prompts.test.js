@@ -1,16 +1,16 @@
-// Agent autonome — modèles de prompt par activité (génération / discussion / exécution).
+// Agent autonome — modèles de prompt par activité (proposition instantanée / discussion / exécution).
 //
 // Vérifie que TOUT ce que le modèle reçoit en prompt est désormais consultable et
 // éditable depuis /agent :
-//   1. GET /agent/settings expose generationPrompt + conversationPrompt + executionPrompt
+//   1. GET /agent/settings expose instantPrompt + conversationPrompt + executionPrompt
 //      ET un bloc `defaults` (pour le bouton « Réinitialiser »).
-//   2. Le panneau « Prompt — génération d'idées » montre le modèle courant (avec ses
-//      jetons {{…}}) dans un textarea, et l'édition + blur autosauvegarde via
+//   2. Le panneau « Prompt — proposition instantanée » montre le modèle courant (avec
+//      ses jetons {{…}}) dans un textarea, et l'édition + blur autosauvegarde via
 //      PUT /agent/settings.
 //   3. Le bouton « Réinitialiser le modèle par défaut » restaure le défaut serveur.
 //
 // L'agent est forcé OFF pour tout le run (aucun subprocess Claude). La valeur réelle
-// du modèle de génération ET du toggle sont capturées au setup et restaurées en
+// du modèle instantané ET du toggle sont capturées au setup et restaurées en
 // after() — règle CLAUDE.md : ne jamais écraser une config sans backup/restauration.
 
 const { test, describe, before, after } = require('node:test')
@@ -48,7 +48,7 @@ async function apiPut(page, p, body) {
 describe('Agent autonome — modèles de prompt par activité', () => {
   let browser, ctx, page
   let originalEnabled = false
-  let originalGeneration
+  let originalInstant
   let serverDefault
 
   before(async () => {
@@ -60,16 +60,16 @@ describe('Agent autonome — modèles de prompt par activité', () => {
     // Capture la config réelle AVANT de la toucher, pour restauration en after().
     const s = await apiGet(page, '/agent/settings')
     originalEnabled = !!s.enabled
-    originalGeneration = s.generationPrompt
-    serverDefault = s.defaults && s.defaults.generationPrompt
+    originalInstant = s.instantPrompt
+    serverDefault = s.defaults && s.defaults.instantPrompt
     await apiPut(page, '/agent/settings', { enabled: false })
   })
 
   after(async () => {
     // Restaure toujours, même si le test a échoué.
     try {
-      if (page && originalGeneration !== undefined) {
-        await apiPut(page, '/agent/settings', { enabled: originalEnabled, generationPrompt: originalGeneration })
+      if (page && originalInstant !== undefined) {
+        await apiPut(page, '/agent/settings', { enabled: originalEnabled, instantPrompt: originalInstant })
       } else if (page) {
         await apiPut(page, '/agent/settings', { enabled: originalEnabled })
       }
@@ -79,26 +79,31 @@ describe('Agent autonome — modèles de prompt par activité', () => {
 
   test('API expose les 3 modèles + defaults', async () => {
     const s = await apiGet(page, '/agent/settings')
-    for (const k of ['generationPrompt', 'conversationPrompt', 'executionPrompt']) {
+    for (const k of ['instantPrompt', 'conversationPrompt', 'executionPrompt']) {
       assert.equal(typeof s[k], 'string', `GET /agent/settings doit renvoyer ${k}`)
       assert.ok(s[k].length > 0, `${k} ne doit pas être vide (défaut serveur)`)
     }
     assert.ok(s.defaults, 'GET doit inclure un bloc defaults')
-    assert.equal(typeof s.defaults.generationPrompt, 'string', 'defaults.generationPrompt requis pour le bouton Réinitialiser')
-    // Le modèle de génération doit contenir ses jetons de templating.
-    assert.ok(s.generationPrompt.includes('{{general}}'), 'le modèle de génération doit contenir {{general}}')
-    assert.ok(s.generationPrompt.includes('{{slots}}'), 'le modèle de génération doit contenir {{slots}}')
+    assert.equal(typeof s.defaults.instantPrompt, 'string', 'defaults.instantPrompt requis pour le bouton Réinitialiser')
+    // Le modèle instantané doit contenir ses jetons de templating.
+    assert.ok(s.instantPrompt.includes('{{general}}'), 'le modèle instantané doit contenir {{general}}')
+    assert.ok(s.instantPrompt.includes('{{text}}'), 'le modèle instantané doit contenir {{text}}')
   })
 
   test('édition + autosave + réinitialisation', async () => {
     await page.goto(URL + '/agent', { waitUntil: 'networkidle' })
 
-    // Déplier le panneau de génération → le textarea montre le modèle courant.
-    await page.click('text=Prompt — génération d\'idées')
-    const ta = page.locator('[data-testid="prompt-textarea-generation"]')
+    // Les panneaux vivent dans la modale « Réglages de l'agent » (bouton header).
+    await page.waitForSelector('[data-testid="agent-settings-button"]', { timeout: 10000 })
+    await page.click('[data-testid="agent-settings-button"]')
+    await page.waitForSelector('[role="dialog"]', { timeout: 5000 })
+
+    // Déplier le panneau instantané → le textarea montre le modèle courant.
+    await page.click('text=Prompt — proposition instantanée')
+    const ta = page.locator('[data-testid="prompt-textarea-instant"]')
     await ta.waitFor({ timeout: 5000 })
     const shown = await ta.inputValue()
-    assert.ok(shown.includes('{{slots}}'), 'le textarea doit afficher le modèle avec ses jetons')
+    assert.ok(shown.includes('{{text}}'), 'le textarea doit afficher le modèle avec ses jetons')
 
     // 1. Éditer + blur → autosave via PUT /agent/settings.
     const marker = `\n\n[E2E marker ${Date.now()}]`
@@ -107,17 +112,17 @@ describe('Agent autonome — modèles de prompt par activité', () => {
     await ta.blur()
     await page.waitForTimeout(700)
     let after = await apiGet(page, '/agent/settings')
-    assert.equal(after.generationPrompt, edited, 'le modèle édité doit être persisté côté serveur')
+    assert.equal(after.instantPrompt, edited, 'le modèle édité doit être persisté côté serveur')
 
     // 2. Le badge « Personnalisé » + le bouton Réinitialiser apparaissent (valeur ≠ défaut).
-    const resetBtn = page.locator('[data-testid="prompt-reset-generation"]')
+    const resetBtn = page.locator('[data-testid="prompt-reset-instant"]')
     await resetBtn.waitFor({ timeout: 5000 })
 
     // 3. Cliquer Réinitialiser → restaure le défaut serveur (persisté + affiché).
     await resetBtn.click()
     await page.waitForTimeout(700)
     after = await apiGet(page, '/agent/settings')
-    assert.equal(after.generationPrompt, serverDefault, 'Réinitialiser doit restaurer le modèle par défaut')
+    assert.equal(after.instantPrompt, serverDefault, 'Réinitialiser doit restaurer le modèle par défaut')
     assert.equal(await ta.inputValue(), serverDefault, 'le textarea doit ré-afficher le défaut après réinitialisation')
   })
 })

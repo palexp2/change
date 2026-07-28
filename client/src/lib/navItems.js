@@ -5,7 +5,7 @@ import {
   Barcode, MessageSquare, CheckSquare,
   Receipt, ReceiptText, Landmark, Users, Banknote, Contact, BookOpen,
   ArrowLeftRight, CreditCard, Clock, Tag, Wallet, Mail, PhoneCall,
-  FolderOpen, Building2, ListChecks, Bot, Activity
+  FolderOpen, Building2, ListChecks, Bot, Activity, Zap, BookUser
 } from 'lucide-react'
 
 // Structure canonique du menu de gauche, partagée entre la sidebar (Layout)
@@ -16,9 +16,6 @@ import {
 //   - groupe entier → clé = `group:<group>`
 export const defaultNavItems = [
   { to: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard' },
-  { to: '/priorite-assemblage', icon: ListChecks, label: "Priorité d'assemblage" },
-  { to: '/public-files', icon: FolderOpen,      label: 'Fichiers publics' },
-  { to: '/activity',     icon: Activity,        label: 'Feed des opérations' },
   { group: 'Clients', icon: Contact, items: [
     { to: '/contacts',     icon: Contact,       label: 'Contacts' },
     { to: '/companies',    icon: Building2,     label: 'Entreprises' },
@@ -36,11 +33,15 @@ export const defaultNavItems = [
     { to: '/retours',  icon: RotateCcw,    label: 'Retours' },
   ]},
   { group: 'Comptabilité', icon: Landmark, items: [
+    { to: '/comptabilite',          icon: Landmark,   label: 'Dashboard comptabilité' },
     { to: '/factures',              icon: FileText,   label: 'Factures clients' },
+    { to: '/paiements',             icon: Banknote,   label: 'Paiements' },
     { to: '/items-vendus',          icon: Tag,        label: 'Items vendus' },
     { to: '/abonnements',           icon: RefreshCw,  label: 'Abonnements' },
     { to: '/abonnements/mouvements', icon: RefreshCw, label: "Mouvements d'abonnements" },
-    { to: '/achats-fournisseurs',   icon: Receipt,    label: 'Achats fournisseurs' },
+    { to: '/fournisseurs',          icon: BookUser,   label: 'Fournisseurs' },
+    { to: '/comptes-prepayes',      icon: Wallet,     label: 'Comptes prépayés' },
+    { to: '/dettes-lt',             icon: Landmark,   label: 'Dettes long terme' },
     { to: '/sale-receipts',         icon: ReceiptText,label: 'Extraction de données' },
     { to: '/stripe-payouts',        icon: CreditCard, label: 'Stripe Payouts' },
     { to: '/journal-entries',       icon: BookOpen,   label: 'Écritures de journal' },
@@ -60,8 +61,10 @@ export const defaultNavItems = [
     { to: '/paies',            icon: Banknote, label: 'Paies' },
     { to: '/banque-heures',    icon: Wallet,   label: "Banque d'heures" },
   ]},
-  // Lien externe : ouvre l'admin du chatbot dans un nouvel onglet. Marqué
-  // `external: true` pour que NavItem rende un <a target="_blank"> au lieu d'un
-  // <NavLink> de routage interne.
-  { external: true, href: 'https://customer.orisha.io/chatbot/admin', icon: Bot, label: 'Admin Chatbot' },
+  { group: 'Autres outils', icon: Wrench, items: [
+    { to: '/priorite-assemblage', icon: ListChecks, label: "Priorité d'assemblage" },
+    { to: '/automations',  icon: Zap,             label: 'Automatisations' },
+    { to: '/public-files', icon: FolderOpen,      label: 'Fichiers publics' },
+    { external: true, href: 'https://customer.orisha.io/chatbot/admin', icon: Bot, label: 'Admin Chatbot' },
+  ]},
 ]

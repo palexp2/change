@@ -4,18 +4,22 @@
 
 export const TABLE_LABELS = {
   achats_fournisseurs:   'Achat fournisseur',
+  vendor_subscriptions:  'Abonnement fournisseur',
+  vendor_profiles:       'Profil fournisseur',
   tasks:          'Tâches',
   companies:      'Entreprises',
   contacts:       'Contacts',
   projects:       'Projets',
   products:       'Produits',
   orders:         'Commandes',
+  order_items:    'Articles de commande',
   interactions:   'Interactions',
   tickets:        'Billets',
   purchases:      'Achats',
   serial_numbers: 'Numéros de série',
   retours:        'Retours',
   factures:       'Factures',
+  payments:       'Paiements',
   project_factures: 'Factures (projet)',
   project_soumissions: 'Soumissions (projet)',
   company_contacts: 'Contacts (entreprise)',
@@ -53,6 +57,7 @@ export const TABLE_LABELS = {
   sale_receipts: 'Extraction de données',
   activity_log: 'Feed des opérations',
   activity_codes: "Codes d'activité",
+  payments: 'Paiements',
 }
 
 // Chaque entrée : { id, label, field, type?, options?, sortable?, filterable?, groupable?, defaultVisible?, description? }
@@ -90,6 +95,21 @@ const CC_PERMISSION_COLUMNS = [
 ]
 
 export const TABLE_COLUMN_META = {
+  // Paiements clients (encaissements/remboursements appliqués aux factures).
+  // Pas de page DataTable dédiée — sert de libellés FR dans la modale de champ
+  // custom (lookup/rollup depuis les factures, ex: « Date de paiement »).
+  payments: [
+    { id: 'received_at', label: 'Date de paiement', field: 'received_at', type: 'date' },
+    { id: 'amount',      label: 'Montant',          field: 'amount',      type: 'number' },
+    { id: 'amount_cad',  label: 'Montant CAD',      field: 'amount_cad',  type: 'number' },
+    { id: 'currency',    label: 'Devise',           field: 'currency' },
+    { id: 'method',      label: 'Mode de paiement', field: 'method',      type: 'single_select', options: ['stripe', 'cheque', 'virement_bancaire', 'interac', 'comptant', 'autre'] },
+    { id: 'direction',   label: 'Direction',        field: 'direction',   type: 'single_select', options: ['in', 'out'] },
+    { id: 'notes',       label: 'Notes',            field: 'notes' },
+    { id: 'facture_id',  label: 'Facture',          field: 'facture_id' },
+    { id: 'created_at',  label: 'Créé le',          field: 'created_at',  type: 'date' },
+  ],
+
   // Feed des opérations — journal d'activité (qui / quoi / quand). Lecture seule.
   // Les options single_select reflètent les valeurs brutes émises par
   // emitEntity/emitOrder/emitCompany (server/src/services/realtimeEmitters.js) ;
@@ -166,7 +186,29 @@ export const TABLE_COLUMN_META = {
     { id: 'updated_at',     label: 'Modifié le',       field: 'updated_at',  type: 'date', defaultVisible: false },
   ],
 
-  products: [],
+  // Champs natifs de la table products. Les 139 champs Airtable dynamiques
+  // arrivent en plus via /api/views/products (custom_fields kind='data') —
+  // depuis la fusion airtable_field_defs → custom_fields, les défs `native_*`
+  // ne migrent plus côté serveur, donc les natifs doivent vivre ici comme pour
+  // les autres tables. Labels alignés sur ensureNativeFieldDefs (index.js).
+  products: [
+    // Rendu vignette : render() custom dans Products.jsx (pattern Purchases).
+    { id: 'image_url', label: 'Image',                  field: 'image_url', sortable: false, filterable: false, groupable: false },
+    { id: 'name_fr',   label: 'Nom',                    field: 'name_fr' },
+    { id: 'name_en',   label: 'Nom (EN)',               field: 'name_en',   defaultVisible: false },
+    { id: 'sku',       label: 'SKU',                    field: 'sku' },
+    { id: 'type',      label: 'Type',                   field: 'type' },
+    { id: 'unit_cost', label: 'Coût unitaire',          field: 'unit_cost', type: 'number', defaultVisible: false },
+    { id: 'price_cad', label: 'Prix (CAD)',             field: 'price_cad', type: 'number', defaultVisible: false },
+    { id: 'stock_qty', label: 'Quantité en inventaire', field: 'stock_qty', type: 'number' },
+    { id: 'min_stock', label: 'Stock minimum',          field: 'min_stock', type: 'number', defaultVisible: false },
+    // « Qté à cmd » (≠ « Quantité à commander ») : le champ Airtable
+    // quantite_a_commander porte déjà ce label — une collision de label le
+    // ferait disparaître du merge de useTableView (les pills y réfèrent).
+    { id: 'order_qty', label: 'Qté à cmd',              field: 'order_qty', type: 'number', defaultVisible: false },
+    { id: 'supplier',  label: 'Fournisseur',            field: 'supplier',  defaultVisible: false },
+    { id: 'is_sellable', label: 'Vendable',             field: 'is_sellable', type: 'boolean', defaultVisible: false },
+  ],
 
   orders: [
     { id: 'order_number',   label: '# Commande',       field: 'order_number' },
@@ -176,6 +218,21 @@ export const TABLE_COLUMN_META = {
     { id: 'priority',       label: 'Priorité',          field: 'priority', type: 'single_select', options: ['low', 'normal', 'high', 'urgent'] },
     { id: 'items_count',    label: 'Items',             field: 'items_count', type: 'number', groupable: false, sortable: false, description: 'Nombre de lignes d\'articles (line items) sur la commande.' },
     { id: 'assigned_name',  label: 'Assigné à',         field: 'assigned_name', type: 'user', defaultVisible: false },
+  ],
+
+  // Lignes d'articles d'une commande — tableau embarqué dans OrderDetail.jsx
+  // (les render() custom — produit, badges, actions — vivent dans la page).
+  order_items: [
+    { id: 'product_name',       label: 'Produit',         field: 'product_name' },
+    { id: 'qty',                label: 'Qté',             field: 'qty', type: 'number' },
+    { id: 'item_type',          label: 'Type',            field: 'item_type', type: 'single_select', options: ['Facturable', 'Remplacement', 'Non facturable'] },
+    { id: 'product_location',   label: 'Emplacement',     field: 'product_location' },
+    { id: 'fulfillment_status', label: 'Prélèvement',     field: 'fulfillment_status', type: 'single_select', options: ['À prélever', 'Prélevé', "Dans l'envoi", 'Envoyé', 'En attente'] },
+    { id: 'replaced_serial',    label: 'Série remplacée', field: 'replaced_serial' },
+    { id: 'product_stock',      label: 'Disponibilité',   field: 'product_stock', type: 'number', description: 'Stock disponible du produit lié (badge Épuisé / n en stock).' },
+    { id: 'unit_cost',          label: 'Coût unitaire',   field: 'unit_cost', type: 'currency', defaultVisible: false },
+    { id: 'notes',              label: 'Notes',           field: 'notes', defaultVisible: false },
+    { id: 'actions',            label: 'Actions',         field: 'actions', sortable: false, filterable: false, groupable: false },
   ],
 
   tickets: [
@@ -234,10 +291,13 @@ export const TABLE_COLUMN_META = {
     { id: 'document_number',       label: 'N° document',       field: 'document_number' },
     { id: 'invoice_id',            label: 'ID Stripe/source',  field: 'invoice_id',            defaultVisible: false },
     { id: 'company_name',          label: 'Entreprise',        field: 'company_name' },
+    { id: 'customer_email',        label: 'Courriel client',   field: 'customer_email',        defaultVisible: false, description: 'Courriel du client Stripe (mapping configurable via « Sync Stripe »). Utile pour les clients Stripe sans entreprise dans l\'ERP.' },
     { id: 'project_name',          label: 'Projet',            field: 'project_name',          defaultVisible: false },
     { id: 'order_number',          label: 'Commande',          field: 'order_number',          defaultVisible: false },
     { id: 'status',                label: 'Statut',            field: 'status',                type: 'single_select', options: ['Payée', 'Partielle', 'En retard', 'Envoyée', 'Brouillon', 'Annulée'] },
     { id: 'document_date',         label: 'Date document',     field: 'document_date',         type: 'date' },
+    { id: 'payment_date',          label: 'Date de paiement',  field: 'payment_date',          type: 'date', defaultVisible: false, description: 'Date à laquelle la facture a été payée : encaissement Stripe (paid_at) ou, à défaut, dernier paiement manuel enregistré (chèque, virement…). Couvre les paiements Stripe qu\'un rollup sur la table Paiements ne voit pas.' },
+    { id: 'payment_reference',     label: 'ID de paiement',    field: 'payment_reference',     defaultVisible: false, sortable: false, description: 'Identifiant du paiement : payment intent Stripe (pi_…) ou, à défaut, charge Stripe, encaissements manuels de la table Paiements, ou identifiant de facture Stripe (in_…). Couvre les encaissements Stripe qu\'un rollup sur la table Paiements ne voit pas (Stripe ne crée pas de ligne de paiement).' },
     { id: 'due_date',              label: 'Échéance',          field: 'due_date',              type: 'date', defaultVisible: false },
     { id: 'currency',              label: 'Devise',            field: 'currency',              type: 'single_select', options: ['CAD', 'USD', 'EUR'], defaultVisible: false },
     { id: 'amount_before_tax_cad', label: 'Avant taxes (CAD)', field: 'amount_before_tax_cad', type: 'number', description: 'Montant hors taxes converti en CAD au taux de la date de facture.' },
@@ -247,6 +307,19 @@ export const TABLE_COLUMN_META = {
     { id: 'is_sent',               label: 'Envoyée',           field: 'is_sent',               type: 'boolean', defaultVisible: false },
     { id: 'deferred_revenue_state',label: 'Revenu reçu d\'avance', field: 'deferred_revenue_state', type: 'single_select', options: ['Constaté', 'En attente', '—'], defaultVisible: false, description: 'État du revenu reporté : « En attente » tant que l\'expédition n\'a pas eu lieu, « Constaté » une fois la commande expédiée.' },
     { id: 'notes',                 label: 'Notes',             field: 'notes' },
+  ],
+
+  payments: [
+    { id: 'received_at',    label: 'Date',        field: 'received_at',   type: 'date' },
+    { id: 'direction',      label: 'Type',        field: 'direction',     type: 'single_select', options: ['in', 'out'] },
+    { id: 'method',         label: 'Méthode',     field: 'method',        type: 'single_select', options: ['stripe', 'cheque', 'virement_bancaire', 'interac', 'comptant', 'autre'] },
+    { id: 'company_name',   label: 'Entreprise',  field: 'company_name' },
+    { id: 'document_number',label: 'Facture',     field: 'document_number' },
+    { id: 'amount',         label: 'Montant',     field: 'amount',        type: 'number', description: 'Montant du paiement dans sa devise d\'origine.' },
+    { id: 'currency',       label: 'Devise',      field: 'currency',      type: 'single_select', options: ['CAD', 'USD', 'EUR'], defaultVisible: false },
+    { id: 'amount_cad',     label: 'Montant (CAD)', field: 'amount_cad',  type: 'number', description: 'Montant converti en CAD au taux de la date du paiement. Vide pour les encaissements Stripe (convertis au payout).' },
+    { id: 'qb_status',      label: 'QuickBooks',  field: 'qb_status', sortable: false, filterable: false },
+    { id: 'notes',          label: 'Notes',       field: 'notes', defaultVisible: false },
   ],
 
   abonnements: [
@@ -382,6 +455,39 @@ export const TABLE_COLUMN_META = {
     { id: 'due_date',         label: 'Échéance',      field: 'due_date',      type: 'date', defaultVisible: false },
     { id: 'payment_method',   label: 'Paiement',      field: 'payment_method', defaultVisible: false },
     { id: 'status',           label: 'Statut',        field: 'status',        type: 'single_select', options: ['Brouillon','Soumis','Approuvé','Refusé','Remboursé','Reçue','Approuvée','Payée partiellement','Payée','En retard','Annulée'] },
+    { id: 'qb',               label: 'QB',            field: 'quickbooks_id' },
+  ],
+
+  vendor_subscriptions: [
+    { id: 'vendor',         label: 'Fournisseur',    field: 'vendor' },
+    { id: 'plan',           label: 'Plan/Forfait',   field: 'plan' },
+    { id: 'currency',       label: 'Devise',         field: 'currency',   type: 'single_select', options: ['CAD', 'USD', 'Euro'] },
+    { id: 'variable',       label: 'Fixe/Variable',  field: 'variable',   type: 'single_select', options: ['Fixe', 'Variable'] },
+    { id: 'amount',         label: 'Montant av. taxes', field: 'amount',  type: 'number' },
+    { id: 'taxes',          label: 'Taxes',          field: 'taxes',      type: 'single_select', options: ['TPS/TVQ', 'TPS', 'TVQ', 'Hors-champ'] },
+    { id: 'frequency',      label: 'Fréquence',      field: 'frequency',  type: 'single_select', options: ['Mensuel', 'Annuel'] },
+    { id: 'billing_label',  label: 'Date de facturation', field: 'billing_label' },
+    { id: 'period',         label: 'Période',        field: 'period',     defaultVisible: false },
+    { id: 'payment_method', label: 'Mode de paiement', field: 'payment_method' },
+    { id: 'active',         label: 'Actif',          field: 'active',     type: 'single_select', options: ['Actif', 'Annulé'] },
+    { id: 'comments',       label: 'Commentaires',   field: 'comments',   defaultVisible: false },
+  ],
+
+  vendor_profiles: [
+    { id: 'name',                 label: 'Fournisseur',        field: 'name' },
+    { id: 'qb_vendors',           label: 'Vendors QB',         field: 'qb_vendor_id_cad' },
+    { id: 'default_qb_type',      label: 'Type d\'entité',     field: 'default_qb_type', type: 'single_select', options: ['purchase', 'bill', 'cc_credit'] },
+    { id: 'expense_account',      label: 'Compte de dépense',  field: 'default_expense_account_id' },
+    { id: 'payment_accounts',     label: 'Comptes de paiement', field: 'default_payment_account_id_cad' },
+    { id: 'transaction_type',     label: 'Type de transaction', field: 'default_transaction_type' },
+    { id: 'tax_codes',            label: 'Codes de taxe',      field: 'default_tax_code_id_cad' },
+    { id: 'payment_terms_days',   label: 'Termes (jours)',     field: 'payment_terms_days', type: 'number' },
+    { id: 'directory_currency',   label: 'Devise (répertoire)', field: 'directory_currency', defaultVisible: false },
+    { id: 'directory_category',   label: 'Catégorie ctb',      field: 'directory_category', defaultVisible: false },
+    { id: 'directory_particularites', label: 'Particularités', field: 'directory_particularites', defaultVisible: false },
+    { id: 'active_subscriptions', label: 'Abonnements',        field: 'active_subscriptions', type: 'number', defaultVisible: false },
+    { id: 'last_receipt_date',    label: 'Dernier document',   field: 'last_receipt_date', type: 'date' },
+    { id: 'notes',                label: 'Notes',              field: 'notes', defaultVisible: false },
   ],
 
   shipments: [

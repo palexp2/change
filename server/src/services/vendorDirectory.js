@@ -97,10 +97,25 @@ export function buildVendorExtractionContext() {
     SELECT name, currency, qb_category FROM vendor_directory
     WHERE deleted_at IS NULL ORDER BY name
   `).all()
+  // Union avec les profils fournisseurs (vendor_profiles) : fournisseurs déjà
+  // comptabilisés mais absents du doc Drive, + leurs alias (variantes de raison
+  // sociale apprises) pour aider la canonisation du modèle.
+  const seen = new Set(rows.map(r => normalizeVendorKey(r.name)))
+  try {
+    const profiles = db.prepare('SELECT name, aliases FROM vendor_profiles WHERE deleted_at IS NULL ORDER BY name').all()
+    for (const p of profiles) {
+      if (seen.has(normalizeVendorKey(p.name))) continue
+      seen.add(normalizeVendorKey(p.name))
+      let aliases = []
+      try { aliases = JSON.parse(p.aliases || '[]') } catch {}
+      rows.push({ name: p.name, currency: null, qb_category: null, aliases })
+    }
+  } catch {}
   if (!rows.length) return null
   const lines = rows.map(r => {
     const extra = [r.currency, r.qb_category].filter(Boolean).join(' | ')
-    return `- ${r.name}${extra ? ` (${extra})` : ''}`
+    const alias = Array.isArray(r.aliases) && r.aliases.length ? ` [aussi vu sous : ${r.aliases.join(', ')}]` : ''
+    return `- ${r.name}${extra ? ` (${extra})` : ''}${alias}`
   })
   return `RÉPERTOIRE INTERNE DES FOURNISSEURS CONNUS (nom canonique, devise habituelle | catégorie comptable) :
 Si l'émetteur du document correspond à l'un de ces fournisseurs — même sous une variante de raison sociale, une marque ou un domaine de courriel — utilise EXACTEMENT le nom canonique ci-dessous comme "company". La devise indiquée est celle habituellement facturée par ce fournisseur : sers-t'en pour trancher quand le document est ambigu (ex. « $ » sans mention CAD/USD).

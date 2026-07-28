@@ -13,6 +13,7 @@ import { initSchema, seedSellableProducts } from './db/schema.js'
 import { initChangeLog } from './db/changeLog.js'
 import { startFieldRuleWatcher } from './services/fieldRuleWatcher.js'
 import { startRevenueRecognitionWatcher } from './services/revenueRecognitionWatcher.js'
+import { syncAllPrepaidAccountsFromQB } from './services/prepaid.js'
 import bootstrapRouter from './routes/bootstrap.js'
 import { seedSystemAutomations, logSystemRun, isSystemAutomationActive } from './services/systemAutomations.js'
 import { runPurge } from './services/purge.js'
@@ -21,8 +22,8 @@ import companiesRouter from './routes/companies.js'
 import contactsRouter from './routes/contacts.js'
 import projectsRouter from './routes/projects.js'
 import customFieldsRouter from './routes/custom-fields.js'
-import airtableFieldsRouter from './routes/airtable-fields.js'
 import fieldVisibilityRulesRouter from './routes/field-visibility-rules.js'
+import fieldOverridesRouter from './routes/field-overrides.js'
 import productsRouter from './routes/products.js'
 import ordersRouter from './routes/orders.js'
 import ticketsRouter from './routes/tickets.js'
@@ -47,6 +48,11 @@ import automationsRouter from './routes/automations.js'
 import tasksRouter from './routes/tasks.js'
 import agentRouter from './routes/agent.js'
 import achatsFournisseursRouter from './routes/achats-fournisseurs.js'
+import vendorSubscriptionsRouter from './routes/vendor-subscriptions.js'
+import vendorProfilesRouter from './routes/vendor-profiles.js'
+import treasuryRouter from './routes/treasury.js'
+import prepaidRouter from './routes/prepaid.js'
+import ltDebtsRouter from './routes/lt-debts.js'
 import employeesRouter from './routes/employees.js'
 import vacationsRouter from './routes/vacations.js'
 import qualificationCallsRouter from './routes/qualification-calls.js'
@@ -90,7 +96,7 @@ import { syncVendorDirectory } from './services/vendorDirectory.js'
 import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncStockMovements } from './services/airtable.js'
 import { tracked } from './services/syncState.js'
 import { syncStripeSubscriptions, isStripeConfigured } from './services/stripe.js'
-import { syncAndPushStripePayouts } from './services/quickbooks.js'
+import { syncAndPushStripePayouts, importFromQB } from './services/quickbooks.js'
 import cron from 'node-cron'
 import { initAirtableWebhooks } from './services/airtableWebhooks.js'
 import { getAccessToken as getAirtableToken } from './connectors/airtable.js'
@@ -201,7 +207,8 @@ seedSystemAutomations()
 runPurge()
 regenerateAllViews()
 
-// Register native fields in airtable_field_defs so they appear in views/filters
+// Register native fields in airtable_field_mappings so they appear in the
+// field-rule template whitelist alongside dynamic Airtable fields
 ensureNativeFieldDefs([
   { module: 'pieces', erp_table: 'products', column_name: 'name_fr',    label: 'Nom',                      field_type: 'text',   sort_order: -1000 },
   { module: 'pieces', erp_table: 'products', column_name: 'name_en',    label: 'Nom (EN)',                  field_type: 'text',   sort_order: -999 },
@@ -242,8 +249,8 @@ app.use('/api/companies', companiesRouter)
 app.use('/api/contacts', contactsRouter)
 app.use('/api/projects', projectsRouter)
 app.use('/api/custom-fields', customFieldsRouter)
-app.use('/api/airtable-fields', airtableFieldsRouter)
 app.use('/api/field-visibility-rules', fieldVisibilityRulesRouter)
+app.use('/api/field-overrides', fieldOverridesRouter)
 app.use('/api/products', productsRouter)
 app.use('/api/orders', ordersRouter)
 app.use('/api/tickets', ticketsRouter)
@@ -271,6 +278,11 @@ app.use('/api/hooks', hooksRouter)
 app.use('/api/tasks', tasksRouter)
 app.use('/api/agent', agentRouter)
 app.use('/api/achats-fournisseurs', achatsFournisseursRouter)
+app.use('/api/vendor-subscriptions', vendorSubscriptionsRouter)
+app.use('/api/vendor-profiles', vendorProfilesRouter)
+app.use('/api/treasury', treasuryRouter)
+app.use('/api/prepaid', prepaidRouter)
+app.use('/api/lt-debts', ltDebtsRouter)
 app.use('/api/sale-receipts', saleReceiptsRouter)
 // Pièces jointes polymorphes (toute entité). Le static '/api/attachments'
 // (ligne ~189) sert les fichiers bruts ; ce router gère list/upload/download/delete.
@@ -415,6 +427,22 @@ const server = app.listen(PORT, () => {
   // Gmail : démarrage après 30s, puis toutes les heures
   setTimeout(scheduleGmailSync, 30_000)
   setInterval(scheduleGmailSync, 60 * 60 * 1000)
+
+  // Comptes prépayés : détection des transactions QB des fournisseurs suivis
+  // (recharges/factures Twilio…) — toutes les 6 h. logSync interne au service.
+  const schedulePrepaidSync = () => { syncAllPrepaidAccountsFromQB('scheduled').catch(() => {}) }
+  setTimeout(schedulePrepaidSync, 90_000)
+  setInterval(schedulePrepaidSync, 6 * 60 * 60 * 1000)
+
+  // Achats fournisseurs : import QB continu — nouvelles factures/dépenses
+  // comptabilisées dans QB ET suppressions, sans clic dans Connecteurs.
+  // CDC incrémental toutes les 15 min ; import complet (réconciliation des
+  // suppressions incluse) une fois par jour. logSync module 'qb_import'.
+  const scheduleQbImportIncremental = () => { importFromQB({ incremental: true, trigger: 'scheduled' }).catch(() => {}) }
+  const scheduleQbImportFull = () => { importFromQB({ trigger: 'scheduled' }).catch(() => {}) }
+  setTimeout(scheduleQbImportIncremental, 120_000)
+  setInterval(scheduleQbImportIncremental, 15 * 60 * 1000)
+  setInterval(scheduleQbImportFull, 24 * 60 * 60 * 1000)
 
   // Airtable webhooks : enregistrement au démarrage
   setTimeout(() => {
@@ -643,6 +671,14 @@ const server = app.listen(PORT, () => {
     }
   }
   cron.schedule('0 12 * * 1', runStripeWeeklyPayoutPush)
+
+  // Alerte trésorerie BNC : vérification quotidienne du solde projeté à 7h30
+  // locale (le service court-circuite si sys_treasury_alert est inactive).
+  cron.schedule('30 7 * * *', () => {
+    import('./services/treasury.js')
+      .then(({ checkTreasuryAlert }) => checkTreasuryAlert({ trigger: 'cron quotidien' }))
+      .catch(e => console.error('treasury cron:', e.message))
+  })
 })
 
 // Kill Claude process on shutdown so pm2 restart doesn't leave orphans

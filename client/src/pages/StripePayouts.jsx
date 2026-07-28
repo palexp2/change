@@ -6,9 +6,9 @@ import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
+import DirectDepositsSection from '../components/DirectDepositsSection.jsx'
 
 function fmtMoney(n, currency = 'CAD') {
   if (n == null) return '—'
@@ -101,7 +101,6 @@ export default function StripePayouts() {
             >
               <ExternalLink size={14} /> Stripe
             </a>
-            <TableConfigModal table="stripe_payouts" />
           </div>
         </div>
 
@@ -111,12 +110,15 @@ export default function StripePayouts() {
 
         <DataTable
           table="stripe_payouts"
+          manageViews
           columns={COLUMNS}
           data={payouts}
           loading={loading}
           searchFields={['stripe_id', 'description', 'bank_name', 'qb_deposit_id', 'amount']}
           onRowClick={row => navigate(`/stripe-payouts/${row.stripe_id}`)}
         />
+
+        <DirectDepositsSection />
       </div>
     </Layout>
   )

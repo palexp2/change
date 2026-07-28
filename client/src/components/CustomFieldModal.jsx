@@ -1,10 +1,40 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { Plus, X, Check, Star } from 'lucide-react'
+import { Plus, X, Check, Star, AlertTriangle, RotateCcw } from 'lucide-react'
 import { Modal } from './Modal.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import api from '../lib/api.js'
+import { OVERRIDE_TYPES, typeLabel, syncSourceForTable } from '../lib/fieldOverrides.jsx'
 import { formatDurationSeconds, normalizeDurationFormat } from '../lib/duration.js'
+import { currencyCodeOf, phoneCountryCodeOf } from '../lib/customFieldDisplay.jsx'
+import { TABLE_LABELS, TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { groupDependents, DEPENDENT_CATEGORY_LABELS } from '../lib/customFieldDeps.js'
+
+// Libellé UI d'une colonne cible (lookup/rollup) : label curé des DataTables
+// (tableDefs) > nom du champ Airtable (renvoyé par le serveur) > nom technique.
+// Affiche les champs comme l'utilisateur les voit ailleurs dans l'app.
+function uiColumnLabel(table, opt) {
+  const meta = (TABLE_COLUMN_META[table] || []).find(c => c.field === opt.column)
+  const label = meta?.label || opt.label
+  return label ? `${label} (${opt.column})` : opt.column
+}
+
+function uiTableLabel(table) {
+  return TABLE_LABELS[table] ? `${TABLE_LABELS[table]} (${table})` : table
+}
+
+// Agrégations de rollup (alignées sur ROLLUP_AGGS serveur). ARRAY / ARRAYUNIQUE
+// concatènent les valeurs liées (toutes / distinctes) en une liste texte.
+const ROLLUP_AGG_OPTIONS = [
+  { value: 'SUM', label: 'SUM' },
+  { value: 'COUNT', label: 'COUNT' },
+  { value: 'AVG', label: 'AVG' },
+  { value: 'MIN', label: 'MIN' },
+  { value: 'MAX', label: 'MAX' },
+  { value: 'ARRAY', label: 'ARRAY' },
+  { value: 'ARRAYUNIQUE', label: 'UNIQUE' },
+]
+const isArrayAgg = agg => agg === 'ARRAY' || agg === 'ARRAYUNIQUE'
 
 // Styles d'un champ Bouton (alignés sur BUTTON_STYLES serveur + BUTTON_STYLE_CLS client).
 const BUTTON_STYLE_OPTIONS = [
@@ -12,6 +42,43 @@ const BUTTON_STYLE_OPTIONS = [
   { v: 'green', label: 'Vert',  dot: 'bg-green-500' },
   { v: 'red',   label: 'Rouge', dot: 'bg-red-500' },
   { v: 'slate', label: 'Gris',  dot: 'bg-slate-400' },
+]
+
+// Devises proposées pour un champ « Devise » (code ISO 4217 + libellé fr).
+// Plus de 10 options → sélecteur avec recherche (règle « dropdowns avec
+// recherche »). Le serveur accepte tout code ISO à 3 lettres.
+const CURRENCY_OPTIONS = [
+  { code: 'CAD', label: 'Dollar canadien' },
+  { code: 'USD', label: 'Dollar américain' },
+  { code: 'EUR', label: 'Euro' },
+  { code: 'GBP', label: 'Livre sterling' },
+  { code: 'AUD', label: 'Dollar australien' },
+  { code: 'NZD', label: 'Dollar néo-zélandais' },
+  { code: 'JPY', label: 'Yen japonais' },
+  { code: 'CNY', label: 'Yuan chinois' },
+  { code: 'CHF', label: 'Franc suisse' },
+  { code: 'HKD', label: 'Dollar de Hong Kong' },
+  { code: 'SGD', label: 'Dollar de Singapour' },
+  { code: 'SEK', label: 'Couronne suédoise' },
+  { code: 'NOK', label: 'Couronne norvégienne' },
+  { code: 'DKK', label: 'Couronne danoise' },
+  { code: 'MXN', label: 'Peso mexicain' },
+  { code: 'BRL', label: 'Réal brésilien' },
+  { code: 'INR', label: 'Roupie indienne' },
+  { code: 'KRW', label: 'Won sud-coréen' },
+  { code: 'PLN', label: 'Złoty polonais' },
+  { code: 'CZK', label: 'Couronne tchèque' },
+  { code: 'HUF', label: 'Forint hongrois' },
+  { code: 'ZAR', label: 'Rand sud-africain' },
+  { code: 'TRY', label: 'Livre turque' },
+  { code: 'AED', label: 'Dirham des Émirats' },
+  { code: 'SAR', label: 'Riyal saoudien' },
+  { code: 'ILS', label: 'Shekel israélien' },
+  { code: 'THB', label: 'Baht thaïlandais' },
+  { code: 'PHP', label: 'Peso philippin' },
+  { code: 'TWD', label: 'Dollar taïwanais' },
+  { code: 'COP', label: 'Peso colombien' },
+  { code: 'CLP', label: 'Peso chilien' },
 ]
 
 // Palette de couleurs des choix (alignée sur Badge.jsx + SELECT_COLORS serveur).
@@ -55,20 +122,310 @@ const AUTO_TYPE_OPTIONS = [
   { v: 'last_modified_by',   label: 'Modifié par',            hint: 'Dernier utilisateur ayant modifié' },
 ]
 
-// Modal pour créer ou éditer un champ custom.
+// Modale UNIQUE de modification de champ, commune à tous les champs de toutes
+// les tables :
+//   - champs custom (création + édition) → CustomFieldModalInner ci-dessous ;
+//   - champs natifs (colonnes de tableDefs.js) → NativeFieldModal : renommage +
+//     changement de type d'affichage via un override cosmétique persisté dans
+//     field_overrides (la colonne SQL et les syncs ne bougent pas).
+// Passer `native={{ column, override }}` pour éditer un champ natif ; sinon la
+// modale se comporte comme avant (champ custom).
+export function CustomFieldModal(props) {
+  if (props.native?.column) return <NativeFieldModal {...props} />
+  return <CustomFieldModalInner {...props} />
+}
+
+// Édition d'un champ NATIF (colonne définie dans tableDefs.js) : renommage +
+// changement de type d'affichage. Même présentation que le mode édition d'un
+// champ custom (labels, cartes de type, autosave au blur/changement, footer
+// « Réinitialiser / Fermer ») pour que la modale « Modifier le champ » soit
+// identique quel que soit le champ cliqué. L'override est cosmétique (label +
+// type d'affichage/tri/filtres) — la colonne SQL et les syncs qui l'alimentent
+// ne bougent pas — mais un changement de type sur un champ alimenté par une
+// sync affiche un avertissement explicite.
+//
+// `native.column` = définition D'ORIGINE de la colonne (pré-override),
+// `native.override` = override actif ou null.
+function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved }) {
+  const { addToast } = useToast()
+  const table = erpTable
+  const column = native?.column || null
+  const override = native?.override || null
+  const [label, setLabel] = useState('')
+  const [type, setType] = useState('text')
+  const [decimals, setDecimals] = useState(2)
+  // Préférence d'indicatif de pays pour les champs téléphone : 'show' | 'hide'.
+  // Baseline (= pas d'override) : 'hide', cohérent avec le rendu natif fmtPhone.
+  const [countryCode, setCountryCode] = useState('hide')
+  const [saving, setSaving] = useState(false)
+  const [savedFlash, setSavedFlash] = useState(false)
+  const [error, setError] = useState(null)
+  // Override actif côté serveur — suivi localement pour que les autosaves
+  // successifs (et le bouton Réinitialiser) restent cohérents sans attendre le
+  // rafraîchissement de la prop `override` par le parent.
+  const [hasOverride, setHasOverride] = useState(false)
+  // Dernières valeurs persistées — évite de re-PATCH un champ inchangé au blur.
+  const lastSaved = useRef({ label: '', type: 'text', decimals: 2, countryCode: 'hide' })
+
+  // Type/label d'origine de la colonne, tels que définis dans tableDefs.js.
+  const originalType = column?.type || 'text'
+  const originalLabel = column?.label || column?.id || ''
+
+  useEffect(() => {
+    if (!isOpen || !column) return
+    const l = override?.label || originalLabel
+    const t = override?.type || originalType
+    const d = Number.isInteger(override?.decimals) ? override.decimals : 2
+    const cc = override?.country_code === 'show' ? 'show' : 'hide'
+    setLabel(l)
+    setType(t)
+    setDecimals(d)
+    setCountryCode(cc)
+    setHasOverride(!!override)
+    lastSaved.current = { label: l, type: t, decimals: d, countryCode: cc }
+    setError(null)
+    // `override` volontairement hors deps : après un autosave, le parent
+    // recharge les overrides et la prop change — sans ce garde, l'effet
+    // écraserait la saisie en cours avec les valeurs re-fetchées.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, column?.id])
+
+  if (!column) return null
+
+  const typeChanged = type !== originalType
+  const syncSource = syncSourceForTable(table)
+  // Types proposés : le type d'origine d'abord (= pas d'override), puis les
+  // types d'affichage supportés.
+  const typeOptions = [
+    { value: originalType, label: typeLabel(originalType), origin: true },
+    ...OVERRIDE_TYPES.filter(t => t.value !== originalType),
+  ]
+
+  // Autosave (règle « autosave partout ») : persiste l'état courant, avec
+  // valeurs explicites pour contourner l'asynchronisme de setState. Valeurs
+  // revenues à l'origine → l'override est retiré.
+  async function persist(next = {}) {
+    const cur = {
+      label: (next.label ?? label).trim(),
+      type: next.type ?? type,
+      decimals: next.decimals ?? decimals,
+      countryCode: next.countryCode ?? countryCode,
+    }
+    if (!cur.label) { setError('Le nom du champ est requis'); return }
+    const ls = lastSaved.current
+    if (cur.label === ls.label && cur.type === ls.type && cur.decimals === ls.decimals && cur.countryCode === ls.countryCode) return
+    const labelChanged = cur.label !== originalLabel
+    const typeIsOverridden = cur.type !== originalType
+    // Préférence d'indicatif applicable seulement si le champ s'affiche en
+    // téléphone. Baseline 'hide' → seul 'show' constitue un override.
+    const isPhone = cur.type === 'phone'
+    const ccIsOverridden = isPhone && cur.countryCode === 'show'
+    setError(null)
+    setSaving(true)
+    try {
+      if (!labelChanged && !typeIsOverridden && !ccIsOverridden) {
+        // Tout est revenu aux valeurs d'origine → on retire l'override.
+        if (hasOverride) {
+          await api.fieldOverrides.reset(table, column.id)
+          setHasOverride(false)
+        }
+      } else {
+        await api.fieldOverrides.save(table, column.id, {
+          label: labelChanged ? cur.label : null,
+          type: typeIsOverridden ? cur.type : null,
+          decimals: typeIsOverridden && (cur.type === 'number' || cur.type === 'currency') ? cur.decimals : null,
+          country_code: isPhone ? cur.countryCode : null,
+        })
+        setHasOverride(true)
+      }
+      lastSaved.current = cur
+      onSaved?.()
+      setSavedFlash(true)
+      setTimeout(() => setSavedFlash(false), 1500)
+    } catch (e) {
+      setError(e.message || 'Erreur')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleReset() {
+    setSaving(true)
+    setError(null)
+    try {
+      await api.fieldOverrides.reset(table, column.id)
+      setLabel(originalLabel)
+      setType(originalType)
+      setDecimals(2)
+      setCountryCode('hide')
+      setHasOverride(false)
+      lastSaved.current = { label: originalLabel, type: originalType, decimals: 2, countryCode: 'hide' }
+      addToast({ message: 'Champ réinitialisé', type: 'success' })
+      onSaved?.()
+    } catch (e) {
+      setError(e.message || 'Erreur')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Modifier le champ" size="md">
+      <form onSubmit={e => { e.preventDefault(); persist() }} className="space-y-4">
+        <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+          Champ natif de l'ERP{syncSource ? ` — alimenté par ${syncSource}` : ''}.
+          Nom et rendu sont éditables ici ; la colonne d'origine et les syncs qui
+          l'alimentent ne changent pas.
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Nom</label>
+          <input
+            autoFocus
+            type="text"
+            value={label}
+            onChange={e => setLabel(e.target.value)}
+            onBlur={() => persist()}
+            maxLength={120}
+            className="input text-sm w-full"
+            data-testid="field-override-name"
+          />
+          {label.trim() !== originalLabel && (
+            <p className="text-[11px] text-slate-400 mt-1">Nom d'origine : {originalLabel}</p>
+          )}
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Type</label>
+          <div className="grid grid-cols-2 gap-2" data-testid="field-override-type">
+            {typeOptions.map(t => (
+              <label
+                key={t.value}
+                data-testid={`field-override-type-${t.value}`}
+                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg border cursor-pointer transition-colors ${type === t.value ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 hover:bg-slate-50 text-slate-700'}`}
+              >
+                <input
+                  type="radio" name="field-override-type" value={t.value}
+                  checked={type === t.value}
+                  onChange={() => { setType(t.value); persist({ type: t.value }) }}
+                  className="sr-only"
+                />
+                {t.label}
+                {t.origin && <span className="text-[11px] text-slate-400">(origine)</span>}
+              </label>
+            ))}
+          </div>
+          {!typeChanged && (
+            <p className="text-[11px] text-slate-400 mt-1">Le changement de type modifie l'affichage, le tri et les filtres de cette colonne.</p>
+          )}
+        </div>
+
+        {typeChanged && (type === 'number' || type === 'currency') && (
+          <div>
+            <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Décimales (0 à 5)</label>
+            <input
+              type="number" min={0} max={5}
+              value={decimals}
+              onChange={e => setDecimals(Math.max(0, Math.min(5, parseInt(e.target.value) || 0)))}
+              onBlur={() => persist()}
+              className="input text-sm w-24"
+              data-testid="field-override-decimals"
+            />
+          </div>
+        )}
+
+        {/* Préférence d'indicatif de pays — uniquement pour l'affichage téléphone. */}
+        {type === 'phone' && (
+          <div>
+            <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Indicatif de pays</label>
+            <div className="grid grid-cols-2 gap-2" data-testid="field-override-country-code">
+              {[
+                { value: 'hide', label: 'Masquer', hint: '(514) 123-4567' },
+                { value: 'show', label: 'Afficher', hint: '+1 (514) 123-4567' },
+              ].map(o => (
+                <label
+                  key={o.value}
+                  data-testid={`field-override-country-code-${o.value}`}
+                  className={`flex flex-col items-center justify-center gap-0.5 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${countryCode === o.value ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 hover:bg-slate-50 text-slate-700'}`}
+                >
+                  <input
+                    type="radio" name="field-override-country-code" value={o.value}
+                    checked={countryCode === o.value}
+                    onChange={() => { setCountryCode(o.value); persist({ countryCode: o.value }) }}
+                    className="sr-only"
+                  />
+                  <span className="text-sm">{o.label}</span>
+                  <span className="text-[11px] text-slate-400 tabular-nums">{o.hint}</span>
+                </label>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1">L'indicatif « +1 » n'est ajusté que sur les numéros nord-américains ; les numéros internationaux le conservent toujours.</p>
+          </div>
+        )}
+
+        {/* Avertissement : changement de type sur un champ alimenté par une sync. */}
+        {typeChanged && syncSource && (
+          <div
+            className="flex gap-2.5 items-start rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm text-amber-800"
+            data-testid="field-override-sync-warning"
+          >
+            <AlertTriangle size={16} className="shrink-0 mt-0.5 text-amber-500" />
+            <div>
+              <p className="font-medium">Ce champ est alimenté par {syncSource}.</p>
+              <p className="mt-0.5 text-amber-700">
+                Changer son type risque de casser cette sync côté affichage : la sync continuera
+                d'écrire des valeurs de type « {typeLabel(originalType)} », qui peuvent devenir
+                illisibles ou mal triées/filtrées en « {typeLabel(type)} ».
+              </p>
+            </div>
+          </div>
+        )}
+
+        {error && <div className="rounded bg-red-50 border border-red-200 p-2 text-xs text-red-700">{error}</div>}
+
+        {/* Autosave au blur / au changement, pas de bouton « Enregistrer » —
+            même footer que le mode édition custom : action à gauche,
+            état de sauvegarde discret + « Fermer » à droite. */}
+        <div className="flex items-center justify-between gap-3 pt-2">
+          {hasOverride ? (
+            <button
+              type="button"
+              onClick={handleReset}
+              disabled={saving}
+              className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700 disabled:opacity-40"
+              data-testid="field-override-reset"
+            >
+              <RotateCcw size={13} /> Réinitialiser le champ
+            </button>
+          ) : <span />}
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-slate-400 min-h-[1rem]" data-testid="field-override-save-state">
+              {saving ? 'Enregistrement…' : (savedFlash ? 'Enregistré ✓' : '')}
+            </span>
+            <button type="button" onClick={onClose} className="btn-secondary">Fermer</button>
+          </div>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
+// Branche « champ custom » de la modale commune.
 // Quatre "kinds" :
 //   - data    : colonne réelle stockée (text/number) — éditable inline
 //   - formula : expression SQLite calculée à la lecture via la VUE
 //   - lookup  : valeur tirée d'une table liée via FK
 //   - auto    : champ système lecture seule (created_time, last_modified_time, created_by, last_modified_by)
 // En mode édition, le kind est figé.
-export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, onDeleted }) {
+function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, onDeleted }) {
   const { addToast } = useToast()
   const [kind, setKind] = useState('data')
   const [name, setName] = useState('')
   const [type, setType] = useState('text')        // pour kind='data'
   const [decimals, setDecimals] = useState(2)
+  const [currencyCode, setCurrencyCode] = useState('CAD') // pour kind='data' type currency (ISO 4217)
   const [durationFormat, setDurationFormat] = useState('h:mm') // pour kind='data' type duration
+  const [phoneCountryCode, setPhoneCountryCode] = useState('hide') // pour kind='data' type phone ('show'|'hide')
   const [defaultValue, setDefaultValue] = useState('') // pour kind='data' text/number/currency/url/duration
   // pour kind='data' type single_select/multi_select
   const [choices, setChoices] = useState([])
@@ -138,6 +495,9 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
       setType(editing.type || 'text')
       setDecimals(editing.decimals ?? 2)
       setDefaultValue(editing.default_value ?? '')
+      // Devise : le code (ISO 4217) est lu depuis options ; défaut CAD pour les
+      // champs créés avant le choix de devise.
+      setCurrencyCode(editing.type === 'currency' ? currencyCodeOf(editing) : 'CAD')
       if (editing.type === 'duration') {
         // Duration : format (h:mm/h:mm:ss) lu depuis options ; la valeur par défaut
         // (secondes en DB) est affichée formatée et alignée sur lastSaved pour éviter
@@ -153,6 +513,8 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
       } else {
         setDurationFormat('h:mm')
       }
+      // Téléphone : affichage de l'indicatif de pays lu depuis options (défaut 'hide').
+      setPhoneCountryCode(editing.type === 'phone' ? phoneCountryCodeOf(editing) : 'hide')
       {
         const os = parseOptionsState(editing.options)
         setChoices(os.choices)
@@ -196,7 +558,9 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
       setName('')
       setType('text')
       setDecimals(2)
+      setCurrencyCode('CAD')
       setDurationFormat('h:mm')
+      setPhoneCountryCode('hide')
       setDefaultValue('')
       setChoices([])
       setDefaultId(null)
@@ -352,6 +716,9 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
       rollup_target_fk: fk,
       rollup_target_column: nextCol,
       rollup_agg: agg,
+      // ARRAY / ARRAYUNIQUE → liste texte ; on bascule le type de résultat en
+      // conséquence pour rester cohérent avec l'affichage.
+      result_type: isArrayAgg(agg) ? 'text' : resultType,
     })
   }
 
@@ -416,7 +783,9 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
             name: name.trim(),
             type,
             ...((type === 'number' || type === 'currency') ? { decimals } : {}),
+            ...(type === 'currency' ? { options: { currency: currencyCode } } : {}),
             ...(type === 'duration' ? { options: { format: durationFormat } } : {}),
+            ...(type === 'phone' ? { options: { country_code: phoneCountryCode } } : {}),
             ...(defaultValue.trim() !== '' ? { default_value: defaultValue.trim() } : {}),
           })
         }
@@ -452,7 +821,9 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
           rollup_target_fk: rollupFk,
           rollup_target_column: rollupAgg === 'COUNT' ? null : rollupColumn,
           rollup_agg: rollupAgg,
-          result_type: resultType,
+          // ARRAY / ARRAYUNIQUE produisent une liste texte → forcer le type texte
+          // (le tri/filtre/affichage numérique n'a pas de sens sur une liste).
+          result_type: isArrayAgg(rollupAgg) ? 'text' : resultType,
         })
       } else if (kind === 'auto') {
         result = await api.customFields.createAuto(erpTable, {
@@ -491,6 +862,13 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title={editing ? 'Modifier le champ' : 'Nouveau champ'} size="md">
       <form onSubmit={handleSubmit} className="space-y-4">
+        {editing?.source === 'airtable' && erpTable !== 'factures' && (
+          <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">
+            Connecté à Airtable — cette colonne est alimentée par la synchronisation.
+            Nom et rendu sont éditables ici ; pour changer le mapping ou désactiver
+            l'import, voir la page de gestion des champs Airtable du module.
+          </div>
+        )}
         {!editing && (
           <div>
             <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Type de champ</label>
@@ -545,15 +923,26 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
               <div className="grid grid-cols-2 gap-2">
                 {[
                   { v: 'text',          label: 'Texte' },
+                  { v: 'long_text',     label: 'Texte long' },
                   { v: 'number',        label: 'Nombre' },
                   { v: 'currency',      label: 'Devise' },
                   { v: 'duration',      label: 'Durée' },
+                  { v: 'date',          label: 'Date' },
                   { v: 'url',           label: 'URL' },
+                  { v: 'phone',         label: 'Téléphone' },
                   { v: 'checkbox',      label: 'Case à cocher' },
                   { v: 'single_select', label: 'Sélection' },
                   { v: 'multi_select',  label: 'Multi-sélection' },
-                ].map(t => (
-                  <label key={t.v} data-testid={`cf-type-${t.v}`} className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg border cursor-pointer transition-colors ${type === t.v ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 hover:bg-slate-50 text-slate-700'} ${editing ? 'opacity-60 cursor-not-allowed' : ''}`}>
+                ].map(t => {
+                  // Un champ existant a normalement son type figé — sauf s'il
+                  // adopte une colonne Airtable (source='airtable') : ces
+                  // colonnes sont pleinement modifiables, le type peut basculer
+                  // vers n'importe quel rendu (le changement est purement
+                  // métadonnée — la colonne physique n'est pas ré-altérée).
+                  const canRetype = editing?.source === 'airtable' && editing?.kind === 'data'
+                  const locked = !!editing && !canRetype
+                  return (
+                  <label key={t.v} data-testid={`cf-type-${t.v}`} className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm rounded-lg border cursor-pointer transition-colors ${type === t.v ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 hover:bg-slate-50 text-slate-700'} ${locked ? 'opacity-60 cursor-not-allowed' : ''}`}>
                     <input
                       type="radio" name="cf-type" value={t.v}
                       checked={type === t.v}
@@ -561,21 +950,27 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
                         setType(t.v)
                         // Devise : défaut 2 décimales (format monétaire usuel).
                         if (t.v === 'currency') setDecimals(2)
+                        if (editing && canRetype && t.v !== editing.type) autosave({ type: t.v })
                       }}
-                      disabled={!!editing}
+                      disabled={locked}
                       className="sr-only"
                     />
                     {t.label}
                   </label>
-                ))}
+                  )
+                })}
               </div>
-              {type === 'currency' && <p className="text-[11px] text-slate-400 mt-1">Nombre au format monétaire (CAD, séparateurs).</p>}
+              {type === 'currency' && <p className="text-[11px] text-slate-400 mt-1">Nombre au format monétaire ({currencyCode}, séparateurs). Devise et décimales configurables ci-dessous.</p>}
+              {type === 'long_text' && <p className="text-[11px] text-slate-400 mt-1">Texte multiligne, affiché dans une zone de texte extensible.</p>}
+              {type === 'date' && <p className="text-[11px] text-slate-400 mt-1">Date sans heure (ex: échéance, date de clôture).</p>}
+              {editing && editing.source === 'airtable' && <p className="text-[11px] text-slate-400 mt-1">Colonne Airtable : le type et le rendu sont entièrement modifiables.</p>}
               {type === 'duration' && <p className="text-[11px] text-slate-400 mt-1">Durée saisie « 1:30 » ou « 1:30:00 », stockée en secondes. Utilisable en formule via DURATION_FORMAT / DURATION_PARSE.</p>}
               {type === 'url' && <p className="text-[11px] text-slate-400 mt-1">Texte rendu comme lien cliquable quand l'URL est valide.</p>}
+              {type === 'phone' && <p className="text-[11px] text-slate-400 mt-1">Numéro formaté automatiquement à l'affichage — ex: (514) 123-4567 — et cliquable pour composer. Les extensions (« poste 123 ») sont préservées.</p>}
               {type === 'checkbox' && <p className="text-[11px] text-slate-400 mt-1">Case cochée / décochée (oui-non). Filtrable « Est vrai » / « Est faux », agrégeable.</p>}
               {type === 'single_select' && <p className="text-[11px] text-slate-400 mt-1">Un seul choix par enregistrement, affiché en pastille colorée.</p>}
               {type === 'multi_select' && <p className="text-[11px] text-slate-400 mt-1">Plusieurs choix (tags) par enregistrement, affichés en pastilles colorées.</p>}
-              {editing && <p className="text-[11px] text-slate-400 mt-1">Le type ne peut pas être modifié après création.</p>}
+              {editing && editing.source !== 'airtable' && <p className="text-[11px] text-slate-400 mt-1">Le type ne peut pas être modifié après création.</p>}
             </div>
 
             {/* Éditeur de choix — single_select / multi_select */}
@@ -592,6 +987,30 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
                 setAlphabetize={setAlphabetize}
                 onPersist={saveOptionsIfEditing}
               />
+            )}
+            {/* Devise : choix du code ISO 4217 (recherchable — >10 options). */}
+            {type === 'currency' && (
+              <div>
+                <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Devise</label>
+                <SearchableSelect
+                  value={currencyCode}
+                  options={CURRENCY_OPTIONS}
+                  getOptionValue={o => o.code}
+                  getOptionKey={o => o.code}
+                  getOptionLabel={o => `${o.code} — ${o.label}`}
+                  onChange={v => {
+                    const prev = currencyCode
+                    setCurrencyCode(v)
+                    // En édition : autosave immédiat (pas de blur sur un sélecteur).
+                    if (editing && v !== prev) autosave({ options: { currency: v } })
+                  }}
+                  placeholder="Choisir une devise…"
+                  searchPlaceholder="Rechercher une devise…"
+                  size="sm"
+                  className="input text-sm w-full bg-white"
+                  testId="cf-currency-code"
+                />
+              </div>
             )}
             {(type === 'number' || type === 'currency') && (
               <div>
@@ -635,6 +1054,33 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
                 </div>
               </div>
             )}
+            {/* Téléphone : affichage (ou non) de l'indicatif de pays. Par défaut
+                masqué → (514) 123-4567 ; coché → +1 (514) 123-4567 sur les
+                numéros nord-américains. Les numéros internationaux (« +33… »)
+                gardent toujours leur indicatif. */}
+            {type === 'phone' && (
+              <div>
+                <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Indicatif de pays</label>
+                <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    data-testid="cf-phone-country-code"
+                    checked={phoneCountryCode === 'show'}
+                    onChange={e => {
+                      const v = e.target.checked ? 'show' : 'hide'
+                      setPhoneCountryCode(v)
+                      // En édition : autosave immédiat (pas de blur sur une case).
+                      if (editing) autosave({ options: { country_code: v } })
+                    }}
+                    className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                  />
+                  Afficher l'indicatif de pays (ex: +1)
+                </label>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Décoché : <span className="tabular-nums">(514) 123-4567</span> — coché : <span className="tabular-nums">+1 (514) 123-4567</span>. Les numéros internationaux (« +33… ») gardent toujours leur indicatif.
+                </p>
+              </div>
+            )}
             {/* Checkbox : la valeur par défaut est un état coché / décoché. */}
             {type === 'checkbox' && (
               <div>
@@ -663,7 +1109,7 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
               <div>
                 <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Valeur par défaut (optionnel)</label>
                 <input
-                  type={(type === 'number' || type === 'currency') ? 'number' : (type === 'url' ? 'url' : 'text')}
+                  type={(type === 'number' || type === 'currency') ? 'number' : (type === 'url' ? 'url' : (type === 'phone' ? 'tel' : 'text'))}
                   value={defaultValue}
                   onChange={e => setDefaultValue(e.target.value)}
                   onBlur={() => {
@@ -671,7 +1117,7 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
                     if (defaultValue !== (lastSaved.current.default_value ?? '')) autosave({ default_value: defaultValue })
                   }}
                   className="input text-sm w-full"
-                  placeholder={type === 'url' ? 'ex: https://…' : type === 'duration' ? 'ex: 1:30' : (type === 'number' || type === 'currency') ? 'ex: 0' : 'ex: À traiter'}
+                  placeholder={type === 'url' ? 'ex: https://…' : type === 'phone' ? 'ex: 514 123-4567' : type === 'duration' ? 'ex: 1:30' : (type === 'number' || type === 'currency') ? 'ex: 0' : 'ex: À traiter'}
                 />
                 <p className="text-[11px] text-slate-400 mt-1">Posée automatiquement à la création d'un nouvel enregistrement. Laisser vide pour aucune valeur par défaut.</p>
               </div>
@@ -692,6 +1138,7 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
               }}
               erpTable={erpTable}
               sourceColumns={meta?.source_columns || []}
+              functions={meta?.formula_functions || []}
             />
             <ResultTypeSelect value={resultType} onChange={setResultType} />
           </>
@@ -706,6 +1153,7 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
                 value={lookupFk}
                 onChange={e => { setLookupFk(e.target.value); setLookupTargetTable(''); setLookupTargetColumn('') }}
                 className="input text-sm w-full"
+                data-testid="cf-lookup-fk"
               >
                 <option value="">— Choisir une colonne FK —</option>
                 {meta?.fk_columns?.map(fk => (
@@ -714,27 +1162,50 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
                   </option>
                 ))}
               </select>
+              {/* Aide : les tables ENFANT (qui référencent cette fiche, ex.
+                  Paiements → Factures) n'apparaissent pas ici — un Lookup suit
+                  un lien direct sortant. On les liste et on propose de basculer
+                  en Rollup, seul mode capable d'agréger des enregistrements liés. */}
+              {meta && (() => {
+                const lookupTables = new Set((meta.fk_columns || []).map(f => f.target_table))
+                const rollupOnly = [...new Set((meta.rollup_sources || []).map(s => s.table).filter(t => !lookupTables.has(t)))]
+                if (rollupOnly.length === 0) return null
+                return (
+                  <p className="text-[11px] text-slate-500 mt-1" data-testid="cf-lookup-rollup-hint">
+                    Les tables qui référencent cette fiche ({rollupOnly.map(uiTableLabel).join(', ')}) ne sont pas accessibles ici : un Lookup suit un lien direct (ex. la commande d'une facture). Pour récupérer leurs données,{' '}
+                    <button type="button" className="text-brand-600 underline hover:text-brand-700" onClick={() => setKind('rollup')}>utilisez un champ Rollup</button>.
+                  </p>
+                )
+              })()}
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Table cible</label>
-              <select
+              <SearchableSelect
                 value={lookupTargetTable}
-                onChange={e => { setLookupTargetTable(e.target.value); setLookupTargetColumn('') }}
-                className="input text-sm w-full"
+                options={meta?.allowed_targets || []}
+                getOptionValue={t => t}
+                getOptionKey={t => t}
+                getOptionLabel={t => uiTableLabel(t)}
+                emptyOption="— Choisir une table —"
+                onChange={v => { setLookupTargetTable(v); setLookupTargetColumn('') }}
                 disabled={!lookupFk}
-              >
-                <option value="">— Choisir une table —</option>
-                {meta?.allowed_targets?.map(t => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
+                placeholder="— Choisir une table —"
+                searchPlaceholder="Rechercher une table…"
+                size="sm"
+                className="input text-sm w-full bg-white"
+                testId="cf-lookup-target-table"
+              />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Colonne à récupérer</label>
-              <select
+              <SearchableSelect
                 value={lookupTargetColumn}
-                onChange={e => {
-                  const v = e.target.value
+                options={targetColumnOptions}
+                getOptionValue={o => o.column}
+                getOptionKey={o => o.column}
+                getOptionLabel={o => uiColumnLabel(lookupTargetTable, o)}
+                emptyOption="— Choisir une colonne —"
+                onChange={v => {
                   setLookupTargetColumn(v)
                   // En édition, le lookup n'est valide que lorsque FK + table + colonne
                   // sont présents — autosave dès que la colonne (dernier maillon) est choisie.
@@ -747,14 +1218,13 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
                     })
                   }
                 }}
-                className="input text-sm w-full"
                 disabled={!lookupTargetTable}
-              >
-                <option value="">— Choisir une colonne —</option>
-                {targetColumnOptions.map(c => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
+                placeholder="— Choisir une colonne —"
+                searchPlaceholder="Rechercher un champ…"
+                size="sm"
+                className="input text-sm w-full bg-white"
+                testId="cf-lookup-target-column"
+              />
             </div>
             <ResultTypeSelect value={resultType} onChange={setResultType} />
           </>
@@ -765,21 +1235,27 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
           <>
             <div>
               <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Agrégation</label>
-              <div className="grid grid-cols-5 gap-1.5">
-                {['SUM', 'COUNT', 'AVG', 'MIN', 'MAX'].map(a => (
-                  <label key={a} className={`flex items-center justify-center px-2 py-2 text-xs rounded-lg border cursor-pointer transition-colors ${rollupAgg === a ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 hover:bg-slate-50 text-slate-700'}`}>
+              <div className="grid grid-cols-4 gap-1.5">
+                {ROLLUP_AGG_OPTIONS.map(({ value, label }) => (
+                  <label key={value} className={`flex items-center justify-center px-2 py-2 text-xs rounded-lg border cursor-pointer transition-colors ${rollupAgg === value ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 hover:bg-slate-50 text-slate-700'}`}>
                     <input
-                      type="radio" name="cf-rollup-agg" value={a}
-                      checked={rollupAgg === a}
-                      onChange={() => { setRollupAgg(a); maybeAutosaveRollup({ agg: a }) }}
+                      type="radio" name="cf-rollup-agg" value={value}
+                      checked={rollupAgg === value}
+                      onChange={() => { setRollupAgg(value); maybeAutosaveRollup({ agg: value }) }}
                       className="sr-only"
                     />
-                    {a}
+                    {label}
                   </label>
                 ))}
               </div>
               <p className="text-[11px] text-slate-400 mt-1">
-                {rollupAgg === 'COUNT' ? 'Compte les enregistrements liés.' : 'Agrège la colonne choisie sur les enregistrements liés.'}
+                {rollupAgg === 'COUNT'
+                  ? 'Compte les enregistrements liés.'
+                  : rollupAgg === 'ARRAY'
+                    ? 'Liste toutes les valeurs liées, séparées par des virgules.'
+                    : rollupAgg === 'ARRAYUNIQUE'
+                      ? 'Liste les valeurs distinctes liées, séparées par des virgules.'
+                      : 'Agrège la colonne choisie sur les enregistrements liés.'}
               </p>
             </div>
             <div>
@@ -800,7 +1276,7 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
                 <option value="">— Choisir une table liée —</option>
                 {meta?.rollup_sources?.map(s => (
                   <option key={`${s.table}::${s.fk_column}`} value={`${s.table}::${s.fk_column}`}>
-                    {s.table} (via {s.fk_column}){s.inferred ? ' — inféré' : ''}
+                    {uiTableLabel(s.table)} — via {s.fk_column}{s.inferred ? ' (inféré)' : ''}
                   </option>
                 ))}
               </select>
@@ -811,21 +1287,24 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
             {rollupAgg !== 'COUNT' && (
               <div>
                 <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Colonne à agréger</label>
-                <select
+                <SearchableSelect
                   value={rollupColumn}
-                  onChange={e => {
-                    const v = e.target.value
+                  options={rollupColumnOptions}
+                  getOptionValue={o => o.column}
+                  getOptionKey={o => o.column}
+                  getOptionLabel={o => uiColumnLabel(rollupTable, o)}
+                  emptyOption="— Choisir une colonne —"
+                  onChange={v => {
                     setRollupColumn(v)
                     maybeAutosaveRollup({ column: v })
                   }}
-                  className="input text-sm w-full"
                   disabled={!rollupTable}
-                >
-                  <option value="">— Choisir une colonne —</option>
-                  {rollupColumnOptions.map(c => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
-                </select>
+                  placeholder="— Choisir une colonne —"
+                  searchPlaceholder="Rechercher un champ…"
+                  size="sm"
+                  className="input text-sm w-full bg-white"
+                  testId="cf-rollup-column"
+                />
               </div>
             )}
             <ResultTypeSelect value={resultType} onChange={setResultType} />
@@ -937,22 +1416,29 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
             ) : dependents.length > 0 ? (
               <div>
                 <p className="font-semibold text-red-700">
-                  Référencé par {dependents.length} champ{dependents.length > 1 ? 's' : ''} calculé{dependents.length > 1 ? 's' : ''}
+                  {dependents.length} dépendance{dependents.length > 1 ? 's' : ''} affectée{dependents.length > 1 ? 's' : ''} par la suppression
                 </p>
-                <ul className="mt-1.5 space-y-1">
-                  {dependents.map(d => (
-                    <li key={d.id} className="flex items-center gap-2 text-red-700" data-testid="cf-dependent">
-                      <span className="font-medium">{d.name}</span>
-                      <span className="text-[11px] text-red-400">({d.relation})</span>
-                    </li>
-                  ))}
-                </ul>
+                {groupDependents(dependents).map(([cat, items]) => (
+                  <div key={cat} className="mt-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide text-red-500">{DEPENDENT_CATEGORY_LABELS[cat]}</p>
+                    <ul className="mt-0.5 space-y-1">
+                      {items.map(d => (
+                        <li key={d.id} className="flex items-baseline gap-2 text-red-700" data-testid="cf-dependent">
+                          <span className="font-medium">{d.name}</span>
+                          <span className="text-[11px] text-red-400">
+                            ({d.relation}{d.table && d.table !== erpTable ? ` — table ${d.table}` : ''})
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
                 <p className="mt-2 text-[11px] text-red-600">
-                  Ces champs cesseront de se calculer (#ERROR) une fois ce champ supprimé. Restaurable depuis la corbeille.
+                  Les champs calculés cesseront de se calculer (#ERROR) ; les automations et vues concernées devront être ajustées. Restaurable depuis la corbeille.
                 </p>
               </div>
             ) : (
-              <p className="text-slate-600">Aucun autre champ ne référence celui-ci. Restaurable depuis la corbeille.</p>
+              <p className="text-slate-600">Aucune dépendance : rien d'autre ne référence ce champ. Restaurable depuis la corbeille.</p>
             )}
             {deleteStep !== 'loading' && (
               <div className="mt-3 flex justify-end gap-2">
@@ -1005,38 +1491,16 @@ export function CustomFieldModal({ isOpen, onClose, erpTable, editing, onSaved, 
   )
 }
 
-// Catalogue des fonctions SQLite réellement supportées par le moteur de
-// formules (évalué côté serveur via la VUE). On expose ce que SQLite sait faire
-// — honnête vis-à-vis de ce qui passera la validation et le « Tester ».
-const SQL_FUNCTIONS = [
-  { name: 'substr',    sig: 'substr(texte, début, longueur)',  hint: 'Sous-chaîne' },
-  { name: 'strftime',  sig: "strftime('%Y-%m', date)",          hint: 'Formate une date/heure' },
-  { name: 'date',      sig: "date(col, '+1 day')",              hint: 'Calcul sur une date' },
-  { name: 'datetime',  sig: 'datetime(col)',                    hint: 'Date + heure' },
-  { name: 'julianday', sig: 'julianday(a) - julianday(b)',      hint: 'Différence en jours' },
-  { name: 'coalesce',  sig: 'coalesce(a, b, …)',                hint: 'Première valeur non nulle' },
-  { name: 'ifnull',    sig: 'ifnull(a, b)',                     hint: 'b si a est NULL' },
-  { name: 'nullif',    sig: 'nullif(a, b)',                     hint: 'NULL si a = b' },
-  { name: 'length',    sig: 'length(texte)',                    hint: 'Longueur' },
-  { name: 'upper',     sig: 'upper(texte)',                     hint: 'Majuscules' },
-  { name: 'lower',     sig: 'lower(texte)',                     hint: 'Minuscules' },
-  { name: 'trim',      sig: 'trim(texte)',                      hint: 'Enlève les espaces' },
-  { name: 'ltrim',     sig: 'ltrim(texte)',                     hint: 'Espaces à gauche' },
-  { name: 'rtrim',     sig: 'rtrim(texte)',                     hint: 'Espaces à droite' },
-  { name: 'replace',   sig: 'replace(texte, de, vers)',         hint: 'Remplace' },
-  { name: 'instr',     sig: 'instr(texte, sousChaîne)',         hint: 'Position (0 si absent)' },
-  { name: 'round',     sig: 'round(nombre, décimales)',         hint: 'Arrondit' },
-  { name: 'abs',       sig: 'abs(nombre)',                      hint: 'Valeur absolue' },
-  { name: 'max',       sig: 'max(a, b, …)',                     hint: 'Maximum' },
-  { name: 'min',       sig: 'min(a, b, …)',                     hint: 'Minimum' },
-  { name: 'cast',      sig: 'cast(x AS REAL)',                  hint: 'Conversion de type' },
-  { name: 'printf',    sig: "printf('%.2f', x)",                hint: 'Format façon C' },
-  { name: 'typeof',    sig: 'typeof(x)',                        hint: 'Type SQLite' },
-]
+// Ordre d'affichage des catégories de fonctions dans le panneau « Fonctions
+// disponibles ». Le catalogue lui-même (parité Airtable) vient du serveur via
+// meta.formula_functions (source unique : formulaEngine.js) — plus de liste
+// dupliquée côté client qui dériverait du moteur réel.
+const FN_CATEGORY_ORDER = ['Texte', 'Nombre', 'Logique', 'Date', 'Durée']
 
 // Éditeur de formule à la Airtable : autocomplete des champs de la table + des
-// fonctions, et bouton « Tester » qui évalue l'expression sur de vrais records.
-function FormulaEditor({ value, onChange, onBlur, erpTable, sourceColumns }) {
+// fonctions (catalogue serveur, parité Airtable), et bouton « Tester » qui
+// évalue l'expression sur de vrais records.
+function FormulaEditor({ value, onChange, onBlur, erpTable, sourceColumns, functions = [] }) {
   const taRef = useRef(null)
   const pendingCaret = useRef(null)
   const [suggest, setSuggest] = useState({ open: false, items: [], active: 0 })
@@ -1063,7 +1527,7 @@ function FormulaEditor({ value, onChange, onBlur, erpTable, sourceColumns }) {
     const fields = (sourceColumns || [])
       .filter(c => c.toLowerCase().includes(tok))
       .map(c => ({ type: 'field', name: c, hint: 'Champ' }))
-    const fns = SQL_FUNCTIONS
+    const fns = (functions || [])
       .filter(f => f.name.toLowerCase().includes(tok))
       .map(f => ({ type: 'function', name: f.name, hint: f.sig }))
     return [...fields, ...fns]
@@ -1150,7 +1614,7 @@ function FormulaEditor({ value, onChange, onBlur, erpTable, sourceColumns }) {
           onBlur={() => { setTimeout(() => setSuggest({ open: false, items: [], active: 0 }), 120); onBlur?.() }}
           rows={3}
           className="input text-sm w-full font-mono"
-          placeholder="ex: substr(document_date, 1, 7)"
+          placeholder="ex: IF(status = 'Gagné', total, 0)  ·  DATETIME_FORMAT(document_date, 'YYYY-MM')"
           spellCheck={false}
         />
         {suggest.open && (
@@ -1179,25 +1643,44 @@ function FormulaEditor({ value, onChange, onBlur, erpTable, sourceColumns }) {
           {preview.loading ? 'Test…' : 'Tester'}
         </button>
         <button type="button" onClick={() => setShowFns(v => !v)} className="text-[11px] text-brand-600 hover:underline">
-          {showFns ? 'Masquer les fonctions' : 'Fonctions disponibles'}
+          {showFns ? 'Masquer les fonctions' : `Fonctions disponibles${functions.length ? ` (${functions.length})` : ''}`}
         </button>
-        <span className="text-[11px] text-slate-400 ml-auto">Tape un nom de champ pour l'autocomplete.</span>
+        <span className="text-[11px] text-slate-400 ml-auto">Tape un nom de champ ou de fonction pour l'autocomplete.</span>
       </div>
 
       {showFns && (
-        <div className="mt-2 grid grid-cols-2 gap-1 rounded-lg border border-slate-100 bg-slate-50 p-2 max-h-40 overflow-y-auto">
-          {SQL_FUNCTIONS.map(f => (
-            <button
-              type="button"
-              key={f.name}
-              onMouseDown={e => { e.preventDefault(); insertAtCaret(`${f.name}()`, true) }}
-              title={f.sig}
-              className="flex flex-col items-start text-left px-2 py-1 rounded hover:bg-white text-[11px]"
-            >
-              <span className="font-mono text-violet-700">{f.name}</span>
-              <span className="text-slate-400 truncate w-full">{f.hint}</span>
-            </button>
-          ))}
+        <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50 p-2 max-h-64 overflow-y-auto">
+          {functions.length === 0 ? (
+            <p className="text-[11px] text-slate-400 px-1 py-2">Chargement du catalogue de fonctions…</p>
+          ) : (
+            // Regroupées par catégorie (Texte, Nombre, Logique, Date, Durée) —
+            // même bibliothèque que les formules Airtable. Le catalogue est
+            // fourni par le serveur (meta.formula_functions).
+            FN_CATEGORY_ORDER
+              .map(cat => [cat, functions.filter(f => f.category === cat)])
+              // Catégories inconnues (au cas où le serveur en ajoute) : à la fin.
+              .concat([['Autres', functions.filter(f => !FN_CATEGORY_ORDER.includes(f.category))]])
+              .filter(([, fns]) => fns.length > 0)
+              .map(([cat, fns]) => (
+                <div key={cat} className="mb-1.5 last:mb-0">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-400 px-1 mb-0.5">{cat}</p>
+                  <div className="grid grid-cols-2 gap-1">
+                    {fns.map(f => (
+                      <button
+                        type="button"
+                        key={f.name}
+                        onMouseDown={e => { e.preventDefault(); insertAtCaret(`${f.name}()`, true) }}
+                        title={f.sig}
+                        className="flex flex-col items-start text-left px-2 py-1 rounded hover:bg-white text-[11px]"
+                      >
+                        <span className="font-mono text-violet-700">{f.name}</span>
+                        <span className="text-slate-400 truncate w-full">{f.hint}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))
+          )}
         </div>
       )}
 
@@ -1230,7 +1713,7 @@ function FormulaEditor({ value, onChange, onBlur, erpTable, sourceColumns }) {
       )}
 
       <p className="text-[11px] text-slate-400 mt-2">
-        Référence les colonnes par leur nom. Opérateurs <code className="bg-slate-100 px-1 rounded">||</code> <code className="bg-slate-100 px-1 rounded">+</code> <code className="bg-slate-100 px-1 rounded">-</code> <code className="bg-slate-100 px-1 rounded">*</code> <code className="bg-slate-100 px-1 rounded">/</code> et <code className="bg-slate-100 px-1 rounded">case when … then … end</code> autorisés.
+        Référence les colonnes par leur nom. Mêmes fonctions que les formules Airtable (IF, SWITCH, CONCATENATE, DATEADD, ROUND…). Opérateurs <code className="bg-slate-100 px-1 rounded">||</code> <code className="bg-slate-100 px-1 rounded">+</code> <code className="bg-slate-100 px-1 rounded">-</code> <code className="bg-slate-100 px-1 rounded">*</code> <code className="bg-slate-100 px-1 rounded">/</code> autorisés.
       </p>
     </div>
   )

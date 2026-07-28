@@ -1,15 +1,19 @@
-// Autonomous improvement agent — UI smoke test.
+// Agent autonome — UI smoke test (modèle « suggestions → correctifs »).
 //
-// Verifies the rebuilt /agent page (propose-first model):
+// Vérifie la page /agent rebâtie :
 //   1. Page renders: header + global ON/OFF toggle.
 //   2. Toggle flips and persists (settings saved/restored — CLAUDE.md config rule).
-//   3. Backlog ("jeter une idée"): add via UI → appears → delete → gone.
-//   4. A seeded proposal renders with its risk badge, supports the read-only
-//      conversation thread, and can be rejected (leaves the triage zone).
+//   3. Une sous-tâche seedée (kind proposal, sans backlog_id) rend dans la zone
+//      « Sous-tâches de l'agent » avec son badge de risque, supporte le fil de
+//      discussion (agent OFF → message stocké sans spawn) et peut être rejetée.
+//   4. Le formulaire « Nouvelle suggestion » a été RETIRÉ de la page — la création
+//      passe par la bulle « Modifier le système » (FeedbackFab). Le test vérifie
+//      l'absence du formulaire, crée une fiche via la bulle, puis la supprime.
 //
-// The agent is forced OFF for the whole run so NO Claude subprocess is ever
-// spawned (no generation / no conversation reply / no execution). All created
-// state is cleaned up in after(), and the user's real toggle value is restored.
+// The agent is forced OFF for the whole run so NO execution/conversation Claude is
+// spawned (la suggestion est auto-approuvée en tâche, mais le runner est en pause).
+// All created state is cleaned up in after(), and the user's real toggle value is
+// restored.
 
 const { test, describe, before, after } = require('node:test')
 const assert = require('node:assert/strict')
@@ -57,10 +61,19 @@ async function apiPut(page, p, body) {
     return r.json()
   }, { path: p, body })
 }
+async function apiDelete(page, p) {
+  return page.evaluate(async (path) => {
+    const tok = localStorage.getItem('erp_token')
+    const r = await fetch('/erp/api' + path, { method: 'DELETE', headers: { Authorization: `Bearer ${tok}` } })
+    return r.json()
+  }, p)
+}
 
 describe('Agent autonome — UI', () => {
   let browser, ctx, page
   let originalEnabled = false
+  let createdBacklogId = null
+  let createdTaskId = null
 
   before(async () => {
     browser = await chromium.launch()
@@ -73,7 +86,7 @@ describe('Agent autonome — UI', () => {
     originalEnabled = !!s.enabled
     await apiPut(page, '/agent/settings', { enabled: false })
 
-    // Seed a high-risk proposal directly into the live task file (agent is OFF,
+    // Seed a high-risk sub-task directly into the live task file (agent is OFF,
     // so nothing races us). Cleaned up in after().
     const now = new Date().toISOString()
     const tasks = readTasks()
@@ -101,14 +114,16 @@ describe('Agent autonome — UI', () => {
   })
 
   after(async () => {
-    // Always remove the seeded task and restore the user's real toggle value,
-    // even if the test failed.
+    // Always remove the seeded task + created suggestion and restore the user's
+    // real toggle value, even if the test failed.
     try { writeTasksAtomic(readTasks().filter(t => t.id !== SEED_ID)) } catch {}
+    try { if (createdTaskId && page) await apiDelete(page, `/agent/tasks/${createdTaskId}`) } catch {}
+    try { if (createdBacklogId && page) await apiDelete(page, `/agent/backlog/${createdBacklogId}`) } catch {}
     try { if (page) await apiPut(page, '/agent/settings', { enabled: originalEnabled }) } catch {}
     await browser?.close()
   })
 
-  test('page + toggle + backlog + proposition', async () => {
+  test('page + toggle + suggestion + sous-tâche', async () => {
     await page.goto(URL + '/agent', { waitUntil: 'networkidle' })
 
     // 1. Header + toggle present.
@@ -127,20 +142,45 @@ describe('Agent autonome — UI', () => {
     s = await apiGet(page, '/agent/settings')
     assert.equal(s.enabled, false, 'recliquer doit désactiver l\'agent')
 
-    // 3. Backlog: open panel, add an idea via UI, see it, delete it.
-    const ideaText = `E2E idée ${Date.now()}`
-    await page.click('text=Jeter une idée')
-    const backlogInput = page.locator('textarea[placeholder^="Une note vague"]')
-    await backlogInput.fill(ideaText)
-    await page.click('button[title="Ajouter au backlog"]')
-    await page.waitForSelector(`text=${ideaText}`, { timeout: 5000 })
-    // Delete it (the trash button next to our idea).
-    const row = page.locator('div', { hasText: ideaText }).last()
-    await row.locator('button').last().click()
-    await page.waitForTimeout(400)
-    assert.equal(await page.locator(`text=${ideaText}`).count(), 0, 'l\'idée backlog doit disparaître après suppression')
+    // 3. Le formulaire « Nouvelle suggestion » a été retiré de la page — la
+    //    création passe désormais uniquement par la bulle « Modifier le système ».
+    // (Pas d'assertion sur le texte « Nouvelle suggestion » : des fiches de
+    // suggestion existantes peuvent contenir cette expression dans leur contenu.)
+    assert.equal(await page.locator('[data-testid="new-suggestion-text"]').count(), 0, 'le champ du formulaire Nouvelle suggestion ne doit plus exister sur /agent')
+    assert.equal(await page.locator('[data-testid="new-suggestion-submit"]').count(), 0, 'le bouton du formulaire Nouvelle suggestion ne doit plus exister sur /agent')
 
-    // 4. Seeded proposal: card visible with high-risk badge.
+    // Création via la bulle (FeedbackFab, montée dans Layout donc visible ici).
+    const ideaText = `E2E suggestion ${Date.now()}`
+    await page.click('[data-testid="feedback-fab"]') // ouvre directement le formulaire (demande générale)
+    await page.waitForSelector('[data-testid="feedback-fab-text"]', { timeout: 5000 })
+    await page.fill('[data-testid="feedback-fab-text"]', ideaText)
+    await page.click('[data-testid="feedback-fab-submit"]')
+    await page.waitForSelector('[data-testid="feedback-approved"]', { timeout: 10000 })
+    await page.click('button:has-text("Fermer")')
+
+    // La fiche doit apparaître sur /agent (rechargement pour rafraîchir la liste).
+    await page.reload({ waitUntil: 'networkidle' })
+    await page.waitForSelector(`text=${ideaText}`, { timeout: 10000 })
+    const backlog = await apiGet(page, '/agent/backlog')
+    const item = backlog.find(i => i.text === ideaText)
+    assert.ok(item, 'la suggestion doit exister côté API')
+    createdBacklogId = item.id
+    createdTaskId = item.task_id || null
+    assert.equal(item.context, '/agent', 'le contexte doit être la page agent')
+    assert.ok(item.author, 'l\'auteur doit être enregistré')
+    assert.ok(item.task_id, 'la suggestion doit être auto-approuvée en tâche liée')
+
+    // Suppression de la fiche via sa corbeille → disparaît (supprime aussi la tâche liée).
+    const card = page.locator('[data-testid="suggestion-card"]', { hasText: ideaText })
+    await card.locator('button[title="Supprimer la suggestion"]').click()
+    await page.waitForTimeout(500)
+    assert.equal(await page.locator(`text=${ideaText}`).count(), 0, 'la fiche doit disparaître après suppression')
+    const backlogAfter = await apiGet(page, '/agent/backlog')
+    assert.ok(!backlogAfter.find(i => i.id === item.id), 'la suggestion doit être supprimée côté API')
+    createdBacklogId = null
+    createdTaskId = null
+
+    // 4. Seeded sub-task: card visible with high-risk badge in « Sous-tâches ».
     const cardTitle = page.locator(`text=E2E proposition ${SEED_ID}`)
     await cardTitle.waitFor({ timeout: 5000 })
     await assert.equal(await page.locator('text=Risque élevé').count() >= 1, true, 'badge risque élevé attendu')
@@ -154,20 +194,18 @@ describe('Agent autonome — UI', () => {
     // Send a discussion message (agent OFF → stored, no Claude reply spawned).
     const msg = `E2E question ${Date.now()}`
     await discuss.fill(msg)
-    await page.click('button[title^="Envoyer"]')
+    await page.click('button[title="Envoyer (⌘+Entrée)"]')
     await page.waitForSelector(`text=${msg}`, { timeout: 5000 })
-    // Confirm it was persisted as a user message on the task.
     const tasksAfter = await apiGet(page, '/agent/tasks')
     const seeded = tasksAfter.find(t => t.id === SEED_ID)
     assert.ok(seeded && (seeded.messages || []).some(m => m.role === 'user' && m.text === msg), 'le message doit être persisté sur la proposition')
     assert.equal(seeded.status, 'in_discussion', 'la proposition passe en discussion après un message')
 
-    // Reject → leaves the triage zone (moves to collapsed Historique).
+    // Reject → leaves the sub-tasks zone's triage state.
     await page.click('button:has-text("Rejeter")')
     await page.waitForTimeout(500)
     const rejected = (await apiGet(page, '/agent/tasks')).find(t => t.id === SEED_ID)
     assert.equal(rejected.status, 'rejected', 'la proposition doit être rejetée')
-    // The "Approuver & coder" button for this card must be gone from view.
     assert.equal(await page.locator('button:has-text("Approuver & coder")').count(), 0, 'plus de bouton Approuver après rejet')
   })
 })

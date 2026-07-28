@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback } from 'react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { AbonnementEventsTable } from '../components/AbonnementEventsTable.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 
@@ -39,10 +38,9 @@ export default function AbonnementMouvements() {
               Tous les évènements enregistrés : créations, mises à jour, annulations.
             </p>
           </div>
-          <TableConfigModal table="abonnement_events" />
         </div>
 
-        <AbonnementEventsTable data={events} loading={loading} />
+        <AbonnementEventsTable data={events} loading={loading} manageViews />
       </div>
     </Layout>
   )

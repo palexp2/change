@@ -8,7 +8,6 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge, ticketStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -182,7 +181,6 @@ export default function Tickets() {
             <h1 className="text-2xl font-bold text-slate-900">Billets</h1>
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="tickets" />
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouveau billet
             </button>
@@ -191,6 +189,7 @@ export default function Tickets() {
 
         <DataTable
           table="tickets"
+          manageViews
           columns={COLUMNS}
           data={tickets}
           loading={loading}

@@ -4,7 +4,6 @@ import { Layout } from '../components/Layout.jsx'
 import { Plus } from 'lucide-react'
 import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 function fmt(n, currency) {
@@ -162,7 +161,6 @@ export default function CatalogProduits() {
             <p className="text-sm text-slate-500 mt-1">Produits et services disponibles pour les soumissions et factures</p>
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="catalog" />
             <button
               onClick={() => setEditing('new')}
               className="flex items-center gap-2 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700"
@@ -174,6 +172,7 @@ export default function CatalogProduits() {
 
         <DataTable
           table="catalog"
+          manageViews
           columns={COLUMNS}
           data={products}
           loading={loading}

@@ -174,7 +174,13 @@ const RACHAT_WINDOW_MONTHS = 12
 // utilise COALESCE(date_commande, created_at) comme date effective de la
 // commande pour ne pas exclure 99% des candidats. Comparaison date-only via
 // substr pour rester stable peu importe le format ISO/UTC.
-const detectRachatStmt = db.prepare(`
+//
+// Préparé paresseusement (et non au chargement du module) : ce module est dans
+// la chaîne d'import des routers testés par test-helpers/testApp.js, où la DB
+// jetable n'a pas encore ses tables au moment de l'évaluation ESM — un prepare
+// top-level y lève « no such table: orders » et casse tout le harnais.
+let detectRachatStmtCached = null
+const detectRachatStmt = () => (detectRachatStmtCached ??= db.prepare(`
   SELECT
     o.id,
     o.order_number,
@@ -189,7 +195,7 @@ const detectRachatStmt = db.prepare(`
     AND COALESCE(o.date_commande, substr(o.created_at, 1, 10)) >= ?
     AND COALESCE(o.date_commande, substr(o.created_at, 1, 10)) <= date(?, '+${RACHAT_WINDOW_MONTHS} months')
   ORDER BY effective_date ASC
-`)
+`))
 
 export function detectRachatForChurn(eventId) {
   const ev = db.prepare(`
@@ -206,7 +212,7 @@ export function detectRachatForChurn(eventId) {
   if (ev.rachat_status === 'confirmed' || ev.rachat_status === 'none' || ev.rachat_status === 'merged') return null
 
   const eventDateOnly = String(ev.event_date).slice(0, 10)
-  const candidates = detectRachatStmt.all(ev.company_id, eventDateOnly, eventDateOnly)
+  const candidates = detectRachatStmt().all(ev.company_id, eventDateOnly, eventDateOnly)
 
   const threshold = ev.previous_amount_cad
     ? 12 * Number(ev.previous_amount_cad)

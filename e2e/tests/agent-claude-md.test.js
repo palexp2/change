@@ -74,7 +74,11 @@ describe('Agent — Instructions projet', () => {
 
     await page.goto(URL + '/agent', { waitUntil: 'networkidle' })
 
-    // 1. Déplier le panneau "Instructions projet" → le textarea montre le contenu courant.
+    // 1. Ouvrir la modale « Réglages de l'agent » puis déplier le panneau
+    //    "Instructions projet" → le textarea montre le contenu courant.
+    await page.waitForSelector('[data-testid="agent-settings-button"]', { timeout: 10000 })
+    await page.click('[data-testid="agent-settings-button"]')
+    await page.waitForSelector('[role="dialog"]', { timeout: 5000 })
     await page.waitForSelector('text=Instructions projet', { timeout: 10000 })
     await page.click('text=Instructions projet')
     const ta = page.locator('[data-testid="claude-md-textarea"]')
@@ -92,6 +96,9 @@ describe('Agent — Instructions projet', () => {
 
     // 3. Recharger → le textarea ré-affiche le contenu enregistré.
     await page.goto(URL + '/agent', { waitUntil: 'networkidle' })
+    await page.waitForSelector('[data-testid="agent-settings-button"]', { timeout: 10000 })
+    await page.click('[data-testid="agent-settings-button"]')
+    await page.waitForSelector('[role="dialog"]', { timeout: 5000 })
     await page.click('text=Instructions projet')
     const ta2 = page.locator('[data-testid="claude-md-textarea"]')
     await ta2.waitFor({ timeout: 10000 })

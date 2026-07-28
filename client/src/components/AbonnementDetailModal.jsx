@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { ExternalLink, FileText } from 'lucide-react'
 import api from '../lib/api.js'
 import { Modal } from './Modal.jsx'
+import RecordPeekDrawer from './RecordPeekDrawer.jsx'
 import LinkedRecordField from './LinkedRecordField.jsx'
 import { SubscriptionHistory } from './SubscriptionHistory.jsx'
 import { fmtDate } from '../lib/formatDate.js'
@@ -9,7 +10,9 @@ import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { intervalAmount, intervalLabel } from '../lib/subscriptionPricing.js'
 import { fmtCad } from '../utils/formatters.js'
 
-export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
+// `variant`: 'modal' (défaut, fenêtre centrée) ou 'peek' — même contenu rendu
+// dans un RecordPeekDrawer (side-peek à la Airtable) par-dessus une liste.
+export function AbonnementDetailModal({ abonnement, onClose, onChange, variant = 'modal' }) {
   const [details, setDetails] = useState(null)
   const [loading, setLoading] = useState(true)
   const [companies, setCompanies] = useState([])
@@ -84,8 +87,7 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
   })()
   const displayedAmount = preTaxCycleAmount != null ? preTaxCycleAmount : intervalAmount(abonnement)
 
-  return (
-    <Modal isOpen onClose={onClose} title="Détails de l'abonnement" size="xl">
+  const body = (
       <div className="space-y-5">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
           <div>
@@ -241,6 +243,25 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
           </>
         )}
       </div>
+  )
+
+  if (variant === 'peek') {
+    return (
+      <RecordPeekDrawer
+        open
+        onClose={onClose}
+        title={abonnement.product_name || "Détails de l'abonnement"}
+        subtitle={aboState.company_name || abonnement.customer_email || undefined}
+        width={640}
+      >
+        <div className="px-5 py-4">{body}</div>
+      </RecordPeekDrawer>
+    )
+  }
+
+  return (
+    <Modal isOpen onClose={onClose} title="Détails de l'abonnement" size="xl">
+      {body}
     </Modal>
   )
 }

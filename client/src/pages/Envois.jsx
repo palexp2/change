@@ -8,7 +8,6 @@ import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -198,7 +197,6 @@ export default function Envois() {
             <p className="text-sm text-slate-500 mt-0.5">{displayedEnvois.length} envoi{displayedEnvois.length !== 1 ? 's' : ''}</p>
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="shipments" />
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouvel envoi
             </button>
@@ -220,6 +218,7 @@ export default function Envois() {
 
         <DataTable
           table="shipments"
+          manageViews
           columns={COLUMNS}
           data={displayedEnvois}
           loading={loading}

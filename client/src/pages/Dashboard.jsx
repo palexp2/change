@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, Fragment } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowRight, SlidersHorizontal, X, Check, Target, Trophy, GripVertical, ChevronDown } from 'lucide-react'
+import { ArrowRight, SlidersHorizontal, X, Check, Target, Trophy, GripVertical, ChevronDown, EyeOff } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
@@ -23,7 +23,8 @@ const WIDGET_DEFS = [
   { id: 'section_geo_map',       label: 'Carte des clients',     group: 'Graphiques',    slug: 'carte-clients' },
   { id: 'section_top_products', label: 'Meilleurs vendeurs',     group: 'Graphiques',    slug: 'meilleurs-vendeurs' },
   { id: 'section_inventory_valuation', label: 'Valeur de l\'inventaire', group: 'Inventaire', slug: 'valeur-inventaire' },
-  { id: 'section_bank_accounts', label: 'Soldes bancaires & CC',    group: 'Comptabilité', slug: 'soldes-bancaires' },
+  { id: 'section_bank_accounts', label: 'Trésorerie & soldes bancaires', group: 'Comptabilité', slug: 'soldes-bancaires' },
+  { id: 'section_deferred_revenue', label: 'Revenus perçus d\'avance', group: 'Comptabilité', slug: 'revenus-percus-avance' },
   { id: 'section_balance_sheet', label: 'Bilan QuickBooks',         group: 'Comptabilité', slug: 'bilan' },
   { id: 'section_tickets_monthly', label: 'Billets par mois',       group: 'Support',       slug: 'billets-par-mois' },
   { id: 'section_support_weekly', label: 'Amélioration du support', group: 'Support',       slug: 'amelioration-support' },
@@ -73,7 +74,7 @@ function saveCollapsed(userId, collapsed) {
   localStorage.setItem(`dashboard_collapsed_${userId}`, JSON.stringify(collapsed))
 }
 
-function CollapsibleCard({ id, title, description, leadingIcon, action, collapsed, onToggle, testId, highlighted, children }) {
+function CollapsibleCard({ id, title, description, leadingIcon, action, collapsed, onToggle, onHide, testId, highlighted, children }) {
   const wrapperProps = {
     'data-section-id': id,
     className: `card p-5 ${collapsed ? 'mb-3' : 'mb-6'} transition-shadow ${highlighted ? 'ring-2 ring-brand-400 ring-offset-2' : ''}`,
@@ -98,6 +99,18 @@ function CollapsibleCard({ id, title, description, leadingIcon, action, collapse
           {description && <p className="text-xs text-slate-400 mt-0.5">{description}</p>}
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
+        {onHide && (
+          <button
+            type="button"
+            onClick={onHide}
+            aria-label="Masquer cette section du dashboard"
+            title="Masquer du dashboard"
+            data-testid={`section-hide-${id}`}
+            className="text-slate-300 hover:text-slate-600 hover:bg-slate-50 rounded p-0.5 mt-0.5 shrink-0 transition-colors"
+          >
+            <EyeOff size={15} />
+          </button>
+        )}
       </div>
       {!collapsed && children}
     </div>
@@ -1032,7 +1045,7 @@ function ShippingCostChart({ data }) {
             const windowStart = new Date(w.date); windowStart.setDate(w.date.getDate() - 27)
             const fromIso = windowStart.toISOString().slice(0, 10)
             const toIso = w.date.toISOString().slice(0, 10)
-            const handleClick = () => navigate(`/achats-fournisseurs?from=${fromIso}&to=${toIso}&account=Expédition`)
+            const handleClick = () => navigate(`/fournisseurs/achats?from=${fromIso}&to=${toIso}&account=Expédition`)
             return (
               <g key={w.key}
                 onMouseEnter={() => setTooltip({ i, x: xCenter(i), y, w })}
@@ -1112,7 +1125,6 @@ function SupportWeeklyTable({ data }) {
             <th className="px-3 py-2 text-center text-xs font-semibold text-slate-400 uppercase tracking-wide">Billets</th>
             <th className="px-3 py-2 text-center text-xs font-semibold text-slate-400 uppercase tracking-wide">Ligne 2</th>
             <th className="px-3 py-2 text-center text-xs font-semibold text-slate-400 uppercase tracking-wide">&gt; 15 min</th>
-            <th className="px-3 py-2 text-center text-xs font-semibold text-slate-400 uppercase tracking-wide">Arbre troubleshoot</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-50">
@@ -1124,14 +1136,12 @@ function SupportWeeklyTable({ data }) {
               ' – ' + endDate.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
             const pctIssue = pct(row.with_issue, row.total)
             const pct15 = pct(row.over_15min, row.total)
-            const pctArbre = pct(row.with_arbre, row.total)
             return (
               <tr key={row.week_start} className="hover:bg-slate-50 transition-colors">
                 <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{label}</td>
                 <td className="px-3 py-2.5 text-center font-semibold text-slate-900 tabular-nums">{row.total}</td>
                 <PctCell value={pctIssue} invert={true} />
                 <PctCell value={pct15} invert={true} />
-                <PctCell value={pctArbre} invert={false} />
               </tr>
             )
           })}
@@ -1141,7 +1151,7 @@ function SupportWeeklyTable({ data }) {
         <span><span className="text-green-600 font-semibold">Vert</span> = bon</span>
         <span><span className="text-amber-500 font-medium">Jaune</span> = à surveiller</span>
         <span><span className="text-red-500 font-medium">Rouge</span> = à améliorer</span>
-        <span className="ml-auto">Ligne 2 / &gt;15 min : vert si ≤ 20%, rouge si &gt; 40% · Arbre : vert si ≥ 60%</span>
+        <span className="ml-auto">Ligne 2 / &gt;15 min : vert si ≤ 20%, rouge si &gt; 40%</span>
       </div>
     </div>
   )
@@ -1937,7 +1947,7 @@ function fmtMoney(n, currency) {
   }
 }
 
-function BankAccountsPanel() {
+export function BankAccountsPanel() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -1970,6 +1980,14 @@ function BankAccountsPanel() {
   const banks = data.accounts.filter(a => a.type === 'Bank')
   const cards = data.accounts.filter(a => a.type === 'Credit Card')
 
+  const treasury = data.treasury ?? data.totals?.net ?? 0
+  const creditLimit = data.credit_limit || 0
+  // Coussin restant avant d'atteindre la limite de la marge de crédit :
+  // la trésorerie peut descendre jusqu'à −limite avant que la marge soit pleine.
+  const headroom = treasury + creditLimit
+  const headroomPct = creditLimit ? Math.max(0, Math.min(1, headroom / creditLimit)) : 0
+  const gaugeColor = headroomPct > 0.5 ? 'bg-emerald-500' : headroomPct > 0.2 ? 'bg-amber-500' : 'bg-rose-500'
+
   const renderGroup = (label, rows, total) => rows.length ? (
     <>
       <tr className="border-b border-slate-100 bg-slate-50 font-semibold text-slate-900">
@@ -1980,6 +1998,9 @@ function BankAccountsPanel() {
           <td className="py-1.5 px-3">{a.name}</td>
           <td className="py-1.5 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
             {fmtMoney(a.balance, a.currency || data.currency)}
+            {a.currency && a.currency !== data.currency && a.balance !== 0 && (
+              <span className="text-xs text-slate-400 ml-1.5">≈ {fmtMoney(a.balance_cad, data.currency)}</span>
+            )}
           </td>
         </tr>
       ))}
@@ -1994,8 +2015,42 @@ function BankAccountsPanel() {
 
   return (
     <div data-testid="dashboard-bank-accounts">
+      <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4" data-testid="dashboard-treasury">
+        <div className="flex flex-wrap items-baseline justify-between gap-2">
+          <div>
+            <p className="text-xs text-slate-500 mb-0.5">Trésorerie (banques − cartes & marges de crédit)</p>
+            <p className={`text-2xl font-semibold tabular-nums ${treasury < 0 ? 'text-rose-600' : 'text-emerald-700'}`} data-testid="treasury-amount">
+              {fmtMoney(treasury, data.currency)}
+            </p>
+          </div>
+          {creditLimit > 0 && (
+            <div className="text-right">
+              <p className="text-xs text-slate-500 mb-0.5">Coussin avant la limite de marge ({fmtMoney(creditLimit, data.currency)})</p>
+              <p className="text-sm font-medium text-slate-800 tabular-nums" data-testid="treasury-headroom">
+                {fmtMoney(headroom, data.currency)} <span className="text-slate-400 font-normal">· {Math.round(headroomPct * 100)} %</span>
+              </p>
+            </div>
+          )}
+        </div>
+        {creditLimit > 0 && (
+          <div className="mt-3">
+            <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
+              <div className={`h-full rounded-full ${gaugeColor} transition-all`} style={{ width: `${headroomPct * 100}%` }} />
+            </div>
+            <div className="flex justify-between text-[11px] text-slate-400 mt-1 tabular-nums">
+              <span>−{fmtMoney(creditLimit, data.currency)} (marge pleine)</span>
+              <span>0 $</span>
+            </div>
+          </div>
+        )}
+      </div>
       <div className="flex items-center justify-between mb-3 text-xs text-slate-500">
-        <span>Soldes du jour · Devise {data.currency}</span>
+        <span>
+          Soldes du jour · totaux en {data.currency}
+          {Object.entries(data.exchange_rates || {}).map(([cur, rate]) => (
+            <span key={cur}> · 1 {cur} = {Number(rate).toFixed(4)} {data.currency}</span>
+          ))}
+        </span>
         <button onClick={() => load({ refresh: true })} className="text-brand-600 hover:underline">Rafraîchir</button>
       </div>
       <div className="overflow-x-auto">
@@ -2004,13 +2059,105 @@ function BankAccountsPanel() {
             {renderGroup('Comptes bancaires', banks, data.totals?.bank ?? 0)}
             {renderGroup('Cartes de crédit', cards, data.totals?.credit_card ?? 0)}
             <tr className="font-semibold text-slate-900">
-              <td className="py-2 px-3">Net (banques − cartes)</td>
+              <td className="py-2 px-3">Trésorerie nette</td>
               <td className="py-2 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
-                {fmtMoney(data.totals?.net ?? 0, data.currency)}
+                {fmtMoney(treasury, data.currency)}
               </td>
             </tr>
           </tbody>
         </table>
+      </div>
+    </div>
+  )
+}
+
+export function DeferredRevenuePanel() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+
+  const load = () => {
+    setLoading(true)
+    setError(null)
+    api.dashboard.deferredRevenue()
+      .then(r => { setData(r); setLoading(false) })
+      .catch(e => { setError(e?.message || 'Erreur'); setLoading(false) })
+  }
+
+  useEffect(() => { load() }, [])
+
+  if (loading && !data) {
+    return <div className="h-24 flex items-center justify-center text-slate-400 text-sm">Chargement…</div>
+  }
+  if (error) {
+    return (
+      <div className="text-sm text-rose-600">
+        Impossible de charger les revenus perçus d'avance : {error}
+        <button onClick={load} className="ml-2 underline">Réessayer</button>
+      </div>
+    )
+  }
+
+  const items = data?.items || []
+
+  return (
+    <div data-testid="dashboard-deferred-revenue">
+      <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <p className="text-xs text-slate-500 mb-0.5">Encaissé, en attente d'expédition (compte 23900)</p>
+        <p className="text-2xl font-semibold tabular-nums text-slate-900" data-testid="deferred-revenue-total">
+          {fmtMoney(data?.total_cad || 0, 'CAD')}
+        </p>
+        {data?.unconverted > 0 && (
+          <p className="text-xs text-amber-600 mt-1">
+            {data.unconverted} facture(s) en devise étrangère sans écriture 23900 — non incluses dans le total.
+          </p>
+        )}
+      </div>
+      {!items.length ? (
+        <div className="text-sm text-slate-500">Aucune vente encaissée en attente d'expédition. 🎉</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 text-left text-xs text-slate-500">
+                <th className="py-1.5 px-3 font-medium">Encaissée le</th>
+                <th className="py-1.5 px-3 font-medium">Client</th>
+                <th className="py-1.5 px-3 font-medium">Facture</th>
+                <th className="py-1.5 pl-3 pr-2 font-medium text-right">Montant</th>
+                <th className="py-1.5 px-3 font-medium">Écriture 23900</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map(i => (
+                <tr key={i.id} className="border-b border-slate-100 text-slate-600">
+                  <td className="py-1.5 px-3 whitespace-nowrap">{fmtDate(i.paid_at)}</td>
+                  <td className="py-1.5 px-3">
+                    {i.company_id
+                      ? <Link to={`/companies/${i.company_id}`} className="text-brand-600 hover:underline">{i.company_name || '—'}</Link>
+                      : (i.company_name || '—')}
+                  </td>
+                  <td className="py-1.5 px-3">
+                    <Link to={`/factures/${i.id}`} className="text-brand-600 hover:underline">{i.document_number || i.id.slice(0, 8)}</Link>
+                  </td>
+                  <td className="py-1.5 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
+                    {fmtMoney(i.amount_native, i.currency)}
+                    {i.currency !== 'CAD' && i.amount_cad != null && (
+                      <span className="text-xs text-slate-400 ml-1.5">≈ {fmtMoney(i.amount_cad, 'CAD')}</span>
+                    )}
+                  </td>
+                  <td className="py-1.5 px-3">
+                    {i.deferred_posted
+                      ? <span className="inline-flex items-center rounded-full bg-emerald-50 text-emerald-700 px-2 py-0.5 text-xs">Posée</span>
+                      : <span className="inline-flex items-center rounded-full bg-slate-100 text-slate-500 px-2 py-0.5 text-xs">En attente du dépôt</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <div className="flex justify-end mt-2">
+        <button onClick={load} className="text-xs text-brand-600 hover:underline">Rafraîchir</button>
       </div>
     </div>
   )
@@ -2301,6 +2448,7 @@ export default function Dashboard() {
   const [showEditor, setShowEditor] = useState(false)
   const [showGoalEditor, setShowGoalEditor] = useState(false)
   const { user } = useAuth()
+  const { addToast } = useToast()
   const navigate = useNavigate()
   const { section: sectionParam } = useParams()
   const [prefs, setPrefs] = useState(() => loadPrefs(user?.id || 'default'))
@@ -2347,6 +2495,24 @@ export default function Dashboard() {
   function updatePrefs(newPrefs) {
     setPrefs(newPrefs)
     savePrefs(user?.id || 'default', newPrefs)
+  }
+
+  // Change une seule pref de visibilité en fonctionnel (évite les closures
+  // périmées si l'utilisateur masque/restaure plusieurs fiches rapidement).
+  function setPrefVisible(id, visible) {
+    setPrefs(prev => {
+      const next = { ...prev, [id]: visible }
+      savePrefs(user?.id || 'default', next)
+      return next
+    })
+  }
+
+  function hideSection(id) {
+    setPrefVisible(id, false)
+    addToast({
+      message: `« ${WIDGET_LABEL[id]} » masquée du dashboard`,
+      action: { label: 'Annuler', onClick: () => setPrefVisible(id, true) },
+    })
   }
 
   function toggleCollapsed(id) {
@@ -2397,6 +2563,7 @@ export default function Dashboard() {
     id,
     collapsed: isCollapsed(id),
     onToggle: () => toggleCollapsed(id),
+    onHide: () => hideSection(id),
     highlighted: highlightId === id,
     ...extra,
   })
@@ -2513,10 +2680,19 @@ export default function Dashboard() {
     section_bank_accounts: (
       <CollapsibleCard
         {...cardProps('section_bank_accounts', { testId: 'section-bank-accounts' })}
-        title="Soldes bancaires & cartes de crédit"
-        description="Solde courant du jour de chaque compte bancaire et carte de crédit — source QuickBooks (CurrentBalance)"
+        title="Trésorerie — banques & cartes de crédit"
+        description="Trésorerie nette (banques − cartes et marges de crédit, converti en CAD) par rapport à la limite de marge de 360 000 $ — source QuickBooks (CurrentBalance)"
       >
         <BankAccountsPanel />
+      </CollapsibleCard>
+    ),
+    section_deferred_revenue: (
+      <CollapsibleCard
+        {...cardProps('section_deferred_revenue', { testId: 'section-deferred-revenue' })}
+        title="Revenus perçus d'avance"
+        description="Ventes encaissées (hors abonnements) dont l'expédition n'a pas encore été créée — les fonds restent au compte 23900 jusqu'au constat de la vente"
+      >
+        <DeferredRevenuePanel />
       </CollapsibleCard>
     ),
     section_balance_sheet: (

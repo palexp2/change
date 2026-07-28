@@ -13,9 +13,22 @@ import { notifyAssignment } from '../services/notifications.js';
 import { getCentralControllers } from '../utils/centralController.js';
 import { rescanRachatForCompany } from '../services/subscriptionEvents.js';
 import { logSync } from '../services/syncLog.js';
+import { writeBackRecord } from '../services/airtableWriteback.js';
 import { parsePositiveInt, parseNonNegativeInt, parseNonNegativeNumber, validateNumericFields } from '../utils/validateNumbers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Extrait les recordID Airtable (recXXXXXXXXXXXXXX) d'une valeur de champ lien
+// importée d'Airtable, qui peut être : un tableau JSON (["rec…","rec…"]), une
+// liste CSV ("rec…, rec…"), ou une valeur unique ("rec…"). Retourne un tableau
+// de recordID dans l'ordre, dédupliqué. Tolérant : renvoie [] si vide/illisible.
+const AIRTABLE_REC_RE = /rec[a-zA-Z0-9]{14}/g;
+function parseAirtableRecordIds(value) {
+  if (value == null || value === '') return [];
+  const str = String(value);
+  const matches = str.match(AIRTABLE_REC_RE) || [];
+  return [...new Set(matches)];
+}
 
 const router = Router();
 router.use(requireAuth);
@@ -126,7 +139,33 @@ router.get('/:id', (req, res) => {
       if (!byItem[s.order_item_id]) byItem[s.order_item_id] = []
       byItem[s.order_item_id].push(s)
     }
-    itemsWithSerials = items.map(i => ({ ...i, serials: byItem[i.id] || [] }))
+    // Champ Airtable « # de série » (order_items.de_serie) : stocke des recordID
+    // Airtable bruts (JSON array, CSV ou valeur unique). On les résout en vraies
+    // fiches série via serial_numbers.airtable_id pour que le client affiche des
+    // liens plutôt que des recXXX. NB : ce lien Airtable peut différer de
+    // order_item_id (serials[]) — d'où une résolution dédiée par recordID.
+    const recIds = new Set()
+    for (const i of items) {
+      for (const rid of parseAirtableRecordIds(i.de_serie)) recIds.add(rid)
+    }
+    const serialByAirtableId = {}
+    if (recIds.size > 0) {
+      const ridList = [...recIds]
+      const rows = db.prepare(
+        `SELECT id, serial, airtable_id FROM serial_numbers WHERE airtable_id IN (${ridList.map(() => '?').join(',')})`
+      ).all(...ridList)
+      for (const r of rows) serialByAirtableId[r.airtable_id] = r
+    }
+    itemsWithSerials = items.map(i => ({
+      ...i,
+      serials: byItem[i.id] || [],
+      // Liste ordonnée { id, serial, airtable_id } des séries référencées par
+      // le champ de_serie et retrouvées en base ; les recordID orphelins (série
+      // absente) sont ignorés. [] si aucune.
+      de_serie_serials: parseAirtableRecordIds(i.de_serie)
+        .map(rid => serialByAirtableId[rid])
+        .filter(Boolean),
+    }))
   }
 
   const factures = db.prepare(
@@ -271,6 +310,16 @@ router.put('/:id', (req, res) => {
   }
 
   emitOrder('updated', req.params.id, req.user?.id);
+
+  // Write-back ERP → Airtable des champs bidirectionnels/push (ex. Notes, si son
+  // sens de sync l'autorise — cf. airtable_field_directions). Best-effort,
+  // fire-and-forget : n'échoue jamais la réponse et no-op si la commande n'est
+  // pas liée à Airtable ou si aucun champ écrivable n'a changé.
+  if (setClause) {
+    writeBackRecord('orders', req.params.id, Object.keys(req.body))
+      .catch(e => console.error('write-back orders:', e.message));
+  }
+
   if ('assigned_to' in req.body) {
     notifyAssignment({
       assignedTo: req.body.assigned_to,

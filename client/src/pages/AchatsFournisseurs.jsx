@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { X, BookOpen, Plus, ShoppingCart } from 'lucide-react'
+import { X, BookOpen, Plus, ShoppingCart, ExternalLink } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
+import { VendorTabs } from '../components/VendorTabs.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -59,6 +59,12 @@ const RENDERS = {
     const v = row.balance_due_cad ?? (row.total_cad - row.amount_paid_cad)
     return <span className={v > 0 ? 'text-red-600 font-medium tabular-nums' : 'text-green-600 tabular-nums'}>{fmtCad(v)}</span>
   },
+  qb: row => row.qb_url
+    ? <a href={row.qb_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
+        className="inline-flex items-center gap-1 text-brand-600 hover:underline" title="Ouvrir dans QuickBooks">
+        <ExternalLink size={12} /> #{row.quickbooks_id}
+      </a>
+    : <span className="text-slate-400">—</span>,
 }
 
 const COLUMNS = TABLE_COLUMN_META.achats_fournisseurs.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
@@ -238,6 +244,9 @@ function AchatAccountingSection({ achat, form, setForm, onSaved }) {
   const [loading, setLoading] = useState(true)
   const [savingField, setSavingField] = useState(null)
   const [error, setError] = useState('')
+  // Champ signalé par la validation serveur — la section fautive est encadrée en rouge.
+  const [errorField, setErrorField] = useState(null)
+  const fieldFrame = f => (errorField === f ? 'ring-2 ring-red-400 rounded-lg bg-red-50 p-2 -m-2' : '')
   const [pushing, setPushing] = useState(false)
   const [autoAppliedFrom, setAutoAppliedFrom] = useState(null)
 
@@ -315,12 +324,14 @@ function AchatAccountingSection({ achat, form, setForm, onSaved }) {
     if (!ok) return
     setPushing(true)
     setError('')
+    setErrorField(null)
     try {
       await api.achatsFournisseurs.pushToQb(achat.id)
       addToast({ message: 'Achat comptabilisé sur QuickBooks.', type: 'success' })
       onSaved()
     } catch (e) {
       setError(e.message)
+      setErrorField(e.details?.field || null)
     } finally {
       setPushing(false)
     }
@@ -338,7 +349,14 @@ function AchatAccountingSection({ achat, form, setForm, onSaved }) {
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Comptabilisation QuickBooks</h3>
         {published && (
-          <span className="inline-flex items-center gap-1 text-xs text-green-700"><BookOpen size={12} /> Publié (#{achat.quickbooks_id})</span>
+          achat.qb_url ? (
+            <a href={achat.qb_url} target="_blank" rel="noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-green-700 hover:underline" title="Ouvrir dans QuickBooks">
+              <BookOpen size={12} /> Publié (#{achat.quickbooks_id}) <ExternalLink size={11} />
+            </a>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-xs text-green-700"><BookOpen size={12} /> Publié (#{achat.quickbooks_id})</span>
+          )
         )}
       </div>
 
@@ -352,7 +370,7 @@ function AchatAccountingSection({ achat, form, setForm, onSaved }) {
             </p>
           )}
 
-          <div>
+          <div className={fieldFrame('expense_account')}>
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">
               Compte de dépense{savingField === 'expense_account_id' && <span className="ml-2 text-slate-400 normal-case">enregistrement…</span>}
             </label>
@@ -366,7 +384,7 @@ function AchatAccountingSection({ achat, form, setForm, onSaved }) {
           </div>
 
           {isPurchase && (
-            <div>
+            <div className={fieldFrame('payment_account')}>
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">
                 Compte de paiement{savingField === 'payment_account_id' && <span className="ml-2 text-slate-400 normal-case">enregistrement…</span>}
               </label>
@@ -380,7 +398,7 @@ function AchatAccountingSection({ achat, form, setForm, onSaved }) {
             </div>
           )}
 
-          <div>
+          <div className={fieldFrame('tax_code')}>
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">
               Code de taxe{savingField === 'tax_code_id' && <span className="ml-2 text-slate-400 normal-case">enregistrement…</span>}
             </label>
@@ -628,6 +646,7 @@ export default function AchatsFournisseurs() {
   return (
     <Layout>
       <div className="p-6">
+        <VendorTabs active="achats" />
         <div className="flex items-center justify-between mb-6">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Achats fournisseurs</h1>
@@ -647,7 +666,6 @@ export default function AchatsFournisseurs() {
             <button onClick={handleQBImport} disabled={syncing} className="btn-secondary" data-testid="qb-import-btn">
               {syncing ? 'Importation…' : 'Importer depuis QB'}
             </button>
-            <TableConfigModal table="achats_fournisseurs" />
           </div>
         </div>
 
@@ -672,6 +690,7 @@ export default function AchatsFournisseurs() {
 
         <DataTable
           table="achats_fournisseurs"
+          manageViews
           columns={COLUMNS}
           data={filteredRows}
           loading={loading}

@@ -1,8 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Bot, Send, CheckCircle, XCircle, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2, Terminal, FileText, Edit3, Search, ListTodo, Activity, Maximize2, Minimize2, Lightbulb, MessageSquare, Power, ShieldAlert, Plus, RotateCw, Clock } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Bot, Send, CheckCircle, XCircle, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2, Terminal, FileText, Edit3, Search, Activity, Maximize2, Minimize2, Lightbulb, MessageSquare, Power, ShieldAlert, RotateCw, Clock, Sparkles, Star, ArrowUpRight, Settings, HelpCircle, Gauge, CalendarDays, Globe } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { Modal } from '../components/Modal.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useAuth } from '../lib/auth.jsx'
+import { invalidate } from '../lib/prefetch.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 
 const STATUS_CONFIG = {
@@ -22,6 +26,10 @@ const SOURCE_LABELS = {
   D: 'Ton backlog',
 }
 const EFFORT_LABELS = { small: 'Petit', medium: 'Moyen', large: 'Gros' }
+
+// NB : le badge modèle + effort d'implémentation (« Opus · effort élevé ») a été
+// retiré des cartes à la demande de l'utilisateur — model/effort restent stockés
+// sur les tâches côté serveur mais ne sont plus affichés.
 
 // ─── Tool icon helper ────────────────────────────────────────────────────────
 function _toolIcon(name) {
@@ -59,6 +67,95 @@ function ElapsedTimer({ startedAt, completedAt, live = false }) {
   const start = new Date(startedAt).getTime()
   const end = live || !completedAt ? Date.now() : new Date(completedAt).getTime()
   return <span className="tabular-nums" data-testid="elapsed-timer">{formatDuration(end - start)}</span>
+}
+
+// ─── Appréciation d'une implémentation (1 à 5 étoiles, un seul clic) ──────────
+// Autosave immédiat au clic (règle « autosave partout » — feedback visible).
+// Re-cliquer l'étoile courante retire l'appréciation.
+function StarRating({ value = 0, onRate }) {
+  const [hover, setHover] = useState(0)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  async function rate(n) {
+    if (saving) return
+    setSaving(true)
+    try {
+      await onRate(n === value ? null : n)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="flex items-center gap-2 flex-wrap" data-testid="implementation-rating">
+      <span className="text-[11px] text-slate-400 font-medium uppercase tracking-wider">Appréciation</span>
+      <div className="flex items-center" onMouseLeave={() => setHover(0)}>
+        {[1, 2, 3, 4, 5].map(n => {
+          const filled = hover ? n <= hover : n <= (value || 0)
+          return (
+            <button
+              key={n}
+              onClick={e => { e.stopPropagation(); rate(n) }}
+              onMouseEnter={() => setHover(n)}
+              data-testid={`rating-star-${n}`}
+              className="p-0.5 transition-transform hover:scale-110"
+              title={n === value ? 'Retirer l\'appréciation' : `${n} étoile${n > 1 ? 's' : ''}`}
+            >
+              <Star size={16} className={`transition-colors ${filled ? 'text-amber-400 fill-amber-400' : 'text-slate-300'}`} />
+            </button>
+          )
+        })}
+      </div>
+      {saving
+        ? <Loader2 size={11} className="text-slate-400 animate-spin" />
+        : saved && <span className="text-[11px] text-emerald-600 font-medium">Enregistré</span>}
+    </div>
+  )
+}
+
+// ─── Lien vers la page concernée (cartes d'implémentation complétées) ─────────
+// Le contexte d'une suggestion combine la route d'où vient le signalement et,
+// optionnellement, le descriptif de l'élément ciblé (voir FeedbackFab). On sépare
+// les deux : le badge et la navigation n'utilisent que la partie « page », le
+// descriptif brut de l'élément (balise HTML) reste disponible au survol.
+const CONTEXT_ELEMENT_SEP = ' — élément ciblé par l\'utilisateur : '
+function contextPage(context) {
+  if (!context) return ''
+  const i = context.indexOf(CONTEXT_ELEMENT_SEP)
+  return i === -1 ? context : context.slice(0, i)
+}
+
+// Une demande « toute l'application » n'a pas de page cible : son contexte est une
+// mention globale (voir FeedbackFab, préfixe ci-dessous), pas une route. Dans ce
+// cas on n'affiche ni badge de page ni lien « Voir la page » — la demande ne
+// concerne pas la page d'où elle a été émise.
+const APP_WIDE_CONTEXT_PREFIX = 'Demande concernant l\'ensemble de l\'application'
+function isAppWideContext(context) {
+  return typeof context === 'string' && context.startsWith(APP_WIDE_CONTEXT_PREFIX)
+}
+
+// Le contexte d'une suggestion = la route d'où vient le signalement ; une fois le
+// correctif implanté, on offre la navigation directe vers la page modifiée.
+function PageLink({ context }) {
+  // Une demande « toute l'application » n'a pas de page cible unique : pas de lien.
+  if (isAppWideContext(context)) return null
+  const page = contextPage(context)
+  // Seules les vraies routes (`/…`) sont navigables.
+  if (!page.startsWith('/')) return null
+  return (
+    <Link
+      to={page}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      data-testid="card-page-link"
+      title={`Voir la page ${page}`}
+      className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200 font-medium transition-colors"
+    >
+      <ArrowUpRight size={10} /> Voir la page
+    </Link>
+  )
 }
 
 // ─── Live stream display ──────────────────────────────────────────────────────
@@ -178,15 +275,21 @@ function ProposalCard({ task, onUpdate, onDelete, onSend, streamChunks, defaultE
             <span className="text-slate-900 text-sm font-medium break-words flex-1 min-w-0">{heading}</span>
             <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${cfg.color} bg-current/10`}>{cfg.label}</span>
           </div>
-          {/* Meta badges */}
-          {isProposal && (
+          {/* Meta badges — la durée d'exécution reste visible même carte repliée. */}
+          {(isProposal || (task.status === 'done' && task.context) || ((task.status === 'done' || task.status === 'blocked') && task.started_at && task.completed_at)) && (
             <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
-              {highRisk
+              {isProposal && (highRisk
                 ? <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700 font-semibold"><ShieldAlert size={10} /> Risque élevé</span>
-                : <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Risque faible</span>}
-              {task.source && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{SOURCE_LABELS[task.source] || task.source}</span>}
-              {task.effort && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Effort : {EFFORT_LABELS[task.effort] || task.effort}</span>}
-              {task.messages?.length > 0 && <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-600"><MessageSquare size={10} />{task.messages.length}</span>}
+                : <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Risque faible</span>)}
+              {isProposal && task.source && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{SOURCE_LABELS[task.source] || task.source}</span>}
+              {isProposal && task.effort && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Effort : {EFFORT_LABELS[task.effort] || task.effort}</span>}
+              {isProposal && task.messages?.length > 0 && <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-600"><MessageSquare size={10} />{task.messages.length}</span>}
+              {(task.status === 'done' || task.status === 'blocked') && task.started_at && task.completed_at && (
+                <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500" data-testid="card-duration">
+                  <Clock size={10} /> <ElapsedTimer startedAt={task.started_at} completedAt={task.completed_at} />
+                </span>
+              )}
+              {task.status === 'done' && <PageLink context={task.context} />}
             </div>
           )}
         </div>
@@ -196,7 +299,7 @@ function ProposalCard({ task, onUpdate, onDelete, onSend, streamChunks, defaultE
         {expanded ? <ChevronUp size={14} className="text-slate-400 flex-shrink-0 mt-1" /> : <ChevronDown size={14} className="text-slate-400 flex-shrink-0 mt-1" />}
       </div>
 
-      {/* Compteur de temps écoulé pendant l'exécution (remplace le stream, gardé en repli). */}
+      {/* Compteur de temps écoulé pendant l'exécution (le stream Claude n'est plus affiché en cours d'exécution — le journal reste consultable uniquement sur une tâche bloquée). */}
       {task.status === 'in_progress' && (
         <div className="px-3.5 sm:px-4 pb-3 space-y-2">
           <div className="flex items-center justify-between gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5">
@@ -208,20 +311,26 @@ function ProposalCard({ task, onUpdate, onDelete, onSend, streamChunks, defaultE
               <ElapsedTimer startedAt={task.started_at} live />
             </span>
           </div>
-          <button
-            onClick={e => { e.stopPropagation(); setShowStream(s => !s) }}
-            className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-600 transition-colors"
-          >
-            <Terminal size={12} />
-            {showStream ? 'Masquer le stream Claude' : 'Voir le stream Claude'}
-            {showStream ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-          </button>
-          {showStream && <TaskStream chunks={streamChunks} />}
+        </div>
+      )}
+
+      {/* Appréciation de l'implémentation — toujours visible une fois terminée (un seul clic). */}
+      {task.status === 'done' && (
+        <div className="px-3.5 sm:px-4 pb-3">
+          <StarRating value={task.rating} onRate={r => onUpdate(task.id, { rating: r })} />
         </div>
       )}
 
       {expanded && (
         <div className="px-3.5 sm:px-4 pb-4 space-y-3 border-t border-slate-200/70 pt-3">
+          {/* Compte-rendu non technique — visible uniquement carte dépliée
+              (demande utilisateur : ne plus l'afficher sur la carte repliée). */}
+          {task.status === 'done' && task.user_summary && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3" data-testid="task-user-summary">
+              <p className="text-[11px] text-emerald-700 font-semibold uppercase tracking-wider mb-1">Ce qui a changé</p>
+              <p className="text-emerald-900 text-sm whitespace-pre-wrap leading-relaxed">{task.user_summary}</p>
+            </div>
+          )}
           {isProposal && task.why && (
             <div>
               <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wider mb-0.5">Pourquoi</p>
@@ -311,17 +420,13 @@ function ProposalCard({ task, onUpdate, onDelete, onSend, streamChunks, defaultE
             </div>
           )}
 
-          {/* Durée totale d'exécution pour les tâches terminées. */}
-          {(task.status === 'done' || task.status === 'blocked') && task.started_at && task.completed_at && (
-            <div className="flex items-center gap-2 text-sm text-slate-600">
-              <Clock size={14} className="text-slate-400" />
-              <span>Durée d'exécution : </span>
-              <span className="font-medium text-slate-700"><ElapsedTimer startedAt={task.started_at} completedAt={task.completed_at} /></span>
-            </div>
-          )}
+          {/* Pas de rappel de durée ni de date de fin en dépli : la durée est déjà
+              affichée dans le badge en tête de carte (demande utilisateur). */}
 
-          {/* Execution replay (debug) for done/blocked — replié par défaut. */}
-          {(task.status === 'done' || task.status === 'blocked') && streamChunks?.length > 0 && (
+          {/* Execution replay (debug) — replié par défaut, uniquement pour les
+              tâches bloquées (diagnostic). Les cartes terminées ne montrent plus
+              le journal d'exécution (demande utilisateur). */}
+          {task.status === 'blocked' && streamChunks?.length > 0 && (
             <div className="space-y-2">
               <button
                 onClick={() => setShowStream(s => !s)}
@@ -334,7 +439,10 @@ function ProposalCard({ task, onUpdate, onDelete, onSend, streamChunks, defaultE
               {showStream && <TaskStream chunks={streamChunks} done />}
             </div>
           )}
-          {task.agent_result && (
+          {/* Tâche terminée : le résumé vulgarisé « Ce qui a changé » ci-dessus suffit —
+              le rapport technique brut n'est plus montré (demande utilisateur). Il reste
+              montré pour les tâches bloquées, où il explique le blocage. */}
+          {task.status !== 'done' && task.agent_result && (
             <div className="bg-white rounded-lg p-3 border border-slate-200">
               <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wider mb-1.5">Rapport agent</p>
               <p className="text-slate-700 text-xs whitespace-pre-wrap font-mono leading-relaxed">{task.agent_result}</p>
@@ -366,47 +474,235 @@ function Zone({ title, count, children, collapsible = false }) {
   )
 }
 
-// ─── Backlog panel ────────────────────────────────────────────────────────────
-function BacklogPanel({ items, onAdd, onDelete }) {
-  const [text, setText] = useState('')
-  const [open, setOpen] = useState(false)
+// ─── Fiche unifiée suggestion ↔ correctif ─────────────────────────────────────
+// Statut dérivé : d'abord la tâche d'implémentation (si approuvée), sinon l'état
+// de la proposition instantanée. Une fiche « question » (mode question) porte des
+// libellés dédiés : l'agent répond, il n'implante rien.
+function suggestionStatus(item, task, isQuestion = false) {
+  if (task) {
+    if (task.status === 'approved')    return { key: 'queued',      label: 'En file',           color: 'text-sky-600',     bg: 'bg-sky-50',       border: 'border-l-sky-500',     icon: CheckCircle }
+    if (task.status === 'in_progress') return { key: 'in_progress', label: isQuestion ? 'Réponse en cours…' : 'Implémentation…', color: 'text-amber-600', bg: 'bg-amber-50', border: 'border-l-amber-500', icon: Loader2 }
+    if (task.status === 'done')        return { key: 'done',        label: isQuestion ? 'Répondu' : 'Implanté', color: 'text-emerald-600', bg: 'bg-emerald-50', border: 'border-l-emerald-500', icon: CheckCircle }
+    if (task.status === 'blocked')     return { key: 'blocked',     label: 'Bloqué',            color: 'text-red-600',     bg: 'bg-red-50',       border: 'border-l-red-500',     icon: AlertTriangle }
+  }
+  if (item.instant_status === 'generating')                  return { key: 'generating', label: 'Analyse…',          color: 'text-violet-600', bg: 'bg-violet-50/40', border: 'border-l-violet-500', icon: Loader2 }
+  if (item.instant_status === 'ready' && item.instant_proposal) return { key: 'proposed', label: 'Correctif proposé', color: 'text-brand-600',  bg: 'bg-white',        border: 'border-l-brand-400',  icon: Sparkles }
+  return { key: 'error', label: 'Analyse échouée', color: 'text-red-600', bg: 'bg-red-50/50', border: 'border-l-red-400', icon: AlertTriangle }
+}
 
-  async function submit() {
-    if (!text.trim()) return
-    await onAdd(text.trim())
-    setText('')
+function SuggestionCard({ item, task, onApprove, onRetry, onDelete, onRelaunch, onRate, streamChunks, defaultExpanded = false, autoApprove = false, onAutoApproveChange = null }) {
+  const [expanded, setExpanded] = useState(defaultExpanded)
+  const [comment, setComment] = useState('')
+  const [approving, setApproving] = useState(false)
+  const [showStream, setShowStream] = useState(false)
+  const [showReport, setShowReport] = useState(false)
+  const [localAutoApprove, setLocalAutoApprove] = useState(autoApprove)
+  // Question : l'utilisateur attend une réponse, pas un correctif — libellés adaptés.
+  const isQuestion = item.mode === 'question' || task?.mode === 'question'
+  const st = suggestionStatus(item, task, isQuestion)
+  const Icon = st.icon
+  const spinning = st.key === 'in_progress' || st.key === 'generating'
+
+  useEffect(() => {
+    setLocalAutoApprove(autoApprove)
+  }, [autoApprove])
+
+  async function approve() {
+    if (approving) return
+    setApproving(true)
+    try {
+      await onApprove(item, comment.trim())
+      if (localAutoApprove) {
+        setExpanded(false)
+      }
+    } finally {
+      setApproving(false)
+    }
+  }
+
+  function handleToggleAutoApprove(value) {
+    setLocalAutoApprove(value)
+    if (onAutoApproveChange) onAutoApproveChange(value)
   }
 
   return (
-    <div className="mb-6 bg-white border border-slate-200 rounded-xl p-3.5 shadow-sm">
-      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-2 text-left">
-        <Lightbulb size={15} className="text-amber-500" />
-        <span className="text-sm font-medium text-slate-700 flex-1">Jeter une idée</span>
-        {items.length > 0 && <span className="text-xs text-slate-400 tabular-nums">{items.length} en attente</span>}
-        {open ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
-      </button>
-      {open && (
-        <div className="mt-3 space-y-2.5">
-          <div className="flex items-end gap-2">
-            <textarea
-              value={text}
-              onChange={e => setText(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit() }}
-              rows={2}
-              placeholder="Une note vague que l'agent transformera en proposition concrète…"
-              className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20"
-            />
-            <button onClick={submit} disabled={!text.trim()} className="flex-shrink-0 h-9 w-9 flex items-center justify-center bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-white rounded-lg transition-colors" title="Ajouter au backlog">
-              <Plus size={16} />
-            </button>
+    <div className={`rounded-xl border border-slate-200 border-l-[3px] ${st.border} ${st.bg} transition-all shadow-sm`} data-testid="suggestion-card">
+      {/* En-tête : le signalement lui-même + provenance */}
+      <div className="flex items-start gap-2.5 p-3.5 sm:p-4 cursor-pointer" onClick={() => setExpanded(s => !s)}>
+        <Icon size={15} className={`mt-0.5 flex-shrink-0 ${st.color} ${spinning ? 'animate-spin' : ''}`} />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-start gap-2 flex-wrap">
+            <span className={`text-slate-900 text-sm font-medium break-words flex-1 min-w-0 whitespace-pre-wrap ${expanded ? '' : 'line-clamp-2'}`}>{item.text}</span>
+            <span className={`text-[11px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap ${st.color} bg-current/10`}>{st.label}</span>
           </div>
-          {items.map(item => (
-            <div key={item.id} className="flex items-start gap-2 text-sm text-slate-600 bg-slate-50 rounded-lg px-3 py-2">
-              <span className="flex-1 whitespace-pre-wrap break-words">{item.text}</span>
-              <button onClick={() => onDelete(item.id)} className="text-slate-300 hover:text-red-500 flex-shrink-0"><Trash2 size={13} /></button>
+          <div className="flex items-center gap-1.5 flex-wrap mt-1.5">
+            {isQuestion && (
+              <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-violet-100 text-violet-600 font-medium" data-testid="question-badge">
+                <HelpCircle size={10} /> Question
+              </span>
+            )}
+            {item.author && <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">{item.author}</span>}
+            {item.context && (isAppWideContext(item.context)
+              ? <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500" title={item.context} data-testid="context-app-wide"><Globe size={10} /> Toute l'application</span>
+              : <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500 font-mono" title={item.context}>{contextPage(item.context)}</span>)}
+            <span className="text-[10px] text-slate-400">{fmtDateTime(item.created_at)}</span>
+            {/* Durée d'exécution visible même carte repliée pour les implémentations terminées. */}
+            {task && (task.status === 'done' || task.status === 'blocked') && task.started_at && task.completed_at && (
+              <span className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500" data-testid="card-duration">
+                <Clock size={10} /> <ElapsedTimer startedAt={task.started_at} completedAt={task.completed_at} />
+              </span>
+            )}
+            {task?.status === 'done' && <PageLink context={item.context} />}
+          </div>
+        </div>
+        <button onClick={e => { e.stopPropagation(); onDelete(item, task) }} className="text-slate-300 hover:text-red-500 p-1 rounded-lg transition-colors hover:bg-red-50 flex-shrink-0" title="Supprimer la suggestion">
+          <Trash2 size={13} />
+        </button>
+        {expanded ? <ChevronUp size={14} className="text-slate-400 flex-shrink-0 mt-1" /> : <ChevronDown size={14} className="text-slate-400 flex-shrink-0 mt-1" />}
+      </div>
+
+      {/* Implémentation en cours : timer visible même fiche repliée. */}
+      {task?.status === 'in_progress' && (
+        <div className="px-3.5 sm:px-4 pb-3 space-y-2">
+          <div className="flex items-center justify-between gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5">
+            <div className="flex items-center gap-2 text-amber-700">
+              <Clock size={15} className="animate-pulse" />
+              <span className="text-sm font-medium">{isQuestion ? 'L\'agent prépare la réponse' : 'L\'agent implémente le correctif'}</span>
             </div>
-          ))}
-          {items.length === 0 && <p className="text-xs text-slate-400">Tes notes seront élaborées en priorité à la prochaine génération.</p>}
+            <span className="text-lg font-semibold text-amber-700 tabular-nums">
+              <ElapsedTimer startedAt={task.started_at} live />
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Appréciation de l'implémentation — toujours visible une fois implanté (un seul clic). */}
+      {task?.status === 'done' && onRate && (
+        <div className="px-3.5 sm:px-4 pb-3">
+          <StarRating value={task.rating} onRate={r => onRate(task.id, r)} />
+        </div>
+      )}
+
+      {expanded && (
+        <div className="px-3.5 sm:px-4 pb-4 space-y-3 border-t border-slate-200/70 pt-3">
+          {/* Le correctif proposé, affiché directement dans la fiche.
+              Gated sur le statut dérivé (st) et non sur instant_status brut :
+              un instant_status resté « generating » ne doit pas afficher
+              l'analyse en cours sur une carte dont la tâche est terminée. */}
+          {st.key === 'generating' && (
+            <div className="flex items-center gap-2 text-slate-500 text-sm">
+              <Loader2 size={14} className="animate-spin text-brand-500" /> L'agent analyse la demande et prépare une proposition…
+            </div>
+          )}
+          {st.key === 'error' && (
+            <div className="flex items-center gap-3 flex-wrap">
+              <p className="text-sm text-red-600">La proposition instantanée a échoué.</p>
+              <button onClick={() => onRetry(item)} className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 transition-colors">
+                <RotateCw size={12} /> Réessayer
+              </button>
+            </div>
+          )}
+          {/* L'analyse initiale n'est plus affichée une fois le correctif implanté —
+              seule la fiche « Ce qui a changé » (résumé non technique) demeure. */}
+          {item.instant_proposal && task?.status !== 'done' && (
+            <div>
+              <p className="text-[11px] text-slate-400 font-medium uppercase tracking-wider mb-0.5 flex items-center gap-1">
+                <Sparkles size={11} className="text-brand-500" /> Correctif proposé
+              </p>
+              <p className="text-slate-700 text-sm whitespace-pre-wrap leading-relaxed">{item.instant_proposal}</p>
+            </div>
+          )}
+
+          {/* Approbation sur place (tant qu'aucune tâche n'existe) */}
+          {!task && st.key === 'proposed' && (
+            <div className="space-y-2 pt-1">
+              <textarea
+                value={comment}
+                onChange={e => setComment(e.target.value)}
+                rows={1}
+                placeholder="Précision optionnelle avant d'approuver (ex. attention à…)"
+                className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 resize-none focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20"
+              />
+              <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between pt-1">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={localAutoApprove}
+                    onChange={e => handleToggleAutoApprove(e.target.checked)}
+                    className="w-4 h-4 accent-emerald-600 cursor-pointer"
+                  />
+                  <span className="text-sm text-slate-600">Approuver automatiquement</span>
+                </label>
+                <button
+                  onClick={approve}
+                  disabled={approving}
+                  data-testid="suggestion-approve"
+                  className="w-full sm:w-auto flex items-center justify-center gap-1.5 px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
+                >
+                  {approving ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle size={15} />}
+                  Approuver le correctif
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Résumé vulgarisé (« Ce qui a changé » / « Réponse ») — visible uniquement
+              carte dépliée (demande utilisateur : ne plus l'afficher repliée). */}
+          {task?.user_summary && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3" data-testid="suggestion-user-summary">
+              <p className="text-[11px] text-emerald-700 font-semibold uppercase tracking-wider mb-1">{isQuestion ? 'Réponse' : 'Ce qui a changé'}</p>
+              <p className="text-emerald-900 text-sm whitespace-pre-wrap leading-relaxed">{task.user_summary}</p>
+            </div>
+          )}
+
+          {/* Tâche bloquée : explication + relance */}
+          {task?.status === 'blocked' && (
+            <div className="space-y-2">
+              {!task.user_summary && task.agent_result && (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-2.5">
+                  <p className="text-red-800 text-xs whitespace-pre-wrap line-clamp-6">{task.agent_result}</p>
+                </div>
+              )}
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button onClick={() => onRelaunch(task)} className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-sm font-medium transition-colors">
+                  <RotateCw size={15} /> {isQuestion ? 'Relancer la réponse' : 'Relancer l\'implémentation'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Rapport technique + journal d'exécution en dépli — visibles uniquement
+              pour les tâches bloquées (diagnostic) ; carte terminée = résumé non
+              technique uniquement, sans journal (demande utilisateur). Pas de rappel
+              durée/date de fin ici : la durée est déjà dans le badge en tête de carte. */}
+          {task?.status === 'blocked' && (
+            <div className="space-y-2">
+              {task.agent_result && (
+                <div>
+                  <button onClick={() => setShowReport(s => !s)} className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-600 transition-colors">
+                    <FileText size={12} />
+                    {showReport ? 'Masquer le rapport technique' : 'Voir le rapport technique'}
+                    {showReport ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  </button>
+                  {showReport && (
+                    <div className="mt-2 bg-white rounded-lg p-3 border border-slate-200">
+                      <p className="text-slate-700 text-xs whitespace-pre-wrap font-mono leading-relaxed">{task.agent_result}</p>
+                    </div>
+                  )}
+                </div>
+              )}
+              {streamChunks?.length > 0 && (
+                <div>
+                  <button onClick={() => setShowStream(s => !s)} className="flex items-center gap-1.5 text-xs text-slate-400 hover:text-slate-600 transition-colors">
+                    <Terminal size={12} />
+                    {showStream ? 'Masquer le journal d\'exécution' : 'Voir le journal d\'exécution'}
+                    {showStream ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  </button>
+                  {showStream && <TaskStream chunks={streamChunks} done />}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -503,7 +799,10 @@ function ClaudeMdPanel() {
   const [open, setOpen] = useState(false)
   const [text, setText] = useState('')
   const [original, setOriginal] = useState('')
-  const [loading, setLoading] = useState(false)
+  // `true` initialement : sans ça, il existe un frame entre l'ouverture du
+  // panneau et le lancement du fetch (useEffect post-paint) où le textarea est
+  // rendu vide — un test/utilisateur rapide peut lire un contenu vide.
+  const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -593,6 +892,120 @@ function ClaudeMdPanel() {
   )
 }
 
+// ─── Utilisation Claude (session 5 h + semaine 7 j) ───────────────────────────
+// L'agent tourne sur l'abonnement Claude Code (forfait fixe) : on affiche donc
+// l'utilisation RÉELLE de l'abonnement — le % de la limite de session (5 h) et de
+// la limite hebdomadaire (7 j) consommé, avec l'heure de réinitialisation — plutôt
+// qu'une estimation de coût en dollars qui n'aurait aucun sens sur un forfait.
+// La consommation de jetons (agrégée depuis les transcriptions locales) reste
+// affichée en détail secondaire.
+function formatTokens(n) {
+  if (!Number.isFinite(n) || n <= 0) return '0'
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + ' M'
+  if (n >= 1_000) return (n / 1_000).toFixed(n >= 100_000 ? 0 : 1) + ' k'
+  return String(Math.round(n))
+}
+// « Réinit. dans 3 h 12 » à partir d'un timestamp ISO de réinitialisation.
+function formatResetIn(iso) {
+  if (!iso) return null
+  const ms = Date.parse(iso) - Date.now()
+  if (!Number.isFinite(ms) || ms <= 0) return null
+  const totalMin = Math.round(ms / 60000)
+  const days = Math.floor(totalMin / 1440)
+  const hours = Math.floor((totalMin % 1440) / 60)
+  const mins = totalMin % 60
+  if (days >= 1) return `réinit. dans ${days} j ${hours} h`
+  if (hours >= 1) return `réinit. dans ${hours} h ${mins} min`
+  return `réinit. dans ${mins} min`
+}
+// Couleur de la jauge selon le niveau de consommation.
+function usageTone(pct) {
+  if (pct >= 90) return { bar: 'bg-rose-500', text: 'text-rose-600' }
+  if (pct >= 70) return { bar: 'bg-amber-500', text: 'text-amber-600' }
+  return { bar: 'bg-brand-500', text: 'text-slate-900' }
+}
+
+function UsageCard({ icon: Icon, label, sublabel, bucket }) {
+  const b = bucket || {}
+  const pct = Number.isFinite(b.utilizationPct) ? Math.max(0, Math.min(100, b.utilizationPct)) : null
+  const tone = usageTone(pct ?? 0)
+  const resetIn = formatResetIn(b.resetsAt)
+  return (
+    <div className="flex-1 min-w-0 flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 shadow-sm">
+      <div className="w-8 h-8 rounded-lg bg-brand-50 border border-brand-100 flex items-center justify-center flex-shrink-0">
+        <Icon size={16} className="text-brand-500" />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</span>
+          <span className="text-[10px] text-slate-400">{sublabel}</span>
+        </div>
+        {pct != null ? (
+          <>
+            <div className="flex items-baseline gap-2 mt-0.5">
+              <span className={`text-base font-semibold tabular-nums leading-none ${tone.text}`} data-testid="usage-pct">
+                {pct} %
+              </span>
+              <span className="text-xs text-slate-400">de la limite</span>
+              {resetIn && <span className="text-[11px] text-slate-400 tabular-nums">· {resetIn}</span>}
+            </div>
+            <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
+              <div className={`h-full rounded-full ${tone.bar}`} style={{ width: `${pct}%` }} />
+            </div>
+            <div className="mt-1 text-[11px] text-slate-400 tabular-nums" data-testid="usage-tokens">
+              {formatTokens(b.totalTokens)} jetons
+            </div>
+          </>
+        ) : (
+          // Abonnement indisponible (token expiré/hors-ligne) → on retombe sur les jetons.
+          <div className="flex items-baseline gap-2 mt-0.5">
+            <span className="text-base font-semibold text-slate-900 tabular-nums leading-none" data-testid="usage-tokens">
+              {formatTokens(b.totalTokens)}
+            </span>
+            <span className="text-xs text-slate-400">jetons</span>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ClaudeUsageBar() {
+  const [usage, setUsage] = useState(null)
+  const [error, setError] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    async function fetchUsage() {
+      try {
+        const u = await api.agent.getUsage()
+        if (alive) { setUsage(u); setError(false) }
+      } catch {
+        if (alive) setError(true)
+      }
+    }
+    fetchUsage()
+    const i = setInterval(fetchUsage, 60_000) // le serveur cache 60 s de toute façon
+    return () => { alive = false; clearInterval(i) }
+  }, [])
+
+  if (error) return null // dégradation silencieuse : la barre disparaît si le calcul échoue
+
+  return (
+    <div className="mb-6" data-testid="claude-usage-bar">
+      <div className="flex items-center gap-1.5 mb-2">
+        <Sparkles size={12} className="text-brand-400" />
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Utilisation de Claude</h2>
+        {!usage && <Loader2 size={11} className="text-slate-300 animate-spin" />}
+      </div>
+      <div className="flex flex-col sm:flex-row gap-2.5">
+        <UsageCard icon={Gauge} label="Session" sublabel="5 dernières h" bucket={usage?.session} />
+        <UsageCard icon={CalendarDays} label="Cette semaine" sublabel="7 derniers j" bucket={usage?.week} />
+      </div>
+    </div>
+  )
+}
+
 // ─── Main content ─────────────────────────────────────────────────────────────
 export function AgentContent() {
   const [tasks, setTasks] = useState([])
@@ -602,8 +1015,10 @@ export function AgentContent() {
   const [backlog, setBacklog] = useState([])
   const [activity, setActivity] = useState(null)
   const [streamData, setStreamData] = useState({})
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const fetchedStreamRef = useRef(new Set())
   const { showToast } = useToast()
+  const { user } = useAuth()
 
   const load = useCallback(async () => {
     try {
@@ -646,7 +1061,9 @@ export function AgentContent() {
       setStreamData(prev => ({ ...prev, [taskId]: [...(prev[taskId] || []), chunk] }))
     }
     function onSettings(e) { setSettings(e.detail) }
-    function onBacklog() { api.agent.listBacklog().then(setBacklog).catch(() => {}) }
+    // Invalider AVANT le re-fetch, sinon le cache prefetch (TTL 30 s) ressert la
+    // version « generating » et la fiche ne passe jamais à « Correctif proposé ».
+    function onBacklog() { invalidate('/agent/backlog'); api.agent.listBacklog().then(setBacklog).catch(() => {}) }
     window.addEventListener('agent:task:updated', onTask)
     window.addEventListener('agent:task:stream', onStream)
     window.addEventListener('agent:settings:updated', onSettings)
@@ -659,9 +1076,10 @@ export function AgentContent() {
     }
   }, [])
 
-  // Fetch stream buffers for in_progress / recently finished
+  // Fetch stream buffers for in_progress / blocked (les cartes terminées
+  // n'affichent plus le journal d'exécution — inutile de le télécharger).
   useEffect(() => {
-    const relevant = tasks.filter(t => ['in_progress', 'done', 'blocked'].includes(t.status))
+    const relevant = tasks.filter(t => ['in_progress', 'blocked'].includes(t.status))
     for (const task of relevant) {
       if (fetchedStreamRef.current.has(task.id)) continue
       fetchedStreamRef.current.add(task.id)
@@ -696,13 +1114,30 @@ export function AgentContent() {
       showToast(s.enabled ? 'Agent activé' : 'Agent en pause', s.enabled ? 'success' : 'info')
     } catch { showToast('Erreur', 'error') }
   }
-  async function addBacklog(text) {
-    try { const it = await api.agent.addBacklog(text); setBacklog(prev => [...prev, it]) }
-    catch { showToast('Erreur backlog', 'error') }
+  async function approveSuggestion(item, comment) {
+    try {
+      const { item: updated, task } = await api.agent.approveBacklog(item.id, comment)
+      setBacklog(prev => prev.map(i => i.id === item.id ? updated : i))
+      if (task) setTasks(prev => prev.some(t => t.id === task.id) ? prev : [task, ...prev])
+      showToast('Correctif approuvé — l\'agent va l\'implémenter', 'success')
+    } catch { showToast('Erreur lors de l\'approbation', 'error') }
   }
-  async function delBacklog(id) {
-    try { await api.agent.deleteBacklog(id); setBacklog(prev => prev.filter(i => i.id !== id)) }
-    catch { showToast('Erreur', 'error') }
+  async function retrySuggestion(item) {
+    try {
+      const updated = await api.agent.retryBacklog(item.id)
+      setBacklog(prev => prev.map(i => i.id === item.id ? updated : i))
+    } catch { showToast('Erreur lors de la relance', 'error') }
+  }
+  async function deleteSuggestion(item, task) {
+    if (task?.status === 'in_progress') {
+      showToast('Implémentation en cours — impossible de supprimer', 'error')
+      return
+    }
+    try {
+      if (task) { await api.agent.deleteTask(task.id); setTasks(prev => prev.filter(t => t.id !== task.id)) }
+      await api.agent.deleteBacklog(item.id)
+      setBacklog(prev => prev.filter(i => i.id !== item.id))
+    } catch { showToast('Erreur lors de la suppression', 'error') }
   }
   async function savePromptField(key, value) {
     try {
@@ -710,23 +1145,39 @@ export function AgentContent() {
       setSettings(prev => ({ ...prev, ...s }))
     } catch { showToast('Erreur enregistrement du prompt', 'error') }
   }
+  async function handleAutoApproveChange(value) {
+    try {
+      const s = await api.agent.saveSettings({ autoApprove: value })
+      setSettings(prev => ({ ...prev, ...s }))
+    } catch { showToast('Erreur enregistrement', 'error') }
+  }
 
-  // Zones
-  const triage = tasks
-    .filter(t => ['pending', 'in_discussion', 'blocked'].includes(t.status))
+  // Fiches unifiées : chaque suggestion est jointe à sa tâche d'implémentation.
+  const taskById = new Map(tasks.map(t => [t.id, t]))
+  const fiches = backlog
+    .map(item => ({ item, task: item.task_id ? taskById.get(item.task_id) || null : null }))
+    .sort((a, b) => (b.item.created_at || '').localeCompare(a.item.created_at || ''))
+
+  // Plus de section « en attente » : les suggestions sont implémentées immédiatement.
+  // Les fiches sans tâche (transitoires) ou bloquées restent visibles dans « En cours »,
+  // bloquées en tête pour attirer l'attention.
+  const enCours = fiches.filter(f => !f.task || ['approved', 'in_progress', 'blocked'].includes(f.task.status))
     .sort((a, b) => {
-      const rank = s => (s === 'blocked' ? 0 : 1)
-      return (rank(a.status) - rank(b.status)) || (b.updated_at || '').localeCompare(a.updated_at || '')
+      const rank = f => (f.task?.status === 'blocked' ? 0 : 1)
+      return (rank(a) - rank(b)) || (b.item.created_at || '').localeCompare(a.item.created_at || '')
     })
-  const running = tasks.filter(t => ['approved', 'in_progress'].includes(t.status))
-    .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
-  const history = tasks.filter(t => ['done', 'rejected'].includes(t.status))
+  const implantees = fiches.filter(f => f.task && ['done', 'rejected'].includes(f.task.status))
+
+  // Tâches hors fiches : sous-tâches internes (créées par l'agent en cours d'exécution)
+  // et tâches historiques sans suggestion liée.
+  const linkedTaskIds = new Set(backlog.map(i => i.task_id).filter(Boolean))
+  const otherTasks = tasks.filter(t => !linkedTaskIds.has(t.id))
     .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
 
-  const activityLabel = activity === 'execution' ? 'Code en cours…' : activity === 'conversation' ? 'Répond…' : activity === 'generation' ? 'Réflexion…' : null
+  const activityLabel = activity === 'execution' ? 'Code en cours…' : activity === 'conversation' ? 'Répond…' : null
 
   return (
-    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
       {/* Header */}
       <div className="flex items-center justify-between gap-3 mb-6">
         <div className="flex items-center gap-3 min-w-0">
@@ -739,118 +1190,169 @@ export function AgentContent() {
               {activityLabel
                 ? <><Loader2 size={10} className="text-amber-500 animate-spin" /><p className="text-amber-600 text-xs font-medium">{activityLabel}</p></>
                 : settings.enabled
-                  ? <><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /><p className="text-slate-400 text-xs">Actif · génération horaire</p></>
+                  ? <><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /><p className="text-slate-400 text-xs">Actif — implémente les correctifs approuvés</p></>
                   : <><span className="w-1.5 h-1.5 rounded-full bg-slate-300" /><p className="text-slate-400 text-xs">En pause</p></>}
             </div>
           </div>
         </div>
-        {/* Global ON/OFF toggle */}
-        <button
-          onClick={toggleAgent}
-          className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors flex-shrink-0 ${settings.enabled ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-600'}`}
-          title="Frein d'urgence : OFF = l'agent ne génère ni ne code"
-        >
-          <Power size={15} />
-          <span className="hidden sm:inline">{settings.enabled ? 'ON' : 'OFF'}</span>
-        </button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {/* Réglages de l'agent — ouverts dans une modale dédiée */}
+          <button
+            onClick={() => setSettingsOpen(true)}
+            data-testid="agent-settings-button"
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors bg-white hover:bg-slate-50 border border-slate-200 text-slate-600"
+            title="Réglages de l'agent (prompts, instructions projet)"
+          >
+            <Settings size={15} />
+            <span className="hidden sm:inline">Réglages</span>
+          </button>
+          {/* Global ON/OFF toggle */}
+          <button
+            onClick={toggleAgent}
+            className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${settings.enabled ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-600'}`}
+            title="Frein d'urgence : OFF = l'agent ne génère ni ne code"
+          >
+            <Power size={15} />
+            <span className="hidden sm:inline">{settings.enabled ? 'ON' : 'OFF'}</span>
+          </button>
+        </div>
       </div>
+
+      {/* Utilisation Claude — en haut de la page (session 5 h + semaine 7 j) */}
+      <ClaudeUsageBar />
 
       {loading ? (
         <div className="flex items-center justify-center py-16"><Loader2 size={20} className="animate-spin text-slate-400" /></div>
       ) : (
         <>
-          <PromptEditorPanel
-            testid="general"
-            title="Prompt général"
-            description="Préambule injecté en tête de CHAQUE activité de l'agent (génération d'idées, discussion, exécution). C'est le {{general}} des trois modèles ci-dessous. Enregistré automatiquement à la sortie du champ."
-            value={settings.generalPrompt}
-            defaultValue={promptDefaults.generalPrompt}
-            rows={8}
-            onSave={v => savePromptField('generalPrompt', v)}
-          />
-          <PromptEditorPanel
-            testid="generation"
-            title="Prompt — génération d'idées"
-            description="Le prompt COMPLET envoyé au modèle quand il génère des propositions d'amélioration. C'est ici que se décide l'originalité : ordre des sources, ton, contraintes de format. Édite-le librement (garde un bloc ```json en sortie sinon la génération ne pourra plus être parsée)."
-            value={settings.generationPrompt}
-            defaultValue={promptDefaults.generationPrompt}
-            rows={22}
-            placeholders={[
-              ['{{general}}', 'le prompt général ci-dessus'],
-              ['{{slots}}', 'nombre max de propositions à produire ce tour'],
-              ['{{backlog}}', 'tes notes de backlog non traitées'],
-              ['{{signals}}', 'erreurs récentes sync_log / automation_logs (JSON)'],
-              ['{{history}}', 'propositions déjà faites / rejetées / ouvertes (dédup)'],
-            ]}
-            onSave={v => savePromptField('generationPrompt', v)}
-          />
-          <PromptEditorPanel
-            testid="conversation"
-            title="Prompt — discussion d'une proposition"
-            description="Le prompt envoyé quand tu discutes d'une proposition dans le fil (réponse en lecture seule, sans coder)."
-            value={settings.conversationPrompt}
-            defaultValue={promptDefaults.conversationPrompt}
-            rows={14}
-            placeholders={[
-              ['{{general}}', 'le prompt général'],
-              ['{{proposal}}', 'titre de la proposition discutée'],
-              ['{{why}}', 'ligne « Pourquoi » (si renseignée)'],
-              ['{{zone}}', 'ligne « Zone visée » (si renseignée)'],
-              ['{{thread}}', 'le fil de discussion humain / agent'],
-            ]}
-            onSave={v => savePromptField('conversationPrompt', v)}
-          />
-          <PromptEditorPanel
-            testid="execution"
-            title="Prompt — exécution (codage)"
-            description="Le prompt envoyé quand une proposition est approuvée et que l'agent code réellement (lecture/écriture du repo)."
-            value={settings.executionPrompt}
-            defaultValue={promptDefaults.executionPrompt}
-            rows={16}
-            placeholders={[
-              ['{{general}}', 'le prompt général'],
-              ['{{brief}}', 'le brief de la tâche (titre, pourquoi, zone, commentaire, fil)'],
-              ['{{internalSecret}}', 'secret d\'auth pour créer des sous-tâches via l\'API'],
-            ]}
-            onSave={v => savePromptField('executionPrompt', v)}
-          />
-          <ClaudeMdPanel />
-          <BacklogPanel items={backlog} onAdd={addBacklog} onDelete={delBacklog} />
-
-          <Zone title="À traiter" count={triage.length}>
-            {triage.length === 0 ? (
-              <div className="text-center py-10 bg-white border border-dashed border-slate-200 rounded-xl">
-                <ListTodo size={22} className="text-slate-300 mx-auto mb-2" />
-                <p className="text-slate-400 text-sm">Rien à traiter pour l'instant.</p>
+          {/* Deux colonnes côte à côte : implantées à gauche, en cours à droite.
+              Sur mobile (1 colonne) « En cours » remonte en premier (plus actionnable)
+              via lg:order — l'ordre DOM garde enCours en tête. */}
+          {(enCours.length > 0 || implantees.length > 0) && (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 items-start" data-testid="agent-columns">
+              <div className="lg:order-2" data-testid="col-en-cours">
+                <Zone title="En cours d'implémentation" count={enCours.length}>
+                  {enCours.length > 0 ? (
+                    <div className="space-y-2.5">
+                      {enCours.map(({ item, task }) => (
+                        <SuggestionCard key={item.id} item={item} task={task}
+                          onApprove={approveSuggestion} onRetry={retrySuggestion} onDelete={deleteSuggestion}
+                          onRelaunch={t => handleUpdate(t.id, { status: 'approved' })}
+                          onRate={(id, rating) => handleUpdate(id, { rating })}
+                          streamChunks={task ? streamData[task.id] : undefined}
+                          defaultExpanded={!task || task.status === 'in_progress'}
+                          autoApprove={settings.autoApprove}
+                          onAutoApproveChange={handleAutoApproveChange} />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-400 py-2">Aucune implémentation en cours.</p>
+                  )}
+                </Zone>
               </div>
-            ) : (
-              <div className="space-y-2.5">
-                {triage.map(t => (
-                  <ProposalCard key={t.id} task={t} onUpdate={handleUpdate} onDelete={handleDelete} onSend={handleSend} streamChunks={streamData[t.id]} />
-                ))}
+              <div className="lg:order-1" data-testid="col-implantees">
+                <Zone title="Implantées" count={implantees.length}>
+                  {implantees.length > 0 ? (
+                    <div className="space-y-2.5">
+                      {implantees.map(({ item, task }) => (
+                        <SuggestionCard key={item.id} item={item} task={task}
+                          onApprove={approveSuggestion} onRetry={retrySuggestion} onDelete={deleteSuggestion}
+                          onRelaunch={t => handleUpdate(t.id, { status: 'approved' })}
+                          onRate={(id, rating) => handleUpdate(id, { rating })}
+                          streamChunks={streamData[task.id]}
+                          autoApprove={settings.autoApprove}
+                          onAutoApproveChange={handleAutoApproveChange} />
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-400 py-2">Aucune carte implantée pour l'instant.</p>
+                  )}
+                </Zone>
               </div>
-            )}
-          </Zone>
+            </div>
+          )}
 
-          {running.length > 0 && (
-            <Zone title="En cours" count={running.length}>
+          {otherTasks.length > 0 && (
+            <Zone title="Sous-tâches de l'agent" count={otherTasks.length}>
               <div className="space-y-2.5">
-                {running.map(t => (
+                {otherTasks.map(t => (
                   <ProposalCard key={t.id} task={t} onUpdate={handleUpdate} onDelete={handleDelete} onSend={handleSend} streamChunks={streamData[t.id]} defaultExpanded={t.status === 'in_progress'} />
                 ))}
               </div>
             </Zone>
           )}
 
-          {history.length > 0 && (
-            <Zone title="Historique" count={history.length} collapsible>
-              <div className="space-y-2.5">
-                {history.map(t => (
-                  <ProposalCard key={t.id} task={t} onUpdate={handleUpdate} onDelete={handleDelete} onSend={handleSend} streamChunks={streamData[t.id]} />
-                ))}
-              </div>
-            </Zone>
-          )}
+          {/* Réglages : prompts éditables + instructions projet, dans une modale
+              ouverte via le bouton « Réglages » du header. */}
+          <Modal isOpen={settingsOpen} onClose={() => setSettingsOpen(false)} title="Réglages de l'agent" size="xl">
+            <PromptEditorPanel
+              testid="general"
+              title="Prompt général"
+              description="Préambule injecté en tête de CHAQUE activité de l'agent (proposition instantanée, discussion, exécution). C'est le {{general}} des modèles ci-dessous. Enregistré automatiquement à la sortie du champ."
+              value={settings.generalPrompt}
+              defaultValue={promptDefaults.generalPrompt}
+              rows={8}
+              onSave={v => savePromptField('generalPrompt', v)}
+            />
+            <PromptEditorPanel
+              testid="instant"
+              title="Prompt — proposition instantanée"
+              description="Le prompt envoyé dès qu'une suggestion est soumise (bulle d'aide ou page agent) pour proposer un correctif immédiat, sans lecture du code."
+              value={settings.instantPrompt}
+              defaultValue={promptDefaults.instantPrompt}
+              rows={12}
+              placeholders={[
+                ['{{general}}', 'le prompt général'],
+                ['{{text}}', 'le texte de la suggestion'],
+                ['{{context}}', 'la page d\'où vient le signalement'],
+              ]}
+              onSave={v => savePromptField('instantPrompt', v)}
+            />
+            <PromptEditorPanel
+              testid="conversation"
+              title="Prompt — discussion d'une proposition"
+              description="Le prompt envoyé quand tu discutes d'une sous-tâche dans le fil (réponse en lecture seule, sans coder)."
+              value={settings.conversationPrompt}
+              defaultValue={promptDefaults.conversationPrompt}
+              rows={14}
+              placeholders={[
+                ['{{general}}', 'le prompt général'],
+                ['{{proposal}}', 'titre de la proposition discutée'],
+                ['{{why}}', 'ligne « Pourquoi » (si renseignée)'],
+                ['{{zone}}', 'ligne « Zone visée » (si renseignée)'],
+                ['{{thread}}', 'le fil de discussion humain / agent'],
+              ]}
+              onSave={v => savePromptField('conversationPrompt', v)}
+            />
+            <PromptEditorPanel
+              testid="execution"
+              title="Prompt — exécution (codage)"
+              description="Le prompt envoyé quand un correctif est approuvé et que l'agent code réellement (lecture/écriture du repo)."
+              value={settings.executionPrompt}
+              defaultValue={promptDefaults.executionPrompt}
+              rows={16}
+              placeholders={[
+                ['{{general}}', 'le prompt général'],
+                ['{{brief}}', 'le brief de la tâche (signalement, correctif approuvé, commentaire)'],
+                ['{{internalSecret}}', 'secret d\'auth pour créer des sous-tâches via l\'API'],
+              ]}
+              onSave={v => savePromptField('executionPrompt', v)}
+            />
+            <PromptEditorPanel
+              testid="question"
+              title="Prompt — question (réponse sans implémentation)"
+              description="Le prompt envoyé quand la demande soumise est une question : l'agent explore le code en lecture seule et répond dans le compte-rendu de la carte, sans rien implémenter."
+              value={settings.questionPrompt}
+              defaultValue={promptDefaults.questionPrompt}
+              rows={12}
+              placeholders={[
+                ['{{general}}', 'le prompt général'],
+                ['{{brief}}', 'la question de l\'utilisateur (avec auteur et page d\'origine)'],
+              ]}
+              onSave={v => savePromptField('questionPrompt', v)}
+            />
+            {user?.role === 'admin' && <ClaudeMdPanel />}
+          </Modal>
         </>
       )}
     </div>

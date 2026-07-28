@@ -5,7 +5,6 @@ import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
@@ -101,13 +100,11 @@ export default function ItemsVendus() {
             <h1 className="text-2xl font-bold text-slate-900">Items vendus</h1>
             <p className="text-sm text-slate-500 mt-1">Lignes des factures Stripe — lie chaque item à un produit ERP.</p>
           </div>
-          <div className="flex items-center gap-2">
-            <TableConfigModal table="stripe_invoice_items" />
-          </div>
         </div>
 
         <DataTable
           table="stripe_invoice_items"
+          manageViews
           columns={COLUMNS}
           data={items}
           searchFields={['description', 'stripe_price_id', 'stripe_product_id', 'facture_document_number', 'amount', 'unit_amount']}

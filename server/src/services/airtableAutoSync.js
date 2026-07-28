@@ -209,7 +209,7 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
   const mappedErpColumns = new Set(Object.keys(hardcodedFieldMap || {}))
   const existingCols = liveColumns(erpTable)
   const existingDefs = db.prepare(
-    'SELECT * FROM airtable_field_defs WHERE erp_table=?'
+    'SELECT * FROM airtable_field_mappings WHERE erp_table=?'
   ).all(erpTable)
   const defsByAtId = new Map(existingDefs.map(d => [d.airtable_field_id, d]))
   const defsByName = new Map(existingDefs.map(d => [d.airtable_field_name, d]))
@@ -232,14 +232,17 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
     // a real column attached — without auto-creation we just skip them.
     if (existingDef.column_name === '__pending__') continue
 
-    // Update field metadata (type/options/name) on the existing def — this
-    // does not alter the SQLite schema, only the field_defs row.
-    const oldType = existingDef.field_type
-    const oldOptions = existingDef.options
-    if (oldType !== mapped.field_type || oldOptions !== JSON.stringify(mapped.options)) {
+    // Update mapping metadata (nom du champ Airtable) sur le mapping existant.
+    // Le field_type/options de RENDU vit désormais dans custom_fields et n'est
+    // plus jamais réécrit par le sync entrant (changement de comportement
+    // volontaire — un renommage/retype côté Airtable ne doit plus surprendre un
+    // utilisateur qui a configuré le rendu ERP à la main). `mapped.field_type`/
+    // `mapped.options`, dérivés à chaque passage des métadonnées Airtable
+    // live, servent uniquement à convertir la VALEUR ci-dessous.
+    if (existingDef.airtable_field_name !== atField.name) {
       db.prepare(
-        'UPDATE airtable_field_defs SET field_type=?, options=?, airtable_field_name=?, updated_at=datetime(\'now\') WHERE id=?'
-      ).run(mapped.field_type, JSON.stringify(mapped.options), atField.name, existingDef.id)
+        "UPDATE airtable_field_mappings SET airtable_field_name=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?"
+      ).run(atField.name, existingDef.id)
       updatedFields++
     }
 
@@ -251,26 +254,17 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
     // hardcodée (souvent avec NULL, quand l'ancien champ Airtable a été remplacé).
     if (mappedErpColumns.has(existingDef.column_name)) continue
 
-    // Les options de la def portent la config de mapping (choices single_select,
-    // précision number, etc.). Un JSON malformé ferait perdre cette config
-    // silencieusement — données déjà connues comme instables côté Airtable. On
-    // signale donc l'échec bruyamment et on retombe sur les options fraîchement
-    // dérivées des métadonnées Airtable (`mapped.options`) plutôt que sur {}.
-    let defOptions = mapped.options
-    try {
-      defOptions = JSON.parse(existingDef.options || '{}')
-    } catch (e) {
-      console.error(
-        `❌ ${module}: options JSON invalide pour le champ « ${atField.name} » ` +
-        `(def id=${existingDef.id}, colonne ${existingDef.column_name}) : ${e.message} — ` +
-        `raw=${JSON.stringify(existingDef.options)} ; fallback sur les options Airtable`
-      )
-    }
+    // `link_target_table` (résolution des liens Airtable→ERP) est une config de
+    // MAPPING persistée sur airtable_field_mappings.options par la modale de
+    // mapping (routes/connectors.js) — indépendante des options de rendu
+    // dérivées ici des métadonnées Airtable (choices, precision, etc.).
+    let mappingOptions = {}
+    try { mappingOptions = JSON.parse(existingDef.options || '{}') } catch {}
     dynamicFieldMap.push({
       airtableFieldName: atField.name,
       columnName: existingDef.column_name,
       fieldType: mapped.field_type,
-      options: defOptions,
+      options: { ...mapped.options, link_target_table: mappingOptions.link_target_table || null },
     })
   }
 
@@ -307,7 +301,14 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
 export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
   if (!records?.length) return
 
-  const defs = db.prepare('SELECT * FROM airtable_field_defs WHERE erp_table=?').all(erpTable)
+  // Le field_type/options de rendu vit désormais dans custom_fields (fusion
+  // avec l'ex-airtable_field_defs) — JOIN pour la conversion de valeur.
+  const defs = db.prepare(`
+    SELECT m.*, cf.type AS render_type, cf.options AS render_options
+    FROM airtable_field_mappings m
+    LEFT JOIN custom_fields cf ON cf.erp_table = m.erp_table AND cf.column_name = m.column_name AND cf.deleted_at IS NULL
+    WHERE m.erp_table=?
+  `).all(erpTable)
   const mappedFields = new Set(Object.values(hardcodedFieldMap || {}).filter(v => typeof v === 'string'))
   // Voir syncDynamicFields pour la motivation : deux noms de champs Airtable
   // ne doivent pas se disputer la même colonne ERP.
@@ -327,9 +328,24 @@ export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
     if (mappedErpColumns.has(d.column_name)) continue
     if (d.column_name === '__pending__') continue
     if (!existingCols.has(d.column_name)) continue
-    let defOptions = {}
-    try { defOptions = JSON.parse(d.options || '{}') } catch {}
-    dynamicFields.push({ airtableFieldName: d.airtable_field_name, columnName: d.column_name, fieldType: d.field_type, options: defOptions })
+    // `d.options` (colonne propre à airtable_field_mappings) porte link_target_table
+    // — config de résolution du sync ; `d.render_options` (custom_fields.options)
+    // porte les choices/format de rendu. On fusionne les deux pour convertValue.
+    // Un champ lien Airtable migre vers custom_fields.type='text' (voir migration
+    // schema.js — 'link' n'est pas un type de rendu sélectionnable) : la présence
+    // de link_target_table est donc le seul signal fiable qu'il faut prendre le
+    // chemin de résolution 'link' de convertValue plutôt que le rendu texte.
+    let mappingOptions = {}
+    try { mappingOptions = JSON.parse(d.options || '{}') } catch {}
+    let renderOptions = {}
+    try { renderOptions = JSON.parse(d.render_options || '{}') } catch {}
+    const isLink = !!mappingOptions.link_target_table
+    dynamicFields.push({
+      airtableFieldName: d.airtable_field_name,
+      columnName: d.column_name,
+      fieldType: isLink ? 'link' : (d.render_type || 'text'),
+      options: { ...renderOptions, link_target_table: mappingOptions.link_target_table || null },
+    })
   }
 
   if (!dynamicFields.length) return
@@ -356,23 +372,25 @@ export function updateDynamicFields(erpTable, hardcodedFieldMap, records) {
 }
 
 /**
- * Register native (hardcoded) fields in airtable_field_defs so they appear
- * in the views/filter UI alongside dynamic Airtable fields.
+ * Register native (hardcoded) fields in airtable_field_mappings so they
+ * appear in fieldRuleEngine's column whitelist (templates) alongside dynamic
+ * Airtable fields. Ces defs 'native_*' ne migrent jamais vers custom_fields
+ * (bruit inutile dans l'UI « champs custom ») — voir plan de fusion.
  * Runs at startup — idempotent (INSERT OR IGNORE).
  */
 export function ensureNativeFieldDefs(definitions) {
   const stmt = db.prepare(
-    `INSERT OR IGNORE INTO airtable_field_defs (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, field_type, options, sort_order)
-     VALUES (?,?,?,?,?,?,?,?,?)`
+    `INSERT OR IGNORE INTO airtable_field_mappings (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, sort_order)
+     VALUES (?,?,?,?,?,?,?)`
   )
   let count = 0
   for (const def of definitions) {
     const result = stmt.run(
       uuid(), def.module, def.erp_table, `native_${def.column_name}`,
-      def.label, def.column_name, def.field_type || 'text', JSON.stringify(def.options || {}),
+      def.label, def.column_name,
       def.sort_order ?? -(1000 - count)
     )
     if (result.changes > 0) count++
   }
-  if (count > 0) console.log(`📋 ${count} native field(s) registered in airtable_field_defs`)
+  if (count > 0) console.log(`📋 ${count} native field(s) registered in airtable_field_mappings`)
 }

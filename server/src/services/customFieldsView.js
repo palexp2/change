@@ -30,6 +30,7 @@
 
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
+import { FORMULA_FUNCTIONS } from './formulaEngine.js'
 
 // Whitelist des tables qu'on autorise comme cible de lookup. Exclut
 // volontairement `users` (hashes de mots de passe), `oauth_tokens`,
@@ -37,7 +38,10 @@ import db from '../db/database.js'
 export const LOOKUP_TARGET_WHITELIST = new Set([
   'companies', 'contacts', 'projects', 'orders', 'products', 'employees',
   'subscriptions', 'shipments', 'returns', 'tasks', 'factures', 'soumissions',
-  'achats_fournisseurs', 'addresses', 'activity_codes',
+  'achats_fournisseurs', 'addresses', 'activity_codes', 'vendor_subscriptions',
+  // Paiements clients (payments.facture_id → factures) : permet notamment un
+  // rollup « Date de paiement » (MIN/MAX de received_at) sur les factures.
+  'payments',
 ])
 
 // Tables autorisées comme CIBLE d'un champ link bidirectionnel. Doit rester
@@ -90,6 +94,7 @@ export const ACTIVITY_ENTITY_MAP = {
   purchases: 'purchase',
   achats_fournisseurs: 'achat_fournisseur',
   interactions: 'interaction',
+  vendor_subscriptions: 'vendor_subscription',
 }
 
 // Kinds de champs auto-remplis : lecture seule, calculés à la lecture via la VUE.
@@ -100,7 +105,9 @@ export const ACTIVITY_ENTITY_MAP = {
 export const AUTO_KINDS = new Set(['created_time', 'last_modified_time', 'created_by', 'last_modified_by'])
 
 // Fonctions d'agrégation autorisées pour les rollups.
-export const ROLLUP_AGGS = new Set(['SUM', 'COUNT', 'AVG', 'MIN', 'MAX'])
+// ARRAY / ARRAYUNIQUE concatènent les valeurs liées (toutes / distinctes) en une
+// liste texte séparée par « , » — utile pour lister des id, noms, etc.
+export const ROLLUP_AGGS = new Set(['SUM', 'COUNT', 'AVG', 'MIN', 'MAX', 'ARRAY', 'ARRAYUNIQUE'])
 
 // Candidats de "singulier" pour dériver le nom de colonne FK inverse probable
 // d'une table source (projects → project, factures → facture, companies → company).
@@ -138,10 +145,25 @@ export function getLookupMeta(erpTable) {
     }
   }
 
+  // Libellés UI des colonnes cibles (custom_fields.name, fusion avec l'ex-
+  // airtable_field_defs.airtable_field_name) — la modale affiche les noms de
+  // champs tels qu'ils apparaissent dans l'app plutôt que les noms techniques
+  // snake_case. Une requête, groupée par table.
+  const labelsByTable = new Map()
+  for (const r of db.prepare(
+    `SELECT erp_table, column_name, name FROM custom_fields
+     WHERE deleted_at IS NULL AND kind='data' AND name IS NOT NULL AND name != ''`
+  ).all()) {
+    if (!labelsByTable.has(r.erp_table)) labelsByTable.set(r.erp_table, new Map())
+    labelsByTable.get(r.erp_table).set(r.column_name, r.name)
+  }
+
   const targetColumns = {}
   for (const t of LOOKUP_TARGET_WHITELIST) {
     try {
+      const labels = labelsByTable.get(t)
       const cols = db.pragma(`table_info(${t})`).map(c => c.name).filter(isSafeLookupColumn)
+        .map(c => ({ column: c, label: labels?.get(c) || null }))
       if (cols.length > 0) targetColumns[t] = cols
     } catch {}
   }
@@ -216,6 +238,11 @@ export function getLookupMeta(erpTable) {
            AND kind IN ('formula','lookup','rollup','link','created_time','last_modified_time','created_by','last_modified_by')`
       ).all(erpTable).map(r => r.column_name),
     ])],
+    // Catalogue des fonctions de formule réellement supportées (parité Airtable),
+    // source unique venant du moteur (formulaEngine.js) : l'éditeur de formule
+    // affiche EXACTEMENT ce que la VUE sait évaluer, sans liste dupliquée qui
+    // dérive. Chaque entrée : { name, category, sig, hint }.
+    formula_functions: FORMULA_FUNCTIONS,
   }
 }
 
@@ -335,6 +362,22 @@ function buildVirtualColumn(cf, erpTable, alias) {
     const ralias = `_r${++alias.n}`
     const childCols = db.pragma(`table_info(${cf.rollup_target_table})`).map(c => c.name)
     const softFilter = childCols.includes('deleted_at') ? ` AND ${ralias}.deleted_at IS NULL` : ''
+    // ARRAY / ARRAYUNIQUE : liste texte des valeurs liées (« , » comme séparateur).
+    // SQLite n'accepte pas group_concat(DISTINCT x, sep) → on passe par une
+    // sous-requête interne qui applique DISTINCT avant de concaténer, ce qui donne
+    // un séparateur cohérent (« , ») pour les deux modes.
+    if (agg === 'ARRAY' || agg === 'ARRAYUNIQUE') {
+      const distinct = agg === 'ARRAYUNIQUE' ? 'DISTINCT ' : ''
+      return {
+        selectExpr:
+          `(SELECT group_concat(_v, ', ') FROM (` +
+          `SELECT ${distinct}${ralias}.${cf.rollup_target_column} AS _v ` +
+          `FROM ${cf.rollup_target_table} AS ${ralias} ` +
+          `WHERE ${ralias}.${cf.rollup_target_fk} = ${erpTable}.id${softFilter} ` +
+          `AND ${ralias}.${cf.rollup_target_column} IS NOT NULL)) AS ${cf.column_name}`,
+        joins: [],
+      }
+    }
     const inner = agg === 'COUNT' ? 'COUNT(*)' : `${agg}(${ralias}.${cf.rollup_target_column})`
     const wrapped = (agg === 'COUNT' || agg === 'SUM') ? `coalesce(${inner}, 0)` : inner
     return {
@@ -427,7 +470,7 @@ export function validateRollup({ rollup_target_table, rollup_target_fk, rollup_t
   }
   const agg = String(rollup_agg || '').toUpperCase()
   if (!ROLLUP_AGGS.has(agg)) {
-    throw new Error("rollup_agg doit être 'SUM', 'COUNT', 'AVG', 'MIN' ou 'MAX'")
+    throw new Error("rollup_agg doit être 'SUM', 'COUNT', 'AVG', 'MIN', 'MAX', 'ARRAY' ou 'ARRAYUNIQUE'")
   }
   // La source doit avoir une colonne id (cible du FK inverse)
   const srcCols = db.pragma(`table_info(${erpTable})`).map(c => c.name)
@@ -649,25 +692,65 @@ function computeDependencyLevels(virtualCols, cfByColumn, depsByColumn) {
   return { levelByColumn: level, cyclicColumns: cyclic }
 }
 
-// Rapport d'usage d'un champ : retourne les AUTRES champs custom actifs de la
-// même table qui le référencent. Sert à prévenir, AU MOMENT du delete/rename,
-// qu'on s'apprête à casser des champs calculés — au lieu de ne le découvrir
-// qu'à la régénération silencieuse de la vue (#ERROR muet).
+// Collecte récursive des identifiants de colonne référencés par une structure
+// de filtre/règle arbitraire (filtres plats [{field,op,value}], groupes
+// imbriqués {conjunction, rules:[…]}, règles de couleur, conditions de
+// visibilité…). Toute valeur string portée par une clé `field` ou `column`
+// compte comme une référence.
+function collectFieldRefs(node, out = new Set()) {
+  if (Array.isArray(node)) { for (const n of node) collectFieldRefs(n, out); return out }
+  if (!node || typeof node !== 'object') return out
+  if (typeof node.field === 'string') out.add(node.field)
+  if (typeof node.column === 'string') out.add(node.column)
+  for (const v of Object.values(node)) {
+    if (v && typeof v === 'object') collectFieldRefs(v, out)
+  }
+  return out
+}
+
+function safeJsonParse(raw, fallback = null) {
+  if (raw == null || raw === '') return fallback
+  if (typeof raw !== 'string') return raw
+  try { return JSON.parse(raw) } catch { return fallback }
+}
+
+// Mapping erp_table → contexte des field_visibility_rules (FieldGuardProvider
+// côté client). Seul `facture` existe à ce jour.
+const VISIBILITY_RULE_CONTEXTS = { factures: 'facture' }
+
+// Rapport d'usage d'un champ : tout ce que sa suppression va affecter. Sert à
+// prévenir AU MOMENT du delete qu'on s'apprête à casser des dépendances — au
+// lieu de le découvrir à la régénération silencieuse de la vue (#ERROR muet)
+// ou à une automation qui cesse de se déclencher.
 //
 // Sources de dépendance détectées :
-//   - formule    : l'expression mentionne le column_name du champ (via
-//                  extractFormulaDeps, qui ignore les littéraux chaîne).
-//   - lookup     : le champ supprimé sert de clé étrangère (lookup_fk) au lookup.
-//   - rollup     : un rollup vit sur les colonnes de la table ENFANT, jamais sur
-//                  les colonnes de CETTE table → pas de dépendance intra-table.
-//   - auto       : champs système, ne référencent rien → ignorés comme sources.
+//   - formule     : une formule de la même table mentionne le column_name (via
+//                   extractFormulaDeps, qui ignore les littéraux chaîne).
+//   - lookup      : le champ sert de clé étrangère (lookup_fk) à un lookup de la
+//                   même table, OU de colonne cible à un lookup d'une AUTRE table
+//                   (lookup_target_table/column).
+//   - rollup      : un rollup d'une autre table agrège cette colonne ou l'utilise
+//                   comme FK inverse (rollup_target_table + column/fk).
+//   - link        : le champ inverse d'une liaison bidirectionnelle est supprimé
+//                   en même temps (même link_group_id).
+//   - automation  : une règle de champ (kind='field_rule') déclenche sur cette
+//                   colonne ou l'interpole dans son action ({{col}} / script) ;
+//                   un webhook (kind='webhook') la cible dans ses étapes.
+//   - vue         : une vue (table_view_pills) l'utilise en filtre, tri,
+//                   regroupement, règle de couleur ou colonne affichée.
+//   - visibilité  : une règle de visibilité de champ (field_visibility_rules)
+//                   la référence dans ses conditions.
 //
-// `field` : { id, erp_table, column_name } (au minimum). Renvoie un tableau
-// d'objets { id, name, column_name, kind, relation } (relation = libellé FR).
+// `field` : { id, erp_table, column_name, kind?, link_group_id? }. Renvoie un
+// tableau d'objets { id, name, column_name?, kind, relation, category, table }
+// (relation = libellé FR ; category ∈ 'field'|'automation'|'view'|'visibility').
 export function getFieldDependents(field) {
-  const { id, erp_table, column_name } = field || {}
+  const { id, erp_table, column_name, kind, link_group_id } = field || {}
   if (!SAFE_IDENT.test(erp_table || '')) throw new Error('Nom de table invalide')
   if (!column_name) return []
+  const deps = []
+
+  // --- 1. Champs calculés de la même table (formules + lookups par FK) ---
   const others = db.prepare(`
     SELECT id, name, column_name, kind, formula_expr, lookup_fk
     FROM custom_fields
@@ -678,16 +761,118 @@ export function getFieldDependents(field) {
   // place le column_name à tester, sinon une formule qui le référence ne serait
   // pas captée.
   const cfByColumn = new Map([[column_name, true]])
-  const deps = []
   for (const o of others) {
     if (o.kind === 'formula' && o.formula_expr) {
       if (extractFormulaDeps(o.formula_expr, cfByColumn).has(column_name)) {
-        deps.push({ id: o.id, name: o.name, column_name: o.column_name, kind: o.kind, relation: 'formule' })
+        deps.push({ id: o.id, name: o.name, column_name: o.column_name, kind: o.kind, relation: 'formule', category: 'field', table: erp_table })
       }
     } else if (o.kind === 'lookup' && o.lookup_fk === column_name) {
-      deps.push({ id: o.id, name: o.name, column_name: o.column_name, kind: o.kind, relation: 'clé étrangère du lookup' })
+      deps.push({ id: o.id, name: o.name, column_name: o.column_name, kind: o.kind, relation: 'clé étrangère du lookup', category: 'field', table: erp_table })
     }
   }
+
+  // --- 2. Lookups d'AUTRES tables ciblant cette colonne ---
+  const crossLookups = db.prepare(`
+    SELECT id, name, column_name, erp_table FROM custom_fields
+    WHERE deleted_at IS NULL AND id <> ? AND kind='lookup'
+      AND lookup_target_table = ? AND lookup_target_column = ?
+  `).all(id, erp_table, column_name)
+  for (const o of crossLookups) {
+    deps.push({ id: o.id, name: o.name, column_name: o.column_name, kind: 'lookup', relation: `lookup depuis ${o.erp_table}`, category: 'field', table: o.erp_table })
+  }
+
+  // --- 3. Rollups d'autres tables agrégeant cette colonne (ou via cette FK) ---
+  const rollups = db.prepare(`
+    SELECT id, name, column_name, erp_table, rollup_target_fk, rollup_target_column
+    FROM custom_fields
+    WHERE deleted_at IS NULL AND id <> ? AND kind='rollup'
+      AND rollup_target_table = ? AND (rollup_target_column = ? OR rollup_target_fk = ?)
+  `).all(id, erp_table, column_name, column_name)
+  for (const o of rollups) {
+    const via = o.rollup_target_fk === column_name ? 'clé du rollup' : 'colonne agrégée'
+    deps.push({ id: o.id, name: o.name, column_name: o.column_name, kind: 'rollup', relation: `rollup depuis ${o.erp_table} (${via})`, category: 'field', table: o.erp_table })
+  }
+
+  // --- 4. Champ inverse d'une liaison (supprimé en cascade avec celui-ci) ---
+  if (kind === 'link' && link_group_id) {
+    const pair = db.prepare(`
+      SELECT id, name, column_name, erp_table FROM custom_fields
+      WHERE link_group_id = ? AND id <> ? AND deleted_at IS NULL
+    `).all(link_group_id, id)
+    for (const p of pair) {
+      deps.push({ id: p.id, name: p.name, column_name: p.column_name, kind: 'link', relation: `champ inverse sur ${p.erp_table} — supprimé en même temps`, category: 'field', table: p.erp_table })
+    }
+  }
+
+  // --- 5. Automations (règles de champ + webhooks) ---
+  const automations = db.prepare(`
+    SELECT id, name, kind, trigger_config, action_config, script
+    FROM automations WHERE deleted_at IS NULL
+  `).all()
+  // Token « mot entier » pour repérer la colonne dans un template {{col}} ou un script.
+  const wordRe = new RegExp(`\\b${column_name}\\b`)
+  for (const a of automations) {
+    if (a.kind === 'field_rule') {
+      const tc = safeJsonParse(a.trigger_config, {})
+      if (tc?.erp_table !== erp_table) continue
+      const trigCols = new Set()
+      if (tc.column) trigCols.add(tc.column)
+      if (tc.filter?.column) trigCols.add(tc.filter.column)
+      for (const r of (tc.conditions?.rules || [])) if (r?.column) trigCols.add(r.column)
+      if (trigCols.has(column_name)) {
+        deps.push({ id: a.id, name: a.name, kind: 'automation', relation: 'déclencheur de la règle de champ', category: 'automation', table: erp_table })
+        continue
+      }
+      // Action : interpolation {{col}} dans les templates, ou référence dans le script.
+      const actionRaw = `${a.action_config || ''}\n${a.script || ''}`
+      if (wordRe.test(actionRaw)) {
+        deps.push({ id: a.id, name: a.name, kind: 'automation', relation: 'action de la règle de champ', category: 'automation', table: erp_table })
+      }
+    } else if (a.kind === 'webhook') {
+      const ac = safeJsonParse(a.action_config, {})
+      const steps = Array.isArray(ac?.steps) ? ac.steps : []
+      const hit = steps.some(s => s?.table === erp_table &&
+        (s?.match?.field === column_name || (s?.fields || []).some(f => f?.column === column_name)))
+      if (hit) {
+        deps.push({ id: a.id, name: a.name, kind: 'automation', relation: 'étape du webhook', category: 'automation', table: erp_table })
+      }
+    }
+  }
+
+  // --- 6. Vues (pills) : filtres, tris, regroupements, couleurs, colonnes ---
+  const pills = db.prepare(`
+    SELECT id, label, filters, visible_columns, sort, group_by, color_rules
+    FROM table_view_pills WHERE table_name = ?
+  `).all(erp_table)
+  for (const p of pills) {
+    const uses = []
+    if (collectFieldRefs(safeJsonParse(p.filters, [])).has(column_name)) uses.push('filtre')
+    const sort = safeJsonParse(p.sort, [])
+    if (Array.isArray(sort) && sort.some(s => s?.field === column_name)) uses.push('tri')
+    // group_by : string legacy (mono-niveau) ou tableau JSON (multi-niveau).
+    const gb = safeJsonParse(p.group_by, p.group_by)
+    const groups = Array.isArray(gb) ? gb : (gb ? [gb] : [])
+    if (groups.includes(column_name)) uses.push('regroupement')
+    if (collectFieldRefs(safeJsonParse(p.color_rules, [])).has(column_name)) uses.push('règle de couleur')
+    const visible = safeJsonParse(p.visible_columns, [])
+    if (Array.isArray(visible) && visible.includes(column_name)) uses.push('colonne affichée')
+    if (uses.length) {
+      deps.push({ id: p.id, name: `Vue « ${p.label} »`, kind: 'view', relation: uses.join(', '), category: 'view', table: erp_table })
+    }
+  }
+
+  // --- 7. Règles de visibilité de champ ---
+  const context = VISIBILITY_RULE_CONTEXTS[erp_table]
+  if (context) {
+    const rules = db.prepare(`SELECT id, field_id, conditions_json FROM field_visibility_rules WHERE context = ?`).all(context)
+    for (const r of rules) {
+      const refs = collectFieldRefs(safeJsonParse(r.conditions_json, {}))
+      if (r.field_id === column_name || refs.has(column_name)) {
+        deps.push({ id: r.id, name: `Règle de visibilité (${r.field_id})`, kind: 'visibility', relation: 'condition de visibilité', category: 'visibility', table: erp_table })
+      }
+    }
+  }
+
   return deps
 }
 

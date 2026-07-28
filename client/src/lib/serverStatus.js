@@ -83,6 +83,14 @@ export function noteBootId(id) {
 
 export function getKnownBootId() { return knownBootId }
 
+// Accepte un nouveau boot_id comme référence SANS reload — appelé quand le
+// handler de restart a vérifié que le bundle client n'a pas changé (pm2
+// restart sans rebuild). Sans ça, chaque réponse suivante re-déclencherait
+// les subscribers de restart.
+export function acceptBootId(id) {
+  if (id) knownBootId = id
+}
+
 export function subscribeServerRestart(fn) {
   restartSubs.add(fn)
   return () => restartSubs.delete(fn)

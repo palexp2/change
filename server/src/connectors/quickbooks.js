@@ -136,6 +136,36 @@ export async function getAccessToken(accountKey) {
 const qbMutationListeners = new Set()
 export function onQbMutation(fn) { qbMutationListeners.add(fn); return () => qbMutationListeners.delete(fn) }
 
+// Traductions FR des codes d'erreur QB les plus fréquents chez nous — le Detail
+// de QB est verbeux et anglophone, on résume en une phrase actionnable.
+const QB_ERROR_HINTS = {
+  '610': 'l\'objet visé n\'existe plus dans QuickBooks (supprimé ou fusionné)',
+  '2020': 'un champ obligatoire est manquant ou invalide',
+  '6000': 'QuickBooks a refusé la transaction (règle métier — souvent une incohérence de devise, de taxe ou de compte)',
+  '6240': 'ce nom existe déjà dans QuickBooks (les noms sont uniques entre Clients, Fournisseurs et Employés)',
+  '6480': 'la transaction est réconciliée dans QuickBooks et ne peut pas être supprimée',
+  '3200': 'la connexion QuickBooks a expiré — reconnecter QuickBooks dans Connecteurs',
+}
+
+function buildQbApiError(method, path, status, text) {
+  let concise = null, code = null
+  try {
+    const fault = JSON.parse(text)?.Fault?.Error?.[0]
+    if (fault) {
+      code = fault.code || null
+      const detail = (fault.Detail || fault.Message || '').replace(/\s+/g, ' ').trim()
+      const hint = QB_ERROR_HINTS[code]
+      concise = hint
+        ? `QuickBooks : ${hint}.${detail ? ` Détail : ${detail}` : ''}`
+        : `QuickBooks a refusé la demande${code ? ` (code ${code})` : ''}${detail ? ` : ${detail}` : ''}`
+    }
+  } catch {}
+  const err = new Error(concise || `QuickBooks a répondu ${status} sur ${method} ${path}`)
+  err.qbCode = code
+  err.status = status
+  return err
+}
+
 export async function qbRequest(method, path, body) {
   const { accessToken, realmId } = await getAccessToken()
   const sep = path.includes('?') ? '&' : '?'
@@ -151,7 +181,10 @@ export async function qbRequest(method, path, body) {
   })
   if (!resp.ok) {
     const text = await resp.text()
-    throw new Error(`QB API ${method} ${path} ${resp.status}: ${text}`)
+    // Le dump JSON complet de QB est illisible pour l'utilisateur — on en extrait
+    // un message concis (le brut reste dans les logs serveur pour le debug).
+    console.error(`QB API ${method} ${path} ${resp.status}:`, text)
+    throw buildQbApiError(method, path, resp.status, text)
   }
   if (method !== 'GET') {
     for (const fn of qbMutationListeners) {

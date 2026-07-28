@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Truck, Package, FileText, X, Printer,
-  GripVertical, Copy, Check, Trash2, ScanBarcode, Boxes,
+  Copy, Check, Trash2, ScanBarcode, Boxes,
   MapPin, Clock, ChevronDown, ChevronRight, AlertCircle
 } from 'lucide-react'
 import api from '../lib/api.js'
@@ -16,6 +16,9 @@ import Attachments from '../components/Attachments.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
 
@@ -931,13 +934,7 @@ export default function OrderDetail() {
   // Commercial mode state
   const [showAddItem, setShowAddItem] = useState(false)
   const [showAddShipment, setShowAddShipment] = useState(false)
-  const [editingItemId, setEditingItemId] = useState(null)
-  const [editingField, setEditingField] = useState(null)
-  const [editValues, setEditValues] = useState({})
-  const [dragItemId, setDragItemId] = useState(null)
-  const [dragOverItemId, setDragOverItemId] = useState(null)
-  const dragItemsRef = useRef([])
-  const [contextMenu, setContextMenu] = useState(null)
+  const confirmDialog = useConfirm()
 
   // Shared
   const [scanToast, setScanToast] = useState(null)
@@ -1036,56 +1033,26 @@ export default function OrderDetail() {
     setOrder(o => ({ ...o, items: newItems }))
   }
 
-  function startEdit(item, field = 'qty') {
-    setEditingItemId(item.id)
-    setEditingField(field)
-    setEditValues({
-      qty: item.qty, unit_cost: item.unit_cost,
-      item_type: item.item_type || 'Facturable',
-      notes: item.notes || '',
-      replaced_serial: item.replaced_serial || ''
-    })
+  // Édition « tableur » du DataTable Articles : PATCH du champ touché, puis
+  // merge de la réponse serveur (qui inclut serials + champs produit joints).
+  async function handleItemCellEdit(row, col, value) {
+    let v = value
+    if (col.field === 'qty') {
+      // Le serveur exige un entier positif ; '' (vidage) retombe sur 1.
+      v = Math.max(1, Math.round(Number(value) || 0))
+    }
+    if (col.field === 'item_type' && !v) return // pas de type vide
+    const updated = await api.orders.updateItem(id, row.id, { [col.field]: v })
+    handlePatchItem(row.id, updated)
   }
 
-  async function saveEdit(itemId) {
-    const orig = order.items.find(i => i.id === itemId)
-    if (!orig) { setEditingItemId(null); return }
-    const changed = {}
-    if (parseInt(editValues.qty) !== orig.qty) changed.qty = parseInt(editValues.qty) || 1
-    if (parseFloat(editValues.unit_cost) !== orig.unit_cost) changed.unit_cost = parseFloat(editValues.unit_cost) || 0
-    if (editValues.item_type !== (orig.item_type || 'Facturable')) changed.item_type = editValues.item_type
-    if (editValues.notes !== (orig.notes || '')) changed.notes = editValues.notes
-    if (editValues.replaced_serial !== (orig.replaced_serial || '')) changed.replaced_serial = editValues.replaced_serial
-    if (Object.keys(changed).length > 0) { await api.orders.updateItem(id, itemId, changed); load() }
-    setEditingItemId(null)
-  }
-
-  function cancelEdit() { setEditingItemId(null); setEditingField(null); setEditValues({}) }
-
-  function handleDragStart(e, itemId) {
-    setDragItemId(itemId)
-    dragItemsRef.current = order.items.map(i => i.id)
-    e.dataTransfer.effectAllowed = 'move'
-  }
-  function handleDragOver(e, itemId) {
-    e.preventDefault()
-    e.dataTransfer.dropEffect = 'move'
-    setDragOverItemId(itemId)
-  }
-  async function handleDrop(e, targetItemId) {
-    e.preventDefault()
-    if (!dragItemId || dragItemId === targetItemId) { setDragItemId(null); setDragOverItemId(null); return }
-    const ids = [...dragItemsRef.current]
-    const fromIdx = ids.indexOf(dragItemId)
-    const toIdx = ids.indexOf(targetItemId)
-    ids.splice(fromIdx, 1); ids.splice(toIdx, 0, dragItemId)
-    const reorderData = ids.map((itemId, idx) => ({ id: itemId, sort_order: idx }))
+  // Réordonnancement drag & drop (poignée DataTable) → sort_order persisté.
+  function handleReorderItems(ids) {
     const itemMap = new Map(order.items.map(i => [i.id, i]))
     setOrder(o => ({ ...o, items: ids.map(iId => itemMap.get(iId)).filter(Boolean) }))
-    setDragItemId(null); setDragOverItemId(null)
+    const reorderData = ids.map((itemId, idx) => ({ id: itemId, sort_order: idx }))
     api.orders.reorderItems(id, reorderData).catch(() => load())
   }
-  function handleDragEnd() { setDragItemId(null); setDragOverItemId(null) }
 
   const handleScan = useCallback(async (value) => {
     const mode = expeditionMode ? 'pick' : 'add'
@@ -1168,6 +1135,103 @@ export default function OrderDetail() {
     )
   }
 
+  // ── Colonnes du DataTable Articles ──────────────────────────────────────────
+  // Méta partagée (tableDefs.order_items) + renders spécifiques à la page.
+  // qty / type / série remplacée / notes / coût unitaire s'éditent en mode
+  // tableur (double-clic ou Entrée sur la cellule) via handleItemCellEdit.
+  const ITEM_RENDERS = {
+    product_name: item => (
+      <div className="flex items-center gap-2 min-w-0">
+        <span className="font-medium text-slate-900 truncate">
+          {item.product_id
+            ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="hover:text-brand-600 hover:underline">{item.product_name || 'Produit inconnu'}</Link>
+            : (item.product_name || 'Produit inconnu')}
+        </span>
+        {item.serials?.length > 0 && item.serials.map(s => (
+          <Link key={s.id} to={`/serials/${s.id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1 text-xs font-mono bg-slate-100 text-brand-700 hover:bg-brand-50 px-1.5 py-0.5 rounded border border-slate-200 hover:border-brand-300 transition-colors flex-shrink-0">
+            {s.serial}
+            {s.status && <span className="text-slate-400 text-[10px]">· {s.status}</span>}
+          </Link>
+        ))}
+      </div>
+    ),
+    qty: item => <span className="font-bold text-slate-900">{item.qty}</span>,
+    item_type: item => item.item_type
+      ? <Badge color={ITEM_TYPE_COLORS[item.item_type] || 'gray'}>{item.item_type}</Badge>
+      : <span className="text-slate-300">—</span>,
+    product_location: item => item.product_location
+      ? <span className="inline-flex items-center gap-1 text-xs font-mono bg-slate-800 text-white px-2 py-0.5 rounded font-bold">{item.product_location}</span>
+      : <span className="text-slate-300">—</span>,
+    fulfillment_status: item => {
+      const fs = item.fulfillment_status || 'À prélever'
+      return <Badge color={FULFILLMENT_STATUS[fs]?.color || 'gray'}>{fs}</Badge>
+    },
+    replaced_serial: item => item.replaced_serial
+      ? <span className="text-xs font-mono text-slate-600">{item.replaced_serial}</span>
+      : <span className="text-slate-300">—</span>,
+    // Champ Airtable « # de série » : le champ custom stocke des recordID Airtable
+    // bruts. Le serveur les résout en vraies fiches série (de_serie_serials, via
+    // serial_numbers.airtable_id) — on les affiche en liens cliquables vers la
+    // fiche série plutôt qu'en recXXX. Cette colonne override le champ custom
+    // auto-géré de même id (voir columnsWithOwnCf dans DataTable).
+    de_serie: item => (item.de_serie_serials?.length > 0
+      ? (
+        <div className="flex items-center gap-1 flex-wrap">
+          {item.de_serie_serials.map(s => (
+            <Link key={s.id} to={`/serials/${s.id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1 text-xs font-mono bg-slate-100 text-brand-700 hover:bg-brand-50 px-1.5 py-0.5 rounded border border-slate-200 hover:border-brand-300 transition-colors flex-shrink-0">
+              {s.serial}
+            </Link>
+          ))}
+        </div>
+      )
+      : <span className="text-slate-300">—</span>),
+    product_stock: item => item.product_stock == null ? <span className="text-slate-300 text-xs">—</span>
+      : item.product_stock === 0 ? <Badge color="red">Épuisé</Badge>
+      : item.product_stock < item.qty ? <Badge color="yellow">{item.product_stock} en stock</Badge>
+      : <Badge color="green">{item.product_stock} en stock</Badge>,
+    unit_cost: item => <span className="tabular-nums">{_fmtCad(item.unit_cost)}</span>,
+    actions: item => (
+      <div className="flex items-center gap-0.5 justify-end" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
+        <button onClick={() => handleDuplicateItem(item.id)} className="text-slate-400 hover:text-brand-600 p-1 rounded" title="Dupliquer" data-testid={`item-duplicate-${item.id}`}><Copy size={13} /></button>
+        <button
+          onClick={async () => {
+            if (await confirmDialog({
+              title: "Supprimer l'article",
+              message: `Supprimer « ${item.product_name || 'Produit inconnu'} » (×${item.qty}) de la commande ?`,
+              confirmLabel: 'Supprimer',
+            })) handleDeleteItem(item.id)
+          }}
+          className="text-slate-400 hover:text-red-600 p-1 rounded"
+          title="Supprimer"
+          data-testid={`item-delete-${item.id}`}
+        ><Trash2 size={13} /></button>
+      </div>
+    ),
+  }
+  const ITEM_EDITABLE = new Set(['qty', 'item_type', 'replaced_serial', 'notes', 'unit_cost'])
+  const itemColumns = TABLE_COLUMN_META.order_items.map(meta => ({
+    ...meta,
+    render: ITEM_RENDERS[meta.id],
+    editable: ITEM_EDITABLE.has(meta.id),
+    ...(meta.id === 'item_type'
+      ? { selectChoices: ITEM_TYPES.map(t => ({ id: t, label: t, color: ITEM_TYPE_COLORS[t] || 'gray' })) }
+      : {}),
+  }))
+  // Override du champ custom Airtable « # de série » (id/field = de_serie) : la
+  // colonne fournie ici prend le pas sur le champ custom auto-géré (voir
+  // columnsWithOwnCf dans DataTable) et affiche des liens vers les fiches série.
+  itemColumns.push({
+    id: 'de_serie',
+    label: '# de série',
+    field: 'de_serie',
+    sortable: false,
+    filterable: false,
+    groupable: false,
+    editable: false,
+    render: ITEM_RENDERS.de_serie,
+  })
+  const itemsCount = order.items?.length || 0
+
   // ── Commercial mode ─────────────────────────────────────────────────────────
   return (
     <Layout>
@@ -1248,158 +1312,28 @@ export default function OrderDetail() {
           <Attachments entityType="orders" entityId={order.id} />
         </div>
 
-        {/* Items section */}
-        <div className="card mb-4">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+        {/* Items section — DataTable (vues, filtres, tri, groupement, édition
+            tableur, réordonnancement par poignée, duplication/suppression) */}
+        <div className="mb-4">
+          <div className="flex items-center justify-between mb-2">
             <h2 className="font-semibold text-slate-900">Articles ({order.items?.length || 0})</h2>
             <button onClick={() => setShowAddItem(true)} className="btn-primary btn-sm"><Plus size={14} /> Ajouter</button>
           </div>
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-100 bg-slate-50">
-                <th className="w-6 px-2 py-3"></th>
-                <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500">Produit</th>
-                <th className="text-center px-3 py-3 text-xs font-semibold text-slate-500 w-16">Qté</th>
-                <th className="text-center px-3 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell w-32">Type</th>
-                <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell w-24">Emplacement</th>
-                <th className="text-center px-3 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell w-32">Prélèvement</th>
-                <th className="text-left px-3 py-3 text-xs font-semibold text-slate-500 hidden lg:table-cell">Série remplacée</th>
-                <th className="text-center px-3 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell w-28">Disponibilité</th>
-                <th className="px-3 py-3"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {order.items?.length === 0 ? (
-                <tr><td colSpan={9} className="text-center py-8 text-slate-400">
-                  <Package size={24} className="mx-auto mb-2 text-slate-300" />
-                  Aucun article — cliquez "Ajouter" pour commencer
-                </td></tr>
-              ) : order.items?.map(item => {
-                const isEditing = editingItemId === item.id
-                const isDragOver = dragOverItemId === item.id && dragItemId !== item.id
-                const fs = item.fulfillment_status || 'À prélever'
-                return (
-                  <tr
-                    key={item.id}
-                    draggable={!isEditing}
-                    onDragStart={e => handleDragStart(e, item.id)}
-                    onDragOver={e => handleDragOver(e, item.id)}
-                    onDrop={e => handleDrop(e, item.id)}
-                    onDragEnd={handleDragEnd}
-                    onContextMenu={e => { e.preventDefault(); setContextMenu({ x: e.clientX, y: e.clientY, item }) }}
-                    className={`border-b border-slate-100 last:border-0 transition-colors
-                      ${isDragOver ? 'bg-brand-50 border-t-2 border-t-brand-400' : ''}
-                      ${dragItemId === item.id ? 'opacity-40' : ''}
-                      ${flashItemId === item.id ? 'bg-emerald-50 ring-1 ring-inset ring-emerald-300' : isEditing ? 'bg-amber-50/40' : 'hover:bg-slate-50'}
-                    `}
-                  >
-                    <td className="px-2 py-2 w-6">
-                      <span className="text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing block"><GripVertical size={14} /></span>
-                    </td>
-
-                    {/* Product */}
-                    <td className="px-3 py-2">
-                      <div className="flex items-start gap-2.5">
-                        {item.product_image && (
-                          <img src={item.product_image} alt="" className="w-9 h-9 rounded object-cover flex-shrink-0 border border-slate-100" onError={e => { e.target.style.display = 'none' }} />
-                        )}
-                        <div className="min-w-0">
-                          <div className="font-medium text-slate-900 leading-tight">
-                            {item.product_id
-                              ? <Link to={`/products/${item.product_id}`} className="hover:text-brand-600 hover:underline">{item.product_name || 'Produit inconnu'}</Link>
-                              : (item.product_name || 'Produit inconnu')}
-                          </div>
-                          {item.sku && <div className="text-xs text-slate-400 font-mono">{item.sku}</div>}
-                          {item.serials?.length > 0 && (
-                            <div className="flex flex-wrap gap-1 mt-1">
-                              {item.serials.map(s => (
-                                <Link key={s.id} to={`/serials/${s.id}`} className="inline-flex items-center gap-1 text-xs font-mono bg-slate-100 text-brand-700 hover:bg-brand-50 px-1.5 py-0.5 rounded border border-slate-200 hover:border-brand-300 transition-colors">
-                                  {s.serial}
-                                  {s.status && <span className="text-slate-400 text-[10px]">· {s.status}</span>}
-                                </Link>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-
-                    {/* Qty */}
-                    <td className={`px-3 py-2 text-center w-16 ${!isEditing ? 'cursor-pointer hover:bg-slate-100' : ''}`} onClick={() => !isEditing && startEdit(item, 'qty')}>
-                      {isEditing ? (
-                        <input type="number" min="1" value={editValues.qty} autoFocus={editingField === 'qty'}
-                          onChange={e => setEditValues(v => ({ ...v, qty: e.target.value }))}
-                          onKeyDown={e => { if (e.key === 'Enter') saveEdit(item.id); if (e.key === 'Escape') cancelEdit() }}
-                          onBlur={() => saveEdit(item.id)}
-                          className="w-14 text-center input py-1 px-1 text-sm" />
-                      ) : <span className="font-bold text-slate-900">{item.qty}</span>}
-                    </td>
-
-                    {/* Type */}
-                    <td className={`px-3 py-2 text-center hidden sm:table-cell w-32 ${!isEditing ? 'cursor-pointer hover:bg-slate-100' : ''}`} onClick={() => !isEditing && startEdit(item, 'item_type')}>
-                      {isEditing ? (
-                        <select value={editValues.item_type} autoFocus={editingField === 'item_type'}
-                          onChange={e => {
-                            const val = e.target.value
-                            setEditValues(v => ({ ...v, item_type: val }))
-                            if (val !== (item.item_type || 'Facturable')) {
-                              api.orders.updateItem(id, item.id, { item_type: val }).then(load).catch(e => setScanToast({ message: e.message || 'Échec de la sauvegarde du type', status: 'error' }))
-                            }
-                            setEditingItemId(null)
-                          }}
-                          onKeyDown={e => { if (e.key === 'Escape') cancelEdit() }}
-                          className="select py-1 text-xs">
-                          {ITEM_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                        </select>
-                      ) : <Badge color={ITEM_TYPE_COLORS[item.item_type] || 'gray'}>{item.item_type}</Badge>}
-                    </td>
-
-                    {/* Location */}
-                    <td className="px-3 py-2 hidden sm:table-cell w-24">
-                      {item.product_location
-                        ? <span className="inline-flex items-center gap-1 text-xs font-mono bg-slate-800 text-white px-2 py-0.5 rounded font-bold">{item.product_location}</span>
-                        : <span className="text-slate-300">—</span>}
-                    </td>
-
-                    {/* Fulfillment status */}
-                    <td className="px-3 py-2 text-center hidden md:table-cell w-32">
-                      <Badge color={FULFILLMENT_STATUS[fs]?.color || 'gray'}>{fs}</Badge>
-                    </td>
-
-                    {/* Série remplacée */}
-                    <td className={`px-3 py-2 hidden lg:table-cell ${!isEditing ? 'cursor-pointer hover:bg-slate-100' : ''}`} onClick={() => !isEditing && startEdit(item, 'replaced_serial')}>
-                      {isEditing ? (
-                        <input value={editValues.replaced_serial} autoFocus={editingField === 'replaced_serial'}
-                          onChange={e => setEditValues(v => ({ ...v, replaced_serial: e.target.value }))}
-                          onKeyDown={e => { if (e.key === 'Enter') saveEdit(item.id); if (e.key === 'Escape') cancelEdit() }}
-                          onBlur={() => saveEdit(item.id)}
-                          className="input py-1 text-xs w-full" placeholder="Ex: SN-12345" />
-                      ) : <span className="text-xs font-mono text-slate-600">{item.replaced_serial || <span className="text-slate-300">—</span>}</span>}
-                    </td>
-
-                    {/* Disponibilité */}
-                    <td className="px-3 py-2 text-center hidden md:table-cell w-28">
-                      {item.product_stock == null ? <span className="text-slate-300 text-xs">—</span>
-                        : item.product_stock === 0 ? <Badge color="red">Épuisé</Badge>
-                        : item.product_stock < item.qty ? <Badge color="yellow">{item.product_stock} en stock</Badge>
-                        : <Badge color="green">{item.product_stock} en stock</Badge>}
-                    </td>
-
-                    {/* Actions */}
-                    <td className="px-3 py-2">
-                      <div className="flex items-center gap-0.5 justify-end">
-                        {isEditing ? (
-                          <button onClick={cancelEdit} className="text-slate-300 hover:text-slate-500 p-1 rounded" title="Annuler (Échap)"><X size={14} /></button>
-                        ) : (
-                          <button onClick={() => handleDuplicateItem(item.id)} className="text-slate-400 hover:text-brand-600 p-1 rounded" title="Dupliquer"><Copy size={13} /></button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+          <DataTable
+            table="order_items"
+            columns={itemColumns}
+            data={order.items || []}
+            searchFields={['product_name', 'sku', 'replaced_serial', 'notes']}
+            height={Math.max(180, Math.min(100 + itemsCount * 32, 480))}
+            onCellEdit={handleItemCellEdit}
+            onRowReorder={handleReorderItems}
+            emptyState={{
+              icon: Package,
+              title: 'Aucun article',
+              description: 'Cliquez « Ajouter » ou scannez un code-barres pour commencer.',
+              cta: { label: 'Ajouter un article', icon: Plus, onClick: () => setShowAddItem(true) },
+            }}
+          />
         </div>
 
         {/* Shipments section */}
@@ -1422,6 +1356,7 @@ export default function OrderDetail() {
                   <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Date envoi</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden lg:table-cell">Articles</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden lg:table-cell">N° de série</th>
                 </tr>
               </thead>
               <tbody>
@@ -1447,6 +1382,26 @@ export default function OrderDetail() {
                             : assignedItems.map(i => (
                               <span key={i.id} className="text-xs bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">{i.product_name} ×{i.qty}</span>
                             ))}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 hidden lg:table-cell" data-testid="shipment-serials">
+                        <div className="flex flex-wrap gap-1">
+                          {(() => {
+                            const serials = assignedItems.flatMap(i => (i.serials || []).map(sn => ({ ...sn, product_name: i.product_name })))
+                            return serials.length === 0
+                              ? <span className="text-slate-300 text-xs">—</span>
+                              : serials.map(sn => (
+                                <Link
+                                  key={sn.id}
+                                  to={`/serials/${sn.id}`}
+                                  onClick={e => e.stopPropagation()}
+                                  title={sn.product_name}
+                                  className="text-xs font-mono bg-slate-100 text-brand-700 hover:bg-brand-50 px-1.5 py-0.5 rounded border border-slate-200 hover:border-brand-300 transition-colors"
+                                >
+                                  {sn.serial}
+                                </Link>
+                              ))
+                          })()}
                         </div>
                       </td>
                     </tr>
@@ -1528,18 +1483,6 @@ export default function OrderDetail() {
         })()}
 
       </div>
-
-      {/* Context menu */}
-      {contextMenu && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setContextMenu(null)} onContextMenu={e => { e.preventDefault(); setContextMenu(null) }} />
-          <div className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-lg py-1 min-w-[140px] text-sm" style={{ top: contextMenu.y, left: contextMenu.x }}>
-            <button onClick={() => { handleDeleteItem(contextMenu.item.id); setContextMenu(null) }} className="w-full flex items-center gap-2.5 px-3 py-2 text-red-600 hover:bg-red-50 transition-colors">
-              <Trash2 size={13} /> Supprimer
-            </button>
-          </div>
-        </>
-      )}
 
       <ScanToast toast={scanToast} onClose={() => setScanToast(null)} />
 

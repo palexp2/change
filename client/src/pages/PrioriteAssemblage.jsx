@@ -397,7 +397,7 @@ export default function PrioriteAssemblage() {
     const base = products.filter(p =>
       p.procurement_type === 'Acheté' &&
       p.min_stock > 0 &&
-      p.stock_qty <= p.min_stock &&
+      p.stock_qty < p.min_stock && // strictement sous le seuil : une pièce pile au seuil (5/5) est correcte, ne pas l'afficher
       !openPurchaseIds.has(p.id))
     const deficit = p => (p.stock_qty - p.min_stock) // plus négatif = manque le plus
     const active = base

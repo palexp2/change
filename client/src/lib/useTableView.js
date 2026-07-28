@@ -133,17 +133,6 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
     return [...columns, ...extra]
   }, [columns, dynamicFields])
 
-  // Map<column_name, def> pour le clic-droit du DataTable (modifier type / supprimer).
-  // Inclut toutes les defs Airtable, native_* incluses — la décision de protéger
-  // une colonne se fait côté serveur (system + frozen).
-  const airtableFieldsByColumn = useMemo(() => {
-    const m = new Map()
-    for (const f of dynamicFields) {
-      if (f.def_id) m.set(f.field, { id: f.def_id, label: f.label, type: f.type, options: f.options, column_name: f.field })
-    }
-    return m
-  }, [dynamicFields])
-
   const viewVisibleColumns = useMemo(() => {
     if (activeView?.visible_columns?.length > 0) return activeView.visible_columns
     if (activeViewId === null) {
@@ -217,7 +206,6 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
     viewGroupOrder,
     allColumns,
     dynamicFields,
-    airtableFieldsByColumn,
     // Largeurs persistées par vue : priorité à la pill active ; fallback sur le
     // column_widths legacy de table_view_configs (vue « Tous »/forceAllView et
     // vues pas encore redimensionnées). Ainsi passer d'une vue à l'autre n'écrase

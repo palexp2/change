@@ -84,6 +84,76 @@ const WRITEBACK_MODULES = {
     skipKeys: new Set(['product', 'company', 'order_item']),
     keyToColumn: { product: 'product_id', company: 'company_id', order_item: 'order_item_id' },
   },
+  paies: {
+    erpTable: 'paies',
+    skipKeys: new Set([]),
+  },
+  paie_items: {
+    erpTable: 'paie_items',
+    // Clés réelles du field_map (cf. syncPaieItems) : paie_link / employee_link.
+    skipKeys: new Set(['paie_link', 'employee_link']),
+    keyToColumn: { paie_link: 'paie_id', employee_link: 'employee_id' },
+    linkedRecords: {
+      paie_link:     (row) => { const id = linkedAirtableId('paies', row.paie_id); return id ? [id] : null },
+      employee_link: (row) => { const id = linkedAirtableId('employees', row.employee_id); return id ? [id] : null },
+    },
+  },
+  // Commandes : write-back best-effort du champ Notes (bidirectionnel par défaut,
+  // sens configurable par l'utilisateur — cf. airtable_field_directions). Les
+  // autres champs (numéro, entreprise/projet/adresse liés, statut traduit,
+  // priorité, abonnement) restent en skipKeys : linked records non ré-écrivables
+  // ou valeurs traduites/dérivées à l'import. Le field_map des commandes vit dans
+  // airtable_orders_config (singleton), d'où le configSource dédié.
+  orders: {
+    erpTable: 'orders',
+    skipKeys: new Set(['order_number', 'company', 'project', 'status', 'priority', 'address', 'is_subscription']),
+    keyToColumn: { company: 'company_id', project: 'project_id', address: 'address_id' },
+    configSource: { table: 'airtable_orders_config', baseCol: 'base_id', tableIdCol: 'orders_table_id', fieldMapCol: 'field_map_orders' },
+  },
+}
+
+// Sens de synchronisation d'une clé du field_map d'un module, pour affichage
+// (modale de mapping) ET pour piloter le write-back : 'both' = importé depuis
+// Airtable ET réécrit vers Airtable, 'pull' = Airtable → ERP seulement, 'push' =
+// ERP → Airtable seulement. Les clés non write-back-éligibles (module sans
+// write-back, ou linked record / champ calculé exclu) sont toujours 'pull' et
+// non configurables. Sinon, l'utilisateur peut choisir le sens (table
+// airtable_field_directions) ; défaut = 'both'.
+export function fieldMapDirection(module, key) {
+  const cfg = WRITEBACK_MODULES[module]
+  if (!cfg) return 'pull'
+  if (cfg.skipKeys.has(key)) return 'pull'
+  const override = readDirectionOverride(module, key)
+  return (override === 'pull' || override === 'push' || override === 'both') ? override : 'both'
+}
+
+// Vrai si le sens de sync de cette clé est configurable par l'utilisateur
+// (champ scalaire write-back-éligible d'un module supportant le write-back).
+export function isDirectionConfigurable(module, key) {
+  const cfg = WRITEBACK_MODULES[module]
+  return !!(cfg && !cfg.skipKeys.has(key))
+}
+
+// Lit le sens choisi par l'utilisateur pour une clé (null si aucun override).
+function readDirectionOverride(module, key) {
+  try {
+    const row = db.prepare('SELECT direction FROM airtable_field_directions WHERE module=? AND field_key=?').get(module, key)
+    return row?.direction || null
+  } catch { return null }
+}
+
+// Enregistre le sens de sync choisi pour une clé configurable. Lève si le sens
+// est invalide ou si la clé n'est pas configurable (linked record / module sans
+// write-back — on ne peut pas y activer un write-back fiable).
+export function setFieldDirection(module, key, direction) {
+  if (!['pull', 'push', 'both'].includes(direction)) throw new Error('Sens invalide (pull, push ou both)')
+  if (!isDirectionConfigurable(module, key)) throw new Error('Ce champ ne supporte pas le choix du sens de synchronisation')
+  db.prepare(`
+    INSERT INTO airtable_field_directions (module, field_key, direction)
+    VALUES (?,?,?)
+    ON CONFLICT(module, field_key) DO UPDATE SET direction=excluded.direction
+  `).run(module, key, direction)
+  return direction
 }
 
 // Lit base_id / table_id / field_map du module. La plupart des modules vivent dans
@@ -173,6 +243,7 @@ function buildColumnMap(module, fieldMap) {
   for (const [key, atField] of Object.entries(fieldMap || {})) {
     if (!atField) continue                       // pas de champ Airtable mappé
     if (cfg.skipKeys.has(key)) continue          // linked record / non scalaire
+    if (fieldMapDirection(module, key) === 'pull') continue  // sens Airtable → ERP : pas de write-back
     const col = cfg.keyToColumn?.[key] || key
     out[col] = atField
   }

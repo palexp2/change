@@ -10,7 +10,11 @@ import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { WebhookEditor } from '../components/WebhookEditor.jsx'
 
 // Mirrors MANUAL_RUNNERS in server/src/services/systemAutomations.js. Keep in sync.
-const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup'])
+const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup', 'sys_ctb_programmation_paiement', 'sys_treasury_alert', 'sys_paie_repartition'])
+
+// Connexion Google Sheets « CTB - Suivi » — config d'action éditable, trigger
+// en lecture seule, bouton unique de diagnostic (aucune écriture).
+const CTB_AUTOMATION_ID = 'sys_ctb_programmation_paiement'
 
 // Mirrors SYSTEM_EMAIL_AUTOMATIONS in server/src/routes/automations.js — system
 // automations whose `from` address is overridable via the picker.
@@ -19,6 +23,53 @@ const SYSTEM_EMAIL_AUTOMATIONS = new Set(['sys_installation_followup', 'sys_ship
 // System automation whose Airtable webhook retry queue is surfaced in the detail page.
 // Mirrors the id gate in server/src/routes/automations.js (/:id/retry-queue).
 const WEBHOOK_RETRY_AUTOMATION_ID = 'sys_airtable_webhook_router'
+
+// Mirrors CONFIGURABLE_SYSTEM_AUTOMATIONS in server/src/services/systemAutomations.js —
+// system automations whose action keys are user-editable.
+const CONFIGURABLE_SYSTEM_AUTOMATIONS = new Set([
+  'sys_revenue_recognition', CTB_AUTOMATION_ID,
+  'sys_treasury_alert', 'sys_paie_repartition',
+])
+
+// Champs de config des automations à éditeur générique clé-valeur.
+const GENERIC_CONFIG_FIELDS = {
+  sys_treasury_alert: {
+    title: 'Alerte trésorerie BNC',
+    intro: 'Seuil et horizon de la projection, et canal Slack de l\'alerte. Vider un champ revient au défaut.',
+    fields: [
+      { key: 'threshold', label: 'Seuil d\'alerte (CAD)', def: '5000' },
+      { key: 'horizon_days', label: 'Horizon d\'affichage de la projection (jours)', def: '42' },
+      { key: 'alert_horizon_days', label: 'Fenêtre d\'action (jours)', def: '14', hint: 'La trésorerie est gérée au fur et à mesure : l\'alerte et le virement suggéré ne regardent que cette fenêtre. Le point bas au-delà est affiché à titre indicatif.' },
+      { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_TREASURY', hint: 'Créer un incoming webhook Slack vers le DM d\'Antoine Lambert et ajouter la variable dans server/.env.' },
+    ],
+  },
+  sys_paie_repartition: {
+    title: 'Répartition de la paie — comptes et pourcentages',
+    intro: 'Format des répartitions : « compte:poids, compte:poids, … ». Vider un champ revient au défaut.',
+    fields: [
+      { key: 'splits', label: 'Répartition de la paie (%)', def: '62100:33.6, 62200:5.1, 62201:11.8, 62300:49.5' },
+      { key: 'source_acctnum', label: 'Compte source (crédité — paie comptabilisée là initialement)', def: '62200' },
+      { key: 'phone_acctnum', label: 'Compte téléphone Martin', def: '76000' },
+      { key: 'phone_amount', label: 'Montant téléphone par paie ($, taxes incluses)', def: '25' },
+      { key: 'meals_acctnum', label: 'Compte allocation repas', def: '75930' },
+      { key: 'reimb_acctnum', label: 'Compte remb. dépenses (23XXX)', def: '', hint: 'Vide = les remboursements restent dans le compte source (avertissement dans l\'aperçu).' },
+      { key: 'aga_splits', label: 'Prorata AGA (nb d\'employés assurés par compte)', def: '62100:2.6, 62200:0.9, 62201:0.8, 62300:3.7' },
+      { key: 'aga_source_acctnum', label: 'Compte source AGA (crédité)', def: '', hint: 'Compte où le paiement AGA est comptabilisé — requis pour publier la répartition AGA.' },
+    ],
+  },
+}
+// Sous-ensemble dont la condition de déclenchement est aussi éditable (le CTB
+// n'en fait pas partie : son trigger vit dans le code, lecture seule).
+const CONFIGURABLE_TRIGGER_AUTOMATIONS = new Set(['sys_revenue_recognition'])
+
+// Comptes QB éditables du constat de vente — mirrors REVREC_ACCOUNT_OVERRIDES
+// (server/src/services/quickbooks.js). `hint` explique le rôle Dr/Cr du compte.
+const REVREC_ACCOUNT_FIELDS = [
+  { key: 'deferred_acctnum', label: 'Passif — revenus perçus d\'avance', def: '23900', hint: 'Débité quand la commande était déjà encaissée (libère le passif)' },
+  { key: 'sale_acctnum', label: 'Revenu — ventes', def: '40000', hint: 'Crédité à chaque constat (le revenu constaté)' },
+  { key: 'ar_cad_acctnum', label: 'Comptes clients CAD', def: '12000', hint: 'Débité pour une commande non payée en CAD (vente à crédit)' },
+  { key: 'ar_usd_acctnum', label: 'Comptes clients USD', def: '12100', hint: 'Débité pour une commande non payée en USD (vente à crédit)' },
+]
 
 const OP_LABELS = {
   eq: 'est égal à',
@@ -102,6 +153,7 @@ export default function AutomationDetail() {
 
   const isFieldRule = kind === 'field_rule'
   const isWebhook = kind === 'webhook'
+  const isConfigurableSystem = isSystem && CONFIGURABLE_SYSTEM_AUTOMATIONS.has(id)
   const isEmailAutomation =
     (kind === 'field_rule' && actionType === 'email') ||
     (isSystem && SYSTEM_EMAIL_AUTOMATIONS.has(id))
@@ -142,6 +194,8 @@ export default function AutomationDetail() {
           const ac = JSON.parse(auto.action_config || '{}')
           setSystemFrom(ac.from || '')
         } catch { setSystemFrom('') }
+      } else if (auto.system && CONFIGURABLE_SYSTEM_AUTOMATIONS.has(auto.id)) {
+        try { setActionConfig(JSON.parse(auto.action_config || '{}')) } catch { setActionConfig({}) }
       }
     }).catch(() => addToast({ message: 'Erreur de chargement', type: 'error' }))
     loadLogs()
@@ -202,6 +256,13 @@ export default function AutomationDetail() {
       const body = { active: active ? 1 : 0 }
       if (SYSTEM_EMAIL_AUTOMATIONS.has(id)) {
         body.action_config = JSON.stringify({ from: systemFrom || undefined })
+      }
+      if (CONFIGURABLE_SYSTEM_AUTOMATIONS.has(id)) {
+        // Le serveur ne retient que la condition (colonne/op/valeur) et les clés
+        // d'action whitelistées — le reste du config reste verrouillé côté serveur.
+        // Le trigger n'est envoyé que si éditable (le serveur rejette sinon).
+        if (CONFIGURABLE_TRIGGER_AUTOMATIONS.has(id)) body.trigger_config = JSON.stringify(triggerConfig)
+        body.action_config = JSON.stringify(actionConfig)
       }
       return body
     }
@@ -443,7 +504,11 @@ export default function AutomationDetail() {
 
         {isSystem && (
           <div className="bg-brand-50 border border-brand-200 rounded-lg px-4 py-3 text-sm text-brand-900">
-            Cette automation est intégrée au code de l'application. Son trigger, son comportement et son script sont en lecture seule. Seul le statut (actif/inactif) peut être modifié.
+            {id === CTB_AUTOMATION_ID
+              ? <>Cette automation est intégrée au code de l'application, mais la <strong>connexion au fichier Google Sheets</strong> (fichier, onglet, compte Google) est configurable ci-dessous. Le déclencheur vit dans le code.</>
+              : isConfigurableSystem
+              ? <>Cette automation est intégrée au code de l'application, mais sa <strong>condition de déclenchement</strong> et ses <strong>comptes QuickBooks</strong> sont configurables ci-dessous. Le comportement (idempotence, file de retry) reste géré par le code.</>
+              : <>Cette automation est intégrée au code de l'application. Son trigger, son comportement et son script sont en lecture seule. Seul le statut (actif/inactif) peut être modifié.</>}
           </div>
         )}
 
@@ -495,6 +560,11 @@ export default function AutomationDetail() {
               onChange={setTriggerConfig}
               readOnly={false}
             />
+          ) : isConfigurableSystem && CONFIGURABLE_TRIGGER_AUTOMATIONS.has(id) ? (
+            <ConfigurableSystemTriggerEditor
+              triggerConfig={triggerConfig}
+              onChange={setTriggerConfig}
+            />
           ) : isSystem ? (
             <SystemTriggerView config={triggerConfig} />
           ) : (
@@ -506,6 +576,25 @@ export default function AutomationDetail() {
             />
           )}
         </div>
+        )}
+
+        {/* Comptes QB — automation système configurable (constat de vente) */}
+        {isConfigurableSystem && id === 'sys_revenue_recognition' && (
+          <RevRecAccountsEditor actionConfig={actionConfig} onChange={setActionConfig} />
+        )}
+
+        {/* Connexion Google Sheets — CTB - Suivi (programmation des paiements) */}
+        {isSystem && id === CTB_AUTOMATION_ID && (
+          <CtbSheetConfigEditor actionConfig={actionConfig} onChange={setActionConfig} />
+        )}
+
+        {/* Config générique clé-valeur (trésorerie, répartition de paie) */}
+        {isSystem && GENERIC_CONFIG_FIELDS[id] && (
+          <GenericConfigEditor
+            spec={GENERIC_CONFIG_FIELDS[id]}
+            actionConfig={actionConfig}
+            onChange={setActionConfig}
+          />
         )}
 
         {isWebhook && (
@@ -644,19 +733,25 @@ export default function AutomationDetail() {
           <div className="bg-white rounded-lg border p-5">
             <div className="flex items-center justify-between mb-3">
               <div>
-                <h2 className="text-sm font-semibold">Exécution manuelle</h2>
+                <h2 className="text-sm font-semibold">
+                  {id === CTB_AUTOMATION_ID ? 'Tester la connexion' : 'Exécution manuelle'}
+                </h2>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  Le <strong>dry-run</strong> liste les clients qui seraient ciblés sans rien envoyer ni persister.
-                  Le <strong>lancement</strong> déclenche immédiatement l'automation (envois, flags, logs inclus).
+                  {id === CTB_AUTOMATION_ID
+                    ? <>Vérifie l'accès au fichier Google Sheets et localise l'onglet et les sections utilisés. <strong>Aucune écriture</strong> n'est faite dans le fichier.</>
+                    : <>Le <strong>dry-run</strong> liste les clients qui seraient ciblés sans rien envoyer ni persister.
+                      Le <strong>lancement</strong> déclenche immédiatement l'automation (envois, flags, logs inclus).</>}
                 </p>
               </div>
               <div className="flex gap-2">
                 <button onClick={() => handleManualRun(true)} disabled={manualRunning !== null}
+                  data-testid="manual-dry-run"
                   className="px-3 py-1.5 text-sm border border-brand-300 text-brand-700 rounded-lg hover:bg-brand-50 disabled:opacity-50 flex items-center gap-1.5">
                   {manualRunning === 'dryRun'
-                    ? <><div className="w-3 h-3 border-2 border-brand-700 border-t-transparent rounded-full animate-spin" /> Simulation...</>
-                    : <><FlaskConical size={14} /> Simuler (dry-run)</>}
+                    ? <><div className="w-3 h-3 border-2 border-brand-700 border-t-transparent rounded-full animate-spin" /> {id === CTB_AUTOMATION_ID ? 'Test...' : 'Simulation...'}</>
+                    : <><FlaskConical size={14} /> {id === CTB_AUTOMATION_ID ? 'Tester la connexion' : 'Simuler (dry-run)'}</>}
                 </button>
+                {!id === CTB_AUTOMATION_ID && (
                 <button onClick={() => handleManualRun(false)} disabled={manualRunning !== null || !active}
                   title={!active ? 'Activez l\'automation avant de pouvoir la lancer manuellement' : ''}
                   className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5">
@@ -664,10 +759,12 @@ export default function AutomationDetail() {
                     ? <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Exécution...</>
                     : <><Play size={14} /> Lancer maintenant</>}
                 </button>
+                )}
               </div>
             </div>
             {manualResult && <ManualRunResult result={manualResult} />}
 
+            {id === 'sys_installation_followup' && (
             <div className="mt-4 pt-4 border-t">
               <div className="flex items-end gap-2 flex-wrap">
                 <div className="flex-1 min-w-[200px]">
@@ -701,6 +798,7 @@ export default function AutomationDetail() {
                 }`}>{testResultMsg.text}</div>
               )}
             </div>
+            )}
           </div>
         )}
 
@@ -1527,6 +1625,22 @@ function ManualRunResult({ result }) {
       {!isError && out.summary && (
         <p className="text-sm text-gray-800 mb-2">{out.summary}</p>
       )}
+      {!isError && out.hint && (
+        <p className="text-xs text-gray-600 mb-2">{out.hint}</p>
+      )}
+      {/* Diagnostic CTB - Suivi : factures actuellement programmées dans le sheet */}
+      {!isError && Array.isArray(out.existing) && out.existing.length > 0 && (
+        <div className="max-h-72 overflow-y-auto border rounded bg-white divide-y" data-testid="ctb-existing-rows">
+          {out.existing.map((e, i) => (
+            <div key={i} className="px-3 py-1.5 text-xs flex items-center gap-3">
+              <span className="font-medium flex-1">{e.vendor}</span>
+              <span className="text-gray-700 font-mono">{e.amount}</span>
+              <span className="text-gray-500">dû {e.due || '—'}</span>
+              <span className="text-brand-700">paiement {e.prog || '—'}</span>
+            </div>
+          ))}
+        </div>
+      )}
       {!isError && details.length > 0 && (
         <div className="max-h-72 overflow-y-auto border rounded bg-white divide-y">
           {details.map((d, i) => (
@@ -1554,9 +1668,316 @@ function ManualRunResult({ result }) {
           ))}
         </div>
       )}
-      {!isError && details.length === 0 && (
+      {!isError && details.length === 0 && !out.summary && (
         <p className="text-xs text-gray-500 italic">Aucun client éligible actuellement.</p>
       )}
+    </div>
+  )
+}
+
+// Tables de déclenchement offertes par l'automation configurable — mirrors
+// CONFIGURABLE_SYSTEM_SPECS.allowedTables (server/src/routes/automations.js).
+const REVREC_TRIGGER_TABLES = [
+  { value: 'shipments', label: 'Envois (shipments)' },
+  { value: 'factures', label: 'Factures' },
+]
+
+// Éditeur de condition pour une automation système configurable : table
+// (envois ou factures), colonne — y compris champs personnalisés — opérateur et
+// valeur. La source (watcher change_log) reste affichée en lecture seule.
+function ConfigurableSystemTriggerEditor({ triggerConfig, onChange }) {
+  const [fieldDefs, setFieldDefs] = useState({ columns: [] })
+  const erpTable = triggerConfig?.erp_table || 'shipments'
+
+  useEffect(() => {
+    // includeCustom : la condition peut cibler un champ personnalisé (lookup,
+    // rollup, formule) — le watcher interroge alors la vue <table>_v.
+    api.automations.ruleFieldDefs(erpTable, { includeCustom: true })
+      .then(setFieldDefs)
+      .catch(() => setFieldDefs({ columns: [] }))
+  }, [erpTable])
+
+  const op = triggerConfig?.op || 'eq'
+  const cols = fieldDefs.columns || []
+  // Pas de date_offset ici — le watcher réagit aux écritures, pas au calendrier.
+  const opChoices = Object.entries(OP_LABELS).filter(([v]) => v !== 'date_offset')
+
+  return (
+    <div className="space-y-3" data-testid="configurable-system-trigger">
+      <div className="flex gap-3 text-sm">
+        <span className="w-28 text-gray-500 shrink-0">Source</span>
+        <span className="text-gray-800 font-mono text-xs break-all">{triggerConfig?.source || '—'}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Table ERP</label>
+          <SearchableSelect
+            value={erpTable}
+            options={REVREC_TRIGGER_TABLES}
+            getOptionValue={t => t.value}
+            getOptionLabel={t => t.label}
+            getOptionKey={t => t.value}
+            onChange={v => onChange({ ...triggerConfig, erp_table: v, column: '' })}
+            size="sm"
+            className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+            testId="revrec-trigger-table"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Colonne</label>
+          <SearchableSelect
+            value={triggerConfig?.column || ''}
+            options={cols}
+            getOptionValue={c => c.column_name}
+            getOptionLabel={c => c.airtable_field_name ? `${c.airtable_field_name} (${c.column_name})` : c.column_name}
+            getOptionKey={c => c.column_name}
+            emptyOption="— choisir —"
+            onChange={v => onChange({ ...triggerConfig, column: v })}
+            placeholder="— choisir —"
+            size="sm"
+            className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+            testId="revrec-trigger-column"
+          />
+        </div>
+      </div>
+      <div className="grid grid-cols-[180px_1fr] gap-3">
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Opérateur</label>
+          <select
+            value={op}
+            onChange={e => {
+              const tc = { ...triggerConfig, op: e.target.value }
+              if (e.target.value === 'not_null') delete tc.value
+              onChange(tc)
+            }}
+            className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+            data-testid="revrec-trigger-op"
+          >
+            {opChoices.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+          </select>
+        </div>
+        {op !== 'not_null' && (
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1">
+              Valeur{op === 'in' ? ' (virgules)' : ''}
+            </label>
+            <input
+              type={NUMERIC_OPS.has(op) ? 'number' : 'text'}
+              step="any"
+              value={op === 'in'
+                ? (Array.isArray(triggerConfig?.value) ? triggerConfig.value.join(',') : (triggerConfig?.value || ''))
+                : (triggerConfig?.value ?? '')}
+              onChange={e => {
+                const raw = e.target.value
+                const v = op === 'in' ? raw.split(',').map(s => s.trim()).filter(Boolean) : raw
+                onChange({ ...triggerConfig, value: v })
+              }}
+              className="w-full border rounded-lg px-3 py-2 text-sm"
+              placeholder="Envoyé"
+              data-testid="revrec-trigger-value"
+            />
+          </div>
+        )}
+      </div>
+      <p className="text-xs text-gray-500">
+        {erpTable === 'factures'
+          ? <>La facture qui satisfait cette condition est constatée directement. Elle est réévaluée à chaque
+              écriture DB de la facture, de sa commande ou d'un envoi de la commande (toute origine : UI,
+              Novoxpress, sync Airtable) — utile pour déclencher sur un champ personnalisé de type lookup
+              (ex. « Date d'envoi de la commande liée » est renseignée).</>
+          : <>Le constat est déclenché à chaque écriture DB d'un envoi qui satisfait cette condition
+              (toute origine : UI, Novoxpress, sync Airtable). Un envoi doit aussi être lié à une commande.</>}
+      </p>
+    </div>
+  )
+}
+
+// Comptes QB du constat de vente — overrides par AcctNum, vide = défaut.
+function RevRecAccountsEditor({ actionConfig, onChange }) {
+  return (
+    <div className="bg-white rounded-lg border p-5" data-testid="revrec-accounts">
+      <h2 className="text-sm font-semibold mb-1">Comptes QuickBooks</h2>
+      <p className="text-xs text-gray-500 mb-4">
+        Numéros de compte (AcctNum) utilisés par l'écriture de journal du constat de vente.
+        Vider un champ revient au compte par défaut. Un numéro introuvable en QB bloque le
+        constat avec une erreur explicite (visible dans les exécutions ci-dessous).
+      </p>
+      <div className="grid grid-cols-2 gap-4">
+        {REVREC_ACCOUNT_FIELDS.map(f => (
+          <div key={f.key}>
+            <label className="block text-xs font-medium text-gray-600 mb-1">{f.label}</label>
+            <input
+              type="text"
+              value={actionConfig?.[f.key] ?? ''}
+              onChange={e => onChange({ ...actionConfig, [f.key]: e.target.value })}
+              placeholder={f.def}
+              className="w-full border rounded-lg px-3 py-2 text-sm font-mono"
+              data-testid={`revrec-account-${f.key}`}
+            />
+            <p className="text-[11px] text-gray-400 mt-1">{f.hint} — défaut {f.def}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// Jours de paiement offerts pour la programmation CTB (ISO : 1=lundi … 7=dimanche).
+const CTB_WEEKDAYS = [
+  { value: '1', label: 'Lundi' }, { value: '2', label: 'Mardi' }, { value: '3', label: 'Mercredi' },
+  { value: '4', label: 'Jeudi' }, { value: '5', label: 'Vendredi' }, { value: '6', label: 'Samedi' },
+  { value: '7', label: 'Dimanche' },
+]
+
+// Défauts affichés en placeholder — mirrors CTB_DEFAULT_CONFIG (services/ctbSheet.js).
+const CTB_DEFAULTS = {
+  spreadsheet_id: '13rd8x_xy5AQJemDwE6yWp8ffvkj3bEo7kq3cuogRGyQ',
+  sheet_name: 'Sommaire',
+  section_header: 'PROGRAMMATION DES FACTURES À PAYER',
+  google_account_email: 'pap@orisha.io',
+}
+
+// Accepte l'URL complète du Google Sheets collée telle quelle et en extrait l'ID.
+function extractSpreadsheetId(raw) {
+  const m = /\/d\/([A-Za-z0-9_-]{20,})/.exec(raw || '')
+  return m ? m[1] : (raw || '').trim()
+}
+
+// Connexion Google Sheets « CTB - Suivi » : fichier, onglet, section(s), jour
+// de paiement et compte Google.
+function CtbSheetConfigEditor({ actionConfig, onChange }) {
+  const [googleAccounts, setGoogleAccounts] = useState([])
+  useEffect(() => {
+    api.connectors.gmailAccounts().then(setGoogleAccounts).catch(() => setGoogleAccounts([]))
+  }, [])
+
+  const set = (key, value) => onChange({ ...actionConfig, [key]: value })
+  const spreadsheetId = actionConfig?.spreadsheet_id ?? ''
+  const defaults = CTB_DEFAULTS
+
+  return (
+    <div className="bg-white rounded-lg border p-5" data-testid="ctb-sheet-config">
+      <h2 className="text-sm font-semibold mb-1">Connexion Google Sheets</h2>
+      <p className="text-xs text-gray-500 mb-4">
+        Fichier et sections où les factures à payer sont programmées puis marquées payées.
+        Vider un champ revient au défaut. Le compte Google doit avoir accès en écriture au fichier
+        et avoir été connecté depuis la page Connecteurs <strong>après</strong> l'ajout du scope Sheets.
+      </p>
+      <div className="grid grid-cols-2 gap-4">
+        <div className="col-span-2">
+          <label className="block text-xs font-medium text-gray-600 mb-1">Fichier (ID ou URL du Google Sheets)</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={spreadsheetId}
+              onChange={e => set('spreadsheet_id', extractSpreadsheetId(e.target.value))}
+              placeholder={CTB_DEFAULTS.spreadsheet_id}
+              className="flex-1 border rounded-lg px-3 py-2 text-sm font-mono"
+              data-testid="ctb-spreadsheet-id"
+            />
+            <a
+              href={`https://docs.google.com/spreadsheets/d/${spreadsheetId || CTB_DEFAULTS.spreadsheet_id}/edit`}
+              target="_blank" rel="noreferrer"
+              className="text-xs text-brand-600 hover:underline whitespace-nowrap">
+              Ouvrir le fichier ↗
+            </a>
+          </div>
+          <p className="text-[11px] text-gray-400 mt-1">Coller l'URL complète fonctionne — l'ID est extrait automatiquement. Défaut : CTB - Suivi.</p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Onglet</label>
+          <input
+            type="text"
+            value={actionConfig?.sheet_name ?? ''}
+            onChange={e => set('sheet_name', e.target.value)}
+            placeholder={defaults.sheet_name}
+            className="w-full border rounded-lg px-3 py-2 text-sm"
+            data-testid="ctb-sheet-name"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Titre de la section (programmation)</label>
+          <input
+            type="text"
+            value={actionConfig?.section_header ?? ''}
+            onChange={e => set('section_header', e.target.value)}
+            placeholder={CTB_DEFAULTS.section_header}
+            className="w-full border rounded-lg px-3 py-2 text-sm"
+            data-testid="ctb-section-header"
+          />
+          <p className="text-[11px] text-gray-400 mt-1">Recherché dans l'onglet, insensible à la casse et aux accents.</p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Titre de la section (factures payées)</label>
+          <input
+            type="text"
+            value={actionConfig?.paid_section_header ?? ''}
+            onChange={e => set('paid_section_header', e.target.value)}
+            placeholder="FACTURES PAYÉES CETTE SEMAINE"
+            className="w-full border rounded-lg px-3 py-2 text-sm"
+            data-testid="ctb-paid-section-header"
+          />
+          <p className="text-[11px] text-gray-400 mt-1">Une facture passée à « Payée » y est ajoutée et sa ligne de programmation retirée.</p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Jour de paiement des factures</label>
+          <select
+            value={actionConfig?.payment_weekday ?? '2'}
+            onChange={e => set('payment_weekday', e.target.value)}
+            className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+            data-testid="ctb-payment-weekday"
+          >
+            {CTB_WEEKDAYS.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
+          </select>
+          <p className="text-[11px] text-gray-400 mt-1">
+            La programmation = ce jour, la semaine qui précède l'échéance (défaut : mardi).
+          </p>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Compte Google</label>
+          <SearchableSelect
+            value={actionConfig?.google_account_email ?? ''}
+            options={googleAccounts}
+            getOptionValue={a => a.account_email}
+            getOptionLabel={a => a.account_email}
+            getOptionKey={a => a.account_email}
+            onChange={v => set('google_account_email', v)}
+            emptyOption={`— Défaut (${CTB_DEFAULTS.google_account_email}) —`}
+            placeholder={`— Défaut (${CTB_DEFAULTS.google_account_email}) —`}
+            size="sm"
+            className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+            testId="ctb-google-account"
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Éditeur générique clé-valeur pour les automations système à config plate
+// (spec = { title, intro, fields: [{key, label, def, hint?}] }).
+function GenericConfigEditor({ spec, actionConfig, onChange }) {
+  const set = (key, value) => onChange({ ...actionConfig, [key]: value })
+  return (
+    <div className="bg-white rounded-lg border p-5" data-testid="generic-config">
+      <h2 className="text-sm font-semibold mb-1">{spec.title}</h2>
+      <p className="text-xs text-gray-500 mb-4">{spec.intro}</p>
+      <div className="grid grid-cols-2 gap-4">
+        {spec.fields.map(f => (
+          <div key={f.key} className={f.key === 'splits' || f.key === 'aga_splits' ? 'col-span-2' : ''}>
+            <label className="block text-xs font-medium text-gray-600 mb-1">{f.label}</label>
+            <input
+              type="text"
+              value={actionConfig?.[f.key] ?? ''}
+              onChange={e => set(f.key, e.target.value)}
+              placeholder={f.def || '—'}
+              className="w-full border rounded-lg px-3 py-2 text-sm"
+              data-testid={`generic-config-${f.key}`}
+            />
+            {f.hint && <p className="text-[11px] text-gray-400 mt-1">{f.hint}</p>}
+          </div>
+        ))}
+      </div>
     </div>
   )
 }

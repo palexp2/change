@@ -18,6 +18,28 @@ import { getAccessToken, airtableFetch } from '../connectors/airtable.js'
 const FACTURES_BASE_ID  = 'appB4Fehk9jYd4s4B'
 const FACTURES_TABLE_ID = 'tblEfH4UV8hm0YHkG'
 
+// Noms des champs Airtable — configurables via la modale « Mapping Airtable »
+// sur /factures (field_map de airtable_module_config, module='factures',
+// seedé dans schema.js). Les défauts reproduisent les noms historiques.
+const DEFAULT_FIELD_MAP = {
+  document_number: 'Numéro de document',
+  project: 'Projet',
+  order: 'Commande',
+}
+function getFieldMap() {
+  try {
+    const row = db.prepare("SELECT field_map FROM airtable_module_config WHERE module='factures'").get()
+    const saved = row?.field_map ? JSON.parse(row.field_map) : {}
+    const map = { ...DEFAULT_FIELD_MAP }
+    for (const k of Object.keys(DEFAULT_FIELD_MAP)) {
+      if (typeof saved[k] === 'string' && saved[k]) map[k] = saved[k]
+    }
+    return map
+  } catch {
+    return { ...DEFAULT_FIELD_MAP }
+  }
+}
+
 function firstLinked(fields, name) {
   const v = fields?.[name]
   return Array.isArray(v) && v.length ? v[0] : null
@@ -38,16 +60,16 @@ function findStripeFactureByDocNumber(documentNumber) {
 // Applique les liens Projet/Commande d'un record Airtable à la facture ERP
 // correspondante, dans le respect des règles ci-dessus.
 // Retourne 'set-project' | 'set-order' | 'no-stripe-match' | 'already-linked' | 'no-airtable-link'.
-function applyLink(record) {
-  const documentNumber = record.fields?.['Numéro de document']
+function applyLink(record, fieldMap = getFieldMap()) {
+  const documentNumber = record.fields?.[fieldMap.document_number]
   if (!documentNumber) return 'no-document-number'
 
   const facture = findStripeFactureByDocNumber(documentNumber)
   if (!facture) return 'no-stripe-match'
   if (facture.project_id || facture.order_id) return 'already-linked'
 
-  const projAt = firstLinked(record.fields, 'Projet')
-  const cmdAt  = firstLinked(record.fields, 'Commande')
+  const projAt = firstLinked(record.fields, fieldMap.project)
+  const cmdAt  = firstLinked(record.fields, fieldMap.order)
 
   if (projAt) {
     const proj = db.prepare('SELECT id FROM projects WHERE airtable_id=? LIMIT 1').get(projAt)
@@ -74,10 +96,11 @@ export async function syncFactureLinksFromWebhook(changes) {
   if (!recordIds?.length) return { processed: 0 }
 
   const token = await getAccessToken()
+  const fieldMap = getFieldMap()
   // Airtable filterByFormula RECORD_ID() — on récupère uniquement les fields utiles
   const formula = `OR(${recordIds.map(id => `RECORD_ID()='${id}'`).join(',')})`
   const url = `/${FACTURES_BASE_ID}/${FACTURES_TABLE_ID}`
-    + `?fields[]=Numéro de document&fields[]=Projet&fields[]=Commande`
+    + `?fields[]=${encodeURIComponent(fieldMap.document_number)}&fields[]=${encodeURIComponent(fieldMap.project)}&fields[]=${encodeURIComponent(fieldMap.order)}`
     + `&filterByFormula=${encodeURIComponent(formula)}`
     + `&pageSize=100`
   const data = await airtableFetch(url, token)
@@ -85,7 +108,7 @@ export async function syncFactureLinksFromWebhook(changes) {
   const counts = {}
   db.transaction((records) => {
     for (const rec of records) {
-      const result = applyLink(rec)
+      const result = applyLink(rec, fieldMap)
       counts[result] = (counts[result] || 0) + 1
     }
   })(data.records)
@@ -109,12 +132,13 @@ export async function backfillFactureLinks({ apply = false } = {}) {
   if (!candidates.length) return { candidates: 0 }
 
   const token = await getAccessToken()
+  const fieldMap = getFieldMap()
   const records = new Map()
   for (let i = 0; i < candidates.length; i += 50) {
     const slice = candidates.slice(i, i + 50)
     const formula = `OR(${slice.map(c => `RECORD_ID()='${c.airtable_id}'`).join(',')})`
     const url = `/${FACTURES_BASE_ID}/${FACTURES_TABLE_ID}`
-      + `?fields[]=Numéro de document&fields[]=Projet&fields[]=Commande`
+      + `?fields[]=${encodeURIComponent(fieldMap.document_number)}&fields[]=${encodeURIComponent(fieldMap.project)}&fields[]=${encodeURIComponent(fieldMap.order)}`
       + `&filterByFormula=${encodeURIComponent(formula)}`
       + `&pageSize=100`
     const data = await airtableFetch(url, token)
@@ -128,7 +152,7 @@ export async function backfillFactureLinks({ apply = false } = {}) {
     for (const c of candidates) {
       const at = records.get(c.airtable_id)
       if (!at) { counts['airtable-record-missing'] = (counts['airtable-record-missing'] || 0) + 1; continue }
-      const result = apply ? applyLink(at) : previewLink(at, c)
+      const result = apply ? applyLink(at, fieldMap) : previewLink(at, fieldMap)
       counts[result] = (counts[result] || 0) + 1
       if (result === 'set-project' || result === 'set-order' || result === 'would-set-project' || result === 'would-set-order') {
         actions.push({ doc: c.document_number, factureId: c.id, action: result })
@@ -143,15 +167,15 @@ export async function backfillFactureLinks({ apply = false } = {}) {
 }
 
 // Variante dry-run de applyLink — retourne ce qu'on ferait sans rien écrire.
-function previewLink(record, facture) {
-  const documentNumber = record.fields?.['Numéro de document']
+function previewLink(record, fieldMap = getFieldMap()) {
+  const documentNumber = record.fields?.[fieldMap.document_number]
   if (!documentNumber) return 'no-document-number'
   const stripeFacture = findStripeFactureByDocNumber(documentNumber)
   if (!stripeFacture) return 'no-stripe-match'
   if (stripeFacture.project_id || stripeFacture.order_id) return 'already-linked'
 
-  const projAt = firstLinked(record.fields, 'Projet')
-  const cmdAt  = firstLinked(record.fields, 'Commande')
+  const projAt = firstLinked(record.fields, fieldMap.project)
+  const cmdAt  = firstLinked(record.fields, fieldMap.order)
   if (projAt) {
     const proj = db.prepare('SELECT id FROM projects WHERE airtable_id=? LIMIT 1').get(projAt)
     return proj ? 'would-set-project' : 'project-not-found-in-erp'

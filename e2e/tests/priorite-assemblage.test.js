@@ -196,6 +196,44 @@ describe("Priorité d'assemblage", () => {
     assert.equal(await page.locator('[data-testid="step-5"] button:has-text("Sem. prochaine")').count(), 1)
   })
 
+  test('étape 5 : aucune pièce pile au seuil (stock == seuil, ex. 5/5) n’apparaît', async () => {
+    await page.goto(URL + '/priorite-assemblage', { waitUntil: 'domcontentloaded' })
+    await page.waitForSelector('[data-testid="step-5"]', { timeout: 15000 })
+    await page.waitForFunction(() => {
+      const box = document.querySelector('[data-testid="step-5"]')
+      return box && !box.textContent.includes('Chargement')
+    }, { timeout: 20000 })
+
+    const rows = await page.locator('[data-testid="achat-row"]').count()
+    if (rows === 0) return // rien à commander → invariant trivialement vrai
+
+    // Chaque ligne affiche « stock / seuil ». Une pièce ne doit apparaître que
+    // si stock < seuil (strictement) : une pièce pile au seuil est correcte.
+    const pairs = await page.locator('[data-testid="achat-row"]').evaluateAll(els =>
+      els.map(el => {
+        const m = el.innerText.match(/(\d+)\s*\/\s*(\d+)/)
+        return m ? { stock: parseInt(m[1], 10), seuil: parseInt(m[2], 10) } : null
+      }),
+    )
+    for (const p of pairs) {
+      assert.ok(p, 'chaque ligne affiche « stock / seuil »')
+      assert.ok(p.stock < p.seuil, `pièce affichée doit être sous le seuil (got ${p.stock}/${p.seuil})`)
+    }
+
+    // Cross-check API : aucune pièce Acheté avec stock_qty === min_stock ne doit
+    // se retrouver dans la liste (elles doivent être filtrées).
+    const { json } = await apiCall('GET', '/products?limit=all')
+    const atThreshold = (json?.data || []).filter(p =>
+      p.procurement_type === 'Acheté' && p.min_stock > 0 && p.stock_qty === p.min_stock)
+    if (atThreshold.length) {
+      const shownNames = await page.locator('[data-testid="achat-row"] .truncate').allInnerTexts()
+      for (const p of atThreshold) {
+        assert.ok(!shownNames.includes(p.name_fr),
+          `pièce pile au seuil « ${p.name_fr} » (${p.stock_qty}/${p.min_stock}) ne doit pas apparaître`)
+      }
+    }
+  })
+
   test('étape 5 : Commander crée un achat interne LIA-ERP (avec avertissement)', async () => {
     await page.goto(URL + '/priorite-assemblage', { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('[data-testid="step-5"]', { timeout: 15000 })

@@ -5,7 +5,6 @@ import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate } from '../lib/formatDate.js'
@@ -450,13 +449,13 @@ export default function QualificationCall() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="qualification_calls" />
             <NewCallDropdown companies={companies} onPick={startCall} onPickNew={startNewCompanyCall} busy={creating} />
           </div>
         </div>
 
         <DataTable
           table="qualification_calls"
+          manageViews
           columns={COLUMNS}
           data={calls}
           loading={loading}

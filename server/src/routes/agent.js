@@ -5,10 +5,12 @@ import { resolve } from 'path'
 import { fileURLToPath } from 'url'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { AGENT_INTERNAL_SECRET } from '../config/secrets.js'
+import { getClaudeUsage } from '../services/claudeUsage.js'
 import {
   runNextTask, isRunnerBusy, getCurrentTaskId, getCurrentActivity, getStreamBuffer,
   getSettings, setSettings, readBacklog, addBacklogItem, deleteBacklogItem,
-  requestGeneration, requestReply, PROMPT_TEMPLATE_DEFAULTS, DEFAULT_GENERAL_PROMPT,
+  updateBacklogItem, generateInstantProposal, approveBacklogItem,
+  requestReply, PROMPT_TEMPLATE_DEFAULTS, DEFAULT_GENERAL_PROMPT,
 } from '../services/taskRunner.js'
 
 function safeEqualSecret(provided, expected) {
@@ -77,7 +79,8 @@ router.get('/settings', (req, res) => res.json({
 router.put('/settings', (req, res) => {
   const patch = {}
   if ('enabled' in req.body) patch.enabled = !!req.body.enabled
-  for (const key of ['generalPrompt', 'generationPrompt', 'conversationPrompt', 'executionPrompt']) {
+  if ('autoApprove' in req.body) patch.autoApprove = !!req.body.autoApprove
+  for (const key of ['generalPrompt', 'instantPrompt', 'conversationPrompt', 'executionPrompt', 'questionPrompt']) {
     if (key in req.body) patch[key] = String(req.body[key] ?? '')
   }
   res.json(setSettings(patch))
@@ -107,17 +110,39 @@ router.put('/claude-md', requireAdmin, (req, res) => {
   }
 })
 
-// ─── Backlog ("jeter une idée") ───────────────────────────────────────────────
+// ─── Suggestions (bulle d'aide / page agent) ──────────────────────────────────
 router.get('/backlog', (req, res) => res.json(readBacklog()))
 router.post('/backlog', (req, res) => {
   const text = (req.body.text || '').trim()
   if (!text) return res.status(400).json({ error: 'text required' })
-  res.status(201).json(addBacklogItem(text))
+  // Toujours opus/effort élevé, implémentation directe sans proposition ni
+  // approbation — file d'attente automatique via le runner si occupé (busy).
+  // mode='question' : l'agent répond (lecture seule) au lieu d'implémenter.
+  // 600 : la route + le descriptif de l'élément cliqué (FeedbackFab, ≤400 chars).
+  const item = addBacklogItem(text, {
+    context: String(req.body.context || '').slice(0, 600),
+    author: req.user?.name || req.user?.email || '',
+    preset: 'deep',
+    mode: req.body.mode === 'question' ? 'question' : 'implement',
+  })
+  const { item: updatedItem, task } = approveBacklogItem(item.id) || {}
+  res.status(201).json(updatedItem || item)
+})
+// Relancer une proposition instantanée en échec.
+router.post('/backlog/:id/retry', (req, res) => {
+  const item = updateBacklogItem(req.params.id, { instant_status: 'generating', instant_proposal: null })
+  if (!item) return res.status(404).json({ error: 'not found' })
+  setImmediate(() => generateInstantProposal(item.id))
+  res.json(item)
+})
+// Approuver le correctif proposé → crée la tâche d'implémentation (préréglage
+// modèle/effort de la suggestion) et réveille le runner.
+router.post('/backlog/:id/approve', (req, res) => {
+  const result = approveBacklogItem(req.params.id, { comment: (req.body?.comment || '').trim() })
+  if (!result) return res.status(404).json({ error: 'not found' })
+  res.json(result)
 })
 router.delete('/backlog/:id', (req, res) => { deleteBacklogItem(req.params.id); res.json({ ok: true }) })
-
-// ─── Manual generation trigger ────────────────────────────────────────────────
-router.post('/generate', (req, res) => { requestGeneration(); res.json({ ok: true }) })
 
 // ─── Tasks / proposals ────────────────────────────────────────────────────────
 router.get('/tasks', (req, res) => res.json(sortTasks(readTasks())))
@@ -145,10 +170,24 @@ router.patch('/tasks/:id', (req, res) => {
   const idx = tasks.findIndex(t => t.id === req.params.id)
   if (idx === -1) return res.status(404).json({ error: 'not found' })
 
-  const allowed = ['status', 'user_comment', 'agent_result', 'priority', 'description', 'feedback']
+  // started_at/completed_at : corrigeables via API (aussi utilisés par les seeds E2E
+  // pour afficher la durée d'exécution sans lancer une vraie exécution).
+  // user_summary : résumé non technique affiché sur les cartes terminées (aussi
+  // utilisé par les seeds E2E pour simuler une implémentation complétée).
+  // mode ('implement' | 'question') : corrigeable via API (aussi utilisé par les
+  // seeds E2E pour simuler une carte question répondue).
+  const allowed = ['status', 'user_comment', 'agent_result', 'user_summary', 'priority', 'description', 'feedback', 'started_at', 'completed_at', 'mode']
   const task = { ...tasks[idx] }
   for (const key of allowed) {
     if (key in req.body) task[key] = req.body[key]
+  }
+  // Appréciation de l'implémentation (1 à 5 étoiles, null = retirée).
+  if ('rating' in req.body) {
+    const r = req.body.rating
+    if (r !== null && !(Number.isInteger(r) && r >= 1 && r <= 5)) {
+      return res.status(400).json({ error: 'rating doit être un entier de 1 à 5 ou null' })
+    }
+    task.rating = r
   }
   if (req.body.status === 'done' && tasks[idx].status !== 'done') {
     task.completed_at = new Date().toISOString()
@@ -179,6 +218,16 @@ router.post('/tasks/:id/message', (req, res) => {
   res.json(task)
 
   requestReply(task.id) // agent replies live (read-only), independent of the hourly clock
+})
+
+// GET /api/agent/usage — utilisation Claude (session 5 h + semaine 7 j), agrégée
+// depuis les transcriptions locales de Claude Code. Résultat mis en cache 60 s.
+router.get('/usage', async (req, res) => {
+  try {
+    res.json(await getClaudeUsage())
+  } catch (err) {
+    res.status(500).json({ error: 'Impossible de calculer l\'utilisation Claude : ' + err.message })
+  }
 })
 
 // GET /api/agent/runner/status

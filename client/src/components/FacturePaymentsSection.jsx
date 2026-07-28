@@ -11,7 +11,7 @@ function fmtMoney(n, currency = 'CAD') {
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(n)
 }
 
-const METHOD_LABELS = {
+export const METHOD_LABELS = {
   stripe: 'Stripe',
   cheque: 'Chèque',
   virement_bancaire: 'Virement bancaire',
@@ -20,7 +20,7 @@ const METHOD_LABELS = {
   autre: 'Autre',
 }
 
-const MANUAL_METHODS = ['cheque', 'virement_bancaire', 'interac', 'comptant', 'autre']
+export const MANUAL_METHODS = ['cheque', 'virement_bancaire', 'interac', 'comptant', 'autre']
 
 export default function FacturePaymentsSection({
   factureId,
@@ -416,7 +416,7 @@ function ConvertConfirmModal({ isOpen, converting, facturePaidAt, onCancel, onCo
 // le mouvement monétaire enregistré ET l'écriture poussée dans QuickBooks
 // (sauf si « écriture déjà postée » est coché) — règle « confirmation des side
 // effects » du CLAUDE.md.
-function PaymentConfirmModal({ isOpen, submitting, direction, method, amount, currency, skipQb, onCancel, onConfirm }) {
+export function PaymentConfirmModal({ isOpen, submitting, direction, method, amount, currency, skipQb, onCancel, onConfirm }) {
   if (!isOpen) return null
   const isIn = direction === 'in'
   const money = fmtMoney(Number.isFinite(amount) ? amount : 0, currency)

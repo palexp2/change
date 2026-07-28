@@ -1,7 +1,8 @@
-// Mémo QB d'un reçu de vente : on NE met PAS la liste des articles. Plusieurs articles →
-// description GÉNÉRALE de la facture (résumé IA de l'objet principal) ; UN SEUL article →
-// sa description transcrite verbatim (pas besoin de résumer). Un mémo personnalisé saisi
-// par l'utilisateur est ajouté en tête. Verrouille ce comportement + la troncature 4000.
+// Mémo QB d'un reçu de vente : on NE met PAS la liste des articles. La description
+// GÉNÉRALE de la facture (« Description principale », éditable par l'utilisateur) est
+// toujours prioritaire. On ne retombe sur la description de l'unique article que si
+// cette description générale est vide. Un mémo personnalisé saisi par l'utilisateur est
+// ajouté en tête. Verrouille ce comportement + la troncature 4000.
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -35,16 +36,20 @@ test('aucun mémo, aucune description → chaîne vide', () => {
   assert.equal(buildReceiptMemo('', undefined), '')
 })
 
-test('un seul article : transcrit sa description verbatim, pas le résumé', () => {
-  // 1 article → on prend items[0].description, même si une description générale existe.
+test('un seul article : la description générale reste prioritaire', () => {
+  // Description générale renseignée → toujours utilisée, même avec 1 seul article.
   assert.equal(
     buildReceiptMemo(null, 'Matériel électronique', [{ description: 'Câble HDMI 2 m' }]),
-    'Câble HDMI 2 m',
+    'Matériel électronique',
   )
-  // Mémo perso conservé en tête.
   assert.equal(
     buildReceiptMemo('Projet X', 'Résumé', [{ description: 'Câble HDMI 2 m' }]),
-    'Projet X\nCâble HDMI 2 m',
+    'Projet X\nRésumé',
+  )
+  // Description générale vide → retombe sur la description de l'unique article, verbatim.
+  assert.equal(
+    buildReceiptMemo(null, '', [{ description: 'Câble HDMI 2 m' }]),
+    'Câble HDMI 2 m',
   )
 })
 

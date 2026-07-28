@@ -24,7 +24,8 @@ import {
   reconcileFacturesForOrder,
   reconcileFactureRevenueRecognition,
 } from './quickbooks.js'
-import { logSystemRun } from './systemAutomations.js'
+import { logSystemRun, isSystemAutomationActive } from './systemAutomations.js'
+import { buildTriggerPredicate, triggerColumns } from './fieldRuleEngine.js'
 
 const POLL_MS = 10000
 const BATCH = 500
@@ -117,21 +118,173 @@ async function processOrder(orderId, source) {
   }
 }
 
-// Étape 1 — tail change_log sur shipments. Pour chaque envoi devenu « Envoyé »,
-// réconcilie sa commande. Dédup intra-batch par commande (un envoi reçoit
-// plusieurs upserts : tracking, notes…).
+// Réconcilie UNE facture (mode factures du déclencheur) et synchronise la file
+// de retry — même contrat que processOrder mais à la maille facture. Les skips
+// sont silencieux (comme processOrder) ; recognized/error sont logués.
+async function processFacture(factureId, source) {
+  let r
+  try {
+    r = await reconcileFactureRevenueRecognition(factureId)
+  } catch (err) {
+    // reconcile ne throw normalement pas (il catch en interne), garde défensive.
+    console.error('[revRecWatcher] reconcileFactureRevenueRecognition error:', err.message)
+    enqueueFailure(factureId, null, err.message)
+    logSystemRun('sys_revenue_recognition', {
+      status: 'error', error: err.message,
+      triggerData: { facture_id: factureId, source },
+    })
+    return
+  }
+  if (r.status === 'recognized') {
+    dequeue(factureId)
+    logSystemRun('sys_revenue_recognition', {
+      status: 'success',
+      result: `Facture #${r.document_number || factureId} constatée (déclencheur : ${source}) — ${r.amount} ${r.currency} via ${r.debit_account}`,
+      triggerData: { facture_id: factureId, source },
+    })
+  } else if (r.status === 'error') {
+    const orderId = db.prepare('SELECT order_id FROM factures WHERE id = ?').get(factureId)?.order_id || null
+    enqueueFailure(factureId, orderId, r.error)
+    logSystemRun('sys_revenue_recognition', {
+      status: 'error',
+      result: `Facture #${r.document_number || factureId} en échec (mise en file pour retry) : ${r.error}`,
+      error: r.error,
+      triggerData: { facture_id: factureId, source },
+    })
+  } else {
+    // skip = terminal via ce chemin ; un prochain change_log re-déclenchera si
+    // la condition redevient vraie.
+    dequeue(factureId)
+  }
+}
+
+// Condition de déclenchement par défaut — utilisée quand la config utilisateur
+// est absente ou illisible (fallback dur, jamais de constat silencieusement omis).
+const DEFAULT_TRIGGER = { erp_table: 'shipments', column: 'status', op: 'eq', value: 'Envoyé' }
+
+const IDENT_RE = /^[a-z_][a-z0-9_]*$/i
+
+// Charge la condition configurée par l'utilisateur sur l'automation système
+// (trigger_config de sys_revenue_recognition, éditable via l'UI). Deux modes
+// selon erp_table :
+//   - 'shipments' (défaut) : condition sur l'envoi → réconcilie les factures de
+//     sa commande (comportement historique).
+//   - 'factures' : condition sur la facture elle-même — y compris un champ
+//     personnalisé (ex. lookup « Date d'envoi de la commande liée ») — →
+//     réconcilie directement la facture qui matche.
+export function loadTriggerConfig() {
+  try {
+    const row = db.prepare(
+      "SELECT trigger_config FROM automations WHERE id = 'sys_revenue_recognition' AND system = 1"
+    ).get()
+    const tc = JSON.parse(row?.trigger_config || '{}')
+    if (tc.column || tc.conditions) return tc
+  } catch (e) {
+    console.error('[revRecWatcher] trigger_config illisible, fallback status=Envoyé :', e.message)
+  }
+  return DEFAULT_TRIGGER
+}
+
+// Construit le matcher pour une condition donnée. Quand la condition référence
+// une colonne absente de la table physique (champ personnalisé cf_*), la requête
+// passe par la VUE <table>_v (customFieldsView.js) qui matérialise lookups,
+// rollups et formules. Lève si la config est inutilisable (colonne invalide,
+// vue manquante) — le caller retombe alors sur DEFAULT_TRIGGER.
+export function buildTriggerMatcher(tc) {
+  const table = tc.erp_table === 'factures' ? 'factures' : 'shipments'
+  const { predicate, params } = buildTriggerPredicate(tc)
+  const physical = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name))
+  const cols = triggerColumns(tc)
+  for (const c of cols) {
+    if (!IDENT_RE.test(c)) throw new Error(`colonne invalide: ${c}`)
+  }
+  let rel = table
+  if (cols.some(c => !physical.has(c))) {
+    const view = `${table}_v`
+    const hasView = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'view' AND name = ?"
+    ).get(view)
+    if (!hasView) throw new Error(`champ personnalisé référencé mais la vue ${view} n'existe pas`)
+    rel = view
+  }
+  const stmt = db.prepare(
+    `SELECT t.id${table === 'shipments' ? ', t.order_id' : ''} FROM ${rel} t WHERE (${predicate}) AND t.id = ?`
+  )
+  return {
+    mode: table,
+    // En mode factures, la valeur d'un lookup dépend de la commande (et des
+    // envois qui alimentent ses champs) : on réévalue aussi sur ces écritures.
+    watchedTables: table === 'factures' ? ['factures', 'orders', 'shipments'] : ['shipments'],
+    match: (recordId) => stmt.get(...params, recordId) || null,
+  }
+}
+
+function loadMatcher() {
+  try {
+    return buildTriggerMatcher(loadTriggerConfig())
+  } catch (e) {
+    console.error('[revRecWatcher] condition configurée invalide, fallback status=Envoyé :', e.message)
+    return buildTriggerMatcher(DEFAULT_TRIGGER)
+  }
+}
+
+// Factures candidates d'une commande — même périmètre que reconcileFacturesForOrder
+// (lien direct order_id OU via le projet de la commande).
+let _facturesForOrderStmt = null
+function facturesForOrder(orderId) {
+  _facturesForOrderStmt ??= db.prepare(`
+    SELECT f.id FROM factures f
+    JOIN orders o ON o.id = ?
+    WHERE f.kind = 'order'
+      AND (f.order_id = o.id OR (f.project_id IS NOT NULL AND f.project_id = o.project_id))
+  `)
+  return _facturesForOrderStmt.all(orderId).map(r => r.id)
+}
+
+// Mappe un événement change_log (mode factures) vers les factures à réévaluer.
+function candidateFacturesForChange(tableName, recordId) {
+  if (tableName === 'factures') return [recordId]
+  if (tableName === 'orders') return facturesForOrder(recordId)
+  if (tableName === 'shipments') {
+    const s = db.prepare('SELECT order_id FROM shipments WHERE id = ?').get(recordId)
+    return s?.order_id ? facturesForOrder(s.order_id) : []
+  }
+  return []
+}
+
+// Étape 1 — tail change_log selon le mode configuré.
+//   - mode shipments : envoi qui matche → réconcilie sa commande (dédup par commande).
+//   - mode factures  : écriture facture/commande/envoi → réévalue les factures
+//     candidates ; celles qui matchent sont réconciliées une à une (dédup par facture).
 export async function tailShipmentsOnce() {
+  const matcher = loadMatcher()
+  const tablesIn = matcher.watchedTables.map(() => '?').join(',')
   const rows = db.prepare(`
-    SELECT id, record_id FROM change_log
-    WHERE id > ? AND change_type = 'upsert' AND table_name = 'shipments'
+    SELECT id, table_name, record_id FROM change_log
+    WHERE id > ? AND change_type = 'upsert' AND table_name IN (${tablesIn})
     ORDER BY id ASC LIMIT ?
-  `).all(lastSeenId, BATCH)
+  `).all(lastSeenId, ...matcher.watchedTables, BATCH)
+  if (!rows.length) return 0
+
+  if (matcher.mode === 'factures') {
+    const facturesSeen = new Set()
+    for (const row of rows) {
+      lastSeenId = row.id
+      for (const factureId of candidateFacturesForChange(row.table_name, row.record_id)) {
+        if (facturesSeen.has(factureId)) continue
+        facturesSeen.add(factureId)
+        if (!matcher.match(factureId)) continue
+        await processFacture(factureId, `facture_condition(${row.table_name})`)
+      }
+    }
+    return facturesSeen.size
+  }
 
   const ordersSeen = new Set()
   for (const row of rows) {
     lastSeenId = row.id
-    const ship = db.prepare('SELECT order_id, status FROM shipments WHERE id = ?').get(row.record_id)
-    if (!ship || ship.status !== 'Envoyé' || !ship.order_id) continue
+    const ship = matcher.match(row.record_id)
+    if (!ship || !ship.order_id) continue
     if (ordersSeen.has(ship.order_id)) continue
     ordersSeen.add(ship.order_id)
     await processOrder(ship.order_id, 'shipment_envoye')
@@ -191,6 +344,14 @@ async function tick() {
   if (running) return
   running = true
   try {
+    // Toggle utilisateur (page Automations) : désactivé = aucun constat, ni tail
+    // ni retry. Le curseur avance quand même — les envois écrits pendant la pause
+    // ne sont PAS rejoués à la réactivation (comportement documenté dans la
+    // description de l'automation).
+    if (!isSystemAutomationActive('sys_revenue_recognition')) {
+      lastSeenId = maxChangeLogId()
+      return
+    }
     await tailShipmentsOnce()
     await retryQueueOnce()
   } catch (e) {

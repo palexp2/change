@@ -3,8 +3,6 @@ import { readFileSync, writeFileSync, renameSync, existsSync, unlinkSync } from 
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { randomUUID } from 'crypto'
-import cron from 'node-cron'
-import db from '../db/database.js'
 import { broadcastAll } from './realtime.js'
 import { AGENT_INTERNAL_SECRET } from '../config/secrets.js'
 
@@ -27,14 +25,23 @@ const EXEC_CODE   = id => resolve(DATA_DIR, `.agent-exec-${id}.code`)
 const EXEC_PROMPT = id => resolve(DATA_DIR, `.agent-exec-${id}.prompt`)
 
 // ─── Tunables (settled during the design grilling) ────────────────────────────
-const MAX_OPEN_PROPOSALS = 25           // generation pauses when this many proposals await triage
 const EXEC_TIMEOUT_MS    = 30 * 60_000  // hard kill an execution after 30 min
-const READONLY_TIMEOUT_MS = 8 * 60_000  // generation / conversation read-only turns
+const READONLY_TIMEOUT_MS = 8 * 60_000  // conversation read-only turns
+const INSTANT_TIMEOUT_MS = 3 * 60_000   // proposition instantanée (sans outils, réponse courte)
 const READONLY_TOOLS = 'Read,Glob,Grep' // truly read-only — no Bash/Write/Edit
 const EXEC_TOOLS     = 'Bash,Read,Write,Edit,Glob,Grep'
 
+// ─── Préréglages modèle / effort (choisis par l'utilisateur à la soumission) ──
+// Appliqués à la proposition instantanée ET à l'exécution du correctif.
+export const PRESETS = {
+  fast:     { model: 'haiku',  effort: 'low',    label: 'Rapide' },
+  standard: { model: 'sonnet', effort: 'medium', label: 'Standard' },
+  deep:     { model: 'opus',   effort: 'high',   label: 'Approfondi' },
+}
+export function presetFor(key) { return PRESETS[key] || PRESETS.standard }
+
 // ─── Prompt général (préambule système, éditable depuis la page Agent) ─────────
-// Injecté en tête de CHAQUE activité (génération / conversation / exécution).
+// Injecté en tête de CHAQUE activité (proposition instantanée / conversation / exécution).
 // Surchargeable via agent-settings.json (clé `generalPrompt`) — voir getSettings().
 export const DEFAULT_GENERAL_PROMPT =
   'Tu es un agent autonome d\'amélioration de l\'ERP Orisha (repo à /home/ec2-user/erp). ' +
@@ -49,42 +56,23 @@ function generalPrompt() {
 // ─── Modèles de prompt par activité (éditables depuis la page Agent) ───────────
 // Chaque modèle est le prompt COMPLET d'une activité (au-delà du préambule général).
 // Les jetons {{placeholder}} sont remplacés au moment de l'exécution par renderTemplate().
-// Surchargeables via agent-settings.json (clés generationPrompt / conversationPrompt /
+// Surchargeables via agent-settings.json (clés instantPrompt / conversationPrompt /
 // executionPrompt) — un champ vide retombe sur le défaut ci-dessous (voir promptTemplate()).
 //
 // Placeholders disponibles :
-//   génération    : {{general}} {{slots}} {{backlog}} {{signals}} {{history}}
+//   instantané    : {{general}} {{text}} {{context}}
 //   conversation  : {{general}} {{proposal}} {{why}} {{zone}} {{thread}}
 //   exécution     : {{general}} {{brief}} {{internalSecret}}
 
-export const DEFAULT_GENERATION_PROMPT = [
+export const DEFAULT_INSTANT_PROMPT = [
   '{{general}}', '\n\n',
-  'Tu es en LECTURE SEULE: explore le code (Read/Glob/Grep) mais ne modifie RIEN.\n\n',
-  'Génère AU PLUS {{slots}} proposition(s) d\'amélioration, de haute qualité, ancrées dans le réel.\n\n',
-  '=== SOURCES D\'IDÉES (par ordre de priorité) ===\n',
-  'D. BACKLOG de l\'humain (PRIORITÉ ABSOLUE — élabore-les d\'abord, une proposition par note si pertinent):\n',
-  '{{backlog}}', '\n\n',
-  'C. CONFORMITÉ aux règles design du CLAUDE.md (DataTable partout, autosave partout, pickers FK cliquables, dropdowns recherchables >10 options, modales de confirmation des side effects…). Cherche les VIOLATIONS réelles dans client/src/.\n',
-  'B. SIGNAUX SYSTÈME réels (erreurs récentes sync_log / automation_logs, TODO/FIXME dans le code):\n',
-  '{{signals}}', '\n',
-  'Note: si "readErrors" est non vide ci-dessus, la lecture des logs de santé a ÉCHOUÉ — les listes d\'erreurs sont incomplètes/non fiables, ne conclus PAS que le système est sain.\n',
-  'A. SCAN libre du code (dette technique, incohérences) — minoritaire, seulement si vraiment pertinent.\n\n',
-  '=== NE PAS REPROPOSER (historique — dédup strict) ===\n',
-  '{{history}}', '\n',
-  'Ne propose JAMAIS une idée déjà rejetée, déjà faite, ou déjà ouverte ci-dessus. Tiens compte des raisons de rejet pour te calibrer.\n\n',
-  '=== FORMAT DE SORTIE ===\n',
-  'Après ton exploration, termine ta réponse par UN SEUL bloc ```json contenant un tableau d\'objets. Chaque objet:\n',
-  '{\n',
-  '  "title": "une ligne",\n',
-  '  "why": "le problème réel / la règle / le signal qui déclenche ça (2-3 phrases)",\n',
-  '  "source": "A" | "B" | "C" | "D",\n',
-  '  "zone": "fichiers/domaines concrets touchés (ex: client/src/pages/X.jsx)",\n',
-  '  "risk": "low" | "high",  // high = touche argent/compta, auth/sécurité, OAuth connectors, ou schéma DB\n',
-  '  "side_effects": "side effects déclenchés (email, push tiers, mouvement monétaire, cascade) ou \\"aucun\\"",\n',
-  '  "effort": "small" | "medium" | "large",\n',
-  '  "backlog_id": "id de la note backlog si dérivée de D, sinon omettre"\n',
-  '}\n',
-  'Si tu n\'as aucune bonne idée ancrée, renvoie un tableau vide []. Pas de remplissage gratuit.',
+  'Un utilisateur vient de signaler un problème ou de suggérer une amélioration via la bulle d\'aide de l\'app. ',
+  'Tu n\'as AUCUN outil : ne tente pas de lire le code, réponds uniquement à partir du signalement et de ta connaissance générale de l\'ERP.\n\n',
+  'Signalement (depuis la page {{context}}):\n{{text}}\n\n',
+  'Propose UN correctif concret et plausible : ce qui devrait changer dans l\'app, où (page/zone), et le comportement attendu après le correctif. ',
+  'Écris en français, orienté utilisateur (pas de jargon technique ni de noms de fichiers), en 3 à 6 phrases maximum. ',
+  'Si le signalement est trop vague pour proposer quoi que ce soit, dis-le et pose LA question qui débloquerait. ',
+  'Ne produis que la proposition, sans préambule ni titre.',
 ].join('')
 
 export const DEFAULT_CONVERSATION_PROMPT = [
@@ -101,6 +89,20 @@ export const DEFAULT_CONVERSATION_PROMPT = [
   'Ne produis que ta réponse, sans préambule.',
 ].join('')
 
+// Consigne du compte-rendu utilisateur — garantie dans CHAQUE prompt d'exécution,
+// même si l'utilisateur a personnalisé son modèle sans l'inclure (voir executeTask).
+// Longueur proportionnelle à la complexité : quelques mots pour un petit correctif,
+// quelques lignes pour un gros changement.
+export const SUMMARY_SECTION_MARKER = '=== RÉSUMÉ UTILISATEUR ==='
+export const SUMMARY_SECTION_INSTRUCTION = [
+  'Puis termine IMPÉRATIVEMENT ta réponse par une section délimitée EXACTEMENT ainsi:\n',
+  SUMMARY_SECTION_MARKER, '\n',
+  'Suivie d\'un court compte-rendu en français destiné à l\'utilisateur qui a signalé le problème, SANS jargon technique ni noms de fichiers. ',
+  'Adapte la longueur à la complexité du changement : quelques mots pour un petit correctif, 2 à 4 phrases pour un changement plus important. ',
+  'Explique ce qui a changé dans l\'app, comment le constater, et tout commentaire pertinent (limite connue, comportement à surveiller…). ',
+  'Si la tâche est bloquée, explique simplement pourquoi.',
+].join('')
+
 export const DEFAULT_EXECUTION_PROMPT = [
   '{{general}}', '\n\n',
   'Implémente UNIQUEMENT la tâche ci-dessous. ',
@@ -114,15 +116,41 @@ export const DEFAULT_EXECUTION_PROMPT = [
   '- Nettoie tout record créé par tes tests E2E (hook after()), et restaure toute configuration existante que le test a écrasée — voir CLAUDE.md.\n\n',
   'Si tu as besoin d\'une approbation humaine pour une sous-étape, crée une sous-tâche:\n',
   'curl -s -X POST http://localhost:3004/api/agent/tasks/internal -H \'Content-Type: application/json\' -H \'X-Agent-Secret: {{internalSecret}}\' -d \'{"description":"...","priority":0}\'\n\n',
-  'Termine par un rapport détaillé: ce que tu as changé, le résultat du build et des tests E2E (vert/rouge), ou la raison du blocage.',
+  'Termine par un rapport détaillé: ce que tu as changé, le résultat du build et des tests E2E (vert/rouge), ou la raison du blocage.\n',
+  SUMMARY_SECTION_INSTRUCTION,
+].join('')
+
+// Consigne de la section réponse pour une QUESTION — même marqueur que le résumé
+// d'implémentation (le pipeline monitorExecution/user_summary est partagé), mais la
+// section contient la RÉPONSE, pas un compte-rendu de changements.
+export const QUESTION_SUMMARY_INSTRUCTION = [
+  'Termine IMPÉRATIVEMENT ta réponse par une section délimitée EXACTEMENT ainsi:\n',
+  SUMMARY_SECTION_MARKER, '\n',
+  'Suivie de la RÉPONSE à la question, en français, destinée à l\'utilisateur, SANS jargon technique ni noms de fichiers. ',
+  'Adapte la longueur à la complexité de la question : une phrase pour une question simple, quelques paragraphes si nécessaire. ',
+  'Si tu n\'as pas pu répondre, explique simplement pourquoi.',
+].join('')
+
+// Prompt d'exécution d'une QUESTION (mode choisi par l'utilisateur à la soumission) :
+// exploration en lecture seule, AUCUNE implémentation — la réponse part dans la
+// section résumé et devient le compte-rendu de la carte.
+export const DEFAULT_QUESTION_PROMPT = [
+  '{{general}}', '\n\n',
+  'La demande ci-dessous est une QUESTION de l\'utilisateur — PAS une demande d\'implémentation. ',
+  'N\'implémente RIEN : tu es en LECTURE SEULE (Read/Glob/Grep uniquement), tu ne modifies aucun fichier, tu ne lances ni build, ni test, ni redémarrage. ',
+  'Ne lis pas agent-tasks.json ni les autres fichiers de gestion de tâches de l\'agent.\n\n',
+  '{{brief}}',
+  '\n\nExplore le code autant que nécessaire pour répondre précisément et complètement à la question.\n',
+  QUESTION_SUMMARY_INSTRUCTION,
 ].join('')
 
 // Map clé de réglage → modèle par défaut. Source de vérité partagée avec la route
 // GET /settings (qui renvoie ces défauts au front pour le bouton « Réinitialiser »).
 export const PROMPT_TEMPLATE_DEFAULTS = {
-  generationPrompt:   DEFAULT_GENERATION_PROMPT,
+  instantPrompt:      DEFAULT_INSTANT_PROMPT,
   conversationPrompt: DEFAULT_CONVERSATION_PROMPT,
   executionPrompt:    DEFAULT_EXECUTION_PROMPT,
+  questionPrompt:     DEFAULT_QUESTION_PROMPT,
 }
 
 // Récupère le modèle effectif d'une activité : override utilisateur si non vide, sinon défaut.
@@ -143,9 +171,8 @@ function renderTemplate(tpl, vars) {
 // Priority: execution > conversation > generation.
 let busy = false
 let currentTaskId = null
-let currentActivity = null     // 'execution' | 'conversation' | 'generation'
+let currentActivity = null     // 'execution' | 'conversation'
 let _currentProc = null
-let _genRequested = false
 const _replyQueue = []         // proposal ids awaiting a conversation reply
 
 // In-memory stream buffer per task: taskId -> chunk[]
@@ -230,10 +257,12 @@ function writeTasks(tasks) {
 export function getSettings() {
   return {
     enabled: false,
+    autoApprove: true,
     generalPrompt: DEFAULT_GENERAL_PROMPT,
-    generationPrompt: DEFAULT_GENERATION_PROMPT,
+    instantPrompt: DEFAULT_INSTANT_PROMPT,
     conversationPrompt: DEFAULT_CONVERSATION_PROMPT,
     executionPrompt: DEFAULT_EXECUTION_PROMPT,
+    questionPrompt: DEFAULT_QUESTION_PROMPT,
     ...readJson(SETTINGS_FILE, {}),
   }
 }
@@ -248,15 +277,215 @@ export function setSettings(patch) {
 
 export function readBacklog() { return readJson(BACKLOG_FILE, []) }
 function writeBacklog(items) { writeJson(BACKLOG_FILE, items); broadcastAll({ type: 'agent:backlog:updated' }) }
-export function addBacklogItem(text) {
-  const item = { id: randomUUID(), text, processed: false, created_at: new Date().toISOString() }
+
+// Une « suggestion » : signalement utilisateur (bulle d'aide ou page agent) qui
+// porte sa proposition instantanée puis le lien vers la tâche d'implémentation.
+export function addBacklogItem(text, { context = '', author = '', preset = 'standard', mode = 'implement' } = {}) {
+  const item = {
+    id: randomUUID(),
+    text,
+    context,                       // route de la page d'où vient le signalement
+    author,                        // nom de l'utilisateur qui signale
+    mode: mode === 'question' ? 'question' : 'implement', // question = répondre sans rien implémenter
+    preset: PRESETS[preset] ? preset : 'standard',
+    instant_status: 'generating',  // 'generating' | 'ready' | 'error'
+    instant_proposal: null,        // correctif proposé (LLM sans outils)
+    task_id: null,                 // tâche d'implémentation une fois approuvée
+    processed: false,
+    created_at: new Date().toISOString(),
+  }
   const items = readBacklog()
   items.push(item)
   writeBacklog(items)
   return item
 }
+export function updateBacklogItem(id, updates) {
+  const items = readBacklog()
+  const idx = items.findIndex(i => i.id === id)
+  if (idx === -1) return null
+  items[idx] = { ...items[idx], ...updates }
+  writeBacklog(items)
+  return items[idx]
+}
 export function deleteBacklogItem(id) {
   writeBacklog(readBacklog().filter(i => i.id !== id))
+}
+
+// ─── Proposition instantanée (sans outils, hors slot global) ──────────────────
+// Tourne en PARALLÈLE de tout le reste : aucun outil autorisé → aucune interaction
+// avec l'arbre de travail, donc pas besoin du slot global ni du toggle enabled.
+export function generateInstantProposal(itemId) {
+  const item = readBacklog().find(i => i.id === itemId)
+  if (!item) return
+  const { model, effort } = presetFor(item.preset)
+  const prompt = renderTemplate(promptTemplate('instantPrompt'), {
+    general: generalPrompt(),
+    text: item.text,
+    context: item.context || '(inconnue)',
+  })
+
+  const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
+  const proc = spawn(CLAUDE_BIN, [
+    '-p', '--model', model, '--effort', effort, '--tools', '',
+  ], { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user' }, stdio: 'pipe' })
+
+  proc.stdin.write(prompt)
+  proc.stdin.end()
+
+  let output = ''
+  let settled = false
+  const timer = setTimeout(() => { if (!settled) { try { proc.kill('SIGKILL') } catch {} } }, INSTANT_TIMEOUT_MS)
+
+  proc.stdout.on('data', chunk => { output += chunk.toString() })
+  proc.stderr.on('data', () => {})
+  proc.on('error', () => {})
+  proc.on('close', (code) => {
+    if (settled) return
+    settled = true
+    clearTimeout(timer)
+    const text = output.trim()
+    const ok = code === 0 && text
+    updateBacklogItem(itemId, ok
+      ? { instant_status: 'ready', instant_proposal: text }
+      : { instant_status: 'error', instant_proposal: null })
+    if (!ok) console.error(`🤖 Agent: proposition instantanée en échec (item ${itemId}, exit ${code})`)
+  })
+}
+
+// ─── Compte-rendu utilisateur de secours (a posteriori, sans outils) ───────────
+// Deux cas alimentent ce chemin : une exécution dont le modèle a oublié la section
+// « RÉSUMÉ UTILISATEUR », et les tâches terminées AVANT l'ajout du compte-rendu
+// (rattrapage au démarrage — voir backfillUserSummaries). Aucun outil autorisé →
+// tourne hors slot global, en parallèle de tout le reste, comme la proposition
+// instantanée.
+const SUMMARY_TIMEOUT_MS = 3 * 60_000
+const _summarizing = new Set()
+
+export function generateUserSummary(taskId) {
+  return new Promise((resolveP) => {
+    if (_summarizing.has(taskId)) return resolveP(false)
+    const task = readTasks().find(t => t.id === taskId)
+    if (!task || task.user_summary || !['done', 'blocked'].includes(task.status)) return resolveP(false)
+    const report = (task.agent_result || '').trim()
+    if (!report || report === '(terminé sans rapport)') return resolveP(false)
+    _summarizing.add(taskId)
+
+    // Une tâche « question » n'a rien changé dans l'app : le compte-rendu de secours
+    // est la RÉPONSE tirée du rapport, pas un récit de modifications.
+    const isQuestion = task.mode === 'question'
+    const prompt = isQuestion ? [
+      'Un agent autonome vient d\'explorer l\'ERP Orisha (en lecture seule) pour répondre à la question d\'un utilisateur. ',
+      'Rédige la RÉPONSE destinée à l\'utilisateur, en français, SANS jargon technique ni noms de fichiers, à partir du rapport ci-dessous. ',
+      'Adapte la longueur à la complexité de la question. ',
+      task.status === 'blocked'
+        ? 'L\'agent n\'a PAS pu répondre : explique simplement pourquoi, sans détails techniques. '
+        : '',
+      'Ne produis QUE la réponse, sans préambule ni titre.\n\n',
+      `Question de l'utilisateur:\n${task.description || task.title || '(inconnue)'}\n\n`,
+      `Rapport de l'exploration:\n${report.slice(-12000)}`,
+    ].join('') : [
+      'Un agent autonome vient d\'intervenir sur l\'ERP Orisha suite à un signalement utilisateur. ',
+      'Rédige le compte-rendu destiné à l\'utilisateur, en français, SANS jargon technique ni noms de fichiers. ',
+      'Adapte la longueur à la complexité : quelques mots pour un petit correctif, 2 à 4 phrases pour un changement plus important. ',
+      'Explique ce qui a changé dans l\'app, comment le constater, et tout commentaire pertinent. ',
+      task.status === 'blocked'
+        ? 'L\'intervention a été BLOQUÉE : explique simplement pourquoi, sans détails techniques. '
+        : '',
+      'Ne produis QUE le compte-rendu, sans préambule ni titre.\n\n',
+      `Signalement initial:\n${task.description || task.title || '(inconnu)'}\n\n`,
+      // Fin du rapport = conclusion de l'agent (le début est du récit d'exécution).
+      `Rapport technique de l'intervention:\n${report.slice(-12000)}`,
+    ].join('')
+
+    const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
+    const proc = spawn(CLAUDE_BIN, [
+      '-p', '--model', 'haiku', '--effort', 'low', '--tools', '',
+    ], { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user' }, stdio: 'pipe' })
+
+    proc.stdin.write(prompt)
+    proc.stdin.end()
+
+    let output = ''
+    let settled = false
+    const settle = (ok) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      _summarizing.delete(taskId)
+      resolveP(ok)
+    }
+    const timer = setTimeout(() => { try { proc.kill('SIGKILL') } catch {} }, SUMMARY_TIMEOUT_MS)
+
+    proc.stdout.on('data', chunk => { output += chunk.toString() })
+    proc.stderr.on('data', () => {})
+    proc.on('error', () => settle(false))
+    proc.on('close', (code) => {
+      const text = output.trim()
+      if (code === 0 && text) {
+        const updated = updateTask(taskId, { user_summary: text })
+        if (updated) broadcastTask(updated)
+        settle(true)
+      } else {
+        console.error(`🤖 Agent: génération du compte-rendu en échec (tâche ${taskId}, exit ${code})`)
+        settle(false)
+      }
+    })
+  })
+}
+
+// Rattrapage : compte-rendus manquants sur les implémentations déjà terminées
+// (tâches d'avant la fonctionnalité, ou prompt personnalisé sans la section).
+// Séquentiel pour ne pas empiler les subprocess ; idempotent (le résumé persisté
+// n'est jamais régénéré) ; relancé au prochain démarrage en cas d'échec ponctuel.
+let _backfillStarted = false
+async function backfillUserSummaries() {
+  if (_backfillStarted) return
+  _backfillStarted = true
+  const ids = readTasks()
+    .filter(t => ['done', 'blocked'].includes(t.status) && !t.user_summary && (t.agent_result || '').trim())
+    .map(t => t.id)
+  if (!ids.length) return
+  console.log(`🤖 Agent: rattrapage des compte-rendus manquants (${ids.length} tâche(s))…`)
+  for (const id of ids) {
+    try { await generateUserSummary(id) } catch {}
+  }
+  console.log('🤖 Agent: rattrapage des compte-rendus terminé')
+}
+
+// ─── Approbation d'une suggestion → tâche d'implémentation ────────────────────
+export function approveBacklogItem(id, { comment = '' } = {}) {
+  const item = readBacklog().find(i => i.id === id)
+  if (!item) return null
+  if (item.task_id) return { item, task: readTasks().find(t => t.id === item.task_id) || null }
+  const { model, effort } = presetFor(item.preset)
+  const now = new Date().toISOString()
+  const task = {
+    id: randomUUID(),
+    kind: 'suggestion',
+    mode: item.mode === 'question' ? 'question' : 'implement',
+    backlog_id: item.id,
+    title: item.text.length > 140 ? item.text.slice(0, 140) + '…' : item.text,
+    description: item.text,
+    context: item.context || '',
+    author: item.author || '',
+    model, effort,
+    status: 'approved',
+    priority: 0,
+    messages: [],
+    user_comment: comment || null,
+    agent_result: null,
+    user_summary: null,
+    created_at: now,
+    updated_at: now,
+    completed_at: null,
+  }
+  const tasks = readTasks()
+  tasks.push(task)
+  writeTasks(tasks)
+  const updatedItem = updateBacklogItem(id, { task_id: task.id, processed: true })
+  broadcastTask(task)
+  setImmediate(kick)
+  return { item: updatedItem, task }
 }
 
 function updateTask(id, updates) {
@@ -276,7 +505,6 @@ export function getCurrentTaskId() { return currentTaskId }
 export function getCurrentActivity() { return currentActivity }
 
 // ─── Public scheduling API ────────────────────────────────────────────────────
-export function requestGeneration() { _genRequested = true; setImmediate(kick) }
 export function requestReply(taskId) {
   if (!_replyQueue.includes(taskId)) _replyQueue.push(taskId)
   setImmediate(kick)
@@ -288,13 +516,7 @@ export function runNextTask() { kick() }
 // ─── The scheduler heart: pick the next activity by priority ───────────────────
 function kick() {
   if (busy) return
-  if (!getSettings().enabled) {
-    // Paused. Drop any pending generation request so it does NOT fire the instant
-    // the agent is re-enabled — otherwise a generation queued while OFF (e.g. by the
-    // hourly cron) would burst the moment the toggle flips back ON.
-    _genRequested = false
-    return
-  }
+  if (!getSettings().enabled) return
 
   const tasks = readTasks()
 
@@ -309,13 +531,6 @@ function kick() {
     const id = _replyQueue.shift()
     const t = readTasks().find(x => x.id === id)
     if (t && (t.status === 'pending' || t.status === 'in_discussion')) { conversationReply(t); return }
-  }
-
-  // 3. Idea generation — only if the triage queue has room.
-  if (_genRequested) {
-    _genRequested = false
-    const open = tasks.filter(t => t.status === 'pending' || t.status === 'in_discussion').length
-    if (open < MAX_OPEN_PROPOSALS) { generate(); return }
   }
 }
 
@@ -427,8 +642,21 @@ export function monitorExecution(taskId, knownPid = null) {
       agent_result = (text ? text + '\n\n' : '') + `(exit code: ${code})`
     }
 
-    const finalTask = updateTask(taskId, { status, agent_result, completed_at: new Date().toISOString() })
+    // Résumé vulgarisé : section finale demandée par le prompt d'exécution, affichée
+    // en clair sur la fiche de la suggestion (le rapport technique reste en dépli).
+    let user_summary = null
+    const summaryIdx = agent_result.lastIndexOf(SUMMARY_SECTION_MARKER)
+    if (summaryIdx !== -1) {
+      user_summary = agent_result.slice(summaryIdx + SUMMARY_SECTION_MARKER.length).trim() || null
+      agent_result = agent_result.slice(0, summaryIdx).trim()
+    }
+
+    const finalTask = updateTask(taskId, { status, agent_result, user_summary, completed_at: new Date().toISOString() })
     if (finalTask) broadcastTask(finalTask)
+
+    // Section résumé absente du rapport (modèle qui a oublié la consigne) →
+    // compte-rendu de secours généré a posteriori, hors slot (sans outils).
+    if (!user_summary) setImmediate(() => generateUserSummary(taskId).catch(() => {}))
 
     try { unlinkSync(LOG) } catch {}
     try { unlinkSync(CODE) } catch {}
@@ -466,7 +694,7 @@ export function monitorExecution(taskId, knownPid = null) {
   drainLog()
 }
 
-function runDetachedExecution(taskId, prompt) {
+function runDetachedExecution(taskId, prompt, { model = null, effort = null, tools = EXEC_TOOLS } = {}) {
   const LOG = EXEC_LOG(taskId)
   const CODE = EXEC_CODE(taskId)
   const PROMPT = EXEC_PROMPT(taskId)
@@ -476,9 +704,11 @@ function runDetachedExecution(taskId, prompt) {
   writeFileSync(PROMPT, prompt, 'utf8')
 
   const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
+  // Modèle/effort issus du préréglage choisi par l'utilisateur à la soumission.
+  const modelFlags = (model ? ` --model "${model}"` : '') + (effort ? ` --effort "${effort}"` : '')
   // claude reads the prompt from stdin (PROMPT file); stream-json → LOG; exit code → CODE.
-  const cmd = `"${CLAUDE_BIN}" -p --output-format stream-json --verbose ` +
-    `--allowedTools "${EXEC_TOOLS}" < "${PROMPT}" > "${LOG}" 2>&1; echo $? > "${CODE}"`
+  const cmd = `"${CLAUDE_BIN}" -p --output-format stream-json --verbose${modelFlags} ` +
+    `--allowedTools "${tools}" < "${PROMPT}" > "${LOG}" 2>&1; echo $? > "${CODE}"`
 
   const proc = spawn('bash', ['-c', cmd], {
     cwd: CWD,
@@ -505,10 +735,21 @@ function executeTask(next) {
   broadcastTask(task)
 
   const internalSecret = AGENT_INTERNAL_SECRET || ''
-  const isProposal = next.kind === 'proposal'
+  // Question : l'utilisateur veut une réponse, pas un correctif — prompt lecture
+  // seule dédié (questionPrompt) + outils read-only, la réponse part dans la
+  // section résumé (compte-rendu de la carte).
+  const isQuestion = next.mode === 'question'
 
   let brief
-  if (isProposal) {
+  if (next.kind === 'suggestion') {
+    // Suggestion utilisateur (bulle d'aide) : signalement + correctif instantané approuvé.
+    const item = readBacklog().find(i => i.id === next.backlog_id)
+    brief = [
+      `${isQuestion ? 'Question' : 'Signalement'} utilisateur${next.author ? ` (par ${next.author})` : ''}${next.context ? ` depuis la page ${next.context}` : ''}:\n${next.description}`,
+      !isQuestion && item?.instant_proposal ? `\n\nCorrectif proposé et APPROUVÉ par l'utilisateur (implémente dans cet esprit):\n${item.instant_proposal}` : '',
+      next.user_comment ? `\n\nCommentaire de l'utilisateur à l'approbation: ${next.user_comment}` : '',
+    ].join('')
+  } else if (next.kind === 'proposal') {
     const thread = (next.messages || [])
       .map(m => `${m.role === 'user' ? 'Humain' : 'Agent'}: ${m.text}`)
       .join('\n')
@@ -523,16 +764,25 @@ function executeTask(next) {
     brief = `Description:\n${next.description}${next.user_comment ? `\n\nCommentaire humain: ${next.user_comment}` : ''}`
   }
 
-  const prompt = renderTemplate(promptTemplate('executionPrompt'), {
+  let prompt = renderTemplate(promptTemplate(isQuestion ? 'questionPrompt' : 'executionPrompt'), {
     general: generalPrompt(),
     brief,
     internalSecret,
   })
+  // Filet : un prompt personnalisé qui omet la section résumé priverait les cartes
+  // terminées de leur compte-rendu (ou de la réponse) — on ré-injecte la consigne.
+  if (!prompt.includes(SUMMARY_SECTION_MARKER)) {
+    prompt += '\n\n' + (isQuestion ? QUESTION_SUMMARY_INSTRUCTION : SUMMARY_SECTION_INSTRUCTION)
+  }
 
   // Detached + durable: the result is recorded off a .code file, so a `pm2 restart`
   // triggered by the implementation itself can't lose the success and leave the task
   // wrongly "blocked". monitorExecution() handles streaming + finalization.
-  runDetachedExecution(next.id, prompt)
+  // Question → outils lecture seule : l'agent ne peut physiquement rien implémenter.
+  runDetachedExecution(next.id, prompt, {
+    model: next.model, effort: next.effort,
+    tools: isQuestion ? READONLY_TOOLS : EXEC_TOOLS,
+  })
 }
 
 // ─── Conversation reply (read-only) ───────────────────────────────────────────
@@ -566,146 +816,6 @@ function conversationReply(task) {
     })
 }
 
-// ─── Idea generation (read-only) ──────────────────────────────────────────────
-function gatherSignals() {
-  // `readErrors` distingue « aucune erreur en DB » de « le SELECT a planté » : sans ça,
-  // un échec de lecture rend un tableau vide indiscernable d'un système sain (faux vert).
-  const out = { syncErrors: [], automationErrors: [], readErrors: [] }
-  try {
-    out.syncErrors = db.prepare(
-      `SELECT module, error_message, created_at FROM sync_log
-       WHERE status='error' AND created_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-14 days')
-       ORDER BY created_at DESC LIMIT 15`
-    ).all()
-  } catch (e) {
-    console.error('🤖 Agent: échec lecture sync_log (santé système non fiable):', e.message)
-    out.readErrors.push({ source: 'sync_log', error: e.message })
-  }
-  try {
-    out.automationErrors = db.prepare(
-      `SELECT automation_id, error, created_at FROM automation_logs
-       WHERE status='error' AND created_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now','-14 days')
-       ORDER BY created_at DESC LIMIT 15`
-    ).all()
-  } catch (e) {
-    console.error('🤖 Agent: échec lecture automation_logs (santé système non fiable):', e.message)
-    out.readErrors.push({ source: 'automation_logs', error: e.message })
-  }
-  return out
-}
-
-function generate() {
-  busy = true
-  currentActivity = 'generation'
-
-  const open = readTasks().filter(t => t.status === 'pending' || t.status === 'in_discussion').length
-  const slots = Math.max(0, MAX_OPEN_PROPOSALS - open)
-  if (slots <= 0) { releaseSlot(); return }
-
-  const tasks = readTasks()
-  const history = tasks
-    .filter(t => t.kind === 'proposal')
-    .slice(-60)
-    .map(t => {
-      if (t.status === 'rejected') return `[REJETÉE] ${t.title || t.description}${t.user_comment ? ` — raison: ${t.user_comment}` : ''}`
-      if (t.status === 'done') return `[DÉJÀ FAITE] ${t.title || t.description}`
-      return `[EN COURS/OUVERTE] ${t.title || t.description}`
-    })
-    .join('\n') || '(aucun historique)'
-
-  const backlog = readBacklog().filter(b => !b.processed)
-  const backlogStr = backlog.length
-    ? backlog.map(b => `- (id:${b.id}) ${b.text}`).join('\n')
-    : '(backlog vide)'
-
-  const signals = gatherSignals()
-  const signalsStr = JSON.stringify(signals).slice(0, 4000)
-
-  const prompt = renderTemplate(promptTemplate('generationPrompt'), {
-    general: generalPrompt(),
-    slots,
-    backlog: backlogStr,
-    signals: signalsStr,
-    history,
-  })
-
-  spawnClaude({ prompt, allowedTools: READONLY_TOOLS, timeoutMs: READONLY_TIMEOUT_MS })
-    .then(({ text }) => {
-      try {
-        const proposals = parseProposals(text)
-        const usedBacklogIds = new Set()
-        const now = new Date().toISOString()
-        const fresh = readTasks()
-        let added = 0
-        for (const p of proposals) {
-          if (added >= slots) break
-          if (!p || !p.title) continue
-          const task = {
-            id: randomUUID(),
-            kind: 'proposal',
-            title: String(p.title).slice(0, 200),
-            why: p.why ? String(p.why) : '',
-            source: ['A', 'B', 'C', 'D'].includes(p.source) ? p.source : 'A',
-            zone: p.zone ? String(p.zone) : '',
-            risk: p.risk === 'high' ? 'high' : 'low',
-            side_effects: p.side_effects ? String(p.side_effects) : 'aucun',
-            effort: ['small', 'medium', 'large'].includes(p.effort) ? p.effort : 'medium',
-            description: `${p.title}${p.why ? `\n\n${p.why}` : ''}`,
-            status: 'pending',
-            priority: 0,
-            messages: [],
-            user_comment: null,
-            agent_result: null,
-            created_at: now,
-            updated_at: now,
-            completed_at: null,
-          }
-          fresh.push(task)
-          added++
-          if (p.backlog_id) usedBacklogIds.add(p.backlog_id)
-          broadcastTask(task)
-        }
-        if (added > 0) writeTasks(fresh)
-        if (usedBacklogIds.size) {
-          const items = readBacklog().map(b => usedBacklogIds.has(b.id) ? { ...b, processed: true } : b)
-          writeBacklog(items)
-        }
-        // Génération continue : tant que cette passe a produit des idées ET qu'il reste
-        // de la place dans la file de triage, on enchaîne IMMÉDIATEMENT une autre passe
-        // (pas d'attente d'horloge). releaseSlot() ci-dessous déclenche kick(), qui
-        // relancera generate() puisque _genRequested est ré-armé.
-        // La chaîne s'arrête d'elle-même quand :
-        //   - la passe n'a rien produit (added === 0) → modèle à court d'idées neuves, et
-        //   - la file est pleine (openNow >= MAX_OPEN_PROPOSALS).
-        // Le cron horaire (ou un déclenchement manuel) relance une nouvelle chaîne plus tard.
-        const openNow = fresh.filter(t => t.status === 'pending' || t.status === 'in_discussion').length
-        if (added > 0 && openNow < MAX_OPEN_PROPOSALS) {
-          _genRequested = true
-        } else if (added === 0) {
-          console.log('🤖 Agent: génération à court d\'idées neuves — chaîne en pause jusqu\'au prochain déclenchement')
-        }
-      } catch (e) {
-        console.error('🤖 Agent: échec parsing génération:', e.message)
-      }
-      releaseSlot()
-    })
-}
-
-function parseProposals(text) {
-  if (!text) return []
-  // Prefer the last ```json fenced block
-  const fences = [...text.matchAll(/```json\s*([\s\S]*?)```/gi)]
-  let raw = fences.length ? fences[fences.length - 1][1] : null
-  if (!raw) {
-    const start = text.indexOf('[')
-    const end = text.lastIndexOf(']')
-    if (start !== -1 && end > start) raw = text.slice(start, end + 1)
-  }
-  if (!raw) return []
-  const parsed = JSON.parse(raw)
-  return Array.isArray(parsed) ? parsed : []
-}
-
 // ─── Orphan / lifecycle (preserved from the original runner) ──────────────────
 function isProcessAlive(pid) {
   try { process.kill(pid, 0); return true } catch { return false }
@@ -729,7 +839,6 @@ export function initTaskRunner() {
         currentTaskId = taskId
         currentActivity = 'execution'
         monitorExecution(taskId, pid || null)
-        scheduleGeneration()
         return
       }
     } catch {}
@@ -757,20 +866,12 @@ export function initTaskRunner() {
   }
   if (changed) writeTasks(tasks)
 
-  scheduleGeneration()
-  setImmediate(kick)
-}
+  // Rattrapage différé des compte-rendus manquants sur les cartes déjà terminées
+  // (laisse le serveur finir de démarrer avant de spawner des subprocess).
+  const backfillTimer = setTimeout(() => { backfillUserSummaries().catch(() => {}) }, 15_000)
+  backfillTimer.unref?.()
 
-let _cronJob = null
-function scheduleGeneration() {
-  if (_cronJob) return
-  // La génération s'enchaîne désormais en continu (voir generate() : une passe productive
-  // ré-arme la suivante sans attente, jusqu'à remplir la file ou tarir les idées). Le cron
-  // n'est plus un cadenceur « une génération par heure » : c'est un simple battement qui
-  // RELANCE une chaîne quand elle s'est arrêtée (file vidée par le triage, nouveaux signaux
-  // sync_log / nouveau code à scanner). No-op si le toggle est OFF ou la file déjà pleine.
-  _cronJob = cron.schedule('0 * * * *', () => { requestGeneration() })
-  console.log('🤖 Agent autonome: génération continue (chaînée) — relance horaire de la chaîne si arrêtée (toggle ON requis)')
+  setImmediate(kick)
 }
 
 export function shutdownTaskRunner() {

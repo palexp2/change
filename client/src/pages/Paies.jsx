@@ -1,10 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { RefreshCw, Database, ChevronDown, ChevronRight, Plus, Pencil, Trash2 } from 'lucide-react'
+import { RefreshCw, Plus, Pencil, Trash2, SlidersHorizontal } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -12,6 +11,7 @@ import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { useAuth } from '../lib/auth.jsx'
+import { AirtableCoreMapModal } from '../components/AirtableCoreMapModal.jsx'
 
 function bool(row, key) {
   return row[key] ? <span className="text-green-600">✓</span> : <span className="text-slate-300">—</span>
@@ -83,70 +83,6 @@ function buildPaieItemsColumns(isHR) {
           ),
         }
       : col,
-  )
-}
-
-function SyncPanel({ onSynced }) {
-  const [open, setOpen] = useState(false)
-  const [cfgPaies, setCfgPaies] = useState(null)
-  const [syncing, setSyncing] = useState(false)
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    api.paies.syncConfig().then(setCfgPaies).catch(() => {})
-  }, [])
-
-  async function handleSync() {
-    setSyncing(true)
-    setError(null)
-    try {
-      await api.paies.sync()
-      await api.paies.syncItems()
-      const start = Date.now()
-      while (Date.now() - start < 90000) {
-        await new Promise(r => setTimeout(r, 1500))
-        const status = await api.connectors.syncStatus().catch(() => ({}))
-        if (!status?.paies && !status?.paie_items) break
-      }
-      const cfg = await api.paies.syncConfig()
-      setCfgPaies(cfg)
-      onSynced?.()
-    } catch (e) { setError(e.message || 'Erreur sync') }
-    finally { setSyncing(false) }
-  }
-
-  const configured = !!(cfgPaies?.base_id && cfgPaies?.table_id)
-
-  return (
-    <div className="card mb-4 overflow-hidden">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-2 px-4 py-3 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
-      >
-        {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-        <Database size={15} className="text-brand-500" />
-        <span className="font-medium">Synchronisation Airtable</span>
-        {configured ? (
-          <span className="text-xs text-slate-400 ml-2">
-            {cfgPaies.last_synced_at ? `Dernière sync: ${fmtDate(cfgPaies.last_synced_at)}` : 'Configurée'}
-          </span>
-        ) : (
-          <span className="text-xs text-amber-600 ml-2">Non configurée</span>
-        )}
-      </button>
-      {open && (
-        <div className="border-t border-slate-200 p-4 bg-slate-50 space-y-3">
-          <p className="text-xs text-slate-500">
-            Les tables Paies et Items de paie sont pré-configurées sur la base Employés. Le mappage des champs est détecté automatiquement au premier import.
-          </p>
-          {error && <p className="text-xs text-red-600">{error}</p>}
-          <button onClick={handleSync} disabled={syncing} className="btn-primary btn-sm flex items-center gap-1.5">
-            <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
-            {syncing ? 'Synchronisation…' : 'Synchroniser Paies + Items'}
-          </button>
-        </div>
-      )}
-    </div>
   )
 }
 
@@ -341,6 +277,110 @@ function PaieForm({ paie, onClose, onSaved, onDeleted }) {
   )
 }
 
+// Écriture de répartition de la paie par département (onglet Salaires du
+// fichier CTB - Suivi). Aperçu recalculé selon les ajouts saisis (téléphone,
+// repas) ; publication QB idempotente (une écriture par paie).
+function PaieRepartitionSection({ paie }) {
+  const [preview, setPreview] = useState(null)
+  const [error, setError] = useState(null)
+  const [phone, setPhone] = useState(null)  // null = défaut de la config
+  const [meals, setMeals] = useState(null)
+  const [pushing, setPushing] = useState(false)
+  const [pushed, setPushed] = useState(null) // { id, url }
+
+  const load = (opts = {}) => {
+    const params = {}
+    if ((opts.phone ?? phone) != null) params.phone = opts.phone ?? phone
+    if ((opts.meals ?? meals) != null) params.meals = opts.meals ?? meals
+    api.paies.repartitionPreview(paie.id, params)
+      .then(p => { setPreview(p); setError(null) })
+      .catch(e => setError(e.message))
+  }
+  useEffect(() => { load() }, [paie.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function push() {
+    if (!confirm('Publier l\'écriture de répartition sur QuickBooks ?')) return
+    setPushing(true)
+    setError(null)
+    try {
+      const out = await api.paies.repartitionPush(paie.id, {
+        ...(phone != null ? { phone } : {}), ...(meals != null ? { meals } : {}),
+      })
+      setPushed({ id: out.qb_journal_entry_id, url: out.qb_journal_entry_url })
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setPushing(false)
+    }
+  }
+
+  const jeId = pushed?.id || preview?.paie?.repartition_je_id
+  const jeUrl = pushed?.url || preview?.paie?.repartition_je_url
+  return (
+    <div className="border-t border-slate-200 pt-3" data-testid="paie-repartition">
+      <div className="flex items-center justify-between mb-2">
+        <h3 className="text-sm font-semibold text-slate-800">Répartition comptable par département</h3>
+        {jeId ? (
+          jeUrl ? (
+            <a href={jeUrl} target="_blank" rel="noreferrer" title="Ouvrir l'écriture dans QuickBooks"
+              className="text-xs text-green-700 bg-green-100 hover:bg-green-200 px-2 py-0.5 rounded-full">
+              Publiée — JE QuickBooks #{jeId} ↗
+            </a>
+          ) : (
+            <span className="text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full">Publiée — JE QuickBooks #{jeId}</span>
+          )
+        ) : (
+          // Action transactionnelle (publication QB) : bouton volontaire.
+          <button onClick={push} disabled={pushing || !preview || preview.base <= 0}
+            className="btn-primary text-sm disabled:opacity-50" data-testid="paie-repartition-push">
+            {pushing ? 'Publication…' : 'Publier sur QB'}
+          </button>
+        )}
+      </div>
+      {error && <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2 mb-2">{error}</div>}
+      {preview && (
+        <>
+          <div className="flex flex-wrap items-end gap-4 text-sm mb-2">
+            <div>
+              <div className="text-xs text-slate-500">Total paie − remb. ({money(preview.reimb)})</div>
+              <div className="font-medium tabular-nums">{money(preview.total)} → base {money(preview.base)}</div>
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 block">Téléphone Martin (76000)</label>
+              <input type="number" step="0.01" min="0" className="input w-24"
+                value={phone ?? preview.phone}
+                onChange={e => setPhone(e.target.value)}
+                onBlur={e => load({ phone: e.target.value })} />
+            </div>
+            <div>
+              <label className="text-xs text-slate-500 block">Repas séjour (75930)</label>
+              <input type="number" step="0.01" min="0" className="input w-24"
+                value={meals ?? preview.meals}
+                onChange={e => setMeals(e.target.value)}
+                onBlur={e => load({ meals: e.target.value })} />
+            </div>
+          </div>
+          <table className="text-sm w-full max-w-xl">
+            <tbody>
+              {preview.lines.map((l, i) => (
+                <tr key={i} className="border-b border-slate-100">
+                  <td className="py-1 pr-3 text-xs text-slate-500">{l.type === 'Debit' ? 'Débit' : 'Crédit'}</td>
+                  <td className="py-1 pr-3 font-mono text-xs">{l.acctnum}</td>
+                  <td className="py-1 pr-3 text-slate-600">{l.label}</td>
+                  <td className="py-1 text-right tabular-nums font-medium">{money(l.amount)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {preview.warnings?.map((w, i) => (
+            <p key={i} className="text-xs text-amber-700 mt-1.5">⚠️ {w}</p>
+          ))}
+        </>
+      )}
+    </div>
+  )
+}
+
 function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
   const { addToast } = useToast()
   const { user } = useAuth()
@@ -463,6 +503,8 @@ function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
         searchFields={['first_name', 'last_name', 'accounting_department']}
       />
 
+      {isHR && <PaieRepartitionSection paie={detail} />}
+
       <div className="flex justify-between items-center gap-2">
         <div>
           {isHR && (confirmDelete ? (
@@ -499,6 +541,7 @@ export default function Paies() {
   const [selected, setSelected] = useState(null)
   const [editing, setEditing] = useState(null)
   const [showForm, setShowForm] = useState(false)
+  const [airtableMapOpen, setAirtableMapOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -534,19 +577,27 @@ export default function Paies() {
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-2xl font-bold text-slate-900">{isHR ? 'Paies' : 'Mes bulletins de paie'}</h1>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="paies" />
             {isHR && (
-              <button onClick={openCreate} className="btn-primary flex items-center gap-2">
-                <Plus size={15} /> Nouvelle paie
-              </button>
+              <>
+                <button
+                  onClick={() => setAirtableMapOpen(true)}
+                  className="btn-secondary btn-sm flex items-center gap-1.5"
+                  title="Choisir quels champs Airtable alimentent les paies et les items de paie"
+                  data-testid="paies-airtable-map-open"
+                >
+                  <SlidersHorizontal size={13} /> Sync Airtable
+                </button>
+                <button onClick={openCreate} className="btn-primary flex items-center gap-2">
+                  <Plus size={15} /> Nouvelle paie
+                </button>
+              </>
             )}
           </div>
         </div>
 
-        {isHR && <SyncPanel onSynced={load} />}
-
         <DataTable
           table="paies"
+          manageViews
           columns={COLUMNS_PAIES}
           data={paies}
           loading={loading}
@@ -577,6 +628,19 @@ export default function Paies() {
           onDeleted={handleSaved}
         />
       </Modal>
+
+      {isHR && (
+        <AirtableCoreMapModal
+          isOpen={airtableMapOpen}
+          onClose={() => setAirtableMapOpen(false)}
+          modules={[
+            { module: 'paies', title: 'Paies' },
+            { module: 'paie_items', title: 'Items de paie' },
+          ]}
+          title="Mapping des champs Airtable"
+          onSaved={load}
+        />
+      )}
     </Layout>
   )
 }

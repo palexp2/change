@@ -8,7 +8,6 @@ import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { Plus, FileDown, Trash2, ChevronUp, ChevronDown, FileText } from 'lucide-react'
 import { fmtDate } from '../lib/formatDate.js'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -370,7 +369,6 @@ export default function Soumissions() {
             <p className="text-sm text-slate-500 mt-1">{total} soumission{total !== 1 ? 's' : ''}</p>
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="soumissions" />
             <button
               onClick={() => setShowCreate(true)}
               className="flex items-center gap-2 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700"
@@ -382,6 +380,7 @@ export default function Soumissions() {
 
         <DataTable
           table="soumissions"
+          manageViews
           columns={COLUMNS}
           data={rows}
           loading={loading}

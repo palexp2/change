@@ -7,7 +7,7 @@ const EMAIL = process.env.ERP_EMAIL || 'pap@orisha.io'
 const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
-describe("Admin → Automations : largeur alignée sur les autres tableaux", () => {
+describe("Automations : largeur alignée sur les autres tableaux", () => {
   let browser, ctx, page
 
   before(async () => {
@@ -23,7 +23,7 @@ describe("Admin → Automations : largeur alignée sur les autres tableaux", () 
 
   after(async () => { await browser?.close() })
 
-  test("largeur DataTable Admin/Automations ~= largeur DataTable /purchases", async () => {
+  test("largeur DataTable /automations ~= largeur DataTable /purchases", async () => {
     // Purchases page (référence : max-w-7xl = 1280px)
     await page.goto(URL + '/purchases', { waitUntil: 'networkidle' })
     await page.waitForSelector('h1:has-text("Achats")', { timeout: 10000 })
@@ -32,10 +32,9 @@ describe("Admin → Automations : largeur alignée sur les autres tableaux", () 
     const refBox = await refCard.boundingBox()
     assert.ok(refBox, 'Purchases: card non visible')
 
-    // Admin → Automations
-    await page.goto(URL + '/admin', { waitUntil: 'networkidle' })
-    await page.click('button:has-text("Automations")')
-    await page.waitForTimeout(400)
+    // Page standalone /automations (l'onglet Admin a été déplacé dans le menu latéral)
+    await page.goto(URL + '/automations', { waitUntil: 'networkidle' })
+    await page.waitForSelector('h1:has-text("Automations")', { timeout: 10000 })
     const autoCard = page.locator('.card').first()
     await autoCard.waitFor({ state: 'visible', timeout: 5000 })
     const autoBox = await autoCard.boundingBox()

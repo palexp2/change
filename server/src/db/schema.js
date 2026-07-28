@@ -1300,6 +1300,13 @@ export function initSchema() {
     "INSERT OR IGNORE INTO airtable_module_config (module, base_id, table_id) VALUES ('paie_items', 'appqavqAf83Td3exW', 'tblv8wtCpVThzQ306')",
     // Seed Airtable module config for mouvements d'inventaire (stock_movements)
     `INSERT OR IGNORE INTO airtable_module_config (module, base_id, table_id, field_map) VALUES ('stock_movements', 'appB4Fehk9jYd4s4B', 'tblamR5pAVkC2RcnR', '{"product":"Pièces","qty_change":"Changement","type":"Type","occurred_at":"Created","unit_cost":"Coût unitaire au moment du mouvement","movement_value":"Valeur du mouvement"}')`,
+    // Seed Airtable module config for factures (liens projet/commande seulement —
+    // base/table historiquement hardcodées dans services/factureLinks.js ;
+    // le field_map alimente la modale « Mapping Airtable » de /factures)
+    `INSERT OR IGNORE INTO airtable_module_config (module, base_id, table_id, field_map) VALUES ('factures', 'appB4Fehk9jYd4s4B', 'tblEfH4UV8hm0YHkG', '{"document_number":"Numéro de document","project":"Projet","order":"Commande"}')`,
+    // Un row legacy 'factures' (ancien sync complet débranché) peut exister sans
+    // base/table — les compléter sans écraser une éventuelle valeur existante
+    `UPDATE airtable_module_config SET base_id=COALESCE(base_id,'appB4Fehk9jYd4s4B'), table_id=COALESCE(table_id,'tblEfH4UV8hm0YHkG') WHERE module='factures'`,
     'CREATE INDEX IF NOT EXISTS idx_paie_items_paie ON paie_items(paie_id)',
     'CREATE INDEX IF NOT EXISTS idx_paie_items_employee ON paie_items(employee_id)',
     // Declarative field-rule automations: discriminator + per-record fire tracking
@@ -1462,6 +1469,18 @@ export function initSchema() {
       airtable_id TEXT PRIMARY KEY,
       fields_json TEXT NOT NULL,
       written_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
+    -- Sens de synchronisation choisi par l'utilisateur, par champ d'un module
+    -- Airtable (modale de mapping). 'pull' = Airtable → ERP seulement, 'push' =
+    -- ERP → Airtable seulement, 'both' = bidirectionnel. Absence de ligne = défaut
+    -- dérivé du code (fieldMapDirection). Ne concerne que les champs write-back
+    -- éligibles (scalaires non liés) ; les linked records restent 'pull'.
+    CREATE TABLE IF NOT EXISTS airtable_field_directions (
+      module TEXT NOT NULL,
+      field_key TEXT NOT NULL,
+      direction TEXT NOT NULL DEFAULT 'both',
+      PRIMARY KEY (module, field_key)
     );
   `)
 
@@ -2183,6 +2202,10 @@ export function initSchema() {
           view_error TEXT,
           options TEXT,
           default_value TEXT,
+          link_target_table TEXT,
+          link_group_id TEXT,
+          link_role TEXT,
+          link_single INTEGER DEFAULT 0,
           UNIQUE(erp_table, column_name)
         )
       `)
@@ -2192,6 +2215,105 @@ export function initSchema() {
     })
     rebuild()
     console.log('✅ custom_fields: contrainte CHECK(type) élargie (rebuild)')
+  }
+
+  // Fusion custom_fields / airtable_field_defs — un champ qui adopte une
+  // colonne native pré-existante (alimentée par le sync Airtable) plutôt que
+  // de créer sa propre colonne cf_*. `source` distingue le comportement de
+  // suppression (jamais de DROP pour 'airtable') ; `airtable_mapping_id`
+  // pointe vers airtable_field_mappings.id pour retrouver le mapping Airtable.
+  try { db.exec("ALTER TABLE custom_fields ADD COLUMN source TEXT NOT NULL DEFAULT 'native'") } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN airtable_mapping_id TEXT') } catch {}
+
+  // Table de mapping Airtable ↔ colonne ERP — remplace airtable_field_defs
+  // pour tout ce qui concerne le mapping (module/airtable_field_id/import_disabled).
+  // Le type/rendu (field_type/display_label) migre vers custom_fields. `options`
+  // est CONSERVÉE ici (contrairement au plan initial) : elle porte
+  // link_target_table, une config de RÉSOLUTION du sync (quelle table ERP cible
+  // un champ lien Airtable), pas de rendu — consommée par convertValue() dans
+  // airtableAutoSync.js, indépendamment du type d'affichage choisi par l'utilisateur.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS airtable_field_mappings (
+      id TEXT PRIMARY KEY,
+      module TEXT NOT NULL,
+      erp_table TEXT NOT NULL,
+      airtable_field_id TEXT,
+      airtable_field_name TEXT,
+      column_name TEXT NOT NULL,
+      options TEXT DEFAULT '{}',
+      import_disabled INTEGER DEFAULT 0,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      UNIQUE(erp_table, column_name)
+    );
+  `)
+
+  // Migration one-shot airtable_field_defs → (airtable_field_mappings ∪ custom_fields).
+  // Guard : ne s'exécute que si airtable_field_defs existe encore ET
+  // airtable_field_mappings est vide (jamais migré). airtable_field_defs n'est
+  // plus lue/écrite par le reste du code après cette migration — conservée
+  // telle quelle un temps comme filet de sécurité (pas de DROP ici).
+  {
+    const legacyDefsExist = db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type='table' AND name='airtable_field_defs'"
+    ).get()
+    if (legacyDefsExist) {
+      const alreadyMigrated = db.prepare('SELECT COUNT(*) AS n FROM airtable_field_mappings').get().n > 0
+      if (!alreadyMigrated) {
+        const rows = db.prepare('SELECT * FROM airtable_field_defs').all()
+        const insMap = db.prepare(`
+          INSERT INTO airtable_field_mappings
+            (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, options, import_disabled, sort_order, created_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        `)
+        const insCf = db.prepare(`
+          INSERT OR IGNORE INTO custom_fields
+            (id, erp_table, name, column_name, type, kind, sort_order, options, source, airtable_mapping_id, created_at, updated_at)
+          VALUES (?,?,?,?,?, 'data', ?, ?, 'airtable', ?, ?, ?)
+        `)
+        // Correspondance field_type (airtable_field_defs) → type (custom_fields).
+        function mapLegacyFieldType(row) {
+          const ft = row.field_type
+          let opts = row.options
+          if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch { opts = null } }
+          if (ft === 'link') return { type: 'text', options: { airtable_link_hint: true } }
+          if (['text', 'long_text', 'number', 'date', 'checkbox'].includes(ft)) {
+            return { type: ft, options: null }
+          }
+          if (ft === 'single_select' || ft === 'multi_select') {
+            const rawChoices = Array.isArray(opts?.choices) ? opts.choices : []
+            const choices = rawChoices.map(c => ({
+              id: c.id || `opt_${Math.random().toString(36).slice(2, 10)}`,
+              label: c.label || c.name || '',
+              color: c.color || 'gray',
+            })).filter(c => c.label !== '')
+            return { type: ft, options: { choices, default_id: null, default_ids: [], alphabetize: false } }
+          }
+          return { type: 'text', options: null }
+        }
+        const tx = db.transaction(() => {
+          for (const r of rows) {
+            insMap.run(r.id, r.module, r.erp_table, r.airtable_field_id, r.airtable_field_name,
+              r.column_name, r.options || '{}', r.import_disabled || 0, r.sort_order || 0, r.created_at, r.updated_at)
+            const isNative = String(r.airtable_field_id || '').startsWith('native_')
+            // Les defs 'native_*' (whitelisting interne) et '__pending__'
+            // (colonne jamais matérialisée) ne migrent pas vers custom_fields —
+            // bruit inutile dans l'UI « champs custom » (voir plan de fusion).
+            if (isNative || r.column_name === '__pending__') continue
+            const mapped = mapLegacyFieldType(r)
+            const label = r.display_label || r.airtable_field_name || r.column_name
+            insCf.run(
+              randomUUID(), r.erp_table, label, r.column_name, mapped.type,
+              r.sort_order || 0, mapped.options ? JSON.stringify(mapped.options) : null,
+              r.id, r.created_at, r.updated_at
+            )
+          }
+        })
+        tx()
+        console.log(`✅ Migration airtable_field_defs → airtable_field_mappings + custom_fields (${rows.length} lignes)`)
+      }
+    }
   }
 
   // Legacy tickets.slack_notified_hardware column — superseded by automation_rule_fires.
@@ -2372,6 +2494,10 @@ export function initSchema() {
   // { "<table>::<field>": <0-5> } : nombre de décimales à afficher dans DataTable
   // pour la colonne `field` de la table `table`. Absent = rendu brut (legacy).
   try { db.exec("ALTER TABLE users ADD COLUMN decimal_preferences TEXT DEFAULT '{}'") } catch {}
+
+  // Largeur (px) du panneau latéral side-peek (RecordPeekDrawer), redimensionnable
+  // par l'utilisateur en tirant la frontière gauche du panneau. NULL = défaut applicatif.
+  try { db.exec("ALTER TABLE users ADD COLUMN peek_width INTEGER") } catch {}
 
   // Feuilles de temps — un header par (user_id, date) avec mode + champs du mode simple.
   // Les entrées du mode "detailed" sont dans timesheet_entries (child).
@@ -2565,6 +2691,11 @@ export function initSchema() {
   // matcher les balance_transactions (qui ont source.payment_intent dans leur raw).
   try { db.exec('ALTER TABLE factures ADD COLUMN paid_payment_intent TEXT') } catch {}
 
+  // Courriel du client Stripe (invoice.customer_email) — mapping configurable
+  // via la modale « Mapping Stripe » sur /factures. Utile pour identifier les
+  // clients Stripe qui n'ont pas d'entreprise dans l'ERP (company_id NULL).
+  try { db.exec('ALTER TABLE factures ADD COLUMN customer_email TEXT') } catch {}
+
   // Override manuel pour la colonne « Envoyée » : par défaut on calcule via
   // has_linked_shipment. Si =1, l'utilisateur force is_sent=true (utile pour
   // factures sans matériel physique : services, frais, etc.).
@@ -2638,6 +2769,30 @@ export function initSchema() {
     )
   `)
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_field_vis_rules_context ON field_visibility_rules(context, field_id)') } catch {}
+
+  // Overrides d'affichage des champs NATIFS (renommage / changement de type)
+  // par table — configurés via le menu contextuel d'en-tête de DataTable
+  // (« Modifier le champ » sur une colonne non-custom). Ne touche PAS aux
+  // colonnes SQL ni aux syncs : l'override est appliqué côté client (label
+  // affiché, type d'affichage/tri/filtre). `erp_table` = clé DataTable (ex.
+  // 'factures'), `field_id` = id de colonne dans tableDefs.js.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS field_overrides (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      erp_table TEXT NOT NULL,
+      field_id TEXT NOT NULL,
+      label TEXT,
+      type TEXT,
+      decimals INTEGER,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT,
+      deleted_at TEXT,
+      UNIQUE(erp_table, field_id)
+    )
+  `)
+  // Préférence d'affichage de l'indicatif de pays pour les champs téléphone
+  // ('show' | 'hide' | null). Cosmétique : appliquée par PhoneValue côté client.
+  try { db.exec('ALTER TABLE field_overrides ADD COLUMN country_code TEXT') } catch {}
 
   // QB Invoice ID séparé : on crée une Invoice QB + un Receive Payment qui la solde.
   // qb_payment_id porte le Payment, qb_invoice_id porte l'Invoice. Permet le LinkedTxn
@@ -2950,6 +3105,264 @@ export function initSchema() {
       deleted_at TEXT
     )
   `)
+
+  // Abonnements fournisseurs (SaaS et charges récurrentes) — registre des
+  // charges attendues (miroir de l'onglet Abonnements du fichier CTB - Suivi).
+  // Sert au croisement « charge attendue ↔ reçu ingéré » et à la resynchro de
+  // l'onglet du Google Sheets. L'ERP est la source de vérité.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS vendor_subscriptions (
+      id TEXT PRIMARY KEY,
+      vendor TEXT NOT NULL,
+      plan TEXT,
+      currency TEXT DEFAULT 'CAD',
+      variable INTEGER DEFAULT 0,
+      amount REAL,
+      amount_label TEXT,
+      taxes TEXT,
+      frequency TEXT NOT NULL DEFAULT 'Mensuel' CHECK(frequency IN ('Mensuel','Annuel')),
+      billing_day INTEGER,
+      billing_month INTEGER,
+      billing_label TEXT,
+      period TEXT,
+      payment_method TEXT,
+      active INTEGER DEFAULT 1,
+      comments TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_vendor_subscriptions_vendor ON vendor_subscriptions(vendor, deleted_at)`) } catch {}
+
+  // Profils fournisseurs — source de vérité ERP des DÉFAUTS COMPTABLES par fournisseur
+  // (services/vendorProfiles.js). Fusionne le répertoire Drive (vendor_directory, lecture
+  // seule) avec les choix de comptabilisation appris à chaque publication QB : vendor QB
+  // par devise (un vendor QB ne porte qu'UNE devise — un fournisseur bi-devise a deux
+  // vendors), compte de dépense, compte de paiement par devise, type de transaction
+  // (statut fiscal), code de taxe par devise, termes de paiement (Net N jours).
+  // aliases : autres raisons sociales rencontrées sur les documents (JSON [string]).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS vendor_profiles (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      aliases TEXT DEFAULT '[]',
+      qb_vendor_id_cad TEXT,
+      qb_vendor_id_usd TEXT,
+      default_qb_type TEXT CHECK(default_qb_type IN ('purchase','bill','cc_credit') OR default_qb_type IS NULL),
+      default_expense_account_id TEXT,
+      default_payment_account_id_cad TEXT,
+      default_payment_account_id_usd TEXT,
+      default_transaction_type TEXT,
+      default_tax_code_id_cad TEXT,
+      default_tax_code_id_usd TEXT,
+      payment_terms_days INTEGER,
+      notes TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+
+  // Extraction : échéance de paiement. due_date = date d'échéance (imprimée sur la
+  // facture ou calculée depuis les termes) ; payment_terms_days = termes détectés
+  // (« Payment due 21 days from date of invoice » → 21) ; vendor_profile_id = profil
+  // fournisseur rattaché à l'extraction (ou lazily au premier affichage).
+  try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN due_date TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN payment_terms_days INTEGER`) } catch {}
+  try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN vendor_profile_id TEXT`) } catch {}
+
+  // Répartition comptable de la paie : JE QB publiée depuis la page Paie.
+  try { db.exec(`ALTER TABLE paies ADD COLUMN repartition_je_id TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE paies ADD COLUMN repartition_pushed_at TEXT`) } catch {}
+
+  // Comptabilisation de la paie : dépense QB (Purchase BNC, fournisseur
+  // « Salaires ») publiée depuis le dashboard comptabilité.
+  try { db.exec(`ALTER TABLE paies ADD COLUMN salary_purchase_id TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE paies ADD COLUMN salary_purchase_pushed_at TEXT`) } catch {}
+
+  // Total de paie par item (formule Airtable « Paie avec remb. dépenses ») —
+  // sert à estimer le débit bancaire d'une paie avant sa comptabilisation.
+  try { db.exec(`ALTER TABLE paie_items ADD COLUMN total_pay REAL`) } catch {}
+  // Date « Débité » (formule Airtable) : jour où la paie est chargée au compte BNC.
+  try { db.exec(`ALTER TABLE paie_items ADD COLUMN debited_date TEXT`) } catch {}
+
+  // Trésorerie BNC — remplace le fichier « Maintien du solde disponible BNC ».
+  // treasury_balances : saisies du solde disponible réel (une ligne par saisie,
+  // la plus récente sert de point de départ à la projection).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS treasury_balances (
+      id TEXT PRIMARY KEY,
+      account TEXT NOT NULL DEFAULT 'bnc_cad',
+      balance REAL NOT NULL,
+      noted_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      created_by TEXT REFERENCES users(id)
+    )
+  `)
+  // recurring_outflows : sorties récurrentes du compte (paie, loyer, dettes…).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS recurring_outflows (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      amount REAL,
+      frequency TEXT NOT NULL DEFAULT 'monthly' CHECK(frequency IN ('weekly','biweekly','monthly','quarterly')),
+      day_of_month INTEGER,
+      anchor_date TEXT,
+      active INTEGER DEFAULT 1,
+      notes TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  // Montant variable (ex. relevé Mastercard) : le montant saisi ne vaut que pour
+  // la prochaine occurrence suivant sa saisie — à ressaisir à chaque cycle.
+  try { db.exec(`ALTER TABLE recurring_outflows ADD COLUMN variable_amount INTEGER DEFAULT 0`) } catch {}
+  try { db.exec(`ALTER TABLE recurring_outflows ADD COLUMN amount_entered_at TEXT`) } catch {}
+
+  // ── Comptes prépayés ───────────────────────────────────────────────────────
+  // Volet 1 — soldes fournisseurs prépayés (remplace le fichier Twilio_Suivi) :
+  // un ledger par fournisseur (recharges vs factures de consommation) alimenté
+  // par détection des transactions QuickBooks du fournisseur. Le solde positif =
+  // crédit prépayé chez le fournisseur (« il nous doit du service »).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS prepaid_accounts (
+      id TEXT PRIMARY KEY,
+      vendor TEXT NOT NULL,
+      currency TEXT DEFAULT 'USD',
+      qb_vendor_name TEXT,
+      qb_vendor_id TEXT,
+      qb_asset_acctnum TEXT,
+      balance_provider TEXT,
+      sync_start_date TEXT,
+      active INTEGER DEFAULT 1,
+      notes TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS prepaid_ledger_entries (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES prepaid_accounts(id),
+      entry_date TEXT NOT NULL,
+      type TEXT NOT NULL CHECK(type IN ('recharge','facture','ajustement')),
+      amount REAL NOT NULL,
+      description TEXT,
+      source TEXT NOT NULL DEFAULT 'manuel' CHECK(source IN ('qb','import','manuel')),
+      qb_txn_type TEXT,
+      qb_txn_id TEXT,
+      excluded INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prepaid_ledger_qb_txn ON prepaid_ledger_entries(account_id, qb_txn_type, qb_txn_id) WHERE qb_txn_id IS NOT NULL AND deleted_at IS NULL`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_prepaid_ledger_account ON prepaid_ledger_entries(account_id, entry_date, deleted_at)`) } catch {}
+
+  // Volet 2 — cédule de continuité des frais payés d'avance (compte #13000,
+  // remplace les fichiers FPA_Continuité annuels). Chaque item est amorti
+  // mensuellement ; l'écriture Dr dépense / Cr 13000 du mois est préparée par
+  // l'ERP puis publiée dans QB après approbation (jamais auto).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS prepaid_expenses (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      description TEXT,
+      payment_date TEXT,
+      amount REAL NOT NULL,
+      currency TEXT DEFAULT 'CAD',
+      method TEXT NOT NULL DEFAULT 'prorata_jours' CHECK(method IN ('prorata_jours','manuel','aucun')),
+      amort_start TEXT,
+      amort_end TEXT,
+      expense_acctnum TEXT,
+      fpa_acctnum TEXT DEFAULT '13000',
+      active INTEGER DEFAULT 1,
+      notes TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  // Une ligne par mois amorti. Les mois calculés (prorata_jours) ne sont
+  // matérialisés qu'à la publication ou en cas d'override manuel ; les mois
+  // historiques importés (déjà comptabilisés à la main dans QB) portent
+  // pushed_at sans qb_je_id.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS prepaid_amortizations (
+      id TEXT PRIMARY KEY,
+      expense_id TEXT NOT NULL REFERENCES prepaid_expenses(id),
+      month TEXT NOT NULL,
+      amount REAL NOT NULL,
+      source TEXT NOT NULL DEFAULT 'auto' CHECK(source IN ('auto','manuel','import')),
+      qb_je_id TEXT,
+      pushed_at TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prepaid_amort_month ON prepaid_amortizations(expense_id, month) WHERE deleted_at IS NULL`) } catch {}
+
+  // Lu / non lu sur les reçus (page Extraction de données) — à la Gmail : ligne en
+  // gras tant que read_at est NULL, marqué lu à l'ouverture. Le backfill marque lus
+  // les reçus existants au moment de la migration (une seule fois : il vit dans le
+  // même try que l'ALTER, qui échoue dès que la colonne existe).
+  try {
+    db.exec(`ALTER TABLE sale_receipts ADD COLUMN read_at TEXT`)
+    db.exec(`UPDATE sale_receipts SET read_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE read_at IS NULL`)
+  } catch {}
+
+  // ── Dettes à long terme ────────────────────────────────────────────────────
+  // Une dette (prêt BDC, DEC, Ville de Québec…) porte sa cédule de remboursement
+  // (une ligne par versement : capital + intérêts). La comptabilisation d'un
+  // versement publie une JE dans QB : Dr dette (capital) · Dr intérêts · Cr banque.
+  // Les versements historiques déjà comptabilisés à la main portent pushed_at
+  // sans qb_je_id (même convention que prepaid_amortizations).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS lt_debts (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      lender TEXT,
+      loan_number TEXT,
+      currency TEXT DEFAULT 'CAD',
+      principal REAL,
+      qb_debt_acctnum TEXT,
+      qb_interest_acctnum TEXT,
+      qb_bank_acctnum TEXT,
+      active INTEGER DEFAULT 1,
+      notes TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS lt_debt_payments (
+      id TEXT PRIMARY KEY,
+      debt_id TEXT NOT NULL REFERENCES lt_debts(id),
+      seq INTEGER,
+      payment_date TEXT NOT NULL,
+      principal REAL NOT NULL DEFAULT 0,
+      interest REAL NOT NULL DEFAULT 0,
+      balance_after REAL,
+      source TEXT NOT NULL DEFAULT 'manuel' CHECK(source IN ('import','manuel')),
+      qb_je_id TEXT,
+      pushed_at TEXT,
+      notes TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_lt_debt_payment_date ON lt_debt_payments(debt_id, payment_date) WHERE deleted_at IS NULL`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_lt_debt_payments_debt ON lt_debt_payments(debt_id, payment_date, deleted_at)`) } catch {}
 
   console.log('Database schema initialized');
 }

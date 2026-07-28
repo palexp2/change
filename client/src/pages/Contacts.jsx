@@ -10,7 +10,6 @@ import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import ContactDetail from './ContactDetail.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { HubSpotExportModal } from '../components/HubSpotExportModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
@@ -141,7 +140,6 @@ export default function Contacts() {
             <h1 className="text-2xl font-bold text-slate-900">Contacts</h1>
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="contacts" bulkDelete />
             <button
               onClick={() => setShowHubspotExport(true)}
               className="btn-secondary"
@@ -157,6 +155,7 @@ export default function Contacts() {
 
         <DataTable
           table="contacts"
+          manageViews
           columns={COLUMNS}
           data={contacts}
           loading={loading}

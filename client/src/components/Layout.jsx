@@ -3,7 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Settings,
   ChevronLeft, ChevronRight, ChevronDown, LogOut, Menu, X,
-  Search, ExternalLink, Sparkles, Network, Bot,
+  Search, ExternalLink, Sparkles, Bot,
 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { useNavPrefs } from '../lib/navPrefs.jsx'
@@ -560,12 +560,9 @@ export function Layout({ children }) {
               badge={item.to === '/connectors' && anyRunning} />
           )
         })}
-        {user?.role === 'admin' && (
-          <NavItem to="/admin/agent" icon={Bot} label="Agent" collapsed={collapsed && !mobile} />
-        )}
-        {user?.role === 'admin' && (
-          <NavItem to="/architecture" icon={Network} label="Architecture" collapsed={collapsed && !mobile} />
-        )}
+        {/* Agent visible par tous : suggestions + correctifs (bulle d'aide). */}
+        <NavItem to="/agent" icon={Bot} label="Agent" collapsed={collapsed && !mobile} />
+
         {user?.role === 'admin' && (
           <NavItem to="/admin" icon={Settings} label="Paramètres" collapsed={collapsed && !mobile} />
         )}

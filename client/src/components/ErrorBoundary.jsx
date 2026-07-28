@@ -49,7 +49,7 @@ export default class ErrorBoundary extends Component {
     return (
       <div
         data-testid="error-boundary-fallback"
-        className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/80 backdrop-blur-sm p-4"
+        className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/80 p-4"
       >
         <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full text-center">
           <div className="w-14 h-14 rounded-full bg-red-100 flex items-center justify-center mx-auto mb-4">

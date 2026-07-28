@@ -16,7 +16,7 @@ const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
 const TOGGLE_TEXT = 'Autoriser la suppression en lot'
-const GEAR_SELECTOR = 'button[title="Gérer les vues de la table"]'
+const GEAR_SELECTOR = 'button[title="Gérer les vues"]'
 
 async function openGearModal(page) {
   await page.locator(GEAR_SELECTOR).first().click()

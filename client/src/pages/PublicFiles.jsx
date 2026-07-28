@@ -4,7 +4,6 @@ import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -481,7 +480,6 @@ export default function PublicFiles() {
                     <X size={12} /> Tous
                   </button>
                 )}
-                <TableConfigModal table="public_files" bulkDelete />
               </div>
             </div>
             <UploadZone
@@ -494,6 +492,7 @@ export default function PublicFiles() {
           <div className="flex-1 overflow-auto p-6">
             <DataTable
               table="public_files"
+              manageViews
               columns={COLUMNS}
               data={files}
               loading={loading}

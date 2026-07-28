@@ -1,8 +1,11 @@
 // Vérifie deux comportements ajoutés au ServerOfflineOverlay :
 //   1. Debounce 400 ms : un blip ultra-court (~150 ms) n'affiche jamais l'overlay.
-//   2. Détection pm2 restart : si le boot_id renvoyé par /api/health change
-//      entre le moment "avant l'outage" et "ping de récupération", l'overlay
-//      passe à l'état "Mise à jour de l'app en cours" avant le reload.
+//   2. Détection déploiement : si le boot_id renvoyé par /api/health change
+//      entre le moment "avant l'outage" et "ping de récupération" ET que le
+//      bundle JS servi par index.html a changé (vrai déploiement frontend),
+//      l'overlay passe à l'état "Mise à jour de l'app en cours" avant le
+//      reload. (Un pm2 restart sans rebuild — même bundle — ne reload plus :
+//      voir server-offline-modal-persists.test.js.)
 
 const { test, describe, before, after } = require('node:test')
 const assert = require('node:assert/strict')
@@ -70,14 +73,25 @@ describe('Server offline overlay — debounce + restart detection', () => {
     assert.equal(overlay, null, 'overlay ne doit pas apparaître pour un blip < 400 ms')
   })
 
-  test('boot_id différent au ping de récupération → "Mise à jour de l\'app en cours"', async () => {
+  test('boot_id différent + bundle différent au ping de récupération → "Mise à jour de l\'app en cours"', async () => {
     // Recharge le dashboard pour repartir d'un bundle propre, et attend la
     // 1ère réponse API (qui transporte le X-Boot-Id réel dans son header) —
     // c'est ce boot_id qui sera comparé avec celui de notre /health truqué.
     await page.goto(`${URL}/dashboard`, { waitUntil: 'domcontentloaded' })
-    await page.waitForResponse((r) => r.url().includes('/erp/api/') && r.ok(), { timeout: 10000 })
+    // Attendre une réponse qui passe par api.js (le poll sync-status du
+    // Layout) — c'est elle qui appelle noteBootId(). Un fetch brut de
+    // dataSync (bootstrap/delta) ne suffit pas.
+    await page.waitForResponse((r) => r.url().includes('/erp/api/connectors/sync/status') && r.ok(), { timeout: 10000 })
     // Petit délai pour s'assurer que noteBootId() a été appelé.
-    await page.waitForTimeout(200)
+    await page.waitForTimeout(300)
+
+    // Le client ne reload que si le bundle JS a changé en plus du boot_id —
+    // on truque donc aussi index.html avec un hash d'asset différent.
+    await page.route('**/erp/', (route) => route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: '<html><head><script type="module" src="/erp/assets/index-FORCED-e2e.js"></script></head><body></body></html>',
+    }))
 
     // /api/health renvoie un boot_id différent → le client doit interpréter
     // ça comme un redémarrage du serveur.
@@ -109,5 +123,6 @@ describe('Server offline overlay — debounce + restart detection', () => {
 
     await page.unroute('**/erp/api/**')
     await page.unroute('**/erp/api/health')
+    await page.unroute('**/erp/')
   })
 })

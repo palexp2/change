@@ -9,7 +9,6 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TableConfigModal } from '../components/TableConfigModal.jsx'
 import TaskForm from '../components/TaskForm.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -137,7 +136,6 @@ export default function Tasks() {
             <p className="text-sm text-slate-500 mt-0.5">{tasks.length} tâche{tasks.length !== 1 ? 's' : ''}</p>
           </div>
           <div className="flex items-center gap-2">
-            <TableConfigModal table="tasks" bulkDelete />
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouvelle tâche
             </button>
@@ -146,6 +144,7 @@ export default function Tasks() {
 
         <DataTable
           table="tasks"
+          manageViews
           columns={COLUMNS}
           data={tasks}
           loading={loading}

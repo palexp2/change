@@ -25,6 +25,21 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 const ROUTES_DIR = join(REPO_ROOT, 'server', 'src', 'routes')
 const CLIENT_DIR = join(REPO_ROOT, 'client', 'src')
 
+// Backends terminés dont l'interface n'est pas (encore) branchée. Ce ne sont pas
+// des routes mortes : les supprimer jetterait du travail fini qui attend son écran.
+// Sortir une entrée d'ici le jour où le client l'appelle — ou la supprimer si la
+// fonctionnalité est abandonnée.
+const PENDING_ROUTES = new Set([
+  // Champ personnalisé « lien vers une autre table » : lecture, écriture et liste
+  // des options existent côté serveur, aucun sélecteur côté client pour l'instant.
+  'GET /api/custom-fields/link/:fieldId/value',
+  'PUT /api/custom-fields/link/:fieldId/value',
+  'GET /api/custom-fields/link/:fieldId/options',
+  // Évolution mensuelle de la trésorerie (BalanceSheet QB par mois) : aucun
+  // graphique ne la consomme depuis le retrait de l'ancien widget du dashboard.
+  'GET /api/dashboard/bank-accounts/history',
+])
+
 // Routes appelées hors client (webhooks, callbacks, pixels, agent interne).
 // Même clé que le test d'auth, pour rester cohérent.
 const EXTERNAL_ROUTES = new Set([
@@ -36,6 +51,7 @@ const EXTERNAL_ROUTES = new Set([
   'GET /api/connectors/google/callback',
   'GET /api/connectors/airtable/callback',
   'GET /api/connectors/quickbooks/callback',
+  'GET /api/connectors/amazon/callback',
   'POST /api/calls/ftp-ingest',
   'POST /api/agent/tasks/internal',
   'GET /api/track/email/:emailId.gif',
@@ -244,11 +260,16 @@ function main() {
   // 3. Pour chaque route, chercher une référence.
   const dead = []
   const external = []
+  const pending = []
   const live = []
 
   for (const r of allRoutes) {
     if (EXTERNAL_ROUTES.has(r.key)) {
       external.push(r)
+      continue
+    }
+    if (PENDING_ROUTES.has(r.key)) {
+      pending.push(r)
       continue
     }
     const regexes = buildClientRegexes(r.fullPath)
@@ -263,6 +284,7 @@ function main() {
   console.log(`Énumération : ${allRoutes.length} routes serveur`)
   console.log(`  · référencées dans client/src/ : ${live.length}`)
   console.log(`  · externes connues (webhooks, OAuth, pixels) : ${external.length}`)
+  console.log(`  · backends en attente d'écran : ${pending.length}`)
   console.log(`  · candidates mortes : ${dead.length}`)
   console.log(hr)
 

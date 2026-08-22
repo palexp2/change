@@ -32,13 +32,12 @@ import { getAuthUrl as amazonAuthUrl, exchangeCode as amazonExchange, isAmazonCo
 import { syncAmazon } from '../services/amazon.js'
 import { syncAllAchatsToQB, importFromQB } from '../services/quickbooks.js'
 import { syncAllMailboxes } from '../services/gmail.js'
-import { syncVendorDirectory } from '../services/vendorDirectory.js'
 import { syncDrive } from '../services/drive.js'
-import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncEmployees, syncPaies, syncPaieItems, syncStockMovements } from '../services/airtable.js'
+import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncEmployees, syncPaies, syncPaieItems, syncStockMovements, syncInstagramProspects } from '../services/airtable.js'
 import { tracked, getStatus } from '../services/syncState.js'
 import { syncStripeSubscriptions, isStripeConfigured } from '../services/stripe.js'
 import { isHubSpotConfigured } from '../connectors/hubspot.js'
-import { pullDelta as hsPullDelta, getOwnerMappingStatus as hsOwnerStatus, setUserOwnerOverride as hsSetOwnerOverride, retryFailedPushes as hsRetryFailedPushes } from '../services/hubspotSync.js'
+import { pullDelta as hsPullDelta, getOwnerMappingStatus as hsOwnerStatus, setUserOwnerOverride as hsSetOwnerOverride} from '../services/hubspotSync.js'
 import { isNovoxpressConfigured } from '../services/novoxpress.js'
 import { processWebhookPing, registerWebhookForBaseTraced } from '../services/airtableWebhooks.js'
 import { backfillFactureLinks } from '../services/factureLinks.js'
@@ -80,12 +79,14 @@ const AIRTABLE_FIELD_MODULES = {
   achats:       { erpTable: 'purchases',      label: 'Achats',             source: 'module',  syncKey: 'achats' },
   billets:      { erpTable: 'tickets',        label: 'Billets',            source: 'module',  syncKey: 'billets' },
   serials:      { erpTable: 'serial_numbers', label: 'N° de série',        source: 'module',  syncKey: 'serials' },
+  serial_changes: { erpTable: 'serial_state_changes', label: 'États de série', source: 'module', syncKey: 'serial_changes' },
   envois:       { erpTable: 'shipments',      label: 'Envois',             source: 'module',  syncKey: 'envois' },
   soumissions:  { erpTable: 'soumissions',    label: 'Soumissions',        source: 'module',  syncKey: 'soumissions' },
   retours:      { erpTable: 'returns',        label: 'Retours',            source: 'module',  syncKey: 'retours' },
   retour_items: { erpTable: 'return_items',   label: 'Items de retour',    source: 'module',  syncKey: 'retour_items' },
   adresses:     { erpTable: 'adresses',       label: 'Adresses',           source: 'module',  syncKey: 'adresses' },
   assemblages:  { erpTable: 'assemblages',    label: 'Assemblages',        source: 'module',  syncKey: 'assemblages' },
+  instagram:    { erpTable: 'instagram_prospects', label: 'Prospects Instagram', source: 'module', syncKey: 'instagram' },
 }
 
 // Résout la config Airtable d'un module : { module, erpTable, label, syncKey,
@@ -226,7 +227,10 @@ router.get('/gmail/accounts', requireAuth, (req, res) => {
 router.get('/google/connect', requireAuth, (req, res) => {
   const state = Buffer.from(JSON.stringify({ user_id: req.user.id })).toString('base64url')
   try {
-    const url = googleAuthUrl(state)
+    // ?account=<email> : reconnexion d'un compte précis (bouton « Reconnecter »).
+    // Pré-sélectionne le compte et, pour les comptes de DRAFT_SCOPE_ACCOUNTS,
+    // demande en plus gmail.compose.
+    const url = googleAuthUrl(state, { loginHint: req.query.account })
     res.redirect(url)
   } catch (e) {
     res.status(500).json({ error: e.message })
@@ -738,7 +742,7 @@ function buildAirtableTableToErp() {
     pieces: 'products', achats: 'purchases', billets: 'tickets', serials: 'serial_numbers',
     envois: 'shipments', soumissions: 'soumissions', retours: 'returns', retour_items: 'return_items',
     adresses: 'adresses', bom: 'bom_items', assemblages: 'assemblages', employees: 'employees',
-    paies: 'paies', paie_items: 'paie_items',
+    paies: 'paies', paie_items: 'paie_items', serial_changes: 'serial_state_changes',
   }
   for (const r of db.prepare('SELECT module, table_id FROM airtable_module_config').all()) {
     if (r.table_id && moduleToErp[r.module]) m.set(r.table_id, moduleToErp[r.module])
@@ -1311,12 +1315,7 @@ router.get('/sync/status', requireAuth, (req, res) => {
 
 // ── Manual sync triggers
 router.post('/sync/gmail', requireAuth, async (req, res) => {
-  // Répertoire fournisseurs d'abord (best effort), puis les boîtes — même ordre
-  // que le sync horaire : l'extraction profite du répertoire à jour.
-  tracked('vendor_directory', () => syncVendorDirectory('manual'))
-    .catch(console.error)
-    .then(() => tracked('gmail', () => syncAllMailboxes('manual')))
-    .catch(console.error)
+  tracked('gmail', () => syncAllMailboxes('manual')).catch(console.error)
   res.json({ ok: true })
 })
 
@@ -1349,7 +1348,7 @@ router.post('/sync/amazon', requireAuth, async (req, res) => {
 })
 
 // ── Save generic module config (pieces, achats, billets, serials, envois)
-const SIMPLE_MODULES = ['pieces', 'achats', 'billets', 'serials', 'envois', 'soumissions', 'retours', 'retour_items', 'adresses', 'bom', 'serial_changes', 'assemblages', 'employees', 'paies', 'paie_items']
+const SIMPLE_MODULES = ['pieces', 'achats', 'billets', 'serials', 'envois', 'soumissions', 'retours', 'retour_items', 'adresses', 'bom', 'serial_changes', 'assemblages', 'employees', 'paies', 'paie_items', 'instagram']
 router.put('/airtable/module-config/:module', requireAuth, (req, res) => {
   const { module } = req.params
   if (!SIMPLE_MODULES.includes(module)) return res.status(400).json({ error: 'Module invalide' })
@@ -1456,6 +1455,12 @@ router.post('/sync/paie_items', requireAuth, async (req, res) => {
 })
 router.post('/sync/stock_movements', requireAuth, async (req, res) => {
   trackedWithLog('stock_movements', syncStockMovements, 'manual')
+  res.json({ ok: true })
+})
+// Prospects Instagram : ne remonte que le suivi et les notes édités par Philippe
+// (l'ERP est la source de vérité, cf. syncInstagramProspects).
+router.post('/sync/instagram', requireAuth, async (req, res) => {
+  trackedWithLog('instagram', syncInstagramProspects, 'manual')
   res.json({ ok: true })
 })
 
@@ -2230,15 +2235,6 @@ router.post('/sync/hubspot', requireAuth, async (req, res) => {
   const full = !!req.body?.full
   trackedWithLog('hubspot_tasks', () => hsPullDelta({ full }), 'manual')
   res.json({ ok: true })
-})
-
-// POST /api/connectors/hubspot/retry-pushes — rejoue à la demande les push
-// (ERP → HubSpot) persistés en échec dans hubspot_push_failures.
-router.post('/hubspot/retry-pushes', requireAuth, async (req, res) => {
-  try {
-    const out = await hsRetryFailedPushes()
-    res.json({ ok: true, ...out })
-  } catch (e) { res.status(500).json({ error: e.message }) }
 })
 
 // PUT /api/connectors/hubspot/mapping — override explicite user ERP → owner HS

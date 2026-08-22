@@ -28,6 +28,7 @@ import productsRouter from './routes/products.js'
 import ordersRouter from './routes/orders.js'
 import ticketsRouter from './routes/tickets.js'
 import dashboardRouter from './routes/dashboard.js'
+import hubRouter from './routes/hub.js'
 import adminRouter from './routes/admin.js'
 import telemetryRouter from './routes/telemetry.js'
 import undoRouter from './routes/undo.js'
@@ -47,27 +48,39 @@ import shipmentsRouter from './routes/shipments.js'
 import automationsRouter from './routes/automations.js'
 import tasksRouter from './routes/tasks.js'
 import agentRouter from './routes/agent.js'
+import travauxRouter from './routes/travaux.js'
 import achatsFournisseursRouter from './routes/achats-fournisseurs.js'
 import vendorSubscriptionsRouter from './routes/vendor-subscriptions.js'
 import vendorProfilesRouter from './routes/vendor-profiles.js'
 import treasuryRouter from './routes/treasury.js'
+import bankRouter from './routes/bank.js'
 import prepaidRouter from './routes/prepaid.js'
 import ltDebtsRouter from './routes/lt-debts.js'
+import marketingBudgetRouter from './routes/marketing-budget.js'
+import carmRouter from './routes/carm.js'
+import scrapersRouter from './routes/scrapers.js'
+import fxRouter from './routes/fx.js'
+import monthEndRouter from './routes/month-end.js'
+import driveInventoryRouter from './routes/drive-inventory.js'
 import employeesRouter from './routes/employees.js'
 import vacationsRouter from './routes/vacations.js'
 import qualificationCallsRouter from './routes/qualification-calls.js'
 import emailRelanceRouter from './routes/email-relance.js'
 import placesRouter from './routes/places.js'
+import weatherRouter from './routes/weather.js'
 import paiesRouter from './routes/paies.js'
 import timesheetsRouter from './routes/timesheets.js'
 import activityCodesRouter from './routes/activity-codes.js'
 import hourBankRouter from './routes/hour-bank.js'
 import saleReceiptsRouter from './routes/sale-receipts.js'
+import anomaliesRouter from './routes/anomalies.js'
+import { runAnomalyScan, runQbLinkVerification } from './services/transactionAnomalies.js'
 import attachmentsRouter from './routes/attachments.js'
 import journalEntriesRouter from './routes/journal-entries.js'
 import stockMovementsRouter from './routes/stock-movements.js'
 import stripeWebhooksRouter from './routes/stripe-webhooks.js'
 import hooksRouter from './routes/hooks.js'
+import instagramRouter from './routes/instagram.js'
 import stripeInvoicesRouter from './routes/stripe-invoices.js'
 import customerPayRouter from './routes/customer-pay.js'
 import customerPostPaymentRouter from './routes/customer-post-payment.js'
@@ -92,11 +105,10 @@ import { createRealtimeServer } from './services/realtime.js'
 import { initTaskRunner, shutdownTaskRunner } from './services/taskRunner.js'
 import { initScheduler } from './services/automationScheduler.js'
 import { syncAllMailboxes } from './services/gmail.js'
-import { syncVendorDirectory } from './services/vendorDirectory.js'
-import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncStockMovements } from './services/airtable.js'
+import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncStockMovements, syncEmployees, syncPaies, syncPaieItems } from './services/airtable.js'
 import { tracked } from './services/syncState.js'
 import { syncStripeSubscriptions, isStripeConfigured } from './services/stripe.js'
-import { syncAndPushStripePayouts, importFromQB } from './services/quickbooks.js'
+import { syncAndPushStripePayouts, getStripePayoutPushConfig, importFromQB } from './services/quickbooks.js'
 import cron from 'node-cron'
 import { initAirtableWebhooks } from './services/airtableWebhooks.js'
 import { getAccessToken as getAirtableToken } from './connectors/airtable.js'
@@ -199,11 +211,23 @@ app.use('/api/attachments', express.static(path.join(process.cwd(), process.env.
 
 import { ensureNativeFieldDefs } from './services/airtableAutoSync.js'
 import { regenerateAllViews } from './services/customFieldsView.js'
+import { seedBankAccounts } from './services/bankReconciliation.js'
+import { seedMonthEndProvisions } from './services/monthEndSeed.js'
+import { seedRecurringWork } from './services/recurringWork.js'
+import { seedLtDebts } from './services/ltDebtSeed.js'
+import { seedCancelUrls } from './services/subscriptionCancelUrls.js'
+import { initPromptQueue } from './services/promptQueue.js'
 
 initSchema()
 initChangeLog()
 seedSellableProducts()
 seedSystemAutomations()
+seedBankAccounts()
+seedMonthEndProvisions()
+seedRecurringWork()
+seedLtDebts()
+// Pages d'annulation des abonnements fournisseurs — ne remplit que les vides.
+seedCancelUrls()
 runPurge()
 regenerateAllViews()
 
@@ -255,6 +279,7 @@ app.use('/api/products', productsRouter)
 app.use('/api/orders', ordersRouter)
 app.use('/api/tickets', ticketsRouter)
 app.use('/api/dashboard', dashboardRouter)
+app.use('/api/hub', hubRouter)
 app.use('/api/reports', reportsTaxesRouter)
 app.use('/api/admin', adminRouter)
 app.use('/api/telemetry', telemetryRouter)
@@ -275,15 +300,26 @@ app.use('/api/shipments', shipmentsRouter)
 app.use('/api/automations', automationsRouter)
 // Webhooks entrants PUBLICS (token = secret, pas de requireAuth) — voir routes/hooks.js
 app.use('/api/hooks', hooksRouter)
+// Prospects Instagram : POST /manychat est public (secret partagé), /prospects authentifié.
+app.use('/api/instagram', instagramRouter)
 app.use('/api/tasks', tasksRouter)
 app.use('/api/agent', agentRouter)
+app.use('/api/travaux', travauxRouter)
 app.use('/api/achats-fournisseurs', achatsFournisseursRouter)
 app.use('/api/vendor-subscriptions', vendorSubscriptionsRouter)
 app.use('/api/vendor-profiles', vendorProfilesRouter)
 app.use('/api/treasury', treasuryRouter)
+app.use('/api/bank', bankRouter)
 app.use('/api/prepaid', prepaidRouter)
 app.use('/api/lt-debts', ltDebtsRouter)
+app.use('/api/marketing-budget', marketingBudgetRouter)
+app.use('/api/carm', carmRouter)
+app.use('/api/scrapers', scrapersRouter)
+app.use('/api/fx', fxRouter)
+app.use('/api/month-end', monthEndRouter)
+app.use('/api/drive-inventory', driveInventoryRouter)
 app.use('/api/sale-receipts', saleReceiptsRouter)
+app.use('/api/anomalies', anomaliesRouter)
 // Pièces jointes polymorphes (toute entité). Le static '/api/attachments'
 // (ligne ~189) sert les fichiers bruts ; ce router gère list/upload/download/delete.
 app.use('/api/attachments', attachmentsRouter)
@@ -304,6 +340,7 @@ app.use('/api/vacations', vacationsRouter)
 app.use('/api/qualification-calls', qualificationCallsRouter)
 app.use('/api/email-relance', emailRelanceRouter)
 app.use('/api/places', placesRouter)
+app.use('/api/weather', weatherRouter)
 app.use('/api/paies', paiesRouter)
 app.use('/api/timesheets', timesheetsRouter)
 app.use('/api/activity-codes', activityCodesRouter)
@@ -346,6 +383,9 @@ const server = app.listen(PORT, () => {
   console.log(`ERP Server running on http://localhost:${PORT}`)
   createRealtimeServer(server)
   initTaskRunner()
+  // File de travaux : réconcilie un item fauché par le redémarrage et relance la
+  // file. Après initTaskRunner, qui a déjà repris ou clos l'exécution en cours.
+  initPromptQueue()
   initScheduler()
 
   // Field-rule automations watcher — tails change_log to fire declarative
@@ -360,13 +400,7 @@ const server = app.listen(PORT, () => {
   // Gmail sync — toutes les heures
   function scheduleGmailSync() {
     const t0 = Date.now()
-    // Répertoire fournisseurs (doc Drive Fournisseurs_Particularités) d'abord :
-    // l'extraction des factures ingérées juste après profite du répertoire à jour.
-    // Best effort — syncVendorDirectory gère ses erreurs en interne (logSync
-    // vendor_directory), on enchaîne toujours sur le sync des boîtes.
-    tracked('vendor_directory', () => syncVendorDirectory('scheduled'))
-      .catch(e => console.error('Vendor directory sync error:', e.message))
-      .then(() => tracked('gmail', () => syncAllMailboxes('scheduled')))
+    tracked('gmail', () => syncAllMailboxes('scheduled'))
       .then((summary = {}) => {
         const { accounts = 0, emailsImported = 0, invoicesImported = 0, errors = [] } = summary
         const base = `${accounts} boîte(s) — ${emailsImported} courriel(s) + ${invoicesImported} facture(s) importé(s).`
@@ -410,6 +444,10 @@ const server = app.listen(PORT, () => {
       ['retours', syncRetours], ['retour_items', syncRetourItems], ['adresses', syncAdresses],
       ['bom', syncBomItems], ['serial_changes', syncSerialStateChanges],
       ['assemblages', syncAssemblages], ['stock_movements', syncStockMovements],
+      // RH : la comptabilisation de la paie lit ces tables (« Remb. dépenses »
+      // des items) — sans ce filet elles restaient périmées entre deux syncs
+      // manuels, et des remboursements manquaient à la publication QB.
+      ['employees', syncEmployees], ['paies', syncPaies], ['paie_items', syncPaieItems],
     ]
     for (const [name, fn] of modules) scheduledSync(name, fn)
     if (isStripeConfigured()) {
@@ -433,6 +471,18 @@ const server = app.listen(PORT, () => {
   const schedulePrepaidSync = () => { syncAllPrepaidAccountsFromQB('scheduled').catch(() => {}) }
   setTimeout(schedulePrepaidSync, 90_000)
   setInterval(schedulePrepaidSync, 6 * 60 * 60 * 1000)
+
+  // Anomalies transactionnelles : re-scan périodique des reçus récents (filet en plus
+  // du scan à l'extraction/édition — attrape les doublons entre canaux et l'historique
+  // modifié hors extraction). logSync module 'transaction_anomalies'.
+  // Le scan est suivi d'une vérification des liens QuickBooks : un reçu peut se dire
+  // publié sous un Id d'écriture supprimée depuis (nettoyage d'un doublon dans QB).
+  const scheduleAnomalyScan = () => {
+    try { runAnomalyScan('scheduled') } catch {}
+    runQbLinkVerification('scheduled').catch(() => {})
+  }
+  setTimeout(scheduleAnomalyScan, 180_000)
+  setInterval(scheduleAnomalyScan, 6 * 60 * 60 * 1000)
 
   // Achats fournisseurs : import QB continu — nouvelles factures/dépenses
   // comptabilisées dans QB ET suppressions, sans clic dans Connecteurs.
@@ -627,20 +677,17 @@ const server = app.listen(PORT, () => {
   }
   scheduleInstallationFollowup()
 
-  // Sync + push QB des Stripe payouts — tous les lundis à 12h00 (local). System
-  // automation shipped disabled (default_active: 0) : aucun push QB tant qu'un
-  // opérateur n'a pas activé `sys_stripe_weekly_payout_push` dans /automations.
-  // La garde anti-erreur vit dans syncAndPushStripePayouts (skip des payouts à
-  // warning). Voir services/quickbooks.js:syncAndPushStripePayouts.
-  async function runStripeWeeklyPayoutPush() {
-    if (!isSystemAutomationActive('sys_stripe_weekly_payout_push')) {
-      logSystemRun('sys_stripe_weekly_payout_push', {
-        status: 'skipped',
-        result: 'Automatisation désactivée — aucun sync ni push.',
-        duration_ms: 0,
-      })
-      return
-    }
+  // Comptabilisation QB des Stripe payouts — deux passages par jour (12h et 22h UTC
+  // = 8h et 18h à Montréal) : le passage du matin ramasse les payouts réglés la
+  // veille, celui du soir ceux marqués « paid » par Stripe en cours de journée
+  // (typiquement le lundi, jour d'arrivée des payouts BNC CAD et Venn USD).
+  // Idempotent et borné (push_since / max_batch) : un passage sans rien à faire est
+  // un no-op silencieux. La garde anti-erreur et l'alerte Slack vivent dans
+  // syncAndPushStripePayouts. Voir services/quickbooks.js:syncAndPushStripePayouts.
+  async function runStripePayoutPush() {
+    // Désactivée → retour silencieux (pas de logSystemRun : en cadence quotidienne,
+    // logger chaque skip noierait l'historique de l'automation sous du bruit).
+    if (!isSystemAutomationActive('sys_stripe_weekly_payout_push')) return
     if (!isStripeConfigured()) {
       logSystemRun('sys_stripe_weekly_payout_push', {
         status: 'skipped',
@@ -655,22 +702,46 @@ const server = app.listen(PORT, () => {
       const pushedLines = out.pushed.map(p => `PUSH — ${p.payout_id} (${p.amount} ${p.currency}) → Deposit ${p.qb_deposit_id}`)
       const skippedLines = out.skipped.map(s => `SKIP (garde) — ${s.payout_id} : ${s.reason}`)
       const errorLines = out.errors.map(e => `ERREUR — ${e.payout_id} : ${e.error}`)
+      const staleLines = (out.stale || []).map(p => `EN SOUFFRANCE — ${p.stripe_id} (${p.amount} ${p.currency}, réglé le ${p.arrival_date})`)
       logSystemRun('sys_stripe_weekly_payout_push', {
         status: out.errors.length ? 'partial' : 'success',
-        result: [out.summary, '', ...pushedLines, ...skippedLines, ...errorLines].join('\n'),
+        result: [out.summary + (out.slack ? ` · Slack: ${out.slack}` : ''), '', ...pushedLines, ...skippedLines, ...errorLines, ...staleLines].join('\n'),
         duration_ms: Date.now() - t0,
-        triggerData: { pushed: out.pushed.length, skipped: out.skipped.length, errors: out.errors.length },
+        triggerData: { pushed: out.pushed.length, skipped: out.skipped.length, errors: out.errors.length, stale: (out.stale || []).length },
       })
     } catch (e) {
-      console.error('Stripe weekly payout push error:', e.message)
+      // Échec total (Stripe injoignable, token QB mort…) : journal + Slack — un
+      // payout non comptabilisé ne doit jamais passer inaperçu.
+      console.error('Stripe payout push error:', e.message)
       logSystemRun('sys_stripe_weekly_payout_push', {
         status: 'error',
         error: e.message,
         duration_ms: Date.now() - t0,
       })
+      try {
+        const { slack_webhook_env } = getStripePayoutPushConfig()
+        const url = process.env[slack_webhook_env]
+        if (url) {
+          await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: `❌ *Payouts Stripe → QuickBooks* — le passage automatique a échoué : ${e.message}\n→ Journal : page Automations de l'ERP.` }),
+          })
+        }
+      } catch (slackErr) {
+        console.error('Stripe payout push Slack alert error:', slackErr.message)
+      }
     }
   }
-  cron.schedule('0 12 * * 1', runStripeWeeklyPayoutPush)
+  cron.schedule('0 12,22 * * *', runStripePayoutPush)
+
+  // Alerte solde du compte CARM (douanes ASFC) : vérification quotidienne à 8h
+  // (le service court-circuite si sys_carm_balance_alert est inactive).
+  cron.schedule('0 8 * * *', () => {
+    import('./services/carmAccount.js')
+      .then(({ checkCarmBalanceAlert }) => checkCarmBalanceAlert({ trigger: 'cron quotidien' }))
+      .catch(e => console.error('carm alert cron:', e.message))
+  })
 
   // Alerte trésorerie BNC : vérification quotidienne du solde projeté à 7h30
   // locale (le service court-circuite si sys_treasury_alert est inactive).
@@ -678,6 +749,176 @@ const server = app.listen(PORT, () => {
     import('./services/treasury.js')
       .then(({ checkTreasuryAlert }) => checkTreasuryAlert({ trigger: 'cron quotidien' }))
       .catch(e => console.error('treasury cron:', e.message))
+  })
+
+  // Sync du Google Sheet « Maintien du solde disponible BNC » vers la projection
+  // de trésorerie (le fichier fait foi) : toutes les 60 min, à l'heure pile.
+  // Cron plutôt que setInterval — l'intervalle repartait de zéro à chaque
+  // redémarrage pm2, donc la cadence réelle dépendait des déploiements. Le
+  // service court-circuite si l'automation sys_treasury_solde_sheet est
+  // désactivée, et journalise lui-même chaque passage (sync_log +
+  // automation_logs).
+  cron.schedule('0 * * * *', () => {
+    import('./services/treasurySoldeSheet.js')
+      .then(({ scheduledSoldeSheetSync }) => scheduledSoldeSheetSync())
+      .catch(e => console.error('solde sheet sync:', e.message))
+  })
+  // Rattrapage au démarrage, seulement si le dernier passage a plus d'une heure.
+  setTimeout(() => {
+    import('./services/treasurySoldeSheet.js')
+      .then(({ catchUpSoldeSheetSync }) => catchUpSoldeSheetSync())
+      .catch(e => console.error('solde sheet catch-up:', e.message))
+  }, 150_000)
+
+  // Reprise automatique (30 min) de l'onglet « Pmt_Suivi » du fichier CTB -
+  // Suivi : les paiements ajoutés à la main dans le fichier arrivent seuls dans
+  // la page Paiements émis, et le passage au vert coche « passé à la banque ».
+  // Coupe-circuit si sys_pmt_suivi_sheet est désactivée ; le service journalise
+  // lui-même chaque passage (sync_log + automation_logs).
+  const runPmtSuiviSync = () => {
+    import('./services/pmtSuiviImport.js')
+      .then(({ scheduledPmtSuiviImport }) => scheduledPmtSuiviImport())
+      .catch(e => console.error('pmt suivi sync:', e.message))
+  }
+  setTimeout(runPmtSuiviSync, 180_000)
+  setInterval(runPmtSuiviSync, 30 * 60 * 1000)
+
+  // Détection horaire du « passé à la banque » dans le grand livre QuickBooks
+  // (écritures compensées « C » / rapprochées « R ») → coche les paiements émis
+  // dont l'appariement est sûr, laisse les autres à confirmer sur la page.
+  // Coupe-circuit si sys_treasury_qb_clear est désactivée ; journalise
+  // lui-même (sync_log + automation_logs).
+  const runQbClearSync = () => {
+    import('./services/treasuryQbClear.js')
+      .then(({ scheduledQbClearSync }) => scheduledQbClearSync())
+      .catch(e => console.error('qb clear sync:', e.message))
+  }
+  setTimeout(runQbClearSync, 210_000)
+  setInterval(runQbClearSync, 60 * 60 * 1000)
+
+  // Sync horaire du fichier TRX_Orisha (relevés des 11 comptes bancaires) vers
+  // le rapprochement bancaire : import des nouvelles transactions, matching
+  // auto, liaison QuickBooks et audit d'anomalies (alerte Slack sur du neuf).
+  // Coupe-circuit si l'automation sys_bank_trx_sheet est désactivée ;
+  // journalise lui-même chaque passage (sync_log + automation_logs).
+  const runTrxSheetSync = () => {
+    import('./services/bankTrxSheet.js')
+      .then(({ scheduledTrxSheetSync }) => scheduledTrxSheetSync())
+      .catch(e => console.error('trx sheet sync:', e.message))
+  }
+  setTimeout(runTrxSheetSync, 240_000)
+  setInterval(runTrxSheetSync, 60 * 60 * 1000)
+
+  // Sync quotidienne de l'onglet « Fournisseurs_TPS_TVQ_Anomalies » (Sheet du
+  // mentor comptable) vers les profils fournisseurs : chaque correction de
+  // statut fiscal nouvelle devient le défaut du fournisseur pour ses prochaines
+  // transactions. Coupe-circuit + journalisation dans le service.
+  const runFiscalAnomaliesSync = () => {
+    import('./services/fiscalAnomaliesSheet.js')
+      .then(({ scheduledFiscalAnomaliesSync }) => scheduledFiscalAnomaliesSync())
+      .catch(e => console.error('fiscal anomalies sync:', e.message))
+  }
+  setTimeout(runFiscalAnomaliesSync, 300_000)
+  setInterval(runFiscalAnomaliesSync, 12 * 60 * 60 * 1000)
+
+  // Préparation des écritures de fin de mois : le 1er de chaque mois à 13h UTC
+  // = 9h à Montréal, sur le mois qui vient de se terminer. Importe les heures
+  // R&D du Drive, recalcule les provisions et notifie — ne publie rien dans QB.
+  cron.schedule('0 13 1 * *', () => {
+    import('./services/monthEndAutomation.js')
+      .then(({ prepareMonthEnd }) => prepareMonthEnd({ trigger: 'cron mensuel' }))
+      .catch(e => console.error('month-end cron:', e.message))
+  })
+
+  // Déboursés mensuels en pièces : le 7 de chaque mois à 13h UTC = 9h à
+  // Montréal, sur le mois qui vient de se terminer. Le 7 plutôt que le 1er —
+  // les factures fournisseurs du mois écoulé doivent avoir eu le temps d'être
+  // saisies dans QuickBooks, sinon « À payer à la fin » est sous-évalué.
+  // Calcule, dépose le Google Sheet et notifie ; le message à Guillaume part
+  // seulement après validation humaine sur la page de fin de mois.
+  cron.schedule('0 13 7 * *', () => {
+    import('./services/piecesDisbursements.js')
+      .then(({ preparePiecesMonth }) => preparePiecesMonth({ trigger: 'cron mensuel' }))
+      .catch(e => console.error('pieces disbursements cron:', e.message))
+  })
+
+  // Collecte des factures sur les portails fournisseurs (Amazon, Wix) : une
+  // tournée quotidienne à 9h UTC = 5h à Montréal, hors des heures où quelqu'un
+  // pourrait travailler dans l'ERP — un Chromium headless par compte, en série.
+  // Les comptes dont la 2FA n'est pas couverte par un secret TOTP peuvent finir
+  // en attente d'un code : la page /collecte le signale.
+  cron.schedule('0 9 * * *', () => {
+    import('./services/scrapers/index.js')
+      .then(({ runAllScrapers }) => runAllScrapers('scheduled'))
+      .catch(e => console.error('scrapers cron:', e.message))
+  })
+
+  // Rappel mensuel de paiement des cartes (Visa CAD / USD) : scan quotidien à
+  // 12h UTC = 8h à Montréal. Le service ne fait rien hors du jour de rappel.
+  cron.schedule('0 12 * * *', () => {
+    import('./services/cardPaymentReminder.js')
+      .then(({ checkCardPaymentReminder }) => checkCardPaymentReminder({ trigger: 'cron quotidien' }))
+      .catch(e => console.error('card reminder cron:', e.message))
+  })
+
+  // Budget marketing (Émilie) : détection des nouvelles dépenses dans les
+  // comptes QB marketing PLUSIEURS FOIS PAR JOUR — aux 3 heures de 10h30 à
+  // 22h30 UTC (6h30 → 18h30 à Montréal en heure d'été, 5h30 → 17h30 en heure
+  // d'hiver), soit 5 passages qui couvrent la journée de travail où les
+  // factures sont saisies dans QuickBooks. Un seul passage matinal laissait la
+  // file muette jusqu'au lendemain pour toute dépense saisie après 7h30.
+  // La sync est idempotente (dédup par import_key) : re-balayer la même période
+  // n'insère rien, donc multiplier les passages ne crée pas de doublon.
+  // Le scan d'envoi du message Slack hebdo reste à 20h UTC = 16h (le service
+  // n'envoie que le mardi, une fois par semaine). Les deux court-circuitent si
+  // leur automation système est désactivée.
+  cron.schedule('30 10,13,16,19,22 * * *', () => {
+    import('./services/marketingBudget.js')
+      .then(({ syncMarketingExpenses }) => syncMarketingExpenses({ trigger: 'cron aux 3 h' }))
+      .catch(e => console.error('marketing budget sync cron:', e.message))
+  })
+  // 20h UTC = 16h à Montréal : l'utilisateur fait son tri du budget marketing le
+  // mardi dans la journée, donc l'envoi doit venir APRÈS (à 9h, le message
+  // partait vide et les dépenses validées attendaient le mardi suivant).
+  cron.schedule('0 20 * * *', () => {
+    import('./services/marketingBudget.js')
+      .then(({ checkWeeklyMarketingSlack }) => checkWeeklyMarketingSlack({ trigger: 'cron quotidien' }))
+      .catch(e => console.error('marketing weekly slack cron:', e.message))
+  })
+
+  // Prospects Instagram : lecture des commentaires à minuit dans la nuit de
+  // dimanche à lundi (heure de Montréal), quand la semaine ISO vient de se
+  // clore. Le serveur tourne en UTC et aucun cron du repo n'utilise l'option
+  // timezone — on tire donc DEUX fois, 4h et 5h UTC le LUNDI (= lundi 0h à
+  // Montréal en heure d'été puis en heure d'hiver), et le service ne retient
+  // que le passage où l'heure locale vaut bien 0. Ne pas « simplifier » en un
+  // seul passage : la moitié de l'année la tournée partirait une heure à côté,
+  // donc potentiellement dans la mauvaise semaine ISO.
+  cron.schedule('0 4,5 * * 1', () => {
+    import('./services/instagramCommentScrape.js')
+      .then(({ runCommentScrape }) => runCommentScrape({ trigger: 'cron nuit dimanche→lundi' }))
+      .catch(e => console.error('instagram comment scrape cron:', e.message))
+  })
+
+  // Prospects Instagram : liste hebdo à Philippe, lundi 7h30 heure de Montréal
+  // — soit après la lecture des commentaires ci-dessus, pour que la liste soit
+  // complète. Même double passage : 11h30 et 12h30 UTC valent 7h30 à Montréal
+  // en heure d'été puis en heure d'hiver. Les MINUTES viennent du cron seul :
+  // send_hour ne porte que l'heure, et c'est elle que le service vérifie.
+  cron.schedule('30 11,12 * * 1', () => {
+    import('./services/instagramProspects.js')
+      .then(({ runWeeklyProspectDigest }) => runWeeklyProspectDigest({ trigger: 'cron lundi matin' }))
+      .catch(e => console.error('instagram prospects hebdo cron:', e.message))
+  })
+
+  // Suggestions de chantiers ET d'intégrations (page Travaux) : passage quotidien
+  // à 7 h (Montréal). Gardé par l'automation système sys_work_suggestions —
+  // désactivée, aucun appel au modèle n'est fait.
+  cron.schedule('0 11 * * *', () => {
+    if (!isSystemAutomationActive('sys_work_suggestions')) return
+    import('./services/workSuggestions.js')
+      .then(({ runSuggestionEngines }) => runSuggestionEngines())
+      .catch(e => console.error('work suggestions cron:', e.message))
   })
 })
 

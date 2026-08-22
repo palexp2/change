@@ -857,6 +857,11 @@ export function initSchema() {
     // (extrait par l'IA, éditable). Sert de mémo QB par défaut — on ne veut pas les
     // 15 articles dans le mémo, seulement la description principale du document.
     'ALTER TABLE sale_receipts ADD COLUMN general_description TEXT',
+    // Période couverte par la facture (abonnements, télécom, services récurrents) :
+    // libellé concis extrait par l'IA, ex. « juillet 2026 », « 15 juil. – 14 août 2026 ».
+    // Reporté dans le mémo QB et suffixé aux lignes d'articles, pour qu'en fin d'année
+    // on sache d'un coup d'œil quelle facture couvre quel mois. NULL = achat ponctuel.
+    'ALTER TABLE sale_receipts ADD COLUMN service_period TEXT',
     // Choix de comptabilisation retenus à la publication QB — conservés pour
     // servir de modèle aux futurs reçus du même fournisseur (panneau "transactions
     // passées" + bouton "Utiliser comme modèle"). Ids QuickBooks.
@@ -874,6 +879,10 @@ export function initSchema() {
     // entre le code choisi et le code attendu (échappatoire tracée).
     'ALTER TABLE sale_receipts ADD COLUMN transaction_type TEXT',
     'ALTER TABLE sale_receipts ADD COLUMN fiscal_force_reason TEXT',
+    // Classification fiscale proposée par l'IA à l'extraction (clé de fiscalStatus.js,
+    // validée avant écriture). Signal parmi d'autres du résolveur de détection fiscale
+    // (services/fiscalDetection.js) — jamais appliqué sans confirmation de l'opérateur.
+    'ALTER TABLE sale_receipts ADD COLUMN extracted_transaction_type TEXT',
     // Document multipage : pages additionnelles (2..N) accumulées à la capture/upload.
     // La page 1 reste dans filename/file_type/original_name (compat routes existantes) ;
     // extra_pages = JSON [{filename, file_type, original_name}] pour les pages suivantes.
@@ -884,6 +893,16 @@ export function initSchema() {
     // gmail_message_id différents mais un seul Message-ID RFC822. On ne l'importe qu'une fois.
     'ALTER TABLE sale_receipts ADD COLUMN rfc822_message_id TEXT',
     'CREATE INDEX IF NOT EXISTS idx_sale_receipts_rfc822 ON sale_receipts(rfc822_message_id) WHERE rfc822_message_id IS NOT NULL',
+    // Dédup par contenu : le Message-ID ne suffit pas quand la même facture est
+    // transférée (le transfert est un nouveau message). Le hash SHA-256 du fichier
+    // identifie la pièce elle-même, peu importe le chemin d'arrivée.
+    'ALTER TABLE sale_receipts ADD COLUMN content_sha256 TEXT',
+    'CREATE INDEX IF NOT EXISTS idx_sale_receipts_content_sha ON sale_receipts(content_sha256) WHERE content_sha256 IS NOT NULL',
+    // Montant réellement débité à la banque quand il diffère du total de la facture
+    // (conversion de devise). Paramètre de publication saisi dans le formulaire QB —
+    // persisté comme le reste du brouillon de comptabilisation pour être retrouvé
+    // quand on revient finaliser la facture plus tard.
+    'ALTER TABLE sale_receipts ADD COLUMN bank_charged_total REAL',
     // qualification_calls — colonnes additionnelles pour le module d'appel guidé
     'ALTER TABLE qualification_calls ADD COLUMN heard_about TEXT',
     'ALTER TABLE qualification_calls ADD COLUMN red_flags TEXT',
@@ -1768,6 +1787,11 @@ export function initSchema() {
   try { db.exec('ALTER TABLE achats_fournisseurs ADD COLUMN payment_account_id TEXT') } catch {}
   try { db.exec('ALTER TABLE achats_fournisseurs ADD COLUMN tax_code_id TEXT') } catch {}
 
+  // Mémo publié dans le champ « Memo » de QuickBooks (PrivateNote). Opt-in : vide,
+  // le mémo QB reste vierge (comportement historique). Rempli par les écritures
+  // automatiques qui veulent un libellé lisible dans les livres (recharges Twilio).
+  try { db.exec('ALTER TABLE achats_fournisseurs ADD COLUMN qb_memo TEXT') } catch {}
+
   const achatsCount = db.prepare('SELECT COUNT(*) AS c FROM achats_fournisseurs').get().c
   const hasDepenses = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='depenses'").get()
   const hasFactFourn = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='factures_fournisseurs'").get()
@@ -1828,9 +1852,33 @@ export function initSchema() {
   // Lien purchases.supplier (texte libre hérité d'Airtable) → companies
   try { db.exec('ALTER TABLE purchases ADD COLUMN supplier_company_id TEXT REFERENCES companies(id)') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_supplier_company ON purchases(supplier_company_id)') } catch {}
+  // Fournisseur d'un achat, résolu depuis le champ LIÉ « Fournisseur » d'Airtable
+  // (table Fournisseurs) — et non depuis le single-select « Fournisseur - LEGACY »
+  // gelé auquel purchases.supplier est mappé. Le nom de la table Fournisseurs est le
+  // nom EXACT du fournisseur QuickBooks (variantes « … USD » incluses), ce qui permet
+  // de rapprocher un achat LIA d'une facture fournisseur sans appariement flou.
+  try { db.exec('ALTER TABLE purchases ADD COLUMN supplier_vendor_name TEXT') } catch {}
+  try { db.exec('ALTER TABLE purchases ADD COLUMN supplier_qb_vendor_id TEXT') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_supplier_vendor ON purchases(supplier_vendor_name)') } catch {}
+  // Cache de la table Airtable « Fournisseurs » : rec id → nom canonique + Id vendor QB.
+  // Rafraîchi à chaque sync complète des achats ; sert à résoudre le champ lié ci-dessus.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS airtable_vendor_links (
+      airtable_id TEXT PRIMARY KEY,
+      name TEXT,
+      qb_vendor_id TEXT,
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+  `)
   // Devise et langue par fournisseur (utilisées pour pré-remplir les PO)
   try { db.exec("ALTER TABLE companies ADD COLUMN currency TEXT DEFAULT 'CAD'") } catch {}
   try { db.exec('ALTER TABLE companies ADD COLUMN language TEXT') } catch {}
+
+  // Géocodage de l'adresse de l'entreprise — mis en cache pour ne pas rappeler
+  // Google Places à chaque consultation de la météo au site (GET /api/weather).
+  try { db.exec('ALTER TABLE companies ADD COLUMN latitude REAL') } catch {}
+  try { db.exec('ALTER TABLE companies ADD COLUMN longitude REAL') } catch {}
+  try { db.exec('ALTER TABLE companies ADD COLUMN geocoded_at TEXT') } catch {}
 
   // FX rate cache (Bank of Canada Valet daily observations, e.g. USDCAD)
   db.exec(`
@@ -2490,6 +2538,13 @@ export function initSchema() {
   // Sémantique blacklist => tout nouvel item ajouté au code reste visible par défaut.
   try { db.exec("ALTER TABLE users ADD COLUMN nav_hidden TEXT DEFAULT '[]'") } catch {}
 
+  // Ordre personnalisé du menu de gauche. Objet JSON { "<conteneur>": ["<clé>", …] }
+  // où conteneur = 'root' (sections + items à plat) ou `group:<nom>` (sous-items
+  // d'une section), et clé = route `to` / `group:<nom>` / href externe.
+  // Sémantique partielle => toute clé absente garde sa position par défaut, à la
+  // suite des clés ordonnées.
+  try { db.exec("ALTER TABLE users ADD COLUMN nav_order TEXT DEFAULT '{}'") } catch {}
+
   // Préférences d'affichage des décimales par colonne numérique. Objet JSON
   // { "<table>::<field>": <0-5> } : nombre de décimales à afficher dans DataTable
   // pour la colonne `field` de la table `table`. Absent = rendu brut (legacy).
@@ -2498,6 +2553,10 @@ export function initSchema() {
   // Largeur (px) du panneau latéral side-peek (RecordPeekDrawer), redimensionnable
   // par l'utilisateur en tirant la frontière gauche du panneau. NULL = défaut applicatif.
   try { db.exec("ALTER TABLE users ADD COLUMN peek_width INTEGER") } catch {}
+
+  // Soft delete des utilisateurs — DELETE /admin/users/:id pose deleted_at (et
+  // tombstone l'email pour libérer l'adresse malgré UNIQUE(email)).
+  try { db.exec('ALTER TABLE users ADD COLUMN deleted_at TEXT') } catch {}
 
   // Feuilles de temps — un header par (user_id, date) avec mode + champs du mode simple.
   // Les entrées du mode "detailed" sont dans timesheet_entries (child).
@@ -3086,26 +3145,6 @@ export function initSchema() {
   `)
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_attachments_entity ON attachments(entity_type, entity_id, deleted_at)`) } catch {}
 
-  // Répertoire fournisseurs — miroir du Google Doc « Fournisseurs_Particularités »
-  // (services/vendorDirectory.js, resync horaire). Sert de contexte à l'extraction IA
-  // des reçus (nom canonique, devise habituelle, catégorie comptable). Le doc Drive
-  // reste la source de vérité : les lignes disparues y sont soft-deletées, pas éditées ici.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS vendor_directory (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      currency TEXT,
-      payment_method TEXT,
-      qb_category TEXT,
-      description TEXT,
-      particularites TEXT,
-      synced_at TEXT,
-      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      deleted_at TEXT
-    )
-  `)
-
   // Abonnements fournisseurs (SaaS et charges récurrentes) — registre des
   // charges attendues (miroir de l'onglet Abonnements du fichier CTB - Suivi).
   // Sert au croisement « charge attendue ↔ reçu ingéré » et à la resynchro de
@@ -3135,10 +3174,18 @@ export function initSchema() {
     )
   `)
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_vendor_subscriptions_vendor ON vendor_subscriptions(vendor, deleted_at)`) } catch {}
+  // Date de désabonnement — posée automatiquement quand `active` passe à 0
+  // (bouton « Se désabonner »), effacée à la réactivation. Voir routes/vendor-subscriptions.js.
+  try { db.exec(`ALTER TABLE vendor_subscriptions ADD COLUMN cancelled_at TEXT`) } catch {}
+  // Page de résiliation chez le fournisseur — ouverte par le bouton
+  // « Se désabonner » ; l'abonnement n'est retiré de la liste qu'après
+  // confirmation explicite que l'annulation a bien été faite là-bas.
+  try { db.exec(`ALTER TABLE vendor_subscriptions ADD COLUMN cancel_url TEXT`) } catch {}
 
   // Profils fournisseurs — source de vérité ERP des DÉFAUTS COMPTABLES par fournisseur
-  // (services/vendorProfiles.js). Fusionne le répertoire Drive (vendor_directory, lecture
-  // seule) avec les choix de comptabilisation appris à chaque publication QB : vendor QB
+  // (services/vendorProfiles.js) ET du répertoire de particularités (ex-Google Doc
+  // « Fournisseurs_Particularités », rapatrié ici et éditable dans /fournisseurs).
+  // Défauts appris à chaque publication QB : vendor QB
   // par devise (un vendor QB ne porte qu'UNE devise — un fournisseur bi-devise a deux
   // vendors), compte de dépense, compte de paiement par devise, type de transaction
   // (statut fiscal), code de taxe par devise, termes de paiement (Net N jours).
@@ -3165,6 +3212,98 @@ export function initSchema() {
     )
   `)
 
+  // Particularités du fournisseur — rapatriées du Google Doc « Fournisseurs_Particularités »
+  // (jadis synchronisé dans la table vendor_directory). L'ERP est désormais la SEULE source
+  // de vérité : ces champs s'éditent dans /fournisseurs et alimentent le prompt d'extraction.
+  try { db.exec(`ALTER TABLE vendor_profiles ADD COLUMN usual_currency TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE vendor_profiles ADD COLUMN payment_method TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE vendor_profiles ADD COLUMN qb_category TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE vendor_profiles ADD COLUMN description TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE vendor_profiles ADD COLUMN particularites TEXT`) } catch {}
+  // Commentaire type du paiement émis (« Virement Interac », « Virement entre comptes »,
+  // « Chèque post-daté »…) : c'est la MANIÈRE de payer ce fournisseur, apprise du dernier
+  // paiement saisi dans /paiements-emis et re-proposée dès qu'on retape son nom.
+  try { db.exec(`ALTER TABLE vendor_profiles ADD COLUMN payment_note TEXT`) } catch {}
+
+  // Migration one-shot vendor_directory → vendor_profiles. La table de miroir est
+  // ensuite renommée (jamais droppée : copie de sécurité du dernier état du doc) —
+  // son absence rend la migration non réexécutable, donc une édition ERP ultérieure
+  // ne peut pas être réécrasée par l'ancien contenu du doc.
+  try {
+    const hasDirectory = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vendor_directory'`).get()
+    if (hasDirectory) {
+      const rows = db.prepare('SELECT * FROM vendor_directory WHERE deleted_at IS NULL').all()
+      const findProfile = db.prepare('SELECT id FROM vendor_profiles WHERE deleted_at IS NULL AND LOWER(TRIM(name))=LOWER(TRIM(?))')
+      const insertProfile = db.prepare('INSERT INTO vendor_profiles (id, name) VALUES (?,?)')
+      // COALESCE : une valeur déjà saisie dans l'ERP prime sur celle du doc.
+      const fill = db.prepare(`
+        UPDATE vendor_profiles SET
+          usual_currency = COALESCE(usual_currency, ?), payment_method = COALESCE(payment_method, ?),
+          qb_category = COALESCE(qb_category, ?), description = COALESCE(description, ?),
+          particularites = COALESCE(particularites, ?)
+        WHERE id = ?
+      `)
+      db.transaction(() => {
+        for (const d of rows) {
+          let id = findProfile.get(d.name)?.id
+          if (!id) { id = randomUUID(); insertProfile.run(id, String(d.name).trim()) }
+          fill.run(d.currency || null, d.payment_method || null, d.qb_category || null,
+            d.description || null, d.particularites || null, id)
+        }
+        const hasLegacy = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name='vendor_directory_legacy'`).get()
+        db.exec(hasLegacy ? 'DROP TABLE vendor_directory' : 'ALTER TABLE vendor_directory RENAME TO vendor_directory_legacy')
+      })()
+      console.log(`↪ Répertoire fournisseurs migré dans vendor_profiles (${rows.length} fournisseur(s))`)
+    }
+  } catch (e) {
+    console.error('❌ Migration vendor_directory → vendor_profiles:', e.message)
+  }
+
+  // Anomalies fiscales relevées par le mentor comptable dans l'onglet
+  // « Fournisseurs_TPS_TVQ_Anomalies » du Google Sheet « Sommaire_Statut fiscal des
+  // taxes » (voir services/fiscalAnomaliesSheet.js). Miroir local de l'onglet : une
+  // ligne = une transaction mal comptabilisée + le statut fiscal qui aurait dû être
+  // utilisé. La sync applique la correction au PROFIL du fournisseur (code de taxe
+  // par devise + type de transaction), pour que les prochaines transactions du même
+  // fournisseur partent du bon statut. `outcome` garde la trace de ce qui a été fait
+  // (appliqué / conflit entre deux lignes du même fournisseur / fournisseur inconnu…)
+  // et `applied_at` rend la sync idempotente : une ligne déjà traitée n'écrase jamais
+  // une édition faite ensuite dans /fournisseurs.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS fiscal_anomalies (
+      id TEXT PRIMARY KEY,
+      row_key TEXT NOT NULL UNIQUE,
+      sheet_date TEXT,
+      account_label TEXT,
+      vendor_name TEXT,
+      amount_text TEXT,
+      currency TEXT,
+      used_status TEXT,
+      correct_status TEXT,
+      explanation TEXT,
+      vendor_profile_id TEXT,
+      outcome TEXT,
+      outcome_detail TEXT,
+      applied_at TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+
+  // Groupes de doublons de profils fournisseurs marqués « pas des doublons » : la
+  // détection (findDuplicateProfileGroups) ne re-propose plus un groupe ignoré tant
+  // que sa composition (member_ids = JSON des ids triés) reste identique — un nouveau
+  // profil qui rejoint le groupe le fait réapparaître.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS vendor_duplicate_dismissals (
+      id TEXT PRIMARY KEY,
+      member_ids TEXT NOT NULL UNIQUE,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+
   // Extraction : échéance de paiement. due_date = date d'échéance (imprimée sur la
   // facture ou calculée depuis les termes) ; payment_terms_days = termes détectés
   // (« Payment due 21 days from date of invoice » → 21) ; vendor_profile_id = profil
@@ -3172,6 +3311,13 @@ export function initSchema() {
   try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN due_date TEXT`) } catch {}
   try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN payment_terms_days INTEGER`) } catch {}
   try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN vendor_profile_id TEXT`) } catch {}
+
+  // Relevé mensuel d'un fournisseur prépayé (Twilio) joint aux transactions QB du
+  // mois couvert — voir services/prepaidStatementAttach.js. Trace du dernier
+  // rattachement : quand, quel mois, et le détail par transaction (JSON).
+  try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN month_attach_at TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN month_attach_month TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN month_attach_result TEXT`) } catch {}
 
   // Répartition comptable de la paie : JE QB publiée depuis la page Paie.
   try { db.exec(`ALTER TABLE paies ADD COLUMN repartition_je_id TEXT`) } catch {}
@@ -3221,6 +3367,268 @@ export function initSchema() {
   try { db.exec(`ALTER TABLE recurring_outflows ADD COLUMN variable_amount INTEGER DEFAULT 0`) } catch {}
   try { db.exec(`ALTER TABLE recurring_outflows ADD COLUMN amount_entered_at TEXT`) } catch {}
 
+  // Réconciliation de la saisie : à chaque nouveau solde réel, on le compare au
+  // solde que la projection annonçait pour ce jour-là (snapshot le plus récent
+  // antérieur). Un écart inexpliqué = un mouvement que l'ERP ne connaissait pas
+  // — c'est le filet qui a manqué le 1er août 2026 (loyer + facture Les Jardins
+  // d'Inverness absents de la projection, 11 864,64 $ de trésorerie fantôme).
+  try { db.exec(`ALTER TABLE treasury_balances ADD COLUMN predicted_balance REAL`) } catch {}
+  try { db.exec(`ALTER TABLE treasury_balances ADD COLUMN variance REAL`) } catch {}
+  try { db.exec(`ALTER TABLE treasury_balances ADD COLUMN predicted_from TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE treasury_balances ADD COLUMN variance_note TEXT`) } catch {}
+  // Provenance de la saisie : NULL = manuelle (page Trésorerie), 'solde_sheet' =
+  // importée du Google Sheet « Maintien du solde disponible BNC » (sync auto).
+  try { db.exec(`ALTER TABLE treasury_balances ADD COLUMN source TEXT`) } catch {}
+
+  // treasury_snapshots : photo de la projection à chaque exécution (cron
+  // quotidien + saisie de solde). Sans elle, impossible de savoir après coup ce
+  // que le système annonçait un jour donné — la projection était recalculée à
+  // partir d'aujourd'hui et le passé était perdu.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS treasury_snapshots (
+      id TEXT PRIMARY KEY,
+      snapshot_date TEXT NOT NULL,          -- jour de la projection (YYYY-MM-DD)
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      trigger TEXT,
+      scenario TEXT DEFAULT 'certain',
+      balance_entry_id TEXT,
+      start_balance REAL,
+      balance_noted_at TEXT,
+      threshold REAL,
+      min_balance REAL,
+      min_date TEXT,
+      action_days INTEGER,
+      action_min_balance REAL,
+      action_min_date TEXT,
+      first_negative_date TEXT,
+      first_negative_balance REAL,
+      suggested_transfer REAL,
+      days TEXT                             -- série quotidienne complète (JSON)
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_treasury_snap_date ON treasury_snapshots(snapshot_date)`)
+
+  // treasury_cleared_events : mouvements en retard (datés après la saisie du
+  // solde mais avant aujourd'hui) que l'utilisateur confirme déjà sortis du
+  // compte. Par défaut ces mouvements restent projetés — prudence : mieux vaut
+  // une projection trop basse qu'un découvert. Cette table est l'échappatoire.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS treasury_cleared_events (
+      event_key TEXT PRIMARY KEY,           -- kind:ref:date
+      label TEXT,
+      amount REAL,
+      event_date TEXT,
+      cleared_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      cleared_by TEXT REFERENCES users(id)
+    )
+  `)
+
+  // treasury_payments : paiements et virements ÉMIS — remplace l'onglet
+  // « Pmt_Suivi » du fichier CTB - Suivi (colonne Montant coloriée en vert =
+  // passé à la banque).
+  //
+  // C'est le maillon qui manquait entre « la facture est payée » et « l'argent
+  // est sorti du compte » : un virement Interac fait le samedi, un chèque
+  // post-daté, un renflouement Mastercard, un virement Venn → BNC n'existaient
+  // nulle part dans l'ERP. Marquer une facture « Payée » la faisait simplement
+  // disparaître de la projection alors que l'argent était encore au compte —
+  // et un paiement post-daté (émis aujourd'hui, débité dans deux semaines)
+  // n'était visible d'aucune façon.
+  //
+  //   cleared_at IS NULL  → émis, PAS encore passé à la banque → projeté
+  //   cleared_at NOT NULL → passé au compte (le vert du fichier) → plus projeté
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS treasury_payments (
+      id TEXT PRIMARY KEY,
+      payment_date TEXT NOT NULL,            -- date de sortie/entrée (peut être future : post-daté)
+      direction TEXT NOT NULL DEFAULT 'out' CHECK(direction IN ('out','in')),
+      amount REAL NOT NULL,                  -- toujours positif ; le sens vient de direction
+      currency TEXT DEFAULT 'CAD',
+      account TEXT DEFAULT 'BNC CAD',        -- compte touché (nom bank_accounts)
+      label TEXT,                            -- fournisseur ou libellé du virement
+      achat_id TEXT,                         -- facture fournisseur payée (optionnel)
+      invoice_number TEXT,
+      reference TEXT,                        -- # virement Interac / MC / Visa / code de paiement
+      method TEXT,                           -- interac, cheque, carte, transfert, code_paiement, autre
+      notes TEXT,
+      cleared_at TEXT,                       -- NULL = pas encore passé à la banque
+      bank_txn_id TEXT,                       -- transaction du relevé appariée (auto)
+      source TEXT DEFAULT 'manual',          -- manual | achat | import
+      import_key TEXT,                       -- clé naturelle de la ligne du fichier (idempotence)
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  // Deux informations que la saisie « par moyen de paiement » a rendues
+  // nécessaires :
+  //   - counterparty_account : l'autre compte d'un mouvement interne. `account`
+  //     ne porte que le côté projeté (« BNC Épargne à BNC Chèque » stockait la
+  //     provenance dans le libellé), donc un transfert Venn → BNC ou un paiement
+  //     de carte perdait la moitié de son sens.
+  //   - recipient : le bénéficiaire réel d'un virement Interac ou d'un chèque,
+  //     souvent distinct du fournisseur facturé (Interac à Antoine Ratteau pour
+  //     Les Jardins d'Inverness).
+  try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN counterparty_account TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN recipient TEXT`) } catch {}
+  // Détection automatique du « passé à la banque » via le fichier « Maintien du
+  // solde disponible BNC » (Charles retire la ligne quand le mouvement passe) :
+  //   - sheet_seen_at : dernière sync où une ligne du fichier couvrait ce
+  //     paiement. C'est le garde-fou : on n'auto-coche JAMAIS un paiement que le
+  //     fichier n'a pas connu, et décocher à la main le remet à NULL pour que
+  //     l'automatisme ne re-coche pas par-dessus l'utilisateur.
+  //   - cleared_source : qui a coché — manual | bank (relevé) | sheet (fichier).
+  try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN sheet_seen_at TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN cleared_source TEXT`) } catch {}
+  // Écriture QuickBooks qui prouve le passage à la banque : le rapport
+  // GeneralLedger d'un compte bancaire marque chaque écriture « C » (compensée
+  // au flux bancaire) ou « R » (rapprochée) — c'est le signal DIRECT, là où le
+  // relevé importé et le fichier de suivi sont des signaux indirects. On garde
+  // l'id + le type pour offrir le lien vers la transaction dans QB.
+  try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN qb_txn_id TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN qb_txn_type TEXT`) } catch {}
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_treasury_pmt_date ON treasury_payments(payment_date)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_treasury_pmt_achat ON treasury_payments(achat_id)`)
+  // Clé naturelle d'import (onglet Pmt_Suivi) : ré-importer ne duplique pas.
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_treasury_pmt_import ON treasury_payments(import_key) WHERE import_key IS NOT NULL`)
+
+  // ── Cédule hebdomadaire de paiements fournisseurs ──────────────────────────
+  // Une facture qu'on décide de NE PAS payer cette semaine (attente d'un avoir,
+  // litige, trésorerie serrée) doit sortir de la cédule proposée sans devenir
+  // invisible : le report est explicite, daté et motivé. `defer_until` NULL =
+  // reporté sans échéance ; sinon la facture revient dans la cédule ce jour-là.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS payment_schedule_deferrals (
+      achat_id TEXT PRIMARY KEY,
+      reason TEXT,
+      defer_until TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+
+  // Récurrente couverte par les vraies factures d'un fournisseur : le loyer est
+  // à la fois une sortie récurrente (6 115,89 $ le 1er) et une facture réelle
+  // (Les Jardins d'Inverness, 5 748,75 $ payée par Interac) — les deux étaient
+  // comptées, ou l'une masquait l'autre. Avec vendor_match, l'occurrence est
+  // remplacée par la facture / le paiement réel quand il existe.
+  try { db.exec(`ALTER TABLE recurring_outflows ADD COLUMN vendor_match TEXT`) } catch {}
+  // Bornes de vie de la récurrence (YYYY-MM-DD, inclusives). Sans elles, une
+  // dette dont les versements ne commencent que dans 2 ans (DEC : 1er novembre
+  // 2028) serait projetée dès aujourd'hui, et une dette remboursée continuerait
+  // à sortir de l'argent pour toujours. NULL = pas de borne de ce côté.
+  try { db.exec(`ALTER TABLE recurring_outflows ADD COLUMN starts_on TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE recurring_outflows ADD COLUMN ends_on TEXT`) } catch {}
+  // ⚠️ AUCUNE valeur seedée ici. Une tentative de lier « Loyer » aux factures
+  // « Les Jardins D'Inverness » était FAUSSE : le loyer est un paiement
+  // pré-autorisé (« PMTS ENTREPRISES », 5 863,69 $ vers le 4 du mois) et
+  // Inverness / Antoine Ratteau est un fournisseur de CONSULTATION facturé au
+  // mois — deux dépenses distinctes, toutes deux à projeter. Le champ ne doit
+  // être rempli que par l'utilisateur, pour un cas qu'il a lui-même constaté.
+
+  // ── Rapprochement bancaire ─────────────────────────────────────────────────
+  // Remplace le fichier TRX_Orisha.xlsx (un onglet par compte, lignes coloriées
+  // à la main). Les transactions de relevés sont importées par collage, puis le
+  // statut est dérivé automatiquement du matching avec les documents de l'ERP :
+  //   a_traiter        (rouge)  — aucun document trouvé (souvent facture manquante)
+  //   facture_recue    (bleu)   — document apparié mais pas encore publié à QB
+  //   comptabilise     (jaune)  — document apparié et publié à QB (quickbooks_id)
+  //   rapproche        (vert)   — comptabilisé + validé contre le relevé
+  //   ignore           (gris)   — hors périmètre (transfert interne, etc.)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bank_accounts (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL DEFAULT 'bank' CHECK(kind IN ('bank','card')),
+      currency TEXT NOT NULL DEFAULT 'CAD',
+      account_number TEXT,
+      institution TEXT,
+      sort_order INTEGER DEFAULT 0,
+      active INTEGER DEFAULT 1,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bank_transactions (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES bank_accounts(id),
+      txn_date TEXT NOT NULL,
+      description TEXT,
+      reference TEXT,
+      amount REAL NOT NULL,
+      balance REAL,
+      dedup_key TEXT NOT NULL UNIQUE,
+      status TEXT NOT NULL DEFAULT 'a_traiter'
+        CHECK(status IN ('a_traiter','facture_recue','comptabilise','rapproche','ignore')),
+      matched_type TEXT CHECK(matched_type IN ('achat','receipt','stripe_payout') OR matched_type IS NULL),
+      matched_id TEXT,
+      match_method TEXT CHECK(match_method IN ('auto','manuel') OR match_method IS NULL),
+      match_confidence REAL,
+      reconciled_at TEXT,
+      reconciled_by TEXT REFERENCES users(id),
+      comment TEXT,
+      import_batch_id TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_txn_account ON bank_transactions(account_id, txn_date)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_txn_status ON bank_transactions(status)`)
+  // Pont QuickBooks : chaque compte bancaire ERP pointe vers son (ou ses,
+  // séparés par virgule — ex. BNC USD scindé en 10020+10021 côté QB) compte(s)
+  // QB, et chaque transaction bancaire peut mémoriser la transaction QB
+  // correspondante trouvée via le rapport GeneralLedger (services/bankQbLink.js).
+  try { db.exec(`ALTER TABLE bank_accounts ADD COLUMN qb_account_id TEXT`) } catch {}
+  // « Autres détails » du relevé BNC : nature réelle de la transaction (le
+  // bénéficiaire, p. ex. « NOVO EXPRESS ») alors que description reste
+  // générique (« PMTS ENTREPRISES »). Affiché en premier côté UI.
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN details TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN qb_txn_type TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN qb_txn_id TEXT`) } catch {}
+  // Couleur de la ligne dans TRX_Orisha.xlsx — statut déclaré à la main par
+  // Michel : 'vert' (comptabilisée ET rapprochée dans QB), 'jaune'
+  // (comptabilisée), 'bleu' (facture retracée), 'rouge' (pas encore
+  // comptabilisée). Fait autorité sur ce que l'ERP arrive à déduire.
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN sheet_color TEXT`) } catch {}
+  // Comment l'écriture QB liée a été retrouvée (voir services/bankQbSearch.js)
+  // et l'écart de montant résiduel (frais bancaires, conversion de devise).
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN qb_match_method TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN qb_match_delta REAL`) } catch {}
+  // Compte QB où l'écriture a été trouvée quand ce n'est pas celui du relevé
+  // (virement interne comptabilisé du côté de l'autre compte).
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN qb_match_account TEXT`) } catch {}
+  // Taux de change vérifié sur l'objet Transfer de QuickBooks quand la ligne
+  // est une conversion de devise (le rapport GeneralLedger affiche le montant
+  // en devise de transaction des DEUX côtés — sans le taux, l'écart apparent
+  // n'a aucun sens).
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN qb_match_rate REAL`) } catch {}
+  // Seed du mapping (idempotent, ne touche pas un mapping déjà posé à la main).
+  for (const [name, qbId] of [
+    ['BNC CAD', '61'], ['BNC USD', '234,168'], ['BNC Épargne', '133'],
+    ['MasterCard BNC', '66'], ['Desjardins CAD', '236'], ['Desjardins USD', '237'],
+    ['Marge Desjardins', '238'], ['VISA Desjardins CAD', '242'], ['VISA Desjardins USD', '239'],
+    ['Venn CAD', '254'], ['Venn USD', '256'],
+  ]) {
+    db.prepare(`UPDATE bank_accounts SET qb_account_id=? WHERE name=? AND qb_account_id IS NULL`).run(qbId, name)
+  }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bank_import_batches (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL REFERENCES bank_accounts(id),
+      row_count INTEGER DEFAULT 0,
+      inserted_count INTEGER DEFAULT 0,
+      duplicate_count INTEGER DEFAULT 0,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+
   // ── Comptes prépayés ───────────────────────────────────────────────────────
   // Volet 1 — soldes fournisseurs prépayés (remplace le fichier Twilio_Suivi) :
   // un ledger par fournisseur (recharges vs factures de consommation) alimenté
@@ -3263,6 +3671,17 @@ export function initSchema() {
   `)
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prepaid_ledger_qb_txn ON prepaid_ledger_entries(account_id, qb_txn_type, qb_txn_id) WHERE qb_txn_id IS NOT NULL AND deleted_at IS NULL`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_prepaid_ledger_account ON prepaid_ledger_entries(account_id, entry_date, deleted_at)`) } catch {}
+  // Détection auto des recharges Twilio dans le rapprochement bancaire (compte
+  // Venn USD) — voir services/prepaid.js:detectTwilioBankRecharges. Une
+  // transaction bancaire ne doit jamais générer deux fois la même recharge, et
+  // une entrée supprimée à la main (faux positif) ne doit jamais revenir.
+  try { db.exec(`ALTER TABLE prepaid_ledger_entries ADD COLUMN bank_transaction_id TEXT`) } catch {}
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prepaid_ledger_bank_txn ON prepaid_ledger_entries(bank_transaction_id) WHERE bank_transaction_id IS NOT NULL`) } catch {}
+  // Facture (consommation) extraite automatiquement du relevé mensuel joint aux
+  // transactions QB — voir services/prepaidStatementAttach.js. Une seule entrée
+  // par document (le relevé « facture d'usage », pas le « reçu de paiement »).
+  try { db.exec(`ALTER TABLE prepaid_ledger_entries ADD COLUMN sale_receipt_id TEXT`) } catch {}
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prepaid_ledger_sale_receipt ON prepaid_ledger_entries(sale_receipt_id) WHERE sale_receipt_id IS NOT NULL AND deleted_at IS NULL`) } catch {}
 
   // Volet 2 — cédule de continuité des frais payés d'avance (compte #13000,
   // remplace les fichiers FPA_Continuité annuels). Chaque item est amorti
@@ -3276,7 +3695,8 @@ export function initSchema() {
       payment_date TEXT,
       amount REAL NOT NULL,
       currency TEXT DEFAULT 'CAD',
-      method TEXT NOT NULL DEFAULT 'prorata_jours' CHECK(method IN ('prorata_jours','manuel','aucun')),
+      method TEXT NOT NULL DEFAULT 'prorata_jours' CHECK(method IN ('prorata_jours','mensuel_fixe','manuel','aucun')),
+      monthly_amount REAL,
       amort_start TEXT,
       amort_end TEXT,
       expense_acctnum TEXT,
@@ -3308,6 +3728,32 @@ export function initSchema() {
     )
   `)
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_prepaid_amort_month ON prepaid_amortizations(expense_id, month) WHERE deleted_at IS NULL`) } catch {}
+
+  // Montant mensuel constant (méthode 'mensuel_fixe') : la comptable inscrit le
+  // même montant chaque mois dans FPA_Continuité et laisse le dernier mois
+  // absorber le résidu, plutôt que de proratiser sur les jours réels du mois.
+  try { db.exec(`ALTER TABLE prepaid_expenses ADD COLUMN monthly_amount REAL`) } catch {}
+  // Le CHECK d'origine ne connaissait pas 'mensuel_fixe' — reconstruction de la
+  // table (SQLite ne sait pas modifier une contrainte en place), une seule fois.
+  const prepaidDef = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='prepaid_expenses'").get()
+  if (prepaidDef && !prepaidDef.sql.includes('mensuel_fixe')) {
+    try {
+      const newSql = prepaidDef.sql
+        .replace(`CHECK(method IN ('prorata_jours','manuel','aucun'))`, `CHECK(method IN ('prorata_jours','mensuel_fixe','manuel','aucun'))`)
+        .replace(/CREATE TABLE "?prepaid_expenses"?/, 'CREATE TABLE prepaid_expenses_new')
+      db.exec('PRAGMA foreign_keys = OFF')
+      db.exec(`
+        ${newSql};
+        INSERT INTO prepaid_expenses_new SELECT * FROM prepaid_expenses;
+        DROP TABLE prepaid_expenses;
+        ALTER TABLE prepaid_expenses_new RENAME TO prepaid_expenses;
+      `)
+      db.exec('PRAGMA foreign_keys = ON')
+    } catch (e) {
+      db.exec('PRAGMA foreign_keys = ON')
+      console.error('⚠️  Migration prepaid_expenses (mensuel_fixe) échouée :', e.message)
+    }
+  }
 
   // Lu / non lu sur les reçus (page Extraction de données) — à la Gmail : ligne en
   // gras tant que read_at est NULL, marqué lu à l'ouverture. Le backfill marque lus
@@ -3353,7 +3799,8 @@ export function initSchema() {
       interest REAL NOT NULL DEFAULT 0,
       balance_after REAL,
       source TEXT NOT NULL DEFAULT 'manuel' CHECK(source IN ('import','manuel')),
-      qb_je_id TEXT,
+      qb_txn_id TEXT,
+      qb_txn_type TEXT,
       pushed_at TEXT,
       notes TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -3361,11 +3808,913 @@ export function initSchema() {
       deleted_at TEXT
     )
   `)
+  // qb_je_id → qb_txn_id : la comptabilisation crée désormais une Dépense QB
+  // (Purchase) plutôt qu'une JE ; qb_txn_type ('purchase', NULL = JE legacy)
+  // distingue les deux pour les liens QB.
+  // Paramètres d'amortissement : ce qu'il faut pour régénérer la cédule (taux
+  // annuel en %, cadence, montant du versement régulier) et pour alimenter la
+  // récurrente de trésorerie. Renseignés par le générateur de cédule.
+  try { db.exec(`ALTER TABLE lt_debts ADD COLUMN annual_rate REAL`) } catch {}
+  try { db.exec(`ALTER TABLE lt_debts ADD COLUMN payment_frequency TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE lt_debts ADD COLUMN payment_amount REAL`) } catch {}
+  try { db.exec(`ALTER TABLE lt_debt_payments RENAME COLUMN qb_je_id TO qb_txn_id`) } catch {}
+  try { db.exec(`ALTER TABLE lt_debt_payments ADD COLUMN qb_txn_type TEXT`) } catch {}
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_lt_debt_payment_date ON lt_debt_payments(debt_id, payment_date) WHERE deleted_at IS NULL`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_lt_debt_payments_debt ON lt_debt_payments(debt_id, payment_date, deleted_at)`) } catch {}
 
+  // ── Douanes — relevé CARM (GCRA) de l'ASFC ─────────────────────────────────
+  // Une ligne par transaction du relevé téléchargé du portail CARM (droits,
+  // TPS à l'importation, paiements, intérêts…). montant signé : positif = dû
+  // à l'ASFC, négatif = paiement/crédit. sale_receipt_id = reçu correspondant
+  // dans l'extracteur (c'est lui qui porte le push QuickBooks). import_key =
+  // clé naturelle de dédup — ré-importer le même relevé n'insère rien.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS carm_transactions (
+      id TEXT PRIMARY KEY,
+      transaction_date TEXT NOT NULL,
+      due_date TEXT,
+      transaction_type TEXT,
+      transaction_number TEXT,
+      description TEXT,
+      amount REAL NOT NULL,
+      balance REAL,
+      currency TEXT DEFAULT 'CAD',
+      sale_receipt_id TEXT REFERENCES sale_receipts(id),
+      match_source TEXT,
+      import_key TEXT,
+      source TEXT NOT NULL DEFAULT 'import' CHECK(source IN ('import','manuel')),
+      notes TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_carm_import_key ON carm_transactions(import_key) WHERE import_key IS NOT NULL`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_carm_txn_date ON carm_transactions(transaction_date, deleted_at)`) } catch {}
+  // Nature comptable de la ligne, déduite du code de transaction ASFC
+  // (B3 → évaluation, C1 → correction, IN → intérêts, LP/LD → paiement) et
+  // corrigeable à la main. Elle décide de l'écriture : une évaluation se
+  // ventile en droits (dépense) + TPS à l'importation (CTI récupérable),
+  // un paiement ne touche que le bilan, des intérêts sont une charge
+  // financière sans taxe. duty_amount / gst_amount portent cette ventilation
+  // quand elle est connue (le relevé détaillé du portail la donne ligne par
+  // ligne ; sinon elle se saisit dans la fiche).
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN category TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN duty_amount REAL`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN gst_amount REAL`) } catch {}
+
+  // ── Écritures de fin de mois (provisions) ──────────────────────────────────
+  // Remplace les fichiers Drive « Provisions_mensuelles_CTB » et
+  // « R&D_Suivi_Feuilles de temps ». Deux provisions récurrentes :
+  //   • crédit d'impôt R&D (RS&DE) : heures R&D du mois × taux × majoration,
+  //     projeté sur 12 mois, × taux de réclamation, ramené sur 1 mois ;
+  //   • subvention salariale (Biotalent, LB) : salaire brut du mois × 60 %,
+  //     plafonné à la contribution maximale sur la fenêtre d'admissibilité.
+  // Même convention que les FPA : l'ERP calcule et prépare la JE, la
+  // publication dans QuickBooks se fait après approbation, jamais en auto.
+
+  // Heures R&D par employé et par mois. Alimentées par l'import mensuel du
+  // fichier Drive feuille_de_temps_{mois}_{année}.xlsx (un onglet par employé,
+  // colonne « Heures RSDE »), corrigeables à la main. Les sous-traitants
+  // (contractor = 1, ex. Antoine Ratheau) sont suivis mais exclus du calcul de
+  // la provision — ils ne sont pas des employés d'Orisha.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS rd_month_hours (
+      id TEXT PRIMARY KEY,
+      month TEXT NOT NULL,
+      employee_name TEXT NOT NULL,
+      employee_id TEXT REFERENCES employees(id),
+      hours REAL NOT NULL DEFAULT 0,
+      contractor INTEGER DEFAULT 0,
+      source TEXT NOT NULL DEFAULT 'import' CHECK(source IN ('import','manuel','erp','seed')),
+      drive_file_id TEXT,
+      notes TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  // `hours` = valeur retenue (l'addition des lignes datées, recalculée par
+  // l'ERP, ou une correction manuelle). Les deux colonnes suivantes gardent ce
+  // qu'on a lu dans la feuille de temps pour rendre les écarts visibles :
+  // `day_hours` = l'addition des lignes au dernier import, `file_total_hours` =
+  // la ligne « total » du fichier (formule pas toujours juste).
+  try { db.exec(`ALTER TABLE rd_month_hours ADD COLUMN day_hours REAL`) } catch {}
+  try { db.exec(`ALTER TABLE rd_month_hours ADD COLUMN file_total_hours REAL`) } catch {}
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rd_hours_month_emp ON rd_month_hours(month, employee_name) WHERE deleted_at IS NULL`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_rd_hours_month ON rd_month_hours(month, deleted_at)`) } catch {}
+
+  // Déboursés mensuels en pièces (procédure Pièces_Déboursés_<mois>).
+  // Une ligne par mois : les trois composantes du calcul, le détail des
+  // opérations figé au moment du calcul (lines_json — ce qui a été mis dans le
+  // fichier Drive), et la trace du dépôt Drive puis de l'envoi Slack.
+  // `override_debut` / `override_fin` laissent le comptable corriger un montant
+  // sans toucher au calcul : c'est lui qui signe le chiffre envoyé.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS pieces_disbursements (
+      month TEXT PRIMARY KEY,
+      achats REAL,
+      a_payer_debut REAL,
+      a_payer_fin REAL,
+      override_debut REAL,
+      override_fin REAL,
+      lines_json TEXT,
+      drive_file_id TEXT,
+      drive_url TEXT,
+      drive_name TEXT,
+      generated_at TEXT,
+      slack_sent_at TEXT,
+      slack_sent_by TEXT REFERENCES users(id),
+      slack_text TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+
+  // Définition d'une provision. `config` (JSON) porte les paramètres de la
+  // grille de calcul — ce sont les cellules bleues des fichiers Excel, rendues
+  // éditables dans l'interface plutôt que gelées dans du code.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS month_end_provisions (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('rd_credit','wage_subsidy')),
+      description TEXT,
+      config TEXT,
+      debit_acctnum TEXT,
+      credit_acctnum TEXT,
+      memo TEXT,
+      active INTEGER DEFAULT 1,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+
+  // Une ligne par provision et par mois. Comme prepaid_amortizations : les mois
+  // calculés ne sont matérialisés qu'à la publication, à l'override manuel ou à
+  // la saisie d'un intrant ; les mois historiques déjà comptabilisés à la main
+  // portent pushed_at sans qb_je_id. `inputs` (JSON) garde les intrants du mois
+  // (ex. PARI reçu) et `computed` la trace du calcul au moment de la publication.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS month_end_provision_months (
+      id TEXT PRIMARY KEY,
+      provision_id TEXT NOT NULL REFERENCES month_end_provisions(id),
+      month TEXT NOT NULL,
+      amount REAL,
+      override_amount REAL,
+      inputs TEXT,
+      computed TEXT,
+      source TEXT NOT NULL DEFAULT 'auto' CHECK(source IN ('auto','manuel','import')),
+      qb_je_id TEXT,
+      pushed_at TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_month_end_prov_month ON month_end_provision_months(provision_id, month) WHERE deleted_at IS NULL`) } catch {}
+
+  // Rapprochement encaissement de la subvention salariale (Biotalent, Louis-
+  // Bernard) : la provision mensuelle est une estimation, le montant réel versé
+  // peut différer. `wage_subsidy_receipts` suit ce qui a été réellement reçu
+  // (indépendant du calendrier des mois provisionnés) ; `wage_subsidy_adjustments`
+  // journalise chaque régularisation Dr/Cr 12400 ↔ 49000 déjà publiée, pour ne
+  // jamais régulariser deux fois le même écart. Voir services/wageSubsidyReceipts.js.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wage_subsidy_receipts (
+      id TEXT PRIMARY KEY,
+      provision_id TEXT NOT NULL REFERENCES month_end_provisions(id),
+      received_date TEXT NOT NULL,
+      amount REAL NOT NULL,
+      note TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_wage_subsidy_receipts_prov ON wage_subsidy_receipts(provision_id, deleted_at)`) } catch {}
+  // Détection automatique depuis le rapprochement bancaire (services/bankReconciliation.js
+  // matche `config.bank_match_label` de la provision contre bank_transactions.description) :
+  // `source` distingue une saisie manuelle d'une ligne trouvée dans le relevé, et
+  // `bank_transaction_id` empêche de détecter deux fois la même transaction — y compris
+  // si l'utilisateur supprime la ligne détectée (faux positif), d'où l'absence de filtre
+  // deleted_at sur la contrainte : une transaction rejetée ne revient jamais.
+  try { db.exec(`ALTER TABLE wage_subsidy_receipts ADD COLUMN source TEXT NOT NULL DEFAULT 'manuel' CHECK(source IN ('manuel','banque'))`) } catch {}
+  try { db.exec(`ALTER TABLE wage_subsidy_receipts ADD COLUMN bank_transaction_id TEXT REFERENCES bank_transactions(id)`) } catch {}
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wage_subsidy_receipts_bank_txn ON wage_subsidy_receipts(bank_transaction_id)`) } catch {}
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS wage_subsidy_adjustments (
+      id TEXT PRIMARY KEY,
+      provision_id TEXT NOT NULL REFERENCES month_end_provisions(id),
+      amount REAL NOT NULL,
+      memo TEXT,
+      qb_je_id TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_wage_subsidy_adj_prov ON wage_subsidy_adjustments(provision_id, deleted_at)`) } catch {}
+
+  // Anomalies transactionnelles : doublons probables, montants hors norme, devise
+  // incohérente — détectées à l'extraction des reçus et par scan périodique.
+  // fingerprint = clé stable de l'anomalie (dédup entre scans) ; une anomalie
+  // 'dismissed' n'est jamais recréée pour le même fingerprint.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS transaction_anomalies (
+      id TEXT PRIMARY KEY,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      severity TEXT NOT NULL CHECK(severity IN ('high','medium','low')),
+      message TEXT NOT NULL,
+      details TEXT,
+      fingerprint TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','dismissed','resolved')),
+      dismissed_by TEXT REFERENCES users(id),
+      dismissed_reason TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_txn_anomalies_fp ON transaction_anomalies(fingerprint)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_anomalies_entity ON transaction_anomalies(entity_type, entity_id, status)`) } catch {}
+
+  // ── Travaux (page /travaux) ────────────────────────────────────────────────
+  // Quatre listes distinctes, volontairement séparées :
+  //   work_prompts      — la file de prompts de l'utilisateur, exécutée une à la
+  //                       fois par l'agent (remplace le Google Doc de prompts).
+  //   work_suggestions  — les recommandations générées par l'agent lui-même ;
+  //                       jamais mélangées à la file humaine, promues sur demande.
+  //   work_ideas        — le carnet d'idées de l'utilisateur : rien ne s'exécute
+  //                       depuis là, une idée se garde et se relit.
+  //   recurring_tasks   — les travaux récurrents du fichier Travaux_OS_ML (Drive),
+  //                       cochés par période dans recurring_task_completions.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS work_prompts (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      -- 'queued' = en attente de son tour ; 'running' = tâche agent en cours ;
+      -- 'done'/'blocked' recopient le sort de la tâche agent ; 'paused' = mise de
+      -- côté par l'utilisateur (jamais ramassée par l'ordonnanceur).
+      status TEXT NOT NULL DEFAULT 'queued'
+        CHECK(status IN ('queued','running','done','blocked','paused','cancelled')),
+      position REAL NOT NULL DEFAULT 0,
+      -- Enchaîne dans la MÊME session Claude que l'item précédent (--resume) au
+      -- lieu de repartir d'un contexte neuf : pour les prompts qui poursuivent le
+      -- travail du précédent. Le défaut (0) = contexte remis à zéro.
+      same_context INTEGER NOT NULL DEFAULT 0,
+      mode TEXT NOT NULL DEFAULT 'implement' CHECK(mode IN ('implement','question')),
+      preset TEXT NOT NULL DEFAULT 'deep',
+      agent_task_id TEXT,
+      -- Session Claude de l'exécution, pour que l'item suivant puisse la reprendre.
+      session_id TEXT,
+      suggestion_id TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      started_at TEXT,
+      completed_at TEXT,
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_work_prompts_status ON work_prompts(status, position)`) } catch {}
+  // Titre géré par l'app (déduit du prompt puis du fil de discussion) plutôt que
+  // saisi à la main. Passe à 0 dès que l'utilisateur écrit son propre titre — un
+  // titre choisi n'est JAMAIS réécrit. Défaut 0 : les items d'avant la
+  // fonctionnalité gardent le leur, seul un item créé sans titre devient dynamique.
+  try { db.exec(`ALTER TABLE work_prompts ADD COLUMN title_auto INTEGER NOT NULL DEFAULT 0`) } catch {}
+  // Préréglage (Rapide/Standard/Approfondi) choisi par l'app plutôt que par
+  // l'utilisateur : `preset` garde toujours une clé concrète (c'est elle que lit
+  // l'ordonnanceur), ce flag dit qu'elle a été jugée automatiquement — et qu'une
+  // reclassification peut la réécrire. Même contrat que title_auto : passe à 0
+  // dès que l'utilisateur choisit lui-même, et plus rien n'y touche.
+  try { db.exec(`ALTER TABLE work_prompts ADD COLUMN preset_auto INTEGER NOT NULL DEFAULT 0`) } catch {}
+  // Question posée par l'agent à la fin d'une exécution, en JSON : { question, options[] }.
+  // Une tâche détachée n'a pas de terminal — elle ne peut pas demander « laquelle des
+  // deux ? » et devinait. Elle écrit désormais sa question ici, la carte l'affiche avec
+  // ses choix, et un clic répond via le fil (ce qui relance la tâche). NULL = rien à
+  // répondre. Colonne plutôt qu'un statut : le CHECK ci-dessus ne se modifie pas sans
+  // reconstruire la table, et « terminé + question en attente » est un état réel.
+  try { db.exec(`ALTER TABLE work_prompts ADD COLUMN pending_question TEXT`) } catch {}
+  // « Arrête après celle-ci » : une fois cet item terminé, l'ordonnanceur se met en
+  // pause au lieu d'enchaîner. Sert à borner la consommation de jetons Claude sans
+  // avoir à surveiller la file (ex. la nuit, garder du quota pour l'équipe du matin).
+  // 0 = enchaîne normalement.
+  try { db.exec(`ALTER TABLE work_prompts ADD COLUMN stop_after INTEGER NOT NULL DEFAULT 0`) } catch {}
+  // Deux files distinctes sur la même table : 'finance' (Espace finance → Travaux)
+  // et 'agent' (section Agent → Travaux de l'agent). Chaque page ne montre que la
+  // sienne ; l'exécuteur, lui, est partagé (une seule implémentation à la fois,
+  // toutes files confondues).
+  try { db.exec(`ALTER TABLE work_prompts ADD COLUMN space TEXT NOT NULL DEFAULT 'finance'`) } catch {}
+  // Relance « avec le fil » : le prochain départ de cet item est une SUITE de
+  // conversation (réponse de l'utilisateur après une exécution) — le brief est le
+  // fil complet et la session Claude précédente est reprise. Posé quand on répond
+  // à un item terminé (tout de suite, ou remis à la fin de la file), consommé à la
+  // fin de l'exécution. 0 = départ normal sur le prompt d'origine.
+  try { db.exec(`ALTER TABLE work_prompts ADD COLUMN follow_up INTEGER NOT NULL DEFAULT 0`) } catch {}
+  // Marqueur « lu » façon boîte mail : posé quand l'utilisateur OUVRE une conversation
+  // terminée (done/blocked/cancelled). NULL tant que le résultat n'a pas été consulté —
+  // la carte « Conversations » s'affiche alors en gras pour qu'une tâche terminée non
+  // relue ne se perde jamais dans la liste. Une relance (follow_up / reprise) le remet à
+  // NULL : la nouvelle réponse de l'agent redevient « à lire ».
+  try { db.exec(`ALTER TABLE work_prompts ADD COLUMN seen_at TEXT`) } catch {}
+
+  // Fil de discussion d'un item de la file : chaque tâche a SA conversation, qui
+  // survit aux exécutions successives (une relance crée une nouvelle tâche agent,
+  // pas un nouveau fil). C'est ce qui permet de répondre à une demande de précision
+  // depuis l'ERP, et de garder la trace même quand la session Claude a été purgée —
+  // le fil est alors réinjecté en résumé dans le prompt de la relance.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS work_prompt_messages (
+      id TEXT PRIMARY KEY,
+      prompt_id TEXT NOT NULL REFERENCES work_prompts(id),
+      role TEXT NOT NULL CHECK(role IN ('user','agent')),
+      text TEXT NOT NULL,
+      -- Tâche agent qui a produit le message (côté agent) ou qu'il a déclenchée
+      -- (côté humain) : permet de relier un tour de conversation à son exécution.
+      agent_task_id TEXT,
+      author TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_work_prompt_msgs ON work_prompt_messages(prompt_id, created_at)`) } catch {}
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS work_suggestions (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      rationale TEXT,
+      prompt TEXT NOT NULL,
+      area TEXT,
+      -- 'chantier'    = un travail à faire dans l'ERP tel qu'il est ;
+      -- 'integration' = un logiciel / une API externe à brancher (ce que ça
+      --                 débloquerait). Deux moteurs distincts, une seule liste.
+      kind TEXT NOT NULL DEFAULT 'chantier',
+      status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','accepted','dismissed')),
+      -- Empreinte de déduplication : une même recommandation ne revient pas à
+      -- chaque passage du moteur, même après avoir été rejetée.
+      fingerprint TEXT NOT NULL,
+      work_prompt_id TEXT,
+      dismissed_reason TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`ALTER TABLE work_suggestions ADD COLUMN kind TEXT NOT NULL DEFAULT 'chantier'`) } catch {}
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_work_suggestions_fp ON work_suggestions(fingerprint)`) } catch {}
+
+  // Fil de discussion d'une suggestion : avant de la mettre dans sa file (ou de la
+  // rejeter), on peut demander à Claude d'en dire plus — pourquoi maintenant, ce que
+  // ça change concrètement, ce que coûte l'outil externe d'une intégration. La
+  // discussion n'exécute RIEN : elle vit à côté de la suggestion, pas dans la file.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS work_suggestion_messages (
+      id TEXT PRIMARY KEY,
+      suggestion_id TEXT NOT NULL REFERENCES work_suggestions(id),
+      role TEXT NOT NULL CHECK(role IN ('user','agent')),
+      text TEXT NOT NULL,
+      author TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_work_suggestion_msgs ON work_suggestion_messages(suggestion_id, created_at)`) } catch {}
+
+  // Idées (onglet « Idées ») : le carnet de l'utilisateur. Rien ne s'exécute
+  // jamais depuis cette liste — une idée est là pour être gardée et relue, pas
+  // pour être faite. Elle ne rejoint la file que par une promotion explicite,
+  // et y arrive « de côté » (voir promoteIdea dans workIdeas.js).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS work_ideas (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      -- Développement libre de l'idée (le « pourquoi », les pistes…).
+      notes TEXT,
+      -- Thème libre saisi par l'utilisateur, purement pour regrouper l'œil.
+      tag TEXT,
+      -- Ordre du carnet, réordonnable à la main comme la file.
+      position REAL NOT NULL DEFAULT 0,
+      -- Item de file créé par une promotion, pour ne pas promouvoir deux fois.
+      work_prompt_id TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_work_ideas_pos ON work_ideas(position)`) } catch {}
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS recurring_tasks (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      -- 'adhoc' = à faire une seule fois (pas de période) ; les autres cadences
+      -- génèrent une occurrence par période et se cochent période par période.
+      -- 'bihebdo' = deux fois par semaine (mardi et samedi) : deux occurrences
+      -- par semaine, cochées séparément.
+      cadence TEXT NOT NULL DEFAULT 'hebdo'
+        CHECK(cadence IN ('hebdo','bihebdo','mensuel','trimestriel','annuel','adhoc')),
+      owner TEXT NOT NULL DEFAULT 'AL',
+      -- Indice de calendrier libre affiché sur la ligne (« mardi », « le 25 »…).
+      day_hint TEXT,
+      notes TEXT,
+      due_date TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      position REAL NOT NULL DEFAULT 0,
+      source TEXT NOT NULL DEFAULT 'manuel',
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_recurring_tasks_owner ON recurring_tasks(owner, cadence, position)`) } catch {}
+  // Jour du mois où le travail est dû (1-31), pour les cadences mensuelles :
+  // « Payer Visa » le 25 doit crier avant le 25, pas se contenter d'exister.
+  // day_hint reste l'indice libre affiché ; due_day est la version calculable.
+  try { db.exec(`ALTER TABLE recurring_tasks ADD COLUMN due_day INTEGER`) } catch {}
+  // La cadence 'bihebdo' est arrivée après la création de la table : sur une DB
+  // existante, le CHECK refuse encore la valeur, et SQLite ne sait pas modifier
+  // une contrainte en place. On reconstruit donc la table (procédure officielle
+  // SQLite), UNE SEULE FOIS — le garde-fou est le texte du CHECK lui-même, donc
+  // une DB déjà reconstruite (ou toute neuve) passe à côté sans rien faire.
+  try {
+    const ddl = db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='recurring_tasks'`).get()?.sql || ''
+    if (ddl && !ddl.includes("'bihebdo'")) {
+      db.pragma('foreign_keys = OFF')
+      try {
+        db.transaction(() => {
+          db.exec(`
+            CREATE TABLE recurring_tasks_new (
+              id TEXT PRIMARY KEY,
+              label TEXT NOT NULL,
+              cadence TEXT NOT NULL DEFAULT 'hebdo'
+                CHECK(cadence IN ('hebdo','bihebdo','mensuel','trimestriel','annuel','adhoc')),
+              owner TEXT NOT NULL DEFAULT 'AL',
+              day_hint TEXT,
+              notes TEXT,
+              due_date TEXT,
+              active INTEGER NOT NULL DEFAULT 1,
+              position REAL NOT NULL DEFAULT 0,
+              source TEXT NOT NULL DEFAULT 'manuel',
+              created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+              updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+              deleted_at TEXT,
+              due_day INTEGER
+            )
+          `)
+          db.exec(`
+            INSERT INTO recurring_tasks_new
+              (id, label, cadence, owner, day_hint, notes, due_date, active, position, source, created_at, updated_at, deleted_at, due_day)
+            SELECT id, label, cadence, owner, day_hint, notes, due_date, active, position, source, created_at, updated_at, deleted_at, due_day
+            FROM recurring_tasks
+          `)
+          db.exec(`DROP TABLE recurring_tasks`)
+          db.exec(`ALTER TABLE recurring_tasks_new RENAME TO recurring_tasks`)
+          db.exec(`CREATE INDEX IF NOT EXISTS idx_recurring_tasks_owner ON recurring_tasks(owner, cadence, position)`)
+        })()
+        console.log('✅ recurring_tasks : cadence « bihebdo » autorisée')
+      } finally { db.pragma('foreign_keys = ON') }
+    }
+  } catch (e) { console.error('⚠️  recurring_tasks (cadence bihebdo) :', e.message) }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS recurring_task_completions (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL REFERENCES recurring_tasks(id),
+      -- Clé de période : '2026-W32' (hebdo), '2026-08' (mensuel), '2026-Q3'
+      -- (trimestriel), '2026' (annuel), 'adhoc' (tâche unique).
+      period_key TEXT NOT NULL,
+      done_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      done_by TEXT REFERENCES users(id),
+      note TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rt_completion_period ON recurring_task_completions(task_id, period_key)`) } catch {}
+
+  // ── Budget marketing (Émilie) ──────────────────────────────────────────────
+  // Remplace la procédure manuelle « Suivi - Budget marketing (Émilie) » :
+  // les dépenses des comptes QB marketing (75910-75930) sont détectées via le
+  // rapport GeneralLedger, l'utilisateur tranche leur pertinence (nouveaux
+  // clients Canada anglais / USA), et un message Slack hebdo part à Émilie.
+  // amount = montant maison (CAD) ; amount_foreign/currency pour l'affichage
+  // des comptes en devise. import_key = clé naturelle de dédup GL.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS marketing_expenses (
+      id TEXT PRIMARY KEY,
+      import_key TEXT,
+      qb_txn_id TEXT,
+      qb_txn_type TEXT,
+      txn_date TEXT NOT NULL,
+      acctnum TEXT NOT NULL,
+      account_name TEXT,
+      vendor TEXT,
+      memo TEXT,
+      doc_num TEXT,
+      amount REAL NOT NULL,
+      amount_foreign REAL,
+      currency TEXT DEFAULT 'CAD',
+      status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','relevant','not_relevant')),
+      rule_id TEXT,
+      decided_at TEXT,
+      decided_by TEXT REFERENCES users(id),
+      notified_at TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mkt_exp_import_key ON marketing_expenses(import_key) WHERE import_key IS NOT NULL`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mkt_exp_status ON marketing_expenses(status, txn_date, deleted_at)`) } catch {}
+
+  // Règles « jamais pertinente » : un fournisseur (clé normalisée) dont les
+  // dépenses récurrentes ne concernent jamais le budget d'Émilie est exclu
+  // automatiquement à l'ingestion. acctnum NULL = tous les comptes marketing.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS marketing_expense_rules (
+      id TEXT PRIMARY KEY,
+      vendor_key TEXT NOT NULL,
+      vendor_label TEXT NOT NULL,
+      acctnum TEXT,
+      note TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+
+  // Budget vs Réel — remplace le fichier Drive « Annual Marketing budget »,
+  // trop fragile pour une écriture programmatique. Une ligne = un montant
+  // budgété pour un compte QB marketing et un mois ; le réel est calculé
+  // depuis marketing_expenses (status='relevant').
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS marketing_budget_lines (
+      id TEXT PRIMARY KEY,
+      acctnum TEXT NOT NULL,
+      month TEXT NOT NULL,
+      budget REAL NOT NULL DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mkt_budget_cell ON marketing_budget_lines(acctnum, month) WHERE deleted_at IS NULL`) } catch {}
+
+  // ── Inventaire des documents Drive de la comptabilité ─────────────────────
+  // Photographie (métadonnées SEULEMENT — rien n'est importé) des Sheets / Docs
+  // accessibles au compte Google connecté, pour décider un par un lesquels
+  // méritent d'être rapatriés dans l'ERP. `status` est recalculé à chaque scan
+  // (déjà synchronisé / candidat / à ignorer) ; `decision` appartient à
+  // l'utilisateur et n'est JAMAIS écrasée par un scan.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS drive_inventory_items (
+      id TEXT PRIMARY KEY,
+      drive_file_id TEXT NOT NULL,
+      name TEXT,
+      mime_type TEXT,
+      kind TEXT,
+      owner_email TEXT,
+      owner_name TEXT,
+      web_view_link TEXT,
+      parent_folder_id TEXT,
+      parent_folder_name TEXT,
+      created_time TEXT,
+      modified_time TEXT,
+      last_modified_by TEXT,
+      version INTEGER,
+      size_bytes INTEGER,
+      tabs TEXT,
+      tabs_error TEXT,
+      edits_per_month REAL,
+      days_since_modified INTEGER,
+      frequency TEXT,
+      status TEXT,
+      status_reason TEXT,
+      sync_target TEXT,
+      match_terms TEXT,
+      source TEXT NOT NULL DEFAULT 'scan',
+      scanned_account TEXT,
+      decision TEXT,
+      decision_note TEXT,
+      decided_at TEXT,
+      decided_by TEXT REFERENCES users(id),
+      first_seen_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      last_seen_at TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_drive_inv_file ON drive_inventory_items(drive_file_id) WHERE deleted_at IS NULL`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_drive_inv_status ON drive_inventory_items(status, deleted_at)`) } catch {}
+
+  // Onglets — la vraie unité de décision. Un classeur « déjà synchronisé » au
+  // niveau du fichier peut n'avoir qu'un ou deux onglets repris par l'ERP (cas
+  // de CTB - Suivi : 12 onglets, 2 touchés) ; c'est donc l'ONGLET qui porte le
+  // statut, la pertinence et la décision. `nature` distingue un tableau de
+  // données (importable) d'une procédure rédigée ou d'une calculatrice.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS drive_inventory_tabs (
+      id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL REFERENCES drive_inventory_items(id),
+      tab_name TEXT NOT NULL,
+      tab_index INTEGER,
+      rows_count INTEGER,
+      cols_count INTEGER,
+      header_json TEXT,
+      sample_json TEXT,
+      nature TEXT,
+      status TEXT,
+      status_reason TEXT,
+      sync_target TEXT,
+      relevance INTEGER,
+      target_module TEXT,
+      suggestion TEXT,
+      verdict TEXT,
+      analysis_source TEXT,
+      analysis_at TEXT,
+      decision TEXT,
+      decision_note TEXT,
+      decided_at TEXT,
+      decided_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`ALTER TABLE drive_inventory_tabs ADD COLUMN sections_json TEXT`) } catch {}
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_drive_tab_unique ON drive_inventory_tabs(item_id, tab_name) WHERE deleted_at IS NULL`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_drive_tab_item ON drive_inventory_tabs(item_id, deleted_at)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_drive_tab_verdict ON drive_inventory_tabs(verdict, relevance)`) } catch {}
+
+  // État du dernier scan (une seule ligne, id=1) — affiché en tête de page.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS drive_inventory_state (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      last_scan_at TEXT,
+      last_status TEXT,
+      last_error TEXT,
+      last_account TEXT,
+      files_seen INTEGER,
+      duration_ms INTEGER
+    )
+  `)
+  // Analyse de pertinence : passage long (lecture du contenu déjà extrait +
+  // jugement du modèle), lancé à la demande et suivi en arrière-plan.
+  for (const col of [
+    'last_analysis_at TEXT', 'analysis_status TEXT', 'analysis_error TEXT',
+    'analysis_done INTEGER', 'analysis_total INTEGER', 'analysis_source TEXT',
+    'analysis_phase TEXT',
+  ]) {
+    try { db.exec(`ALTER TABLE drive_inventory_state ADD COLUMN ${col}`) } catch {}
+  }
+
+  // ── Prospects Instagram ───────────────────────────────────────────────────
+  // Les gens qui commentent nos publications Instagram (en particulier le mot
+  // « coach ») sont captés par ManyChat, qui appelle POST /api/instagram/manychat.
+  // L'ERP est la SOURCE DE VÉRITÉ : il dédoublonne, décide s'il faut envoyer le
+  // DM (`should_dm` dans la réponse — ManyChat ne déclenche qu'une fois par
+  // personne ET par publication, il ne peut donc pas dédoublonner seul), et
+  // met la liste en miroir dans Airtable où Philippe édite le suivi.
+  //
+  // dedup_key : 'igsid:<id>' quand l'IGSID est fourni (stable même si la
+  // personne renomme son compte), sinon 'user:<username minuscule>'. Une ligne
+  // 'user:' est promue en 'igsid:' dès qu'un événement apporte l'IGSID.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS instagram_prospects (
+      id TEXT PRIMARY KEY,
+      dedup_key TEXT NOT NULL,
+      ig_username TEXT,
+      ig_user_id TEXT,
+      manychat_subscriber_id TEXT,
+      full_name TEXT,
+      profile_url TEXT,
+      first_comment_text TEXT,
+      first_comment_at TEXT,
+      first_post_url TEXT,
+      keyword TEXT,
+      has_keyword INTEGER NOT NULL DEFAULT 0,
+      last_comment_text TEXT,
+      last_comment_at TEXT,
+      last_post_url TEXT,
+      comment_count INTEGER NOT NULL DEFAULT 0,
+      dm_sent INTEGER NOT NULL DEFAULT 0,
+      dm_sent_at TEXT,
+      replied INTEGER NOT NULL DEFAULT 0,
+      replied_at TEXT,
+      first_reply_text TEXT,
+      reply_count INTEGER NOT NULL DEFAULT 0,
+      follow_up_status TEXT NOT NULL DEFAULT 'À contacter',
+      notes TEXT,
+      week_key TEXT,
+      notified_at TEXT,
+      notified_week TEXT,
+      airtable_id TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ig_prospect_dedup ON instagram_prospects(dedup_key) WHERE deleted_at IS NULL`) } catch {}
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ig_prospect_airtable ON instagram_prospects(airtable_id) WHERE airtable_id IS NOT NULL`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_ig_prospect_notify ON instagram_prospects(notified_at, first_comment_at)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_ig_prospect_igsid ON instagram_prospects(ig_user_id) WHERE ig_user_id IS NOT NULL`) } catch {}
+
+  // Ajouts (additif/idempotent) :
+  //  • contacted / contacted_at — la case que Philippe coche, dans l'ERP ou
+  //    dans Airtable, pour ne pas recontacter quelqu'un. Distincte de dm_sent
+  //    (automatique, ManyChat) : c'est la trace d'un contact HUMAIN.
+  //  • source — 'manychat' (webhook) ou 'scrape' (lecture des commentaires).
+  //  • comment_url — permalien de la publication commentée, pour retrouver le fil.
+  try { db.exec(`ALTER TABLE instagram_prospects ADD COLUMN contacted INTEGER NOT NULL DEFAULT 0`) } catch {}
+  try { db.exec(`ALTER TABLE instagram_prospects ADD COLUMN contacted_at TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE instagram_prospects ADD COLUMN contacted_by TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE instagram_prospects ADD COLUMN source TEXT`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_ig_prospect_week ON instagram_prospects(week_key) WHERE deleted_at IS NULL`) } catch {}
+
+  // Journal brut des appels ManyChat. Porte l'idempotence (event_key unique :
+  // un rejeu ne regonfle pas les compteurs), l'historique « a commenté 4 fois »
+  // et le diagnostic quand un flow ManyChat est mal configuré.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS instagram_prospect_events (
+      id TEXT PRIMARY KEY,
+      prospect_id TEXT REFERENCES instagram_prospects(id),
+      event_key TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('comment','dm_sent','reply')),
+      payload TEXT,
+      occurred_at TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ig_event_key ON instagram_prospect_events(event_key)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_ig_event_prospect ON instagram_prospect_events(prospect_id, kind)`) } catch {}
+
+  // Config Airtable du module. table_id volontairement NULL : la table
+  // « Prospects Instagram » doit être créée à la main (le jeton OAuth n'a que
+  // le scope schema.bases:read). Un faux tbl… ferait boucler le write-back en
+  // 404 ; table_id absent ⇒ writeBackRecord skip proprement.
+  try {
+    db.prepare(`
+      INSERT OR IGNORE INTO airtable_module_config (module, base_id, field_map)
+      VALUES ('instagram', 'appB4Fehk9jYd4s4B', ?)
+    `).run(JSON.stringify(INSTAGRAM_FIELD_MAP))
+  } catch {}
+
+  // Le field_map est complété de façon ADDITIVE : la ligne existe déjà chez
+  // l'utilisateur, l'INSERT ci-dessus ne fait donc plus rien, et un champ ajouté
+  // au code (« Contacté ») resterait invisible d'Airtable. On n'ajoute que les
+  // clés absentes — un nom de champ modifié à la main reste prioritaire.
+  try {
+    const row = db.prepare("SELECT field_map FROM airtable_module_config WHERE module='instagram'").get()
+    const current = JSON.parse(row?.field_map || '{}')
+    let added = 0
+    for (const [key, atField] of Object.entries(INSTAGRAM_FIELD_MAP)) {
+      if (!(key in current)) { current[key] = atField; added++ }
+    }
+    if (added) {
+      db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='instagram'").run(JSON.stringify(current))
+    }
+  } catch {}
+
+  // Sens de synchro par champ. SANS ce seed, fieldMapDirection renvoie 'both'
+  // par défaut et une édition Airtable pourrait écraser comment_count ou
+  // dm_sent — donc faire re-contacter quelqu'un. INSERT OR IGNORE : un réglage
+  // fait à la main dans « Gérer les champs » reste prioritaire.
+  try {
+    const dir = db.prepare(`INSERT OR IGNORE INTO airtable_field_directions (module, field_key, direction) VALUES ('instagram', ?, ?)`)
+    for (const key of Object.keys(INSTAGRAM_FIELD_MAP)) {
+      dir.run(key, INSTAGRAM_PULLABLE_KEYS.has(key) ? 'both' : 'push')
+    }
+  } catch {}
+
+
+  // ── Collecte automatique des factures sur les portails fournisseurs ────────
+  // Certains fournisseurs (Amazon, Wix) n'envoient aucune facture par courriel
+  // et n'exposent pas d'API : la facture ne vit que derrière le login de leur
+  // portail. Un compte = un jeu d'identifiants chiffrés + une session Playwright
+  // persistée (storage_state) pour éviter de re-passer la 2FA à chaque tournée.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scraper_accounts (
+      id TEXT PRIMARY KEY,
+      vendor TEXT NOT NULL,
+      label TEXT,
+      username TEXT,
+      password_enc TEXT,
+      totp_secret_enc TEXT,
+      storage_state_enc TEXT,
+      storage_state_at TEXT,
+      enabled INTEGER DEFAULT 1,
+      lookback_days INTEGER DEFAULT 60,
+      schedule_cron TEXT,
+      last_run_at TEXT,
+      last_status TEXT,
+      last_error TEXT,
+      last_imported INTEGER DEFAULT 0,
+      -- Défi OTP en cours : le scraper se met en pause et sonde otp_code.
+      otp_code TEXT,
+      otp_requested_at TEXT,
+      otp_submitted_at TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_scraper_accounts_vendor ON scraper_accounts(vendor) WHERE deleted_at IS NULL`) } catch {}
+
+  // Historique des tournées. `log` = trace lisible (une ligne par étape) pour
+  // diagnostiquer un sélecteur cassé sans relancer à l'aveugle ; `artifacts` =
+  // captures d'écran/HTML écrites sous uploads/scrapers/<run_id>/.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scraper_runs (
+      id TEXT PRIMARY KEY,
+      account_id TEXT REFERENCES scraper_accounts(id),
+      vendor TEXT,
+      trigger TEXT,
+      status TEXT NOT NULL DEFAULT 'running'
+        CHECK(status IN ('running','needs_otp','success','error','cancelled')),
+      started_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      finished_at TEXT,
+      duration_ms INTEGER,
+      found INTEGER DEFAULT 0,
+      imported INTEGER DEFAULT 0,
+      skipped INTEGER DEFAULT 0,
+      error TEXT,
+      log TEXT DEFAULT '[]',
+      artifacts TEXT DEFAULT '[]',
+      created_by TEXT REFERENCES users(id)
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_scraper_runs_account ON scraper_runs(account_id, started_at DESC)`) } catch {}
+
+  // Un document = une facture vue sur le portail. La clé (vendor, external_id)
+  // porte la dédup entre tournées : on ne re-télécharge jamais une facture déjà
+  // vue, même si l'utilisateur a supprimé le reçu correspondant.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scraper_documents (
+      id TEXT PRIMARY KEY,
+      account_id TEXT REFERENCES scraper_accounts(id),
+      vendor TEXT NOT NULL,
+      external_id TEXT NOT NULL,
+      doc_date TEXT,
+      amount REAL,
+      currency TEXT,
+      source_url TEXT,
+      filename TEXT,
+      content_sha256 TEXT,
+      sale_receipt_id TEXT REFERENCES sale_receipts(id),
+      run_id TEXT REFERENCES scraper_runs(id),
+      status TEXT DEFAULT 'imported',
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_scraper_docs_external ON scraper_documents(vendor, external_id)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_scraper_docs_receipt ON scraper_documents(sale_receipt_id) WHERE sale_receipt_id IS NOT NULL`) } catch {}
+
   console.log('Database schema initialized');
 }
+
+// Mapping colonne ERP → nom du champ Airtable. Les clés SONT les noms de
+// colonnes de instagram_prospects, d'où l'absence de keyToColumn côté
+// write-back. Les champs listés dans INSTAGRAM_PULLABLE_KEYS appartiennent à
+// Philippe (il les édite dans Airtable) ; tous les autres sont poussés par le
+// système et ne remontent jamais.
+export const INSTAGRAM_FIELD_MAP = {
+  ig_username: "Nom d'usager",
+  full_name: 'Nom',
+  profile_url: 'Profil',
+  ig_user_id: 'IGSID',
+  manychat_subscriber_id: 'ID ManyChat',
+  keyword: 'Mot-clé',
+  comment_count: 'Nb de commentaires',
+  first_comment_text: 'Premier commentaire',
+  first_comment_at: 'Premier commentaire le',
+  last_comment_text: 'Dernier commentaire',
+  last_comment_at: 'Dernier commentaire le',
+  last_post_url: 'Publication',
+  dm_sent: 'DM envoyé',
+  dm_sent_at: 'DM envoyé le',
+  replied: 'A répondu',
+  replied_at: 'Répondu le',
+  first_reply_text: 'Réponse',
+  week_key: 'Semaine',
+  notified_at: 'Annoncé le',
+  follow_up_status: 'Suivi',
+  notes: 'Notes',
+  contacted: 'Contacté',
+  contacted_at: 'Contacté le',
+}
+
+// `contacted` remonte d'Airtable : Philippe peut cocher des deux côtés.
+export const INSTAGRAM_PULLABLE_KEYS = new Set(['follow_up_status', 'notes', 'contacted'])
 
 
 const SELLABLE_DEFAULTS = [

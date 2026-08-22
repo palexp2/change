@@ -93,6 +93,13 @@ export function listen(app) {
       const { port } = server.address()
       resolve({ server, base: `http://127.0.0.1:${port}` })
     })
+    // unref : un hook after() déclaré au TOP LEVEL d'un fichier node:test n'est
+    // jamais exécuté (il faut un describe() englobant) — le serveur n'était donc
+    // jamais fermé et le fichier de test ne rendait jamais la main. C'est ce qui
+    // faisait « hanger » npm test, donc le hook pre-push, indéfiniment. Un
+    // serveur unref'd n'empêche plus le processus de sortir ; les requêtes en
+    // cours gardent leurs propres handles actifs le temps du test.
+    server.unref()
   })
 }
 
@@ -136,6 +143,11 @@ export function closeServer(server) {
   return new Promise((resolve) => {
     if (!server) return resolve()
     server.close(() => resolve())
+    // fetch() (undici) garde ses sockets en keep-alive : sans fermeture forcée,
+    // server.close() n'appelle jamais son callback et le fichier de test ne rend
+    // jamais la main — c'est ce qui faisait « hanger » npm test (donc le hook
+    // pre-push) indéfiniment.
+    server.closeAllConnections?.()
   })
 }
 

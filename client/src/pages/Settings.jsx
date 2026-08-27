@@ -4,7 +4,7 @@ import { SlidersHorizontal, FolderOpen, ExternalLink, Check, Search, BookOpen } 
 import { Layout } from '../components/Layout.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { useNavPrefs } from '../lib/navPrefs.jsx'
-import { defaultNavItems } from '../lib/navItems.js'
+import { defaultNavItems, applyNavOrder } from '../lib/navItems.js'
 import QuickBooksAccountCard from '../components/QuickBooksAccountCard.jsx'
 
 // Sections de la page Paramètres perso. Shell extensible : ajouter une entrée
@@ -45,7 +45,7 @@ function VisibilityCheckbox({ checked, disabled, label, Icon, onChange, indent, 
 
 function MenuSection() {
   const { user } = useAuth()
-  const { isHidden, toggle } = useNavPrefs()
+  const { isHidden, toggle, order } = useNavPrefs()
   const isHR = ['admin', 'rh'].includes(user?.role)
   const [query, setQuery] = useState('')
 
@@ -56,7 +56,8 @@ function MenuSection() {
   // puis on applique la recherche : un item correspond si son label matche ; un
   // groupe est conservé si son nom matche (tous ses items) ou si au moins un de
   // ses items matche (seulement ceux-ci).
-  const sections = defaultNavItems
+  // Même ordre que la sidebar (personnalisable au glisser-déposer).
+  const sections = applyNavOrder(defaultNavItems, order)
     .map((item) => {
       if (!item.group) {
         if (q && !matches(item.label)) return null

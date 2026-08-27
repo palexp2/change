@@ -65,41 +65,81 @@ function rawRequest(method, path, body, signal) {
   }).finally(() => onFetchEnd())
 }
 
-// GETs consult the prefetch cache (populated by nav hover). Mutations
-// invalidate the resource-path prefix so subsequent GETs see fresh data.
-function request(method, path, body) {
-  if (method === 'GET') {
-    const hit = cacheGet(path)
-    if (hit) return hit
-    const promise = rawRequest('GET', path)
-    cacheSet(path, promise)
-    return promise
-  }
+// Toute mutation (JSON ou multipart) doit purger le cache de la ressource
+// touchée, sinon un GET immédiat après coup sert la réponse d'avant (TTL 30 s)
+// — c'est ce qui empêchait un document fraîchement téléversé d'apparaître dans
+// la liste rechargée juste après l'upload.
+function invalidateForPath(path) {
   // Pour PATCH /admin/<resource>/... ou POST /admin/<resource>/..., on
   // invalide aussi la ressource sous-jacente (et pas seulement /admin), sinon
   // les GET /<resource>/... suivants servent le cache obsolète.
   const segments = path.split('?')[0].split('/').filter(Boolean)
   const resource = segments[0]
-  if (resource) {
-    invalidate('/' + resource)
-    invalidateStale(resource)
-    if (resource === 'admin' && segments[1]) {
-      invalidate('/' + segments[1])
-      invalidateStale(segments[1])
-    }
-    // API générique /records/<table>/... : invalider la ressource sous-jacente
-    // (sinon les GET /<resource> servent le cache obsolète). Le nom de table SQL
-    // utilise des underscores (activity_codes) alors que la route REST utilise
-    // des tirets (activity-codes) — on invalide les deux variantes par sécurité.
-    if (resource === 'records' && segments[1]) {
-      const table = segments[1]
-      for (const variant of new Set([table, table.replace(/_/g, '-')])) {
-        invalidate('/' + variant)
-        invalidateStale(variant)
-      }
+  if (!resource) return
+  invalidate('/' + resource)
+  invalidateStale(resource)
+  if (resource === 'admin' && segments[1]) {
+    invalidate('/' + segments[1])
+    invalidateStale(segments[1])
+  }
+  // API générique /records/<table>/... : invalider la ressource sous-jacente
+  // (sinon les GET /<resource> servent le cache obsolète). Le nom de table SQL
+  // utilise des underscores (activity_codes) alors que la route REST utilise
+  // des tirets (activity-codes) — on invalide les deux variantes par sécurité.
+  if (resource === 'records' && segments[1]) {
+    const table = segments[1]
+    for (const variant of new Set([table, table.replace(/_/g, '-')])) {
+      invalidate('/' + variant)
+      invalidateStale(variant)
     }
   }
-  return rawRequest(method, path, body)
+}
+
+// Une connexion HTTP gardée ouverte peut être fermée par le serveur à l'instant
+// précis où le navigateur la réutilise : fetch() rejette alors avec un TypeError
+// (ECONNRESET) sans que la requête ait été traitée. Un clic sur un bouton d'action
+// se perdait donc « une fois sur deux » sans que rien ne soit fait côté serveur.
+// Une seule reprise immédiate suffit — la connexion morte est écartée du pool.
+// Réservé aux méthodes IDEMPOTENTES : rejouer un POST créerait un doublon.
+const IDEMPOTENT = new Set(['GET', 'PUT', 'PATCH', 'DELETE'])
+const isNetworkError = err => err instanceof TypeError && err?.name !== 'AbortError'
+
+function withNetworkRetry(method, path, body) {
+  return rawRequest(method, path, body).catch(err => {
+    if (!isNetworkError(err)) throw err
+    return rawRequest(method, path, body)
+  })
+}
+
+// GETs consult the prefetch cache (populated by nav hover). Mutations
+// invalidate the resource-path prefix so subsequent GETs see fresh data.
+function request(method, path, body, { retryOnNetworkError = false } = {}) {
+  if (method === 'GET') {
+    const hit = cacheGet(path)
+    if (hit) return hit
+    const promise = withNetworkRetry('GET', path)
+    cacheSet(path, promise)
+    return promise
+  }
+  invalidateForPath(path)
+  const retry = retryOnNetworkError || IDEMPOTENT.has(method)
+  return retry ? withNetworkRetry(method, path, body) : rawRequest(method, path, body)
+}
+
+// Upload multipart : `fetch` direct (pas de Content-Type JSON, le navigateur
+// pose le boundary) mais MÊME invalidation de cache qu'une mutation normale.
+// `path` est relatif à BASE, comme pour request().
+async function uploadRequest(path, formData, method = 'POST') {
+  invalidateForPath(path)
+  const token = getToken()
+  const res = await fetch(`${BASE}${path}`, {
+    method,
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  return data
 }
 
 const get = (path) => request('GET', path)
@@ -109,6 +149,9 @@ const getAbortable = (path, signal) => rawRequest('GET', path, undefined, signal
 // le cache prefetch (TTL 30 s) rendrait le poll aveugle aux transitions.
 const getFresh = (path) => rawRequest('GET', path)
 const post = (path, body) => request('POST', path, body)
+// POST dont rejouer l'appel est sans conséquence (l'effet est le même la 2e fois) :
+// éligible à la reprise sur coupure réseau, comme les méthodes idempotentes.
+const postIdempotent = (path, body) => request('POST', path, body, { retryOnNetworkError: true })
 const put = (path, body) => request('PUT', path, body)
 const patch = (path, body) => request('PATCH', path, body)
 const del = (path) => request('DELETE', path)
@@ -249,6 +292,10 @@ export const api = {
     update: (id, data) => put(`/tickets/${id}`, data),
     updateStatus: (id, status) => patch(`/tickets/${id}/status`, { status }),
     delete: (id) => del(`/tickets/${id}`),
+    // Sondage de satisfaction par SMS. `phone` (optionnel) envoie à un numéro
+    // ponctuel sans modifier la fiche du contact.
+    survey: (id) => get(`/tickets/${id}/survey`),
+    sendSurvey: (id, phone = null) => post(`/tickets/${id}/survey`, phone ? { phone } : {}),
   },
 
   // Dashboard
@@ -280,7 +327,6 @@ export const api = {
     linkFactureRevenueRecognition: (id, je_id) => post(`/admin/factures/${id}/link-revenue-recognition`, { je_id }),
     linkFactureDeferredRevenue: (id, qb_ref) => post(`/admin/factures/${id}/link-deferred-revenue`, { qb_ref }),
     clearFacturePaidStatus: (id) => post(`/admin/factures/${id}/clear-paid-status`, {}),
-    factureReconciliationAudit: () => get('/admin/facture-reconciliation-audit'),
     factureRawSchema: (id) => get(`/admin/factures/${id}/raw-schema`),
     factureRawUpdate: (id, data) => patch(`/admin/factures/${id}/raw`, data),
     paymentRawSchema: (id) => get(`/admin/payments/${id}/raw-schema`),
@@ -372,7 +418,7 @@ export const api = {
     deleteToken: () => del('/connectors/hubspot'),
     sync: (full = false) => post('/connectors/sync/hubspot', { full }),
     setMapping: (user_id, hubspot_owner_id) => put('/connectors/hubspot/mapping', { user_id, hubspot_owner_id }),
-    createContactSegment: (name, emails) => post('/hubspot/contact-segment', { name, emails }),
+    createContactSegment: (name, emails, createMissing = false) => post('/hubspot/contact-segment', { name, emails, createMissing }),
   },
 
   // Novoxpress shipping labels
@@ -485,6 +531,7 @@ export const api = {
     list: (params = {}) => get('/serials?' + new URLSearchParams(params)),
     get: (id) => get(`/serials/${id}`),
     history: (id) => get(`/serials/${id}/history`),
+    stateChanges: (params = {}) => get('/serials/state-changes?' + new URLSearchParams(params)),
     accounting: {
       transitions: (params = {}) => get('/serials/accounting/transitions?' + new URLSearchParams(params)),
       missingValuations: (params = {}) => get('/serials/accounting/missing-valuations?' + new URLSearchParams(params)),
@@ -536,6 +583,7 @@ export const api = {
   // Factures
   factures: {
     list: (params = {}) => get('/projets/factures?' + new URLSearchParams(params)),
+    reconciliationAudit: () => get('/projets/factures/reconciliation-audit'),
     get: (id) => get(`/projets/factures/${id}`),
     update: (id, data) => patch(`/projets/factures/${id}`, data),
     delete: (id) => del(`/projets/factures/${id}`),
@@ -686,9 +734,12 @@ export const api = {
     repartitionPush: (id, data = {}) => post(`/paies/${id}/repartition-push`, data),
     salaryExpenseReconcile: () => post('/paies/salary-expense/reconcile', {}),
     salaryExpenseEstimate: (id) => get(`/paies/${id}/salary-expense/estimate`),
+    salaryExpenseDeductions: (id) => get(`/paies/${id}/salary-expense/deductions`),
+    salaryExpenseDeductionsRefresh: (id) => post(`/paies/${id}/salary-expense/deductions/refresh`, {}),
+    salaryExpenseUpdate: (id, data = {}) => post(`/paies/${id}/salary-expense/update`, data),
     salaryExpensePreview: (id, data = {}) => post(`/paies/${id}/salary-expense/preview`, data),
     salaryExpensePush: (id, data = {}) => post(`/paies/${id}/salary-expense/push`, data),
-    agaRepartitionPreview: (amount) => post('/paies/aga-repartition/preview', { amount }),
+    agaRepartitionPreview: (amount, txn_date = null) => post('/paies/aga-repartition/preview', { amount, txn_date }),
     agaRepartitionPush: (amount, txn_date = null) => post('/paies/aga-repartition/push', { amount, txn_date }),
     saveSyncConfig: (data) => put('/connectors/airtable/module-config/paies', data),
     sync: () => post('/connectors/sync/paies'),
@@ -768,14 +819,119 @@ export const api = {
   // Trésorerie BNC (projection + saisie du solde réel + sorties récurrentes)
   treasury: {
     projection: (params = {}) => get('/treasury/projection?' + new URLSearchParams(params)),
+    config: () => get('/treasury/config'),
+    updateConfig: (data) => put('/treasury/config', data),
     balances: () => get('/treasury/balances'),
     noteBalance: (balance) => post('/treasury/balance', { balance }),
+    // Passé réel : mouvements du relevé bancaire BNC CAD, jour par jour
+    // (même forme que projection.days — alimente la remontée dans le passé).
+    actuals: (params = {}) => get('/treasury/actuals?' + new URLSearchParams(params)),
+    // Historique : ce que la projection annonçait, jour par jour (snapshots).
+    history: (days = 60) => get(`/treasury/history?days=${days}`),
+    historyDay: (date) => get(`/treasury/history/${date}`),
+    // Mouvement en retard confirmé déjà sorti du compte (cesse d'être projeté).
+    markCleared: (data) => post('/treasury/cleared', data),
+    unmarkCleared: (key) => del(`/treasury/cleared/${encodeURIComponent(key)}`),
+    // Paiements et virements émis (remplace l'onglet Pmt_Suivi du CTB - Suivi) :
+    // `cleared` = passé à la banque (le vert du fichier). Tant qu'un paiement
+    // n'est pas passé, il pèse sur la projection.
+    payments: {
+      list: (params = {}) => get('/treasury/payments?' + new URLSearchParams(params)),
+      // Mémoire par fournisseur : dernier commentaire / moyen / compte utilisés.
+      vendorHints: () => get('/treasury/payments/vendor-hints'),
+      // Modèles dérivés de l'historique : « refaire le même paiement » d'un clic.
+      templates: () => get('/treasury/payments/templates'),
+      openBills: () => get('/treasury/payments/open-bills'),
+      create: (data) => post('/treasury/payments', data),
+      update: (id, data) => put(`/treasury/payments/${id}`, data),
+      setCleared: (id, cleared) => post(`/treasury/payments/${id}/cleared`, { cleared }),
+      delete: (id) => del(`/treasury/payments/${id}`),
+      autoClear: (account = null) => post('/treasury/payments/auto-clear', { account }),
+      importSheet: (since) => post('/treasury/payments/import-sheet', { since }),
+      // Sync automatique de l'onglet Pmt_Suivi (toutes les 30 min) : active ?
+      // dernier passage ? — affiché à côté du bouton de sync manuelle.
+      sheetStatus: () => get('/treasury/payments/sheet-status'),
+      // Détection du « passé à la banque » dans le grand livre QuickBooks :
+      // les appariements sûrs sont cochés, les autres reviennent à confirmer.
+      qbClear: ({ dryRun = false } = {}) => post('/treasury/payments/qb-clear', { dry_run: dryRun }),
+      qbClearStatus: () => get('/treasury/payments/qb-clear/status'),
+      qbClearApply: ({ paymentIds = [], achatIds = [] }) =>
+        post('/treasury/payments/qb-clear/apply', { payment_ids: paymentIds, achat_ids: achatIds }),
+    },
+    // Cédule hebdomadaire de paiements fournisseurs : ce qu'on paie cette
+    // semaine, confronté au solde BNC et au solde projeté de la carte.
+    // Cocher (`pay`) crée le paiement émis du jour lié à la facture ; décocher
+    // le supprime tant qu'il n'est pas passé à la banque.
+    schedule: {
+      get: (params = {}) => get('/treasury/payment-schedule?' + new URLSearchParams(params)),
+      pay: (achatId, data = {}) => post(`/treasury/payment-schedule/${achatId}/pay`, data),
+      unpay: (achatId) => del(`/treasury/payment-schedule/${achatId}/pay`),
+      defer: (achatId, data = {}) => put(`/treasury/payment-schedule/${achatId}/defer`, data),
+      resume: (achatId) => del(`/treasury/payment-schedule/${achatId}/defer`),
+      // La remarque ambre d'une ligne appartient au profil du fournisseur :
+      // l'éditer ici écrit dans ce profil (donc partout où il est affiché).
+      setParticularites: (achatId, particularites) =>
+        put(`/treasury/payment-schedule/${achatId}/particularites`, { particularites }),
+    },
+    // Cartes de crédit à payer (Visa CAD / USD) : le solde n'arrive par aucun
+    // canal automatique, montant et date se saisissent à la main.
+    cardDues: {
+      update: (id, data) => put(`/treasury/card-dues/${id}`, data),
+      pay: (id, data) => post(`/treasury/card-dues/${id}/pay`, data),
+      unpay: (id) => del(`/treasury/card-dues/${id}/pay`),
+      dismiss: (id) => post(`/treasury/card-dues/${id}/dismiss`, {}),
+      restore: (id) => del(`/treasury/card-dues/${id}/dismiss`),
+    },
     recurring: {
       list: () => get('/treasury/recurring'),
       create: (data) => post('/treasury/recurring', data),
       update: (id, data) => put(`/treasury/recurring/${id}`, data),
       delete: (id) => del(`/treasury/recurring/${id}`),
     },
+    // Sync du Google Sheet « Maintien du solde disponible BNC » (le fichier
+    // fait foi) : état de la dernière sync + déclenchement manuel.
+    soldeSheet: {
+      status: () => get('/treasury/solde-sheet/status'),
+      sync: (dryRun = false) => post('/treasury/solde-sheet/sync', { dry_run: dryRun }),
+      // Sync à l'ouverture de la page si le fichier n'a pas été lu depuis
+      // `maxAgeMinutes` — l'utilisateur n'a plus à cliquer « Synchroniser ».
+      syncIfStale: (maxAgeMinutes = 20) =>
+        post('/treasury/solde-sheet/sync-if-stale', { max_age_minutes: maxAgeMinutes }),
+    },
+    // Ce que le relevé BNC apprend à la projection : montants et jours réels des
+    // récurrentes, récurrentes introuvables au relevé, prélèvements périodiques
+    // pas encore modélisés (propositions).
+    learning: {
+      get: (months) => get('/treasury/learning' + (months ? `?months=${months}` : '')),
+      adopt: (suggestion) => post('/treasury/learning/adopt', suggestion),
+    },
+  },
+
+  // Rapprochement bancaire (remplace TRX_Orisha.xlsx)
+  bank: {
+    accounts: () => get('/bank/accounts'),
+    createAccount: (data) => post('/bank/accounts', data),
+    updateAccount: (id, data) => patch(`/bank/accounts/${id}`, data),
+    deleteAccount: (id) => del(`/bank/accounts/${id}`),
+    transactions: (accountId) => get(`/bank/accounts/${accountId}/transactions`),
+    import: (accountId, data) => post(`/bank/accounts/${accountId}/import`, data),
+    imports: (accountId) => get(`/bank/accounts/${accountId}/imports`),
+    automatch: (accountId) => post(`/bank/accounts/${accountId}/automatch`, {}),
+    summary: (accountId) => get(`/bank/accounts/${accountId}/summary`),
+    qbCompare: (accountId, params = {}) => {
+      const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()
+      return get(`/bank/accounts/${accountId}/qb-compare${qs ? `?${qs}` : ''}`)
+    },
+    reconcileAuto: (accountId) => post(`/bank/accounts/${accountId}/reconcile-auto`, {}),
+    qbAccounts: () => get('/bank/qb-accounts'),
+    qbLink: (accountId) => post(`/bank/accounts/${accountId}/qb-link`, {}),
+    suggestions: (txnId) => get(`/bank/transactions/${txnId}/suggestions`),
+    match: (txnId, data) => post(`/bank/transactions/${txnId}/match`, data),
+    reconcile: (ids, unreconcile = false) => post('/bank/transactions/reconcile', { ids, unreconcile }),
+    updateTransaction: (id, data) => patch(`/bank/transactions/${id}`, data),
+    deleteTransaction: (id) => del(`/bank/transactions/${id}`),
+    trxSheetStatus: () => get('/bank/trx-sheet/status'),
+    trxSheetSync: (dryRun = false) => post('/bank/trx-sheet/sync', { dryRun }),
   },
 
   // Comptes prépayés : ledger fournisseurs prépayés + cédule FPA #13000
@@ -810,7 +966,59 @@ export const api = {
     fpaPublish: (month) => post(`/prepaid/fpa/month/${month}/publish`, {}),
   },
 
+  // Écritures de fin de mois : provisions mensuelles (crédit d'impôt R&D,
+  // subvention salariale) et heures R&D importées des feuilles de temps.
+  monthEnd: {
+    month: (month) => get(`/month-end/month/${month}`),
+    checks: (month) => get(`/month-end/month/${month}/checks`),
+    provisions: () => get('/month-end/provisions'),
+    series: (id, month) => get(`/month-end/provisions/${id}/series/${month}`),
+    updateProvision: (id, data) => put(`/month-end/provisions/${id}`, data),
+    updateMonth: (id, month, data) => put(`/month-end/provisions/${id}/months/${month}`, data),
+    publish: (id, month) => post(`/month-end/provisions/${id}/months/${month}/publish`, {}),
+    correct: (id, month) => post(`/month-end/provisions/${id}/months/${month}/correct`, {}),
+    receipts: (id) => get(`/month-end/provisions/${id}/receipts`),
+    addReceipt: (id, data) => post(`/month-end/provisions/${id}/receipts`, data),
+    updateReceipt: (id, data) => put(`/month-end/receipts/${id}`, data),
+    deleteReceipt: (id) => del(`/month-end/receipts/${id}`),
+    regularizeSubsidy: (id) => post(`/month-end/provisions/${id}/regularize`, {}),
+    scanBankReceipts: (id) => post(`/month-end/provisions/${id}/receipts/scan-bank`, {}),
+    hours: (month) => get(`/month-end/hours/${month}`),
+    importHours: (month) => post(`/month-end/hours/${month}/import`, {}),
+    addHours: (data) => post('/month-end/hours', data),
+    updateHours: (id, data) => put(`/month-end/hours/${id}`, data),
+    deleteHours: (id) => del(`/month-end/hours/${id}`),
+    // Déboursés de pièces : calcul depuis QuickBooks, fichier Drive, message Slack
+    pieces: (month) => get(`/month-end/pieces/${month}`),
+    piecesCompute: (month) => post(`/month-end/pieces/${month}/compute`, {}),
+    piecesUpdate: (month, data) => put(`/month-end/pieces/${month}`, data),
+    piecesSheet: (month) => post(`/month-end/pieces/${month}/sheet`, {}),
+    piecesSlackPreview: (month) => get(`/month-end/pieces/${month}/slack`),
+    piecesSlackSend: (month) => post(`/month-end/pieces/${month}/slack`, {}),
+  },
+
   // Dettes à long terme : cédules de remboursement + comptabilisation QB
+  marketingBudget: {
+    expenses: (status = 'all') => get(`/marketing-budget/expenses?status=${status}`),
+    decide: (id, status) => patch(`/marketing-budget/expenses/${id}`, { status }),
+    never: (id, opts) => post(`/marketing-budget/expenses/${id}/never`, opts || {}),
+    rules: () => get('/marketing-budget/rules'),
+    createRule: (data) => post('/marketing-budget/rules', data),
+    deleteRule: (id) => del(`/marketing-budget/rules/${id}`),
+    sync: () => post('/marketing-budget/sync', {}),
+    slackPreview: () => get('/marketing-budget/slack/preview'),
+    slackSend: () => post('/marketing-budget/slack/send', {}),
+    summary: (fy) => get(`/marketing-budget/summary?fy=${fy}`),
+    setBudget: (data) => put('/marketing-budget/budget', data),
+  },
+  instagram: {
+    weeks: (params = {}) => get('/instagram/weeks?' + new URLSearchParams(params)),
+    update: (id, data) => patch(`/instagram/prospects/${id}`, data),
+    remove: (id) => del(`/instagram/prospects/${id}`),
+    scrape: (days) => post('/instagram/scrape', days ? { days } : {}),
+    session: () => get('/instagram/session'),
+    setSession: (data) => put('/instagram/session', data),
+  },
   ltDebts: {
     list: () => get('/lt-debts'),
     create: (data) => post('/lt-debts', data),
@@ -819,11 +1027,47 @@ export const api = {
     payments: (id) => get(`/lt-debts/${id}/payments`),
     addPayment: (id, data) => post(`/lt-debts/${id}/payments`, data),
     importPayments: (id, rows, replace) => post(`/lt-debts/${id}/payments/import`, { rows, replace: replace === true }),
+    generatePayments: (id, params) => post(`/lt-debts/${id}/payments/generate`, params),
+    qbBalance: (id) => get(`/lt-debts/${id}/qb-balance`),
+    // Les transactions QB liées aux versements publiés existent-elles encore ?
+    qbCheck: (id) => get(`/lt-debts/${id}/qb-check`),
     updatePayment: (id, data) => put(`/lt-debts/payments/${id}`, data),
     deletePayment: (id) => del(`/lt-debts/payments/${id}`),
     markBooked: (id) => post(`/lt-debts/payments/${id}/mark-booked`, {}),
     unmarkBooked: (id) => post(`/lt-debts/payments/${id}/unmark-booked`, {}),
     publishPayment: (id) => post(`/lt-debts/payments/${id}/publish`, {}),
+    unpublishPayment: (id, opts) => post(`/lt-debts/payments/${id}/unpublish`, opts || {}),
+  },
+
+  // Inventaire Drive — recensement décisionnel des documents de la comptabilité
+  // encore tenus dans Google Drive (métadonnées seulement, aucun import).
+  driveInventory: {
+    list: () => get('/drive-inventory'),
+    // Le recensement tourne en arrière-plan (plusieurs minutes) : `scan` rend la
+    // main tout de suite, `status` suit la progression.
+    scan: (accountEmail) => post('/drive-inventory/scan', accountEmail ? { account_email: accountEmail } : {}),
+    status: () => get('/drive-inventory/status'),
+    create: (data) => post('/drive-inventory/items', data),
+    update: (id, data) => patch(`/drive-inventory/items/${id}`, data),
+    updateTab: (id, data) => patch(`/drive-inventory/tabs/${id}`, data),
+    remove: (id) => del(`/drive-inventory/items/${id}`),
+  },
+
+  // Douanes — relevé CARM (GCRA) de l'ASFC + appariement aux reçus
+  carm: {
+    list: () => get('/carm/transactions'),
+    import: (payload) => post('/carm/import', typeof payload === 'string' ? { text: payload } : payload),
+    importPreview: (payload) => post('/carm/import/preview', typeof payload === 'string' ? { text: payload } : payload),
+    // Comptabilisation : l'aperçu n'écrit rien, `post` pousse dans QuickBooks.
+    postingsPreview: () => get('/carm/postings/preview'),
+    postPostings: (groupIds) => post('/carm/postings/post', groupIds ? { group_ids: groupIds } : {}),
+    skip: (id, reason) => post(`/carm/transactions/${id}/skip`, { reason }),
+    unskip: (id) => post(`/carm/transactions/${id}/unskip`, {}),
+    saveConfig: (patch) => put('/carm/config', patch),
+    update: (id, data) => patch(`/carm/transactions/${id}`, data),
+    delete: (id) => del(`/carm/transactions/${id}`),
+    link: (id, saleReceiptId) => post(`/carm/transactions/${id}/link`, { sale_receipt_id: saleReceiptId }),
+    unlink: (id) => post(`/carm/transactions/${id}/unlink`, {}),
   },
 
   // Abonnements fournisseurs (registre des charges récurrentes attendues)
@@ -834,10 +1078,35 @@ export const api = {
     update: (id, data) => put(`/vendor-subscriptions/${id}`, data),
     delete: (id) => del(`/vendor-subscriptions/${id}`),
     missingReceipts: () => get('/vendor-subscriptions/missing-receipts'),
+    // Confirme qu'un nom de fournisseur QuickBooks désigne bien ce fournisseur :
+    // enregistré comme alias, il sera reconnu par les analyses suivantes.
+    // Poser deux fois le même alias ne fait rien de plus → rejouable sans risque.
+    linkVendor: (id, vendor) => postIdempotent(`/vendor-subscriptions/${id}/link-vendor`, { vendor }),
   },
 
   // Profils fournisseurs — défauts comptables par fournisseur (vendor QB par devise,
   // comptes, statut fiscal, code de taxe, termes de paiement), appris à chaque push QB.
+  // Collecte de factures sur les portails fournisseurs (Amazon, Wix) — pour les
+  // fournisseurs qui n'envoient rien par courriel et n'ont pas d'API.
+  scrapers: {
+    list: () => get('/scrapers'),
+    runs: (accountId) => get(`/scrapers/runs${accountId ? `?account_id=${accountId}` : ''}`),
+    documents: () => get('/scrapers/documents'),
+    needs: () => get('/scrapers/needs'),
+    needForTransaction: (txnId) => get(`/scrapers/needs/transaction/${txnId}`),
+    collectForTransaction: (txnId) => post(`/scrapers/needs/transaction/${txnId}/collect`, {}),
+    create: (data) => post('/scrapers/accounts', data),
+    update: (id, data) => patch(`/scrapers/accounts/${id}`, data),
+    remove: (id) => del(`/scrapers/accounts/${id}`),
+    run: (id) => post(`/scrapers/accounts/${id}/run`, {}),
+    runAll: () => post('/scrapers/run-all', {}),
+    otp: (id, code) => post(`/scrapers/accounts/${id}/otp`, { code }),
+    forgetSession: (id) => post(`/scrapers/accounts/${id}/forget-session`, {}),
+    importSession: (id, payload) => post(`/scrapers/accounts/${id}/session`, { payload }),
+    artifactUrl: (runId, name) =>
+      `/erp/api/scrapers/runs/${runId}/artifacts/${name}?token=${encodeURIComponent(localStorage.getItem('erp_token') || '')}`,
+  },
+
   vendorProfiles: {
     list: () => get('/vendor-profiles'),
     create: (data) => post('/vendor-profiles', data),
@@ -846,24 +1115,20 @@ export const api = {
     seed: () => post('/vendor-profiles/seed', {}),
     duplicates: () => get('/vendor-profiles/duplicates'),
     merge: (targetId, sourceIds) => post(`/vendor-profiles/${targetId}/merge`, { sourceIds }),
+    // « Pas un doublon » persistant : le groupe (ids) n'est plus re-proposé tant que
+    // sa composition ne change pas. undismiss = ré-activer la détection (id du dismissal).
+    dismissDuplicates: (ids) => post('/vendor-profiles/duplicates/dismiss', { ids }),
+    undismissDuplicates: (dismissalId) => del(`/vendor-profiles/duplicates/dismissals/${dismissalId}`),
   },
 
   // Pièces jointes polymorphes — attachables à n'importe quelle entité
   // (entityType ∈ companies|contacts|orders|tickets|projects|products|…).
   attachments: {
     list: (entityType, entityId) => get(`/attachments/${entityType}/${entityId}`),
-    upload: async (entityType, entityId, files) => {
-      const token = getToken()
+    upload: (entityType, entityId, files) => {
       const fd = new FormData()
       for (const f of files) fd.append('file', f)
-      const res = await fetch(`${BASE}/attachments/${entityType}/${entityId}`, {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        body: fd,
-      })
-      const data = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
-      return data
+      return uploadRequest(`/attachments/${entityType}/${entityId}`, fd)
     },
     download: async (entityType, entityId, attId) => {
       const token = getToken()
@@ -981,6 +1246,59 @@ export const api = {
     deleteBacklog:(id)       => del(`/agent/backlog/${id}`),
   },
 
+  // Travaux : file de prompts, suggestions de l'agent, carnet d'idées, travaux
+  // récurrents.
+  // Les listes sont pollées via getFresh (pas de cache) : la file change en
+  // arrière-plan à chaque fin d'exécution, un cache de 30 s la ferait mentir.
+  travaux: {
+    // `space` sépare les deux files : 'finance' (Espace finance) / 'agent' (section Agent).
+    listPrompts:   (params = {}) => getFresh('/travaux/prompts' + (Object.keys(params).length ? '?' + new URLSearchParams(params) : '')),
+    createPrompt:  (data)      => post('/travaux/prompts', data),
+    updatePrompt:  (id, data)  => patch(`/travaux/prompts/${id}`, data),
+    deletePrompt:  (id)        => del(`/travaux/prompts/${id}`),
+    reorderPrompts:(ids)       => post('/travaux/prompts/reorder', { ids }),
+    promptFirst:   (id)        => post(`/travaux/prompts/${id}/first`, {}),
+    advanceQueue:  ()          => post('/travaux/prompts/advance', {}),
+    // Pause de la file : rien de nouveau ne démarre, l'exécution en cours va au bout.
+    getQueuePause: ()          => getFresh('/travaux/queue/pause'),
+    setQueuePaused:(paused, reason) => post('/travaux/queue/pause', { paused, reason }),
+    listMessages:  (id)        => getFresh(`/travaux/prompts/${id}/messages`),
+    // placement : 'front' (défaut) = la tâche repart tout de suite ; 'back' = elle
+    // retourne en fin de file et repartira quand son tour reviendra.
+    replyToPrompt: (id, text, placement)  => post(`/travaux/prompts/${id}/reply`, { text, ...(placement ? { placement } : {}) }),
+    // Steering : message livré à Claude PENDANT l'exécution, sans l'interrompre.
+    steerPrompt:   (id, text)  => post(`/travaux/prompts/${id}/message`, { text }),
+
+    listSuggestions:  (params = {}) => getFresh('/travaux/suggestions?' + new URLSearchParams(params)),
+    acceptSuggestion: (id, prompt, space, priority) => post(`/travaux/suggestions/${id}/accept`, {
+      ...(prompt ? { prompt } : {}), ...(space ? { space } : {}), ...(priority ? { priority: true } : {}),
+    }),
+    dismissSuggestion:(id, reason)  => post(`/travaux/suggestions/${id}/dismiss`, { reason }),
+    deleteSuggestion: (id)          => del(`/travaux/suggestions/${id}`),
+    // Sans `kind`, le serveur passe les deux moteurs (chantiers + intégrations).
+    generateSuggestions: (kind)     => post('/travaux/suggestions/generate', kind ? { kind } : {}),
+    // Discussion d'une suggestion (chantier ou intégration) : échange en lecture
+    // seule à côté de la carte — rien ne part en exécution par ce chemin.
+    listSuggestionMessages: (id)       => getFresh(`/travaux/suggestions/${id}/messages`),
+    askSuggestion:          (id, text) => post(`/travaux/suggestions/${id}/messages`, { text }),
+
+    // Carnet d'idées : rien ne s'exécute d'ici ; `promoteIdea` dépose un item de
+    // file « de côté », à lancer à la main.
+    listIdeas:    ()         => getFresh('/travaux/ideas'),
+    createIdea:   (data)     => post('/travaux/ideas', data),
+    updateIdea:   (id, data) => patch(`/travaux/ideas/${id}`, data),
+    deleteIdea:   (id)       => del(`/travaux/ideas/${id}`),
+    reorderIdeas: (ids)      => post('/travaux/ideas/reorder', { ids }),
+    promoteIdea:  (id, space) => post(`/travaux/ideas/${id}/promote`, space ? { space } : {}),
+
+    listRecurring:   (params = {}) => getFresh('/travaux/recurring?' + new URLSearchParams(params)),
+    createRecurring: (data)        => post('/travaux/recurring', data),
+    updateRecurring: (id, data)    => patch(`/travaux/recurring/${id}`, data),
+    deleteRecurring: (id)          => del(`/travaux/recurring/${id}`),
+    setCompletion:   (id, data)    => post(`/travaux/recurring/${id}/completion`, data),
+    listCompletions: (id)          => getFresh(`/travaux/recurring/${id}/completions`),
+  },
+
   // QuickBooks journal entries (proxy — no local copy)
   journalEntries: {
     list: (params = {}) => get('/journal-entries?' + new URLSearchParams(params)),
@@ -989,6 +1307,11 @@ export const api = {
     pendingOperations: (params = {}) => get('/journal-entries/pending-operations?' + new URLSearchParams(params)),
     getDefaults: () => get('/journal-entries/defaults'),
     saveDefaults: (defaults) => put('/journal-entries/defaults', { defaults }),
+  },
+
+  // Taux de change Banque du Canada (référence du calculateur de conversion)
+  fx: {
+    rate: (date, pair = 'USDCAD') => get('/fx/rate?' + new URLSearchParams({ date, pair })),
   },
 
   // Sale receipts (OCR/AI extraction)
@@ -1004,20 +1327,22 @@ export const api = {
     markUnread: (id) => post(`/sale-receipts/${id}/unread`),
     history: (id) => get(`/sale-receipts/${id}/history`),
     vendorHistory: (id) => get(`/sale-receipts/${id}/vendor-history`),
+    // Achats LIA rapprochables : suggestion par ligne + candidats du même fournisseur.
+    liaMatches: (id) => get(`/sale-receipts/${id}/lia-matches`),
     pushToQb: (id, params) => post(`/sale-receipts/${id}/push-to-qb`, params),
+    // Relevé mensuel d'un fournisseur prépayé : joint le document aux transactions
+    // QB du mois couvert (aucune comptabilisation).
+    attachToMonthQb: (id, month) => post(`/sale-receipts/${id}/attach-to-month-qb`, { month }),
     reExtract: (id) => post(`/sale-receipts/${id}/re-extract`),
-    upload: (formData) => {
-      const token = getToken()
-      return fetch('/erp/api/sale-receipts/upload', {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        body: formData,
-      }).then(async r => {
-        const d = await r.json().catch(() => ({}))
-        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
-        return d
-      })
-    },
+    upload: (formData) => uploadRequest('/sale-receipts/upload', formData),
+  },
+
+  // Anomalies transactionnelles (doublons, montants hors norme, devise incohérente)
+  anomalies: {
+    list: (params = {}) => get('/anomalies?' + new URLSearchParams(params)),
+    dismiss: (id, reason) => post(`/anomalies/${id}/dismiss`, { reason }),
+    reopen: (id) => post(`/anomalies/${id}/reopen`),
+    scan: () => post('/anomalies/scan', {}),
   },
 
   syncLog: {
@@ -1031,31 +1356,9 @@ export const api = {
     folders: () => get('/public-files/folders'),
     update: (id, data) => patch(`/public-files/${id}`, data),
     delete: (id) => del(`/public-files/${id}`),
-    upload: (formData) => {
-      const token = getToken()
-      return fetch('/erp/api/public-files/upload', {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        body: formData,
-      }).then(async r => {
-        const d = await r.json().catch(() => ({}))
-        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
-        return d
-      })
-    },
+    upload: (formData) => uploadRequest('/public-files/upload', formData),
     // Remplace le contenu d'un fichier en conservant son lien public (token).
-    replace: (id, formData) => {
-      const token = getToken()
-      return fetch(`/erp/api/public-files/${id}/replace`, {
-        method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        body: formData,
-      }).then(async r => {
-        const d = await r.json().catch(() => ({}))
-        if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
-        return d
-      })
-    },
+    replace: (id, formData) => uploadRequest(`/public-files/${id}/replace`, formData),
   },
 
   stripePayouts: {
@@ -1091,6 +1394,15 @@ export const api = {
     shippingProvince: (companyId) => get(`/stripe-invoices/companies/${companyId}/shipping-province`),
   },
 
+  // Météo au site (GeoMet ECCC / National Weather Service) — lecture seule.
+  weather: {
+    get: (companyId, at, signal) => {
+      const qs = new URLSearchParams({ companyId })
+      if (at) qs.set('at', at)
+      return getAbortable(`/weather?${qs}`, signal)
+    },
+  },
+
   stripeInvoiceItems: {
     list: (params = {}) => get('/stripe-invoice-items?' + new URLSearchParams(params)),
     get: (id) => get(`/stripe-invoice-items/${id}`),
@@ -1100,16 +1412,7 @@ export const api = {
 }
 
 export function uploadRecording(formData) {
-  const token = localStorage.getItem('erp_token')
-  return fetch('/erp/api/calls/upload', {
-    method: 'POST',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    body: formData,
-  }).then(async r => {
-    const d = await r.json().catch(() => ({}))
-    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`)
-    return d
-  })
+  return uploadRequest('/calls/upload', formData)
 }
 
 export default api

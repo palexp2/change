@@ -9,6 +9,7 @@ import { CentralControllerPermissions } from '../components/CentralControllerPer
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtCad } from '../utils/formatters.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import WeatherPanel from '../components/WeatherPanel.jsx'
 
 function Field({ label, children }) {
   return (
@@ -107,6 +108,11 @@ export default function SerialDetail() {
             <span>Créé le {fmtDate(serial.created_at)}</span>
             <span>Mis à jour le {fmtDate(serial.updated_at)}</span>
           </div>
+        </div>
+
+        {/* Météo au site — conditions à l'adresse où l'unité est installée */}
+        <div className="mt-5">
+          <WeatherPanel companyId={serial.company_id} />
         </div>
 
         <div className="card p-5 mt-5">

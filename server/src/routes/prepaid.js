@@ -149,7 +149,9 @@ router.get('/accounts/:id/provider-balance', async (req, res) => {
 // ── Cédule FPA ──────────────────────────────────────────────────────────────
 
 const EXPENSE_FIELDS = ['label', 'description', 'payment_date', 'amount', 'currency',
-  'method', 'amort_start', 'amort_end', 'expense_acctnum', 'fpa_acctnum', 'active', 'notes']
+  'method', 'monthly_amount', 'amort_start', 'amort_end', 'expense_acctnum', 'fpa_acctnum', 'active', 'notes']
+
+const EXPENSE_METHODS = ['prorata_jours', 'mensuel_fixe', 'manuel', 'aucun']
 
 function validateExpense(b, { partial = false } = {}) {
   if (!partial && (!b.label || !String(b.label).trim())) return 'label requis'
@@ -158,7 +160,11 @@ function validateExpense(b, { partial = false } = {}) {
     const n = Number(b.amount)
     if (!Number.isFinite(n) || n <= 0) return 'amount doit être un nombre positif'
   }
-  if ('method' in b && b.method != null && !['prorata_jours', 'manuel', 'aucun'].includes(b.method)) return 'method invalide'
+  if ('method' in b && b.method != null && !EXPENSE_METHODS.includes(b.method)) return 'method invalide'
+  if ('monthly_amount' in b && b.monthly_amount != null && b.monthly_amount !== '') {
+    const n = Number(b.monthly_amount)
+    if (!Number.isFinite(n) || n <= 0) return 'monthly_amount doit être un nombre positif'
+  }
   for (const k of ['payment_date', 'amort_start', 'amort_end']) {
     if (k in b && b[k] != null && b[k] !== '' && !isDate(b[k])) return `${k} invalide (YYYY-MM-DD)`
   }
@@ -181,10 +187,12 @@ router.post('/expenses', (req, res) => {
   const b = req.body
   const id = randomUUID()
   db.prepare(`
-    INSERT INTO prepaid_expenses (id, label, description, payment_date, amount, currency, method, amort_start, amort_end, expense_acctnum, fpa_acctnum, active, notes, created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    INSERT INTO prepaid_expenses (id, label, description, payment_date, amount, currency, method, monthly_amount, amort_start, amort_end, expense_acctnum, fpa_acctnum, active, notes, created_by)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(id, String(b.label).trim(), b.description || null, b.payment_date || null, Number(b.amount),
-    b.currency || 'CAD', b.method || 'prorata_jours', b.amort_start || null, b.amort_end || null,
+    b.currency || 'CAD', b.method || 'prorata_jours',
+    b.monthly_amount === '' || b.monthly_amount == null ? null : Number(b.monthly_amount),
+    b.amort_start || null, b.amort_end || null,
     b.expense_acctnum || null, b.fpa_acctnum || '13000',
     b.active === 0 || b.active === false ? 0 : 1, b.notes || null, req.user.id)
   res.status(201).json(db.prepare('SELECT * FROM prepaid_expenses WHERE id = ?').get(id))

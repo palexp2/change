@@ -1,13 +1,17 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { Bot, Send, CheckCircle, XCircle, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2, Terminal, FileText, Edit3, Search, Activity, Maximize2, Minimize2, Lightbulb, MessageSquare, Power, ShieldAlert, RotateCw, Clock, Sparkles, Star, ArrowUpRight, Settings, HelpCircle, Gauge, CalendarDays, Globe } from 'lucide-react'
+import { Bot, Send, CheckCircle, XCircle, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2, Terminal, FileText, Edit3, Search, Activity, Maximize2, Minimize2, Lightbulb, MessageSquare, Power, ShieldAlert, RotateCw, Clock, Sparkles, Star, Settings, HelpCircle, Globe, ListChecks } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+// Cartes d'utilisation Claude : extraites dans un composant partagé avec la page
+// Travaux (qui en affiche la version bandeau).
+import { ClaudeUsageBar } from '../components/ClaudeUsage.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { invalidate } from '../lib/prefetch.js'
 import { fmtDateTime } from '../lib/formatDate.js'
+import { PageLink, isAppWideContext, contextPage } from '../components/PageLink.jsx'
 
 const STATUS_CONFIG = {
   pending:       { label: 'À lire',      color: 'text-slate-600',   bg: 'bg-white',       border: 'border-l-slate-400',   icon: Lightbulb },
@@ -114,50 +118,6 @@ function StarRating({ value = 0, onRate }) {
   )
 }
 
-// ─── Lien vers la page concernée (cartes d'implémentation complétées) ─────────
-// Le contexte d'une suggestion combine la route d'où vient le signalement et,
-// optionnellement, le descriptif de l'élément ciblé (voir FeedbackFab). On sépare
-// les deux : le badge et la navigation n'utilisent que la partie « page », le
-// descriptif brut de l'élément (balise HTML) reste disponible au survol.
-const CONTEXT_ELEMENT_SEP = ' — élément ciblé par l\'utilisateur : '
-function contextPage(context) {
-  if (!context) return ''
-  const i = context.indexOf(CONTEXT_ELEMENT_SEP)
-  return i === -1 ? context : context.slice(0, i)
-}
-
-// Une demande « toute l'application » n'a pas de page cible : son contexte est une
-// mention globale (voir FeedbackFab, préfixe ci-dessous), pas une route. Dans ce
-// cas on n'affiche ni badge de page ni lien « Voir la page » — la demande ne
-// concerne pas la page d'où elle a été émise.
-const APP_WIDE_CONTEXT_PREFIX = 'Demande concernant l\'ensemble de l\'application'
-function isAppWideContext(context) {
-  return typeof context === 'string' && context.startsWith(APP_WIDE_CONTEXT_PREFIX)
-}
-
-// Le contexte d'une suggestion = la route d'où vient le signalement ; une fois le
-// correctif implanté, on offre la navigation directe vers la page modifiée.
-function PageLink({ context }) {
-  // Une demande « toute l'application » n'a pas de page cible unique : pas de lien.
-  if (isAppWideContext(context)) return null
-  const page = contextPage(context)
-  // Seules les vraies routes (`/…`) sont navigables.
-  if (!page.startsWith('/')) return null
-  return (
-    <Link
-      to={page}
-      target="_blank"
-      rel="noopener noreferrer"
-      onClick={e => e.stopPropagation()}
-      data-testid="card-page-link"
-      title={`Voir la page ${page}`}
-      className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200 font-medium transition-colors"
-    >
-      <ArrowUpRight size={10} /> Voir la page
-    </Link>
-  )
-}
-
 // ─── Live stream display ──────────────────────────────────────────────────────
 function TaskStream({ chunks, done = false }) {
   const bottomRef = useRef(null)
@@ -214,6 +174,10 @@ function TaskStream({ chunks, done = false }) {
             )
             if (chunk.kind === 'text') return (
               <div key={i} className="text-emerald-400 whitespace-pre-wrap leading-relaxed py-0.5">{chunk.text}</div>
+            )
+            // Message glissé par l'utilisateur PENDANT l'exécution (steering /travaux).
+            if (chunk.kind === 'user') return (
+              <div key={i} className="text-sky-300 whitespace-pre-wrap leading-relaxed py-0.5">📨 {chunk.text}</div>
             )
             return null
           })
@@ -289,7 +253,7 @@ function ProposalCard({ task, onUpdate, onDelete, onSend, streamChunks, defaultE
                   <Clock size={10} /> <ElapsedTimer startedAt={task.started_at} completedAt={task.completed_at} />
                 </span>
               )}
-              {task.status === 'done' && <PageLink context={task.context} />}
+              {task.status === 'done' && <PageLink task={task} />}
             </div>
           )}
         </div>
@@ -552,7 +516,7 @@ function SuggestionCard({ item, task, onApprove, onRetry, onDelete, onRelaunch, 
                 <Clock size={10} /> <ElapsedTimer startedAt={task.started_at} completedAt={task.completed_at} />
               </span>
             )}
-            {task?.status === 'done' && <PageLink context={item.context} />}
+            {task?.status === 'done' && <PageLink task={task} />}
           </div>
         </div>
         <button onClick={e => { e.stopPropagation(); onDelete(item, task) }} className="text-slate-300 hover:text-red-500 p-1 rounded-lg transition-colors hover:bg-red-50 flex-shrink-0" title="Supprimer la suggestion">
@@ -892,120 +856,6 @@ function ClaudeMdPanel() {
   )
 }
 
-// ─── Utilisation Claude (session 5 h + semaine 7 j) ───────────────────────────
-// L'agent tourne sur l'abonnement Claude Code (forfait fixe) : on affiche donc
-// l'utilisation RÉELLE de l'abonnement — le % de la limite de session (5 h) et de
-// la limite hebdomadaire (7 j) consommé, avec l'heure de réinitialisation — plutôt
-// qu'une estimation de coût en dollars qui n'aurait aucun sens sur un forfait.
-// La consommation de jetons (agrégée depuis les transcriptions locales) reste
-// affichée en détail secondaire.
-function formatTokens(n) {
-  if (!Number.isFinite(n) || n <= 0) return '0'
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + ' M'
-  if (n >= 1_000) return (n / 1_000).toFixed(n >= 100_000 ? 0 : 1) + ' k'
-  return String(Math.round(n))
-}
-// « Réinit. dans 3 h 12 » à partir d'un timestamp ISO de réinitialisation.
-function formatResetIn(iso) {
-  if (!iso) return null
-  const ms = Date.parse(iso) - Date.now()
-  if (!Number.isFinite(ms) || ms <= 0) return null
-  const totalMin = Math.round(ms / 60000)
-  const days = Math.floor(totalMin / 1440)
-  const hours = Math.floor((totalMin % 1440) / 60)
-  const mins = totalMin % 60
-  if (days >= 1) return `réinit. dans ${days} j ${hours} h`
-  if (hours >= 1) return `réinit. dans ${hours} h ${mins} min`
-  return `réinit. dans ${mins} min`
-}
-// Couleur de la jauge selon le niveau de consommation.
-function usageTone(pct) {
-  if (pct >= 90) return { bar: 'bg-rose-500', text: 'text-rose-600' }
-  if (pct >= 70) return { bar: 'bg-amber-500', text: 'text-amber-600' }
-  return { bar: 'bg-brand-500', text: 'text-slate-900' }
-}
-
-function UsageCard({ icon: Icon, label, sublabel, bucket }) {
-  const b = bucket || {}
-  const pct = Number.isFinite(b.utilizationPct) ? Math.max(0, Math.min(100, b.utilizationPct)) : null
-  const tone = usageTone(pct ?? 0)
-  const resetIn = formatResetIn(b.resetsAt)
-  return (
-    <div className="flex-1 min-w-0 flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 shadow-sm">
-      <div className="w-8 h-8 rounded-lg bg-brand-50 border border-brand-100 flex items-center justify-center flex-shrink-0">
-        <Icon size={16} className="text-brand-500" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-1.5">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</span>
-          <span className="text-[10px] text-slate-400">{sublabel}</span>
-        </div>
-        {pct != null ? (
-          <>
-            <div className="flex items-baseline gap-2 mt-0.5">
-              <span className={`text-base font-semibold tabular-nums leading-none ${tone.text}`} data-testid="usage-pct">
-                {pct} %
-              </span>
-              <span className="text-xs text-slate-400">de la limite</span>
-              {resetIn && <span className="text-[11px] text-slate-400 tabular-nums">· {resetIn}</span>}
-            </div>
-            <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
-              <div className={`h-full rounded-full ${tone.bar}`} style={{ width: `${pct}%` }} />
-            </div>
-            <div className="mt-1 text-[11px] text-slate-400 tabular-nums" data-testid="usage-tokens">
-              {formatTokens(b.totalTokens)} jetons
-            </div>
-          </>
-        ) : (
-          // Abonnement indisponible (token expiré/hors-ligne) → on retombe sur les jetons.
-          <div className="flex items-baseline gap-2 mt-0.5">
-            <span className="text-base font-semibold text-slate-900 tabular-nums leading-none" data-testid="usage-tokens">
-              {formatTokens(b.totalTokens)}
-            </span>
-            <span className="text-xs text-slate-400">jetons</span>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-function ClaudeUsageBar() {
-  const [usage, setUsage] = useState(null)
-  const [error, setError] = useState(false)
-
-  useEffect(() => {
-    let alive = true
-    async function fetchUsage() {
-      try {
-        const u = await api.agent.getUsage()
-        if (alive) { setUsage(u); setError(false) }
-      } catch {
-        if (alive) setError(true)
-      }
-    }
-    fetchUsage()
-    const i = setInterval(fetchUsage, 60_000) // le serveur cache 60 s de toute façon
-    return () => { alive = false; clearInterval(i) }
-  }, [])
-
-  if (error) return null // dégradation silencieuse : la barre disparaît si le calcul échoue
-
-  return (
-    <div className="mb-6" data-testid="claude-usage-bar">
-      <div className="flex items-center gap-1.5 mb-2">
-        <Sparkles size={12} className="text-brand-400" />
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Utilisation de Claude</h2>
-        {!usage && <Loader2 size={11} className="text-slate-300 animate-spin" />}
-      </div>
-      <div className="flex flex-col sm:flex-row gap-2.5">
-        <UsageCard icon={Gauge} label="Session" sublabel="5 dernières h" bucket={usage?.session} />
-        <UsageCard icon={CalendarDays} label="Cette semaine" sublabel="7 derniers j" bucket={usage?.week} />
-      </div>
-    </div>
-  )
-}
-
 // ─── Main content ─────────────────────────────────────────────────────────────
 export function AgentContent() {
   const [tasks, setTasks] = useState([])
@@ -1196,6 +1046,17 @@ export function AgentContent() {
           </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
+          {/* File de prompts propre à la section Agent (distincte de celle de
+              l'Espace finance), avec suggestions et idées. */}
+          <Link
+            to="/agent/travaux"
+            data-testid="agent-travaux-link"
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors bg-white hover:bg-slate-50 border border-slate-200 text-slate-600"
+            title="File de prompts de l'agent, suggestions de Claude et idées"
+          >
+            <ListChecks size={15} />
+            <span className="hidden sm:inline">Travaux de l'agent</span>
+          </Link>
           {/* Réglages de l'agent — ouverts dans une modale dédiée */}
           <button
             onClick={() => setSettingsOpen(true)}

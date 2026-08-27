@@ -34,6 +34,8 @@ const ALLOWED_TABLES = new Set([
   'soumissions', 'assemblages', 'paies', 'paie_items', 'bom_items', 'company_serials',
   // Paiements clients (encaissements + remboursements) — page « Paiements ».
   'payments',
+  // Mouvements de numéros de série — champs créés depuis /airtable/fields/serial_changes.
+  'serial_state_changes',
 ])
 
 function slugify(s) {

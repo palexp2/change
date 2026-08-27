@@ -63,3 +63,14 @@ test('aucun article — ligne unique au HT avec libellé de repli', () => {
   assert.equal(lines[0].Description, 'Acme Inc')
   assert.equal(lines[0].Amount, 50)
 })
+
+test('ligne rattachée à un achat LIA — code ET nom de la pièce publiés', () => {
+  // Le nom accompagne le code, quel que soit le séparateur saisi (tabulation, tiret).
+  const items = [
+    { description: 'LIA-1991\tSIM Simplex CAN (Carrier 1)', total: 120 },
+    { description: 'LIA-1966 - LVM60 Automatisation', total: 80 },
+    { description: 'Frais de transport', total: 20 },
+  ]
+  const lines = buildReceiptLines(items, 220, { lineDetail: LD })
+  assert.deepEqual(descs(lines), ['LIA-1991\tSIM Simplex CAN (Carrier 1)', 'LIA-1966\tLVM60 Automatisation', 'Frais de transport'])
+})

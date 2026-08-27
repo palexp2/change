@@ -110,6 +110,19 @@ test('PATCH /:id valide → persiste et normalise les items', async () => {
   assert.equal(body.items[0].unit_price, 10)
 })
 
+test('PATCH /:id ligne de crédit → montant négatif conservé', async () => {
+  const id = seedReceipt()
+  const { status, body } = await apiFetch(base, token, 'PATCH', `/api/sale-receipts/${id}`, {
+    items: [
+      { description: 'Remaining time on 3 × Team plan', total: '512.91' },
+      { description: 'Unused time on 2 × Team plan', total: '-341.94' },
+    ],
+  })
+  assert.equal(status, 200)
+  assert.equal(body.items[1].total, -341.94)
+  assert.equal(Math.round(body.items.reduce((s, it) => s + it.total, 0) * 100) / 100, 170.97)
+})
+
 test('PATCH /:id sans champ modifiable → 400', async () => {
   const id = seedReceipt()
   const { status } = await apiFetch(base, token, 'PATCH', `/api/sale-receipts/${id}`, { not_a_field: 1 })

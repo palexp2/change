@@ -581,7 +581,7 @@ export default function PrioriteAssemblage() {
               data-testid="step-1-help-image"
               className="w-full rounded-xl border border-slate-200 transition group-hover:opacity-90"
             />
-            <span className="absolute bottom-2 right-2 px-2 py-1 rounded-md bg-black/60 text-white text-xs opacity-0 group-hover:opacity-100 transition">
+            <span className="absolute bottom-2 right-2 px-2 py-1 rounded-md bg-black/60 text-fixed-white text-xs opacity-0 group-hover:opacity-100 transition">
               Cliquer pour agrandir
             </span>
           </button>

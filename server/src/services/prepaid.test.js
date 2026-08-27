@@ -33,6 +33,37 @@ test('prorata_jours : période sur un seul mois → tout le montant ce mois-là'
   assert.deepEqual(sched, [{ month: '2026-06', amount: 500 }])
 })
 
+test('mensuel_fixe : cas Intact tel qu\'inscrit dans FPA_Continuité (515,91 $/mois)', () => {
+  // Le fichier porte le même montant tous les mois d'avril à octobre, puis le
+  // résidu en novembre — c'est ce que la comptable comptabilise.
+  const sched = computeSchedule({
+    method: 'mensuel_fixe', amount: 3835, monthly_amount: 515.91,
+    amort_start: '2026-04-01', amort_end: '2026-11-09',
+  })
+  assert.equal(sched.length, 8)
+  for (const m of sched.slice(0, 7)) assert.equal(m.amount, 515.91)
+  assert.deepEqual(sched[7], { month: '2026-11', amount: 223.63 })
+  assert.equal(Math.round(sched.reduce((s, m) => s + m.amount, 0) * 100) / 100, 3835)
+})
+
+test('mensuel_fixe : le montant s\'épuise avant la fin de la période', () => {
+  const sched = computeSchedule({
+    method: 'mensuel_fixe', amount: 250, monthly_amount: 100,
+    amort_start: '2026-01-01', amort_end: '2026-12-31',
+  })
+  assert.deepEqual(sched, [
+    { month: '2026-01', amount: 100 },
+    { month: '2026-02', amount: 100 },
+    { month: '2026-03', amount: 50 },
+  ])
+})
+
+test('mensuel_fixe : sans montant mensuel → cédule vide', () => {
+  assert.deepEqual(computeSchedule({
+    method: 'mensuel_fixe', amount: 1000, amort_start: '2026-01-01', amort_end: '2026-06-30',
+  }), [])
+})
+
 test('méthode manuel/aucun ou bornes manquantes → cédule calculée vide', () => {
   assert.deepEqual(computeSchedule({ method: 'manuel', amount: 100 }), [])
   assert.deepEqual(computeSchedule({ method: 'aucun', amount: 100, amort_start: '2026-01-01', amort_end: '2026-02-01' }), [])

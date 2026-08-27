@@ -7,6 +7,7 @@ import { useSyncStatus } from '../lib/useSyncStatus.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { CustomFieldModal } from '../components/CustomFieldModal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 
 // Compat type Airtable (côté ERP) ↔ type colonne ERP. Aligné sur TYPE_COMPAT
@@ -402,6 +403,7 @@ export default function ProjectFields() {
   const [data, setData] = useState(null)
   const [filter, setFilter] = useState('')
   const [savingId, setSavingId] = useState(null)
+  const [showNewField, setShowNewField] = useState(false)
   const confirm = useConfirm()
   const { addToast } = useToast()
 
@@ -529,8 +531,19 @@ export default function ProjectFields() {
               placeholder="Rechercher un champ…"
               className="input text-sm w-64"
             />
-            <div className="text-xs text-slate-400">
-              Clique sur un nom pour le renommer · Le type s'autosauve · Pas de mapping = pas d'import
+            <div className="flex items-center gap-3">
+              <div className="text-xs text-slate-400">
+                Clique sur un nom pour le renommer · Le type s'autosauve · Pas de mapping = pas d'import
+              </div>
+              {erpTable && (
+                <button
+                  onClick={() => setShowNewField(true)}
+                  className="btn-secondary btn-sm py-1 flex items-center gap-1"
+                  title="Créer une nouvelle colonne ERP, mappable ensuite vers un champ Airtable"
+                >
+                  <Plus size={12} /> Ajouter un champ
+                </button>
+              )}
             </div>
           </div>
           {data === null ? (
@@ -607,6 +620,19 @@ export default function ProjectFields() {
           </div>
         )}
       </div>
+
+      {erpTable && (
+        <CustomFieldModal
+          isOpen={showNewField}
+          onClose={() => setShowNewField(false)}
+          erpTable={erpTable}
+          onSaved={async () => {
+            setShowNewField(false)
+            await reload()
+            window.dispatchEvent(new CustomEvent('views:updated', { detail: { table: erpTable } }))
+          }}
+        />
+      )}
     </Layout>
   )
 }

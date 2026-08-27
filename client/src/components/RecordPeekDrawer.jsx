@@ -48,6 +48,10 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, w
   const panelRef = useRef(null)
   const [panelWidth, setPanelWidth] = useState(() => clampWidth(prefCache.width ?? width))
   const [resizing, setResizing] = useState(false)
+  // Rejoue l'animation d'entrée seulement à l'ouverture — évite qu'elle ne
+  // reparte (et donne l'impression de rebond) au relâchement de la poignée
+  // de redimensionnement, quand `resizing` repasse à false.
+  const [entering, setEntering] = useState(false)
 
   // Charge la préférence de largeur persistée (une seule fois par session).
   useEffect(() => {
@@ -79,6 +83,14 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, w
     const prev = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     return () => { document.body.style.overflow = prev }
+  }, [open])
+
+  // Joue l'animation de glissement une seule fois par ouverture.
+  useEffect(() => {
+    if (!open) return
+    setEntering(true)
+    const t = setTimeout(() => setEntering(false), 200)
+    return () => clearTimeout(t)
   }, [open])
 
   // Fermeture sur Échap. stopPropagation pour ne pas fermer aussi une modale
@@ -135,7 +147,7 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, w
       <div className="fixed inset-0 bg-black/40 animate-fade-in" onClick={onClose} />
       <div
         ref={panelRef}
-        className={`fixed top-0 right-0 bottom-0 bg-slate-50 shadow-2xl flex flex-col ${resizing ? 'select-none' : 'animate-slide-in-right'}`}
+        className={`fixed top-0 right-0 bottom-0 bg-slate-50 shadow-2xl flex flex-col ${resizing ? 'select-none' : ''} ${entering ? 'animate-slide-in-right' : ''}`}
         style={{ width: `${panelWidth}px`, maxWidth: '100vw' }}
       >
         {/* Poignée de redimensionnement sur la frontière gauche du panneau. */}
@@ -151,9 +163,10 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, w
         >
           <div className={`h-full w-px transition-colors ${resizing ? 'bg-brand-500' : 'bg-transparent group-hover:bg-brand-400'}`} />
         </div>
-        <div className="flex items-center gap-1.5 px-4 py-3 border-b border-slate-200 bg-white flex-shrink-0">
+        <div className="flex items-center gap-1.5 px-6 py-4 border-b border-slate-200 bg-white flex-shrink-0">
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-semibold text-slate-900 truncate" data-testid="record-peek-title">{title}</div>
+            {/* Titre à la Airtable : gros et gras, c'est le nom de l'enregistrement. */}
+            <div className="text-xl font-bold text-slate-900 truncate leading-tight" data-testid="record-peek-title">{title}</div>
             {subtitle && <div className="text-xs text-slate-400 truncate">{subtitle}</div>}
           </div>
           {to && (
@@ -179,7 +192,10 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, w
         {/* Overlay transparent pendant le drag : capte les events pour que le
             survol d'un iframe/embed ne coupe pas le mousemove. */}
         {resizing && <div className="absolute inset-0 z-20 cursor-col-resize" />}
-        <div className="overflow-y-auto flex-1" data-testid="record-peek-body">
+        {/* `peek-panel` : c'est ce marqueur qui déclenche le layout Airtable des
+            champs (libellé à gauche, valeur pleine largeur à droite, cartes
+            aplaties) — voir les règles `.peek-panel` dans index.css. */}
+        <div className="overflow-y-auto flex-1 peek-panel" data-testid="record-peek-body">
           {children}
         </div>
       </div>

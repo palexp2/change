@@ -57,14 +57,21 @@ describe('Répartition de paie & AGA — aperçus', () => {
     assert.ok(r.body.lines.some(l => l.amount === 100 && /Repas/.test(l.label)))
   })
 
-  test('aperçu AGA : répartition au prorata des employés assurés', async () => {
+  test('aperçu AGA : ventilation par département, montant avec virgule', async () => {
+    // Virgule décimale (clavier fr-CA) acceptée par le serveur.
     const r = await apiFetch('/paies/aga-repartition/preview', {
-      method: 'POST', body: JSON.stringify({ amount: 2737.95 }),
+      method: 'POST', body: JSON.stringify({ amount: '2 737,95' }),
     })
     assert.equal(r.status, 200)
     const debits = r.body.lines.filter(l => l.type === 'Debit')
     assert.equal(debits.length, 4)
     assert.equal(Math.round(debits.reduce((s, l) => s + l.amount, 0) * 100) / 100, 2737.95)
+    // Reproduit les dépenses QB d'avril à juillet 2026 (Purchases 16848 → 17667).
+    assert.deepEqual(Object.fromEntries(debits.map(l => [l.acctnum, l.amount])),
+      { 62100: 890.86, 62200: 311.78, 62201: 260.11, 62300: 1275.20 })
+    // La banque n'est pas une ligne : elle est portée par la dépense QB.
+    assert.ok(r.body.bank_acctnum && !debits.some(l => l.acctnum === r.body.bank_acctnum))
+    assert.equal(r.body.taxcode, 'Exonéré')
   })
 
   test('la section Répartition apparaît dans le détail d\'une paie', async () => {
@@ -88,8 +95,8 @@ describe('Répartition de paie & AGA — aperçus', () => {
     const card = page.locator('[data-testid="compta-aga"]')
     await card.waitFor({ state: 'attached', timeout: 20000 })
     await card.scrollIntoViewIfNeeded()
-    const input = card.locator('input[type="number"]')
-    await input.fill('2737.95')
+    const input = card.locator('[data-testid="compta-aga-amount"]')
+    await input.fill('2 737,95')
     await input.blur()
     await card.locator('table tr').first().waitFor({ timeout: 15000 })
     assert.ok(await card.locator('table tr').count() >= 4, 'aperçu AGA absent')

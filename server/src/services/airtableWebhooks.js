@@ -8,7 +8,7 @@ import {
   syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats,
   syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours,
   syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges,
-  syncAssemblages, syncStockMovements,
+  syncAssemblages, syncStockMovements, syncInstagramProspects,
 } from './airtable.js'
 import { syncFactureLinksFromWebhook } from './factureLinks.js'
 
@@ -32,6 +32,7 @@ const SYNC_FNS = {
   serial_changes: syncSerialStateChanges,
   assemblages: syncAssemblages,
   stock_movements: syncStockMovements,
+  instagram: syncInstagramProspects,
   // Factures : pas de re-sync complet (le sync Airtable a été déconnecté).
   // On ne capte que les changements de liens projet/commande, et seulement
   // pour les factures déjà connues côté Stripe.

@@ -27,7 +27,7 @@
   width: 18px;
   height: 18px;
   border-radius: 9999px;
-  background: white;
+  background: rgb(var(--c-white));
   border: 2px solid #21B14B;
   box-shadow: 0 1px 3px rgba(0,0,0,0.15);
   cursor: grab;
@@ -38,7 +38,7 @@
   width: 18px;
   height: 18px;
   border-radius: 9999px;
-  background: white;
+  background: rgb(var(--c-white));
   border: 2px solid #21B14B;
   box-shadow: 0 1px 3px rgba(0,0,0,0.15);
   cursor: grab;
@@ -64,6 +64,13 @@
   .bg-slate-950 ::-webkit-scrollbar-thumb { @apply bg-slate-700; }
   .bg-slate-900 ::-webkit-scrollbar-thumb:hover,
   .bg-slate-950 ::-webkit-scrollbar-thumb:hover { @apply bg-slate-600; }
+}
+
+@layer utilities {
+  /* Texte posé sur une surface toujours sombre (voile noir d'une modale,
+     vignette d'image) : reste blanc même en mode nuit, contrairement à
+     `text-white` qui suit la variable de surface. */
+  .text-fixed-white { color: #fff; }
 }
 
 @layer components {
@@ -135,4 +142,54 @@
 }
 .dt-editor-badge {
   animation: dtEditorBadge 3.6s ease-out forwards;
+}
+
+/* ── Panneaux latéraux (side-peek) — layout des champs façon Airtable ───────
+   Les fiches *Detail.jsx montées en `embedded` gardent, en pleine page, leur
+   grille 2 colonnes avec le libellé AU-DESSUS du champ. Dans une colonne
+   étroite comme le panneau latéral, Airtable met le libellé À GAUCHE et la
+   valeur pleine largeur à droite, une ligne par champ — c'est plus lisible et
+   c'est la référence de design de l'app.
+   Fait en CSS plutôt qu'en dupliquant le markup de chaque fiche : le crochet
+   est la classe du libellé (`uppercase tracking-wide`), identique partout.
+   `:has()` sert à remonter au conteneur du champ. */
+
+/* La grille de champs repasse sur une seule colonne. */
+.peek-panel .grid:has(> div > .uppercase.tracking-wide) {
+  grid-template-columns: minmax(0, 1fr) !important;
+  column-gap: 0;
+  row-gap: 0.75rem;
+}
+
+/* Les champs `col-span-2` (textareas, titres) : sans ça leur portée sur 2
+   colonnes recrée une 2e colonne implicite et les champs simples se remettent
+   côte à côte. */
+.peek-panel .grid:has(> div > .uppercase.tracking-wide) > * {
+  grid-column: span 1 / span 1 !important;
+}
+
+/* Une ligne de champ : libellé (colonne fixe) | valeur (reste de la largeur). */
+.peek-panel div:has(> .uppercase.tracking-wide) {
+  display: grid;
+  grid-template-columns: minmax(0, 140px) minmax(0, 1fr);
+  align-items: start;
+  column-gap: 1rem;
+}
+
+/* Libellé : plus de majuscules ni d'interlettrage — casse normale, aligné sur
+   la première ligne du champ. */
+.peek-panel div:has(> .uppercase.tracking-wide) > .uppercase.tracking-wide {
+  @apply text-slate-500 font-medium;
+  margin-bottom: 0;
+  padding-top: 0.4rem;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+}
+
+/* La carte qui porte les champs disparaît : dans un panneau, le panneau EST la
+   carte (cadre + ombre en double, sinon). */
+.peek-panel .card:has(.uppercase.tracking-wide) {
+  @apply border-0 shadow-none bg-transparent;
 }

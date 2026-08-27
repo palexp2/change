@@ -7,7 +7,7 @@ import { Layout } from '../components/Layout.jsx'
 import { VendorTabs } from '../components/VendorTabs.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { Modal } from '../components/Modal.jsx'
+import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
@@ -421,7 +421,7 @@ function AchatAccountingSection({ achat, form, setForm, onSaved }) {
 
           {history.length > 0 && (
             <div className="border-t border-green-200 pt-3" data-testid="achat-vendor-history">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Déjà comptabilisé pour ce fournisseur</p>
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Comptabilisations passées de ce fournisseur — modèles à réutiliser</p>
               <ul className="space-y-1.5">
                 {history.map(txn => {
                   const acc = txn.expense_account_id ? accounts.find(a => a.Id === txn.expense_account_id) : null
@@ -700,14 +700,21 @@ export default function AchatsFournisseurs() {
         />
       </div>
 
-      <Modal isOpen={modalOpen} title={modalTitle} onClose={() => { setCreating(null); setEditing(null) }}>
-        <AchatModal
-          achat={editing}
-          initialType={creating}
-          onClose={() => { setCreating(null); setEditing(null) }}
-          onSaved={handleSaved}
-        />
-      </Modal>
+      <RecordPeekDrawer
+        open={modalOpen}
+        onClose={() => { setCreating(null); setEditing(null) }}
+        title={modalTitle}
+        width={640}
+      >
+        <div className="px-5 py-4">
+          <AchatModal
+            achat={editing}
+            initialType={creating}
+            onClose={() => { setCreating(null); setEditing(null) }}
+            onSaved={handleSaved}
+          />
+        </div>
+      </RecordPeekDrawer>
     </Layout>
   )
 }

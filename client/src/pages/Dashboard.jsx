@@ -485,7 +485,7 @@ function ProjectsCreatedChart({ data, onMonthClick }) {
                   onClick={() => onMonthClick && onMonthClick(m.currKey)}
                 />
               )}
-              <text x={cx} y={H - 4} textAnchor="middle" fontSize="9" fill={m.idx === currentMonthIdx ? '#0f172a' : '#94a3b8'} fontWeight={m.idx === currentMonthIdx ? '600' : 'normal'}>{m.label}</text>
+              <text x={cx} y={H - 4} textAnchor="middle" fontSize="9" className={m.idx === currentMonthIdx ? 'fill-slate-900' : 'fill-slate-400'} fontWeight={m.idx === currentMonthIdx ? '600' : 'normal'}>{m.label}</text>
             </g>
           )
         })}
@@ -666,7 +666,7 @@ function TicketsMonthlyChart({ data }) {
                   fill={isHovered ? '#1B8E3C' : '#21B14B'}
                 />
               )}
-              <text x={cx} y={H - 14} textAnchor="middle" fontSize="9" fill={m.isCurrentMonth ? '#0f172a' : '#94a3b8'} fontWeight={m.isCurrentMonth ? '600' : 'normal'}>{m.label}</text>
+              <text x={cx} y={H - 14} textAnchor="middle" fontSize="9" className={m.isCurrentMonth ? 'fill-slate-900' : 'fill-slate-400'} fontWeight={m.isCurrentMonth ? '600' : 'normal'}>{m.label}</text>
               {showYear && (
                 <text x={cx} y={H - 3} textAnchor="middle" fontSize="8" fill="#cbd5e1">{m.yearLabel}</text>
               )}
@@ -1060,7 +1060,7 @@ function ShippingCostChart({ data }) {
                     fill={isHovered ? 'url(#shippingBarGradHover)' : 'url(#shippingBarGrad)'} />
                 )}
                 {bh > 0 && (
-                  <text x={xCenter(i)} y={y - 6} textAnchor="middle" fontSize="11" fontWeight="600" fill="#475569">
+                  <text x={xCenter(i)} y={y - 6} textAnchor="middle" fontSize="11" fontWeight="600" className="fill-slate-600">
                     {fmtCad(w.amount)}
                   </text>
                 )}
@@ -1359,7 +1359,7 @@ function ProfitabilityChart({ data, recentOrders }) {
                   opacity={isLast4 || isSelected ? 1 : 0.5}
                 />
                 {showLabel && (
-                  <text x={cx} y={H - 4} textAnchor="middle" fontSize="8" fontWeight={isSelected ? 'bold' : 'normal'} fill={isSelected ? '#0f172a' : '#94a3b8'}>{label}</text>
+                  <text x={cx} y={H - 4} textAnchor="middle" fontSize="8" fontWeight={isSelected ? 'bold' : 'normal'} className={isSelected ? 'fill-slate-900' : 'fill-slate-400'}>{label}</text>
                 )}
               </g>
             )

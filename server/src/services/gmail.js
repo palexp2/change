@@ -1,11 +1,13 @@
 import { v4 as uuid } from 'uuid'
 import { join, extname } from 'path'
+import { createHash } from 'crypto'
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
 import db from '../db/database.js'
-import { getGmailClient } from '../connectors/google.js'
+import { getGmailClient, canCreateDrafts, invoiceTrashMailboxes, isInvoiceOnlyMailbox, mailboxList } from '../connectors/google.js'
 import { runExtractionAndUpdate } from './saleReceiptExtraction.js'
 import { emitEntity } from './realtimeEmitters.js'
-import { buildEmailBodyPdf, htmlToText, looksLikeInvoiceEmail, stripTrackingUrls } from '../utils/emailBodyPdf.js'
+import { buildEmailBodyPdf, htmlToText, isBillingSender, looksLikeInvoiceEmail, looksLikeInvoiceMessage, stripTrackingUrls } from '../utils/emailBodyPdf.js'
+import { renderEmailHtmlPdf } from '../utils/emailHtmlPdf.js'
 import { logSync } from './syncLog.js'
 
 const DOMAIN = 'orisha.io'
@@ -15,6 +17,51 @@ const INVOICE_LABEL_NAME = 'ERP/Factures'
 // ingéré comme facture MÊME SANS le label ERP/Factures. L'alias livrant le même message
 // dans plusieurs boîtes, la dédup inter-boîtes se fait par Message-ID RFC822.
 const INVOICE_RECIPIENT = 'factures@orisha.io'
+// Boîtes en autodétection : toute facture reçue y est ingérée, sans label ni
+// passage par factures@. Liste d'adresses JSON dans connector_config
+// (google / invoice_autodetect_mailboxes), pilotée depuis la page Connecteurs.
+// Désactivé par défaut : sur une boîte de vente, les « factures » sortantes et
+// les documents clients pollueraient les reçus fournisseurs.
+const INVOICE_AUTODETECT_KEY = 'invoice_autodetect_mailboxes'
+// Fenêtre de rattrapage. À l'activation d'une boîte, seules les factures du
+// dernier mois remontent — pas tout l'historique.
+const INVOICE_AUTODETECT_DAYS = 30
+// Requête Gmail large : on laisse Gmail pré-filtrer sur les mots-clés, puis
+// looksLikeInvoiceMessage tranche localement (sujet / nom de PJ / expéditeur).
+const INVOICE_AUTODETECT_QUERY =
+  '-in:sent -in:chats -in:drafts -from:me ' +
+  '(facture OR factures OR invoice OR invoices OR receipt OR reçu OR relevé OR statement OR billing OR facturation)'
+
+function autoDetectMailboxes() {
+  return mailboxList(INVOICE_AUTODETECT_KEY)
+}
+// Restriction d'expéditeurs, par boîte : { "boite@x.com": ["anthropic.com"] }.
+// Une entrée vide ou absente = aucune restriction (comportement historique des
+// boîtes Orisha). Sur une boîte personnelle, c'est ce qui empêche l'autodétection
+// de remonter les achats privés dans les reçus de l'entreprise : seuls les
+// expéditeurs listés sont ingérés. Le label ERP/Factures et l'alias factures@
+// restent des intentions humaines explicites — ils ne sont jamais filtrés ici.
+const INVOICE_AUTODETECT_SENDERS_KEY = 'invoice_autodetect_senders'
+function autoDetectSenders(email) {
+  const row = db.prepare(
+    `SELECT value FROM connector_config WHERE connector='google' AND key=?`
+  ).get(INVOICE_AUTODETECT_SENDERS_KEY)
+  if (!row?.value) return []
+  try {
+    const map = JSON.parse(row.value)
+    const list = map?.[String(email || '').toLowerCase()]
+    return Array.isArray(list) ? list.map(s => String(s).toLowerCase().trim()).filter(Boolean) : []
+  } catch { return [] }
+}
+// Une entrée vaut soit une adresse complète (billing@anthropic.com), soit un
+// domaine (anthropic.com) — auquel cas les sous-domaines comptent aussi, les
+// fournisseurs expédiant souvent depuis mail.<domaine> ou em.<domaine>.
+export function senderAllowed(fromHeader, allowed) {
+  if (allowed.length === 0) return true
+  const addr = parseEmailAddress(fromHeader)
+  if (!addr) return false
+  return allowed.some(a => addr === a || addr.endsWith(`@${a}`) || addr.endsWith(`.${a}`))
+}
 const RECEIPT_ATTACHMENT_EXTS = ['.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp']
 const RECEIPT_MIME_PREFIXES = ['application/pdf', 'image/']
 // Les images de signature courriel (logos sociaux, pixels de suivi) sont
@@ -26,6 +73,17 @@ const MIN_RECEIPT_IMAGE_BYTES = 20 * 1024
 
 const receiptsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')
 if (!existsSync(receiptsDir)) mkdirSync(receiptsDir, { recursive: true })
+
+// Dédup par contenu : la même facture arrive sous plusieurs Message-ID (transfert
+// interne, fournisseur qui relance, boîte du comptable en copie). Le hash du
+// fichier est le seul identifiant stable. On tient compte des reçus supprimés :
+// une suppression est un rejet explicite, on ne réimporte pas.
+function sha256(buffer) {
+  return createHash('sha256').update(buffer).digest('hex')
+}
+function contentAlreadyImported(hash) {
+  return !!db.prepare('SELECT 1 FROM sale_receipts WHERE content_sha256=?').get(hash)
+}
 
 async function resolveLabelId(gmail, name) {
   const res = await gmail.users.labels.list({ userId: 'me' })
@@ -258,9 +316,7 @@ async function syncAccount(oauthRow, trigger = 'scheduled') {
  * @param {string} [options.accountEmail] Compte Gmail explicite à utiliser
  * @returns {Promise<{account_email: string, message_id: string, thread_id: string}>}
  */
-export async function sendEmail(to, subject, htmlBody, options = {}) {
-  const { cc, attachments, userId, accountEmail } = options
-
+function resolveSenderAccount({ accountEmail, userId }) {
   let account = null
   if (accountEmail) {
     account = db.prepare(
@@ -281,8 +337,10 @@ export async function sendEmail(to, subject, htmlBody, options = {}) {
     }
   }
   if (!account) throw new Error('Aucun compte Gmail fourni (accountEmail ou userId requis)')
+  return account
+}
 
-  const gmail = await getGmailClient(account.id)
+function buildRawMessage({ to, cc, subject, htmlBody, attachments }) {
   const subjectHeader = `=?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`
 
   let raw
@@ -327,6 +385,14 @@ export async function sendEmail(to, subject, htmlBody, options = {}) {
     ]
     raw = Buffer.from(rawLines.join('\r\n')).toString('base64url')
   }
+  return raw
+}
+
+export async function sendEmail(to, subject, htmlBody, options = {}) {
+  const { cc, attachments, userId, accountEmail } = options
+  const account = resolveSenderAccount({ accountEmail, userId })
+  const gmail = await getGmailClient(account.id)
+  const raw = buildRawMessage({ to, cc, subject, htmlBody, attachments })
 
   const resp = await gmail.users.messages.send({ userId: 'me', requestBody: { raw } })
   return {
@@ -336,14 +402,60 @@ export async function sendEmail(to, subject, htmlBody, options = {}) {
   }
 }
 
+/**
+ * Crée un brouillon Gmail (rien n'est envoyé — l'utilisateur relit et envoie
+ * depuis Gmail). Même sélection de compte que sendEmail.
+ * Requiert le scope gmail.compose : `gmail.send` seul renvoie
+ * ACCESS_TOKEN_SCOPE_INSUFFICIENT. Seuls les comptes de DRAFT_SCOPE_ACCOUNTS
+ * (voir connectors/google.js) l'obtiennent, après reconnexion depuis la page
+ * Connecteurs.
+ *
+ * @returns {Promise<{account_email: string, draft_id: string, message_id: string}>}
+ */
+export async function createDraft(to, subject, htmlBody, options = {}) {
+  const { cc, attachments, userId, accountEmail } = options
+  const account = resolveSenderAccount({ accountEmail, userId })
+  if (!canCreateDrafts(account.account_email)) {
+    throw new Error(
+      `Le compte ${account.account_email} n'est pas autorisé à créer des brouillons ` +
+      '(scope gmail.compose non demandé — voir DRAFT_SCOPE_ACCOUNTS).'
+    )
+  }
+  const gmail = await getGmailClient(account.id)
+  const raw = buildRawMessage({ to, cc, subject, htmlBody, attachments })
+
+  try {
+    const resp = await gmail.users.drafts.create({ userId: 'me', requestBody: { message: { raw } } })
+    return {
+      account_email: account.account_email,
+      draft_id: resp.data.id,
+      message_id: resp.data.message?.id,
+    }
+  } catch (e) {
+    if (/insufficient|ACCESS_TOKEN_SCOPE/i.test(e.message || '')) {
+      throw new Error(
+        `Scope gmail.compose manquant pour ${account.account_email} — reconnectez ce compte ` +
+        'depuis la page Connecteurs (bouton « Reconnecter » de la ligne du compte).'
+      )
+    }
+    throw e
+  }
+}
+
 // Messages du label déjà examinés et jugés non-facture (pas de PJ, pas de
 // mots-clés facture). Évite de re-télécharger leur corps à chaque sync horaire.
 // En mémoire seulement : un restart les ré-examine une fois, c'est acceptable.
 const skippedInvoiceMessageIds = new Set()
 
-// Facture sans pièce jointe : le corps du courriel est la facture (ex. Manychat).
-// On le matérialise en PDF texte puis on suit le même chemin que les PJ.
-// Retourne true si un reçu a été créé.
+// Facture sans pièce jointe : le corps du courriel est la facture (ex. Webflow,
+// Manychat). On la matérialise en PDF — rendu HTML fidèle via Chromium headless
+// (mise en page, tableaux et logos préservés, comme dans Gmail), avec repli sur
+// le PDF texte pdfkit si le rendu échoue ou que le courriel n'a pas de corps
+// HTML — puis on suit le même chemin que les PJ.
+// Retourne un statut : 'imported' (reçu créé), 'duplicate' (contenu déjà en
+// base — le courriel est donc bien une facture ingérée), 'not-invoice' ou
+// 'error'. La distinction duplicate/not-invoice compte pour la corbeille
+// après import : un doublon se met à la corbeille, pas un non-facture.
 async function importInlineInvoice({ message, msgId, userId, rfc822Id = null }) {
   const headers = message.payload?.headers || []
   const subject = getHeader(headers, 'Subject')
@@ -352,39 +464,55 @@ async function importInlineInvoice({ message, msgId, userId, rfc822Id = null }) 
 
   if (!bodyText || !looksLikeInvoiceEmail(subject, bodyText)) {
     skippedInvoiceMessageIds.add(msgId)
-    return false
+    return 'not-invoice'
   }
 
-  let buffer
-  try {
-    buffer = await buildEmailBodyPdf({
-      subject,
-      from: getHeader(headers, 'From'),
-      date: getHeader(headers, 'Date'),
-      text: bodyText,
-    })
-  } catch (e) {
-    console.error(`❌ Gmail inline invoice PDF ${msgId}:`, e.message)
-    return false
+  // Dédup par contenu AVANT rendu, sur le texte normalisé du courriel plutôt
+  // que sur les octets du PDF : le rendu Chromium n'est pas déterministe (dates
+  // internes au fichier), deux rendus du même courriel n'auraient jamais le
+  // même hash. Le texte, lui, est stable d'une boîte et d'une passe à l'autre.
+  const hash = sha256(Buffer.from(`${subject || ''}\n${bodyText}`, 'utf8'))
+  if (contentAlreadyImported(hash)) {
+    skippedInvoiceMessageIds.add(msgId)
+    return 'duplicate'
+  }
+
+  const from = getHeader(headers, 'From')
+  const date = getHeader(headers, 'Date')
+  let buffer = null
+  if (html) {
+    try {
+      buffer = await renderEmailHtmlPdf({ subject, from, date, html })
+    } catch (e) {
+      console.warn(`⚠️ Gmail inline invoice rendu HTML ${msgId} — repli texte :`, e.message)
+    }
+  }
+  if (!buffer) {
+    try {
+      buffer = await buildEmailBodyPdf({ subject, from, date, text: bodyText })
+    } catch (e) {
+      console.error(`❌ Gmail inline invoice PDF ${msgId}:`, e.message)
+      return 'error'
+    }
   }
 
   const id = uuid()
   const storedName = `${id}.pdf`
   const filePath = join(receiptsDir, storedName)
   try { writeFileSync(filePath, buffer) }
-  catch (e) { console.error(`❌ Gmail inline invoice write ${msgId}:`, e.message); return false }
+  catch (e) { console.error(`❌ Gmail inline invoice write ${msgId}:`, e.message); return 'error' }
 
   const originalName = `${(subject || 'courriel').replace(/[/\\]/g, '_').slice(0, 120)}.pdf`
   db.prepare(`
-    INSERT INTO sale_receipts (id, filename, original_name, file_type, status, created_by, source, gmail_message_id, rfc822_message_id)
-    VALUES (?, ?, ?, '.pdf', 'processing', ?, 'email', ?, ?)
-  `).run(id, storedName, originalName, userId, msgId, rfc822Id)
+    INSERT INTO sale_receipts (id, filename, original_name, file_type, status, created_by, source, gmail_message_id, rfc822_message_id, content_sha256)
+    VALUES (?, ?, ?, '.pdf', 'processing', ?, 'email', ?, ?, ?)
+  `).run(id, storedName, originalName, userId, msgId, rfc822Id, hash)
 
   const created = db.prepare('SELECT * FROM sale_receipts WHERE id=?').get(id)
   if (created) emitEntity('sale_receipt', 'created', id, { ...created, items: [] }, userId)
 
   runExtractionAndUpdate({ saleReceiptId: id, filePath, fileExt: '.pdf', userId, trigger: 'scheduled' })
-  return true
+  return 'imported'
 }
 
 async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
@@ -414,6 +542,42 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
   // sans qu'aucun label ne soit posé (fournisseurs configurés pour y envoyer leurs
   // factures, forwards internes, etc.).
   const byId = new Map()
+  // Messages venus de l'autodétection seulement : eux doivent passer le filtre
+  // heuristique avant import (le label et l'alias, eux, sont des intentions
+  // explicites et n'ont pas à être devinés).
+  const autoDetectedIds = new Set()
+  const autoDetectOn = autoDetectMailboxes().includes((account_email || '').toLowerCase())
+  // Liste blanche d'expéditeurs pour l'autodétection de cette boîte (vide = tous).
+  const allowedSenders = autoDetectSenders(account_email)
+
+  // Corbeille après import (toggle par boîte, page Connecteurs) : tout message
+  // dont la facture a été ingérée — reçu créé maintenant, ou doublon d'un reçu
+  // déjà en base — est mis à la corbeille Gmail pour que l'utilisateur n'ait
+  // pas à faire le ménage à la main. Réversible 30 jours (corbeille Gmail).
+  // Les messages jugés non-facture ne sont jamais touchés.
+  const trashOn = invoiceTrashMailboxes().includes((account_email || '').toLowerCase())
+  // messages.trash exige gmail.modify, absent tant que le compte n'a pas été
+  // reconnecté après activation du toggle. Au premier refus de scope, on cesse
+  // d'essayer pour la passe entière (sinon 50 erreurs identiques par sync).
+  let trashScopeMissing = false
+  let trashed = 0
+  async function trashMessage(msgId) {
+    if (!trashOn || trashScopeMissing) return
+    try {
+      await gmail.users.messages.trash({ userId: 'me', id: msgId })
+      trashed++
+    } catch (e) {
+      if (/insufficient|ACCESS_TOKEN_SCOPE|Insufficient Permission|PERMISSION_DENIED|Request had insufficient authentication scopes/i.test(e.message || '')) {
+        trashScopeMissing = true
+        console.warn(
+          `⚠️ Gmail ${account_email}: corbeille après import impossible — scope gmail.modify manquant. ` +
+          'Reconnectez ce compte depuis la page Connecteurs (bouton « Reconnecter »).'
+        )
+      } else {
+        console.warn(`⚠️ Gmail trash ${msgId} (${account_email}):`, e.message)
+      }
+    }
+  }
   try {
     if (labelId) {
       // Pas de filtre has:attachment : certaines factures (ex. Manychat) arrivent
@@ -421,16 +585,37 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
       const list = await gmail.users.messages.list({
         userId: 'me',
         labelIds: [labelId],
+        q: '-in:drafts',
         maxResults: 50,
       })
       for (const m of list.data.messages || []) byId.set(m.id, m)
     }
+    // -in:drafts : un brouillon adressé à factures@ matche `to:` sans avoir été
+    // envoyé (cas vécu : un outil Google Workspace créait des brouillons de
+    // transfert au corps aplati — l'ERP ingérait cette copie dégradée au lieu
+    // du courriel original, pourtant présent dans la boîte connectée).
     const list = await gmail.users.messages.list({
       userId: 'me',
-      q: `to:${INVOICE_RECIPIENT} OR cc:${INVOICE_RECIPIENT} OR deliveredto:${INVOICE_RECIPIENT}`,
+      q: `-in:drafts {to:${INVOICE_RECIPIENT} cc:${INVOICE_RECIPIENT} deliveredto:${INVOICE_RECIPIENT}}`,
       maxResults: 50,
     })
     for (const m of list.data.messages || []) byId.set(m.id, m)
+
+    if (autoDetectOn) {
+      // La liste blanche est appliquée deux fois : ici pour que Gmail ne renvoie
+      // que ces expéditeurs (aucun autre message n'est même lu), puis localement
+      // sur l'en-tête From — un `from:` Gmail matche aussi le nom affiché.
+      const senderFilter = allowedSenders.length ? ` from:(${allowedSenders.join(' OR ')})` : ''
+      const auto = await gmail.users.messages.list({
+        userId: 'me',
+        q: `${INVOICE_AUTODETECT_QUERY}${senderFilter} newer_than:${INVOICE_AUTODETECT_DAYS}d`,
+        maxResults: 50,
+      })
+      for (const m of auto.data.messages || []) {
+        if (!byId.has(m.id)) autoDetectedIds.add(m.id)
+        byId.set(m.id, m)
+      }
+    }
   } catch (e) {
     console.error(`❌ Gmail invoice list ${account_email}:`, e.message)
     logSync(module, trigger, { status: 'error', error: `list: ${e.message}`, durationMs: Date.now() - t0 })
@@ -440,8 +625,11 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
 
   let imported = 0
   for (const msgRef of messages) {
+    // Déjà ingéré lors d'une passe précédente (le reçu porte ce message id) :
+    // rien à réimporter, mais la corbeille après import s'applique — c'est le
+    // chemin qui nettoie le backlog des factures extraites avant l'activation.
     const already = db.prepare('SELECT 1 FROM sale_receipts WHERE gmail_message_id=?').get(msgRef.id)
-    if (already) continue
+    if (already) { await trashMessage(msgRef.id); continue }
     if (skippedInvoiceMessageIds.has(msgRef.id)) continue
 
     let msg
@@ -454,15 +642,68 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
     const rfc822Id = getHeader(msg.data.payload?.headers || [], 'message-id').trim() || null
     if (rfc822Id && db.prepare('SELECT 1 FROM sale_receipts WHERE rfc822_message_id=?').get(rfc822Id)) {
       skippedInvoiceMessageIds.add(msgRef.id)
+      // Copie d'une facture déjà importée via une autre boîte : ingérée quand même.
+      await trashMessage(msgRef.id)
       continue
     }
 
-    const attachments = collectAttachments(msg.data.payload)
+    let attachments = collectAttachments(msg.data.payload)
+    const autoDetected = autoDetectedIds.has(msgRef.id)
+
+    // Autodétection : le message n'a été ni labellisé ni adressé à factures@,
+    // c'est nous qui le proposons — il doit ressembler à une facture.
+    if (autoDetected) {
+      const headers = msg.data.payload?.headers || []
+      if (!senderAllowed(getHeader(headers, 'From'), allowedSenders)) {
+        skippedInvoiceMessageIds.add(msgRef.id)
+        continue
+      }
+      const { html, text } = extractBodies(msg.data.payload)
+      const isInvoice = looksLikeInvoiceMessage({
+        subject: getHeader(headers, 'Subject'),
+        from: getHeader(headers, 'From'),
+        bodyText: stripTrackingUrls(text || htmlToText(html)),
+        attachmentNames: attachments.map(a => a.filename || ''),
+        // Un fil de discussion embarque les pièces jointes ET les images de
+        // signature de tous les messages cités : en autodétection on l'ignore.
+        isReply: !!(getHeader(headers, 'in-reply-to') || getHeader(headers, 'references')),
+      })
+      if (!isInvoice) {
+        skippedInvoiceMessageIds.add(msgRef.id)
+        continue
+      }
+      // Une facture devinée doit être un PDF. Les images (photo de reçu, capture)
+      // restent acceptées sur les deux voies explicites — label ERP/Factures et
+      // alias factures@ — où un humain a désigné le message. En autodétection
+      // elles ne rapportent que du bruit : logos et captures collés dans les
+      // signatures pèsent souvent plus que le seuil de 20 Ko.
+      attachments = attachments.filter(a =>
+        a.mimeType === 'application/pdf' || extname(a.filename || '').toLowerCase() === '.pdf'
+      )
+      // Plus de pièce jointe exploitable : matérialiser n'importe quel corps en
+      // PDF transformerait toute notification en « facture ». On ne le fait que
+      // pour un expéditeur de facturation (billing@, receipts@…) dont le corps
+      // passe le filtre strict mot-clé + montant — les reçus Webflow/Stripe
+      // arrivent ainsi : sans pièce jointe, la facture EST le courriel.
+      if (attachments.length === 0) {
+        const bodyText = stripTrackingUrls(text || htmlToText(html))
+        if (!isBillingSender(getHeader(headers, 'From')) ||
+            !looksLikeInvoiceEmail(getHeader(headers, 'Subject'), bodyText)) {
+          skippedInvoiceMessageIds.add(msgRef.id)
+          continue
+        }
+      }
+    }
+
     if (attachments.length === 0) {
-      if (await importInlineInvoice({ message: msg.data, msgId: msgRef.id, userId, rfc822Id })) imported++
+      const inlineStatus = await importInlineInvoice({ message: msg.data, msgId: msgRef.id, userId, rfc822Id })
+      if (inlineStatus === 'imported') imported++
+      if (inlineStatus === 'imported' || inlineStatus === 'duplicate') await trashMessage(msgRef.id)
       continue
     }
 
+    let importedFromMessage = 0
+    let duplicatesFromMessage = 0
     for (const att of attachments) {
       let ext = extname(att.filename).toLowerCase()
       if (!RECEIPT_ATTACHMENT_EXTS.includes(ext)) {
@@ -485,6 +726,11 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
       if (!data) continue
 
       const buffer = Buffer.from(data, 'base64url')
+      // Même pièce déjà en base sous un autre message (transfert, relance,
+      // comptable en copie) — ou déjà supprimée par un humain : on passe.
+      const hash = sha256(buffer)
+      if (contentAlreadyImported(hash)) { duplicatesFromMessage++; continue }
+
       const id = uuid()
       const storedName = `${id}${ext}`
       const filePath = join(receiptsDir, storedName)
@@ -492,19 +738,27 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
       catch (e) { console.error(`❌ Gmail attachment write ${msgRef.id}:`, e.message); continue }
 
       db.prepare(`
-        INSERT INTO sale_receipts (id, filename, original_name, file_type, status, created_by, source, gmail_message_id, rfc822_message_id)
-        VALUES (?, ?, ?, ?, 'processing', ?, 'email', ?, ?)
-      `).run(id, storedName, att.filename || storedName, ext, userId, msgRef.id, rfc822Id)
+        INSERT INTO sale_receipts (id, filename, original_name, file_type, status, created_by, source, gmail_message_id, rfc822_message_id, content_sha256)
+        VALUES (?, ?, ?, ?, 'processing', ?, 'email', ?, ?, ?)
+      `).run(id, storedName, att.filename || storedName, ext, userId, msgRef.id, rfc822Id, hash)
 
       const created = db.prepare('SELECT * FROM sale_receipts WHERE id=?').get(id)
       if (created) emitEntity('sale_receipt', 'created', id, { ...created, items: [] }, userId)
 
       runExtractionAndUpdate({ saleReceiptId: id, filePath, fileExt: ext, userId, trigger: 'scheduled' })
       imported++
+      importedFromMessage++
     }
+
+    // Au moins une pièce ingérée (maintenant ou déjà en base) → le message a
+    // rempli son rôle. Une pièce en échec de téléchargement ne bloque pas : le
+    // message serait de toute façon skippé aux passes suivantes (dédup par
+    // gmail_message_id), la corbeille ne fait perdre aucun retry.
+    if (importedFromMessage > 0 || duplicatesFromMessage > 0) await trashMessage(msgRef.id)
   }
 
   if (imported > 0) console.log(`🧾 Gmail ${account_email}: ${imported} pièce(s) jointe(s) facture importée(s)`)
+  if (trashed > 0) console.log(`🗑️ Gmail ${account_email}: ${trashed} courriel(s) facture mis à la corbeille après import`)
   logSync(module, trigger, { status: 'success', modified: imported, durationMs: Date.now() - t0 })
   return { status: 'success', imported }
 }
@@ -517,16 +771,38 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
  * Retourne un résumé agrégé pour le logSystemRun macro de l'appelant.
  * @param {'scheduled'|'manual'} [trigger]
  */
+// Verrou : la dédup est un « lis puis insère » entrecoupé d'appels réseau
+// (messages.get, téléchargement de pièce jointe). Deux passes simultanées —
+// double clic sur « Synchroniser », ou manuel qui croise l'horaire — lisent donc
+// toutes les deux « pas encore importé » et insèrent chacune leur copie. Un
+// appel concurrent se rattache à la passe en cours au lieu d'en lancer une autre.
+let mailboxSyncInFlight = null
+
 export async function syncAllMailboxes(trigger = 'scheduled') {
+  if (mailboxSyncInFlight) {
+    console.log('⏭️ Gmail sync déjà en cours — appel rattaché à la passe courante')
+    return mailboxSyncInFlight
+  }
+  mailboxSyncInFlight = runAllMailboxes(trigger).finally(() => { mailboxSyncInFlight = null })
+  return mailboxSyncInFlight
+}
+
+async function runAllMailboxes(trigger) {
   const accounts = db.prepare(`
     SELECT * FROM connector_oauth WHERE connector='google' AND refresh_token IS NOT NULL
   `).all()
 
   const summary = { accounts: accounts.length, emailsImported: 0, invoicesImported: 0, errors: [] }
   for (const account of accounts) {
-    const a = await syncAccount(account, trigger)
-    summary.emailsImported += a?.imported || 0
-    if (a?.status === 'error') summary.errors.push(`emails ${account.account_email}: ${a.error}`)
+    // Boîte « factures seulement » : on saute le sync des courriels — il aspire
+    // toute la boîte dans emails/interactions et crée un contact par
+    // correspondant. Sur une boîte personnelle connectée juste pour router une
+    // facture fournisseur, ce serait déverser la vie privée dans le CRM.
+    if (!isInvoiceOnlyMailbox(account.account_email)) {
+      const a = await syncAccount(account, trigger)
+      summary.emailsImported += a?.imported || 0
+      if (a?.status === 'error') summary.errors.push(`emails ${account.account_email}: ${a.error}`)
+    }
 
     const b = await syncInvoiceLabel(account, trigger)
     summary.invoicesImported += b?.imported || 0

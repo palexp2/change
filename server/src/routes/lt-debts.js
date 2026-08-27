@@ -1,13 +1,14 @@
 // Dettes à long terme — cédules de remboursement et comptabilisation des
-// versements dans QB (JE : Dr dette (capital) · Dr intérêts · Cr banque).
+// versements dans QB (Dépense : banque → capital + intérêts).
 import { Router } from 'express'
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
+import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum } from '../services/quickbooks.js'
-import { qbPost, qbEntityUrl, qbUploadAttachment } from '../connectors/quickbooks.js'
-import { buildDebtSchedulePdf } from '../services/ltDebtSchedulePdf.js'
+import { publishDebtPaymentExpense } from '../services/ltDebtQb.js'
+import { generateSchedule } from '../services/ltDebtSchedule.js'
 import { logSync } from '../services/syncLog.js'
 
 const router = Router()
@@ -17,7 +18,8 @@ const isDate = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''))
 const round2 = n => Math.round(n * 100) / 100
 
 const DEBT_FIELDS = ['label', 'lender', 'loan_number', 'currency', 'principal',
-  'qb_debt_acctnum', 'qb_interest_acctnum', 'qb_bank_acctnum', 'active', 'notes']
+  'qb_debt_acctnum', 'qb_interest_acctnum', 'qb_bank_acctnum', 'active', 'notes',
+  'annual_rate', 'payment_frequency', 'payment_amount']
 
 function debtSummary(debt) {
   const payments = db.prepare(`
@@ -98,7 +100,7 @@ router.get('/:id/payments', (req, res) => {
   const payments = db.prepare(`
     SELECT * FROM lt_debt_payments WHERE debt_id = ? AND deleted_at IS NULL ORDER BY payment_date
   `).all(debt.id)
-  for (const p of payments) p.qb_je_url = p.qb_je_id ? qbEntityUrl('journal', p.qb_je_id) : null
+  for (const p of payments) p.qb_txn_url = p.qb_txn_id ? qbEntityUrl(p.qb_txn_type === 'purchase' ? 'expense' : 'journal', p.qb_txn_id) : null
   Object.assign(debt, debtSummary(debt))
   res.json({ debt, payments })
 })
@@ -145,13 +147,21 @@ router.post('/:id/payments/import', (req, res) => {
     const error = validatePaymentRow(r)
     if (error) return res.status(400).json({ error: `ligne ${i + 1} : ${error}` })
   }
+  const { inserted, skipped } = insertScheduleRows(req.params.id, rows, req.body.replace === true)
+  res.json({ inserted, skipped })
+})
+
+// Insertion d'une cédule (import collé ou générée). replace = true efface les
+// versements NON comptabilisés existants ; une ligne dont la date est déjà prise
+// est ignorée plutôt que d'écraser un versement publié.
+function insertScheduleRows(debtId, rows, replace) {
   let inserted = 0, skipped = 0
   const tx = db.transaction(() => {
-    if (req.body.replace === true) {
+    if (replace) {
       db.prepare(`
         UPDATE lt_debt_payments SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        WHERE debt_id = ? AND deleted_at IS NULL AND pushed_at IS NULL AND qb_je_id IS NULL
-      `).run(req.params.id)
+        WHERE debt_id = ? AND deleted_at IS NULL AND pushed_at IS NULL AND qb_txn_id IS NULL
+      `).run(debtId)
     }
     const insert = db.prepare(`
       INSERT INTO lt_debt_payments (id, debt_id, payment_date, principal, interest, balance_after, source, notes)
@@ -159,17 +169,105 @@ router.post('/:id/payments/import', (req, res) => {
     `)
     for (const r of rows) {
       const dup = db.prepare('SELECT id FROM lt_debt_payments WHERE debt_id = ? AND payment_date = ? AND deleted_at IS NULL')
-        .get(req.params.id, r.payment_date)
+        .get(debtId, r.payment_date)
       if (dup) { skipped++; continue }
-      insert.run(randomUUID(), req.params.id, r.payment_date, Number(r.principal), Number(r.interest),
+      insert.run(randomUUID(), debtId, r.payment_date, Number(r.principal), Number(r.interest),
         Number.isFinite(Number(r.balance_after)) && r.balance_after !== '' && r.balance_after != null ? Number(r.balance_after) : null,
         r.notes || null)
       inserted++
     }
   })
   tx()
-  renumber(req.params.id)
-  res.json({ inserted, skipped })
+  renumber(debtId)
+  return { inserted, skipped }
+}
+
+// Génération de la cédule d'amortissement à partir des paramètres du prêt
+// (solde d'ouverture, taux annuel, cadence, montant du versement OU nombre de
+// versements). `preview: true` ne fait que calculer — c'est ce qui alimente
+// l'aperçu de la modale avant que l'utilisateur confirme.
+router.post('/:id/payments/generate', (req, res) => {
+  const debt = db.prepare('SELECT * FROM lt_debts WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
+  if (!debt) return res.status(404).json({ error: 'Not found' })
+  const { rows, error, totals } = generateSchedule(req.body)
+  if (error) return res.status(400).json({ error })
+  if (req.body.preview === true) return res.json({ preview: true, rows, totals })
+
+  const { inserted, skipped } = insertScheduleRows(req.params.id, rows, req.body.replace === true)
+  // Les paramètres restent sur la dette : ils préremplissent la prochaine
+  // génération et alimentent la récurrente de trésorerie.
+  db.prepare(`
+    UPDATE lt_debts SET annual_rate = ?, payment_frequency = ?, payment_amount = ?,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
+  `).run(Number(req.body.annual_rate) || 0, req.body.frequency || 'monthly',
+    totals.count ? round2(rows[0].principal + rows[0].interest) : null, req.params.id)
+  res.json({ inserted, skipped, totals })
+})
+
+// Concordance du solde de la cédule avec le solde du compte de dette dans QB.
+// QB porte les passifs en négatif : on compare en valeur absolue. Un écart
+// signale une cédule décalée (versement oublié, intérêts capitalisés non
+// repris…) — c'est un contrôle de lecture, rien n'est écrit.
+router.get('/:id/qb-balance', async (req, res) => {
+  const debt = db.prepare('SELECT * FROM lt_debts WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
+  if (!debt) return res.status(404).json({ error: 'Not found' })
+  if (!debt.qb_debt_acctnum) return res.status(400).json({ error: 'Aucun compte de dette QB configuré' })
+  Object.assign(debt, debtSummary(debt))
+  try {
+    const acctId = await resolveAccountByAcctNum(debt.qb_debt_acctnum)
+    if (!acctId) return res.status(404).json({ error: `Compte QB #${debt.qb_debt_acctnum} introuvable` })
+    const acct = (await qbGet(`/account/${acctId}`))?.Account
+    const qbBalance = round2(Math.abs(Number(acct?.CurrentBalance) || 0))
+    const erpBalance = debt.remaining_balance == null ? null : round2(Math.abs(debt.remaining_balance))
+    const delta = erpBalance == null ? null : round2(qbBalance - erpBalance)
+    res.json({
+      acctnum: debt.qb_debt_acctnum,
+      account_name: acct?.Name || null,
+      qb_balance: qbBalance,
+      erp_balance: erpBalance,
+      delta,
+      // 1 ¢ de tolérance : les deux côtés sont arrondis au cent.
+      matches: delta != null && Math.abs(delta) <= 0.01,
+      checked_at: new Date().toISOString(),
+    })
+  } catch (e) {
+    res.status(502).json({ error: e.message })
+  }
+})
+
+// Contrôle de lecture : les transactions QB liées aux versements « publiés »
+// existent-elles toujours ? Une suppression côté QuickBooks laissait l'ERP
+// afficher « Publié » alors que rien n'est comptabilisé. Un seul appel par type
+// d'entité (WHERE Id IN (…)), rien n'est écrit.
+router.get('/:id/qb-check', async (req, res) => {
+  const debt = db.prepare('SELECT id FROM lt_debts WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
+  if (!debt) return res.status(404).json({ error: 'Not found' })
+  const published = db.prepare(`
+    SELECT id, qb_txn_id, qb_txn_type FROM lt_debt_payments
+    WHERE debt_id = ? AND deleted_at IS NULL AND qb_txn_id IS NOT NULL
+  `).all(req.params.id).filter(p => /^\d+$/.test(String(p.qb_txn_id)))
+  if (!published.length) return res.json({ missing: [], checked_at: new Date().toISOString() })
+
+  try {
+    const missing = []
+    for (const [type, entity] of [['purchase', 'Purchase'], ['journal', 'JournalEntry']]) {
+      const rows = published.filter(p => (p.qb_txn_type === 'purchase' ? 'purchase' : 'journal') === type)
+      if (!rows.length) continue
+      const found = new Set()
+      const ids = [...new Set(rows.map(p => String(p.qb_txn_id)))]
+      // Lots de 50 : la requête QB passe par l'URL, on évite les URI géantes.
+      for (let i = 0; i < ids.length; i += 50) {
+        const batch = ids.slice(i, i + 50).map(id => `'${id}'`).join(', ')
+        const q = encodeURIComponent(`SELECT Id FROM ${entity} WHERE Id IN (${batch}) MAXRESULTS 1000`)
+        const found_ = (await qbGet(`/query?query=${q}`))?.QueryResponse?.[entity] || []
+        for (const r of found_) found.add(String(r.Id))
+      }
+      for (const p of rows) if (!found.has(String(p.qb_txn_id))) missing.push(p.id)
+    }
+    res.json({ missing, checked_at: new Date().toISOString() })
+  } catch (e) {
+    res.status(502).json({ error: e.message })
+  }
 })
 
 function renumber(debtId) {
@@ -182,7 +280,7 @@ function renumber(debtId) {
 router.put('/payments/:id', (req, res) => {
   const existing = db.prepare('SELECT * FROM lt_debt_payments WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
-  if (existing.qb_je_id) return res.status(400).json({ error: 'Versement déjà publié dans QB — non modifiable' })
+  if (existing.qb_txn_id) return res.status(400).json({ error: 'Versement déjà publié dans QB — non modifiable' })
   const merged = { ...existing, ...req.body }
   const error = validatePaymentRow(merged)
   if (error) return res.status(400).json({ error })
@@ -206,7 +304,7 @@ router.put('/payments/:id', (req, res) => {
 router.delete('/payments/:id', (req, res) => {
   const existing = db.prepare('SELECT * FROM lt_debt_payments WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
-  if (existing.qb_je_id) return res.status(400).json({ error: 'Versement déjà publié dans QB — non supprimable' })
+  if (existing.qb_txn_id) return res.status(400).json({ error: 'Versement déjà publié dans QB — non supprimable' })
   db.prepare(`UPDATE lt_debt_payments SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
     .run(req.params.id)
   renumber(existing.debt_id)
@@ -226,15 +324,50 @@ router.post('/payments/:id/mark-booked', (req, res) => {
 router.post('/payments/:id/unmark-booked', (req, res) => {
   const existing = db.prepare('SELECT * FROM lt_debt_payments WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
-  if (existing.qb_je_id) return res.status(400).json({ error: 'Versement publié via une JE ERP — non démarquable' })
+  if (existing.qb_txn_id) return res.status(400).json({ error: 'Versement publié via l\'ERP — non démarquable' })
   db.prepare(`UPDATE lt_debt_payments SET pushed_at = NULL, updated_at = ? WHERE id = ?`)
     .run(new Date().toISOString(), req.params.id)
   res.json(db.prepare('SELECT * FROM lt_debt_payments WHERE id = ?').get(req.params.id))
 })
 
-// Comptabilisation d'un versement — action transactionnelle approuvée par
-// l'utilisateur (bouton), jamais automatique. Claim AVANT le POST, rollback si
-// le POST échoue (même pattern que publishFpaMonth).
+// Délier la transaction QB d'un versement (supprimée dans QuickBooks : rien n'est
+// comptabilisé, l'ERP ne doit plus afficher « Publié »). On vérifie auprès de QB
+// avant de délier — { force: true } pour passer outre. Le versement redevient
+// « À comptabiliser » et peut être republié.
+router.post('/payments/:id/unpublish', async (req, res) => {
+  const existing = db.prepare('SELECT * FROM lt_debt_payments WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
+  if (!existing) return res.status(404).json({ error: 'Not found' })
+  if (!existing.qb_txn_id) return res.status(400).json({ error: 'Aucune transaction QB liée à ce versement' })
+
+  const isPurchase = existing.qb_txn_type === 'purchase'
+  if (req.body?.force !== true) {
+    try {
+      const r = await qbGet(`/${isPurchase ? 'purchase' : 'journalentry'}/${existing.qb_txn_id}`)
+      if (r?.Purchase || r?.JournalEntry) {
+        return res.status(409).json({
+          error: `${isPurchase ? 'Dépense' : 'JE'} QB #${existing.qb_txn_id} existe encore dans QuickBooks. Supprime-la d'abord ou renvoie { force: true } pour délier quand même.`,
+        })
+      }
+    } catch (e) {
+      // Code 610 « Objet introuvable » → confirme que la transaction n'existe plus.
+      if (!/610|introuvable|n'existe plus|not found/i.test(e.message)) {
+        return res.status(502).json({ error: `Vérification QB échouée: ${e.message}` })
+      }
+    }
+  }
+
+  db.prepare(`UPDATE lt_debt_payments SET qb_txn_id = NULL, qb_txn_type = NULL, pushed_at = NULL, updated_at = ? WHERE id = ?`)
+    .run(new Date().toISOString(), req.params.id)
+  res.json({
+    ok: true,
+    previous_qb_txn_id: existing.qb_txn_id,
+    payment: db.prepare('SELECT * FROM lt_debt_payments WHERE id = ?').get(req.params.id),
+  })
+})
+
+// Comptabilisation d'un versement en Dépense QB — action transactionnelle
+// approuvée par l'utilisateur (bouton), jamais automatique. Claim AVANT le
+// POST, rollback si le POST échoue (même pattern que publishFpaMonth).
 router.post('/payments/:id/publish', async (req, res) => {
   const payment = db.prepare('SELECT * FROM lt_debt_payments WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!payment) return res.status(404).json({ error: 'Not found' })
@@ -254,61 +387,18 @@ router.post('/payments/:id/publish', async (req, res) => {
   if (!claimed.changes) return res.status(409).json({ error: 'Versement déjà en cours de publication' })
 
   try {
-    const total = round2(payment.principal + payment.interest)
-    const lines = []
-    const addLine = async (acctnum, type, amount, desc) => {
-      const acctId = await resolveAccountByAcctNum(acctnum)
-      if (!acctId) throw new Error(`Compte QB #${acctnum} introuvable`)
-      lines.push({
-        DetailType: 'JournalEntryLineDetail',
-        Amount: round2(amount),
-        Description: desc,
-        JournalEntryLineDetail: { PostingType: type, AccountRef: { value: acctId } },
-      })
-    }
-    const ref = [debt.label, debt.loan_number].filter(Boolean).join(' ')
-    if (payment.principal > 0) await addLine(debt.qb_debt_acctnum, 'Debit', payment.principal, `Remboursement capital — ${ref}`)
-    if (payment.interest > 0) await addLine(debt.qb_interest_acctnum, 'Debit', payment.interest, `Intérêts — ${ref}`)
-    await addLine(debt.qb_bank_acctnum, 'Credit', total, `Versement ${payment.payment_date} — ${ref}`)
-
-    const je = {
-      TxnDate: payment.payment_date,
-      PrivateNote: `Versement dette LT ${ref} — ${payment.payment_date} (ERP, dettes long terme)`,
-      Line: lines,
-    }
-    const result = await qbPost('/journalentry', je)
-    const jeId = result.JournalEntry?.Id
-    if (!jeId) throw new Error("QB n'a pas retourné d'Id pour le JournalEntry")
-    db.prepare(`UPDATE lt_debt_payments SET qb_je_id = ?, updated_at = ? WHERE id = ?`)
-      .run(String(jeId), new Date().toISOString(), payment.id)
-
-    // Pièce justificative : la cédule complète (versement courant surligné)
-    // jointe à la JE. L'écriture est déjà créée — un échec ici ne l'annule pas,
-    // on remonte un avertissement à l'utilisateur.
-    let attachmentWarning = null
-    try {
-      const schedule = db.prepare(`
-        SELECT * FROM lt_debt_payments WHERE debt_id = ? AND deleted_at IS NULL ORDER BY payment_date
-      `).all(debt.id)
-      const pdf = await buildDebtSchedulePdf({ debt, payments: schedule, highlightPaymentId: payment.id })
-      const slug = debt.label.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '')
-      await qbUploadAttachment({
-        entityType: 'JournalEntry', entityId: jeId,
-        fileBuffer: pdf, fileName: `cedule-${slug}-${payment.payment_date}.pdf`,
-        contentType: 'application/pdf',
-      })
-    } catch (e) {
-      attachmentWarning = `Écriture créée, mais la cédule n'a pas pu être jointe : ${e.message}`
-    }
+    const { purchaseId, attachmentWarning } = await publishDebtPaymentExpense(debt, payment)
+    db.prepare(`UPDATE lt_debt_payments SET qb_txn_id = ?, qb_txn_type = 'purchase', updated_at = ? WHERE id = ?`)
+      .run(purchaseId, new Date().toISOString(), payment.id)
 
     logSync('lt_debts', 'manual', { status: 'success', modified: 1 })
     res.json({
-      qb_je_id: String(jeId),
+      qb_txn_id: purchaseId,
       warning: attachmentWarning,
       payment: db.prepare('SELECT * FROM lt_debt_payments WHERE id = ?').get(payment.id),
     })
   } catch (e) {
-    db.prepare(`UPDATE lt_debt_payments SET pushed_at = NULL WHERE id = ? AND qb_je_id IS NULL`).run(payment.id)
+    db.prepare(`UPDATE lt_debt_payments SET pushed_at = NULL WHERE id = ? AND qb_txn_id IS NULL`).run(payment.id)
     logSync('lt_debts', 'manual', { status: 'error', error: e.message })
     res.status(502).json({ error: e.message })
   }

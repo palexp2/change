@@ -3,13 +3,15 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
   ArrowLeft, ChevronLeft, ChevronRight,
   RefreshCw, AlertCircle, CheckCircle, Clock, BookOpen, ReceiptText,
-  Plus, Trash2, Archive, ArchiveRestore, Pencil, Mail,
+  Plus, Trash2, Archive, ArchiveRestore, Pencil, Mail, Sparkles, FileX, Paperclip,
+  ArrowLeftRight,
 } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { CurrencyConversionModal } from '../components/CurrencyConversionModal.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -55,6 +57,19 @@ function StatusBadge({ status }) {
 // Code de taxe QB déduit par défaut selon les montants TPS/TVQ extraits — sert de
 // présélection. Doit rester aligné avec la déduction serveur (pushSaleReceiptToQB).
 const NO_TAX = '__none__'
+
+// Compte d'imputation des PIÈCES. Une facture dont les lignes sont rattachées à des
+// achats LIA (table Achats) entre au STOCK — ce n'est pas une dépense de la période.
+// Historique QuickBooks : 100 des 101 lignes « LIA-… » publiées depuis mars sont
+// imputées à 14000 « Stock de Pièces ». On présélectionne donc ce compte dès qu'une
+// ligne porte un achat LIA, au lieu de le faire ressaisir à chaque facture.
+// Repéré par NUMÉRO de compte (stable, lisible) et non par Id QB.
+const PARTS_ACCT_NUM = '14000'
+
+// Une ligne « pièce » = rattachée à un achat LIA (lien explicite) ou décrite par un
+// code LIA (saisie manuelle, extraction).
+const hasLiaLines = items => (items || []).some(it => it?.purchase_id || /^\s*lia-\d+/i.test(it?.description || ''))
+
 function deducedTaxName(tps, tvq) {
   if (tps > 0 && tvq > 0) return 'TPS/TVQ QC - 9,975'
   if (tps > 0) return 'TPS'
@@ -62,9 +77,35 @@ function deducedTaxName(tps, tvq) {
   return null
 }
 
+// Signature de montants attendue par code de taxe QB — miroir client de
+// CODE_SIGNATURES (server/services/fiscalDetection.js). Sert à choisir, parmi les
+// codes acceptés d'un type de transaction, celui qui colle aux montants DU document
+// (ex. « Achat local taxable » + TPS seule → « TPS », pas « TPS/TVQ QC - 9,975 »).
+const CODE_AMOUNT_SIGNS = {
+  'TPS/TVQ QC - 9,975': { tps: true, tvq: true },
+  'TPS/TVQ repas':      { tps: true, tvq: true },
+  'TPS':                { tps: true, tvq: false },
+  'TVQ QC - 9,975':     { tps: false, tvq: true },
+  'Détaxé':             { tps: false, tvq: false },
+  'Exonéré':            { tps: false, tvq: false },
+  'Hors champ':         { tps: false, tvq: false },
+}
+
+function bestCodeForType(type, tps, tvq) {
+  if (!type) return null
+  const hasTps = (Number(tps) || 0) > 0
+  const hasTvq = (Number(tvq) || 0) > 0
+  const match = (type.codes || []).find(c => {
+    const s = CODE_AMOUNT_SIGNS[c]
+    return s && s.tps === hasTps && s.tvq === hasTvq
+  })
+  return match || type.recommendedCode
+}
+
 // Taux de taxe d'ACHAT par NOM de code QB (codes vérifiés en prod — cf. fiscalStatus.js).
-// Sert UNIQUEMENT à l'indicateur de réconciliation : compare la taxe impliquée par les
-// codes par ligne aux taxes saisies du document. Un nom absent = taux inconnu → la
+// Sert à l'indicateur de réconciliation (compare la taxe impliquée par les codes par
+// ligne aux taxes saisies du document) et à repérer les lignes explicitement à 0 % pour
+// les exclure de la base taxable au recalcul. Un nom absent = taux inconnu → la
 // réconciliation est marquée « partielle » plutôt que de conclure à tort.
 const TAX_RATE_BY_NAME = new Map([
   ['TPS', 5],
@@ -141,7 +182,7 @@ function recomputeAmounts(receipt, items, defaultCodeId, taxNameById) {
       }
     }
   }
-  return recalcAmountsFromItems(items, receipt)
+  return recalcAmountsFromItems(items, receipt, taxNameById)
 }
 
 // Taxe impliquée par les codes de taxe PAR LIGNE (réconciliation, lecture seule — ne
@@ -178,7 +219,7 @@ function impliedTaxFromLineCodes(receipt, taxNameById) {
 }
 
 
-function QBPublishForm({ receipt, onSuccess, onUpdate }) {
+function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
   const { addToast } = useToast()
   const [accounts, setAccounts] = useState([])
   const [vendors, setVendors] = useState([])
@@ -192,7 +233,17 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
   // correspondante est encadrée en rouge. Valeurs : vendor, expense_account,
   // payment_account, transaction_type, tax_code, currency.
   const [errorField, setErrorField] = useState(null)
-  const fail = (msg, field = null) => { setError(msg); setErrorField(field) }
+  // Publication tardive : nombre de jours de retard quand le garde-fou des 30 jours
+  // bloque. Non nul ⇒ le message rouge propose « Publier quand même » (le retard est
+  // souvent légitime — facture comptabilisée après coup — mais doit être vu).
+  const [staleDays, setStaleDays] = useState(null)
+  // Doublon probable : le serveur refuse la publication tant qu'une anomalie « doublon »
+  // est ouverte (cf. transactionAnomalies.js). Le blocage n'est pas une impasse — après
+  // avoir LU le message, l'opérateur peut publier quand même en justifiant (la raison est
+  // tracée au journal du reçu). Non nul ⇒ le message rouge propose la justification.
+  const [anomalyBlocked, setAnomalyBlocked] = useState(false)
+  const [anomalyReason, setAnomalyReason] = useState('')
+  const fail = (msg, field = null) => { setError(msg); setErrorField(field); setStaleDays(null); setAnomalyBlocked(false) }
   const fieldFrame = f => (errorField === f ? 'ring-2 ring-red-400 rounded-lg bg-red-50 p-2 -m-2' : '')
 
   // Vérification du statut fiscal avant publication. transactionType détermine le
@@ -200,6 +251,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
   // la modale récapitulative ; forceReason = justification pour publier malgré un écart.
   const [transactionType, setTransactionType] = useState('')
   const [showConfirm, setShowConfirm] = useState(false)
+  const [showHistory, setShowHistory] = useState(false)
   const [forceReason, setForceReason] = useState('')
 
   const [type, setType] = useState('purchase')
@@ -210,6 +262,26 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
   const [vendorId, setVendorId] = useState('')
   const [newVendorName, setNewVendorName] = useState(receipt.company || '')
   const [taxCodeId, setTaxCodeId] = useState(NO_TAX)
+  // Montant réellement débité à la banque quand il diffère du total de la facture
+  // (conversion de devise — ex. AWS facture en USD mais charge la carte en CAD, que
+  // Desjardins reconvertit à son taux). Paramètre de publication, pas une donnée du
+  // reçu : l'écart devient une ligne « Frais de conversion » (Exonéré) côté serveur.
+  const [bankChargedTotal, setBankChargedTotal] = useState(
+    receipt.bank_charged_total != null ? String(receipt.bank_charged_total) : ''
+  )
+  // Champ rarement utilisé — replié par défaut, ouvert seulement si déjà rempli.
+  const [bankFieldOpen, setBankFieldOpen] = useState(receipt.bank_charged_total != null)
+
+  // BROUILLON de comptabilisation : chaque choix du formulaire (type, fournisseur,
+  // comptes, statut fiscal, montant banque) est autosauvegardé sur le reçu dès la
+  // saisie — on peut quitter la fiche en cours de route et retrouver ses choix tels
+  // quels au retour pour finaliser. Best effort : un échec réseau ne bloque pas la
+  // saisie (toast d'erreur), la publication revalide tout de toute façon.
+  function saveDraft(patch) {
+    api.saleReceipts.update(receipt.id, patch)
+      .then(u => onUpdate?.(u))
+      .catch(e => addToast({ message: 'Brouillon non sauvegardé : ' + e.message, type: 'error' }))
+  }
 
   // Pré-remplissage auto depuis le PROFIL fournisseur (défauts appris/édités —
   // prioritaire) puis, à défaut, depuis la dernière compta du même fournisseur.
@@ -219,7 +291,9 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
   const userTouchedRef = useRef(false)
   const [autoAppliedFrom, setAutoAppliedFrom] = useState(null)
   const [profileApplied, setProfileApplied] = useState(false)
-  const markTouched = fn => v => { userTouchedRef.current = true; fn(v) }
+  const [partsApplied, setPartsApplied] = useState(false)
+  // Édition manuelle + autosave brouillon en un geste (type, comptes).
+  const touchAndDraft = (fn, field) => v => { userTouchedRef.current = true; fn(v); saveDraft({ [field]: v || null }) }
 
   useEffect(() => {
     Promise.all([api.quickbooks.accounts(), api.quickbooks.vendors(), api.quickbooks.taxCodes(), api.saleReceipts.transactionTypes()])
@@ -231,16 +305,29 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
         // Défauts du profil fournisseur, déjà résolus pour LA devise du reçu
         // (vendor QB CAD vs USD, compte de paiement par devise, code de taxe par devise).
         const defaults = receipt.vendor_defaults || null
-        // Type de transaction : choix confirmé déjà en DB, sinon défaut du profil,
-        // sinon suggestion serveur. Toujours à confirmer (obligatoire à la publication).
-        setTransactionType(receipt.transaction_type || defaults?.transaction_type || receipt.suggested_transaction_type || '')
-        // Fournisseur : le vendor QB du profil pour cette devise prime. Sinon,
-        // rapprochement flou DEVISE D'ABORD (un fournisseur bi-devise a deux vendors
-        // QB — on cherche parmi ceux de la devise du reçu avant les autres), et en
-        // dernier recours on propose d'en créer un nouveau — évite les doublons.
+        // Type de transaction : choix confirmé déjà en DB, sinon DÉTECTION fiscale
+        // serveur (profil → historique → IA du document → règles, chaque signal validé
+        // contre les montants — cf. services/fiscalDetection.js), sinon défaut brut du
+        // profil. Toujours à confirmer (obligatoire à la publication).
+        setTransactionType(receipt.transaction_type || receipt.fiscal_detection?.transaction_type || defaults?.transaction_type || receipt.suggested_transaction_type || '')
+        // BROUILLON persisté par un passage précédent dans le formulaire (autosave) :
+        // les choix déjà faits priment sur le profil fournisseur, l'historique et le
+        // rapprochement flou — on retrouve la facture exactement là où on l'a laissée.
+        // Chaque valeur est validée contre les référentiels QB chargés (compte ou
+        // vendor supprimé depuis → on retombe sur les défauts).
+        const draftType = ['purchase', 'bill', 'cc_credit'].includes(receipt.quickbooks_type) ? receipt.quickbooks_type : null
+        const draftVendorId = receipt.vendor_id && vends.some(v => v.Id === receipt.vendor_id) ? receipt.vendor_id : null
+        const draftExpenseId = receipt.expense_account_id && accs.some(a => a.Id === receipt.expense_account_id) ? receipt.expense_account_id : null
+        const draftPaymentId = receipt.payment_account_id && accs.some(a => a.Id === receipt.payment_account_id) ? receipt.payment_account_id : null
+        // Fournisseur : le brouillon prime, puis le vendor QB du profil pour cette
+        // devise. Sinon, rapprochement flou DEVISE D'ABORD (un fournisseur bi-devise a
+        // deux vendors QB — on cherche parmi ceux de la devise du reçu avant les
+        // autres), et en dernier recours on propose d'en créer un nouveau — évite les doublons.
         const recCur = (receipt.currency || 'CAD').toUpperCase()
         const profileVendor = defaults?.qb_vendor_id && vends.find(v => v.Id === defaults.qb_vendor_id)
-        if (profileVendor) {
+        if (draftVendorId) {
+          setVendorId(draftVendorId); setVendorMode('existing')
+        } else if (profileVendor) {
           setVendorId(profileVendor.Id); setVendorMode('existing')
         } else if (receipt.company) {
           const sameCur = vends.filter(v => ((v.CurrencyRef?.value || 'CAD').toUpperCase()) === recCur)
@@ -248,12 +335,23 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
           if (match) { setVendorId(match.Id); setVendorMode('existing') }
           else setVendorMode('new')
         }
-        // Type d'entité + comptes : défauts du profil (le panneau « dernière compta »
-        // ne s'applique ensuite que si le profil n'avait pas de compte de dépense).
+        // Type d'entité + comptes : brouillon d'abord, sinon défauts du profil (le
+        // panneau « dernière compta » ne s'applique ensuite que si le profil n'avait
+        // pas de compte de dépense).
         let fromProfile = false
-        if (defaults?.qb_type) { setType(defaults.qb_type); fromProfile = true }
-        if (defaults?.expense_account_id) { setExpenseAccountId(defaults.expense_account_id); fromProfile = true }
-        if (defaults?.payment_account_id) { setPaymentAccountId(defaults.payment_account_id); fromProfile = true }
+        if (draftType) setType(draftType)
+        else if (defaults?.qb_type) { setType(defaults.qb_type); fromProfile = true }
+        if (draftExpenseId) setExpenseAccountId(draftExpenseId)
+        else if (defaults?.expense_account_id) { setExpenseAccountId(defaults.expense_account_id); fromProfile = true }
+        if (draftPaymentId) setPaymentAccountId(draftPaymentId)
+        else if (defaults?.payment_account_id) { setPaymentAccountId(defaults.payment_account_id); fromProfile = true }
+        // Un brouillon type/comptes = des choix DÉJÀ faits par l'opérateur : on les
+        // traite comme des éditions manuelles pour que ni l'auto-apply « dernière
+        // compta » ni le compte de pièces LIA ne viennent les écraser au retour.
+        if (draftType || draftExpenseId || draftPaymentId) {
+          userTouchedRef.current = true
+          autoAppliedRef.current = true
+        }
         // Échéance : extraite du document (ou calculée depuis ses termes), sinon
         // recalculée depuis les termes par défaut du profil (Net N jours).
         if (receipt.due_date) setDueDate(receipt.due_date)
@@ -268,13 +366,26 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
         // Présélection du code de taxe : code du document (section Montants), sinon
         // défaut du profil pour cette devise (sentinel __none__ = aucune taxe), sinon
         // déduction automatique par les montants TPS/TVQ.
+        // Le défaut du profil est écarté quand les montants du document le CONTREDISENT
+        // (verdict serveur code_amount_verdicts) : le profil Amazon.ca porte le code
+        // groupé « TPS/TVQ QC - 9,975 », mais un livre n'est facturé qu'à 5 % (TVH ON
+        // remise) — publier le groupé sans TVQ faisait refuser QB (« erreur lors du
+        // calcul de la taxe »). On retombe alors sur le code recommandé par la détection.
+        const verdicts = receipt.fiscal_detection?.code_amount_verdicts || {}
+        const defaultCodeName = defaults?.tax_code_id && defaults.tax_code_id !== NO_TAX
+          ? (codes.find(c => c.Id === defaults.tax_code_id)?.Name || null)
+          : null
+        const defaultContradicted = defaultCodeName ? verdicts[defaultCodeName] === false : false
         if (receipt.tax_code_id) {
           setTaxCodeId(receipt.tax_code_id)
-        } else if (defaults?.tax_code_id && (defaults.tax_code_id === NO_TAX || codes.some(c => c.Id === defaults.tax_code_id))) {
+        } else if (!defaultContradicted && defaults?.tax_code_id
+          && (defaults.tax_code_id === NO_TAX || codes.some(c => c.Id === defaults.tax_code_id))) {
           setTaxCodeId(defaults.tax_code_id)
           fromProfile = true
         } else {
-          const wantName = deducedTaxName(receipt.tps || 0, receipt.tvq || 0)
+          // Code recommandé par la détection fiscale (adapté au type ET aux montants),
+          // sinon déduction brute par les montants TPS/TVQ.
+          const wantName = receipt.fiscal_detection?.tax_code_name || deducedTaxName(receipt.tps || 0, receipt.tvq || 0)
           const taxMatch = wantName && codes.find(c => c.Name === wantName)
           if (taxMatch) setTaxCodeId(taxMatch.Id)
         }
@@ -302,13 +413,24 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
   // withTax=true (bouton « Utiliser » manuel) copie aussi le code de taxe + toast ;
   // withTax=false (auto-apply silencieux) laisse la déduction TPS/TVQ du reçu courant.
   function applyAccountingFields(txn, { withTax } = { withTax: true }) {
-    setType(['bill', 'cc_credit'].includes(txn.quickbooks_type) ? txn.quickbooks_type : 'purchase')
+    const qbType = ['bill', 'cc_credit'].includes(txn.quickbooks_type) ? txn.quickbooks_type : 'purchase'
+    setType(qbType)
     if (txn.expense_account_id) setExpenseAccountId(txn.expense_account_id)
     if (txn.payment_account_id) setPaymentAccountId(txn.payment_account_id)
     if (withTax) {
       setTaxCodeId(txn.tax_code_id || NO_TAX)
       if (txn.transaction_type) setTransactionType(txn.transaction_type)
       fail(null)
+      // Copie MANUELLE (bouton « Utiliser ») = choix de l'opérateur → persistée en
+      // brouillon, comme une saisie directe. L'auto-apply silencieux (withTax=false),
+      // lui, ne persiste rien : il est recalculé à chaque visite.
+      userTouchedRef.current = true
+      saveDraft({
+        quickbooks_type: qbType,
+        ...(txn.expense_account_id ? { expense_account_id: txn.expense_account_id } : {}),
+        ...(txn.payment_account_id ? { payment_account_id: txn.payment_account_id } : {}),
+        ...(txn.transaction_type ? { transaction_type: txn.transaction_type } : {}),
+      })
       addToast({ message: 'Réglages copiés depuis la transaction passée — vérifiez puis publiez.', type: 'success' })
     }
   }
@@ -327,6 +449,23 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
     setAutoAppliedFrom(txn)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, vendorHistory])
+
+  // Facture de PIÈCES : dès qu'une ligne est rattachée à un achat LIA, le compte de
+  // dépense est le compte de pièces (#14000) — un achat LIA entre au stock. Ce signal
+  // est plus fort que les défauts du profil fournisseur ou de la dernière compta : il
+  // vient du contenu de CETTE facture, il les écrase donc. Jamais après une édition
+  // manuelle (userTouchedRef), jamais sur un reçu déjà publié. Re-évalué si l'opérateur
+  // rattache un achat après coup dans la section Articles.
+  const liaLines = hasLiaLines(receipt.items)
+  useEffect(() => {
+    if (loading || receipt.quickbooks_id || userTouchedRef.current || !liaLines) return
+    const partsAcct = accounts.find(a => String(a.AcctNum) === PARTS_ACCT_NUM)
+    if (!partsAcct || expenseAccountId === partsAcct.Id) return
+    setExpenseAccountId(partsAcct.Id)
+    setPartsApplied(true)
+    autoAppliedRef.current = true // court-circuite l'auto-apply « dernière compta »
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, liaLines, accounts])
 
   const expenseAccounts = accounts.filter(a => ['Expense', 'Other Expense', 'Cost of Goods Sold', 'Other Current Asset'].includes(a.AccountType))
   const paymentAccounts = accounts.filter(a => ['Bank', 'Credit Card'].includes(a.AccountType))
@@ -360,6 +499,8 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
     .sort((a, b) => (a.side === 'vente' ? 1 : 0) - (b.side === 'vente' ? 1 : 0))
     .map(t => ({ value: t.key, label: t.side === 'vente' ? `Vente · ${t.label}` : t.label }))
   const selectedType = txTypes.find(t => t.key === transactionType) || null
+  // Détection fiscale serveur (type + code probables, source, confiance, conflits).
+  const detection = receipt.fiscal_detection || null
   const selectedTaxName = taxCodeId === NO_TAX ? null : (taxNameById.get(taxCodeId) || null)
   const fiscalOk = selectedType ? (!!selectedTaxName && selectedType.codes.includes(selectedTaxName)) : false
   // Id QB du code recommandé pour le bouton « Corriger » (null si absent du fichier QB).
@@ -371,14 +512,21 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
   // l'utilisateur peut corriger le code de taxe ou saisir une justification (le serveur
   // BLOQUE la publication sans forceReason — cf. services/fiscalStatus.js), donc on ne
   // peut pas la sauter.
-  function handlePublish() {
+  // ignoreStaleDate : l'utilisateur a lu l'avertissement de publication tardive et
+  // confirmé (bouton « Publier quand même »). Passé en argument plutôt qu'en état pour
+  // que la reprise soit immédiate, sans attendre un re-render.
+  function handlePublish(ignoreStaleDate = false) {
     if (receipt.receipt_date) {
       const today = new Date(); today.setHours(0, 0, 0, 0)
       const [y, m, d] = receipt.receipt_date.slice(0, 10).split('-').map(Number)
       const rDate = new Date(y, (m || 1) - 1, d || 1)
       const diffDays = Math.round((today - rDate) / 86400000)
       if (diffDays < 0) { fail('Impossible de publier une facture datée dans le futur.'); return }
-      if (diffDays > 30) { fail(`Impossible de publier une facture datée de plus de 30 jours dans le passé (${diffDays} jours).`); return }
+      if (diffDays > 30 && !ignoreStaleDate) {
+        fail(`Facture datée de plus de 30 jours dans le passé (${diffDays} jours) — vérifiez la date avant de publier.`)
+        setStaleDays(diffDays)
+        return
+      }
     }
     if (!transactionType) { fail('Sélectionnez le type de transaction (statut fiscal)', 'transaction_type'); return }
     if (!expenseAccountId) { fail('Sélectionnez un compte de dépense', 'expense_account'); return }
@@ -386,6 +534,10 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
     if (type === 'cc_credit') {
       if (!paymentAccountId) { fail('Sélectionnez un compte de carte de crédit', 'payment_account'); return }
       if (!creditCardOptions.some(o => o.value === paymentAccountId)) { fail('Le compte sélectionné n\'est pas un compte de carte de crédit', 'payment_account'); return }
+    }
+    if (type === 'purchase' && bankChargedTotal !== '') {
+      const bank = Number(bankChargedTotal)
+      if (!Number.isFinite(bank) || bank <= 0) { fail('Montant passé à la banque invalide', 'bank_charged_total'); return }
     }
     if (vendorMode === 'existing' && !vendorId) { fail('Sélectionnez un fournisseur', 'vendor'); return }
     if (vendorMode === 'new' && !newVendorName.trim()) { fail('Entrez le nom du fournisseur', 'vendor'); return }
@@ -397,7 +549,8 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
 
   // Étape 2 : publication effective. forceReason n'est transmis (et requis) que si le
   // code de taxe ne correspond pas au statut fiscal attendu — échappatoire tracée.
-  async function doPublish() {
+  // anomalyOverride : justification saisie après un blocage « doublon probable ».
+  async function doPublish(anomalyOverride = null) {
     setSubmitting(true)
     fail(null)
     try {
@@ -411,12 +564,15 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
         taxCodeId: taxCodeId === NO_TAX ? null : taxCodeId,
         transactionType,
         forceReason: fiscalOk ? undefined : forceReason.trim(),
+        bankChargedTotal: type === 'purchase' && bankChargedTotal !== '' ? Number(bankChargedTotal) : undefined,
+        anomalyOverride: anomalyOverride || undefined,
       })
       setShowConfirm(false)
       const updated = await api.saleReceipts.get(receipt.id)
       onSuccess(updated)
     } catch (e) {
       fail(e.message, e.details?.field || null)
+      if (e.details?.field === 'anomaly') setAnomalyBlocked(true)
       setShowConfirm(false)
     } finally {
       setSubmitting(false)
@@ -427,11 +583,14 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
   // publication) ET persiste le code + recalcule les taxes du reçu en direct (chaque
   // ligne suit son code, ou ce code par défaut). La section Montants se met ainsi à jour
   // sans sélecteur séparé. NO_TAX (— Aucune taxe —) ⇒ pas de code document → taxes manuelles.
-  async function changeDocCode(val) {
+  // extraPatch : champs additionnels à persister dans le MÊME PATCH (ex. le type de
+  // transaction quand sa sélection applique aussi le code recommandé) — évite deux
+  // requêtes concurrentes dont les réponses pourraient se doubler.
+  async function changeDocCode(val, extraPatch = null) {
     setTaxCodeId(val)
     const defaultCode = val === NO_TAX ? null : (val || null)
     const taxNameById = new Map(taxCodes.map(c => [c.Id, c.Name]))
-    const patch = { tax_code_id: defaultCode }
+    const patch = { tax_code_id: defaultCode, ...(extraPatch || {}) }
     if (defaultCode) Object.assign(patch, recomputeAmounts(receipt, receipt.items || [], defaultCode, taxNameById))
     try {
       const updated = await api.saleReceipts.update(receipt.id, patch)
@@ -449,9 +608,14 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
   function changeTransactionType(key) {
     setTransactionType(key)
     const type = txTypes.find(t => t.key === key)
-    if (!type) return
-    const codeId = taxIdByName.get(type.recommendedCode)
-    if (codeId && codeId !== taxCodeId) changeDocCode(codeId)
+    // Le type choisi est persisté immédiatement (brouillon) — avec le code de taxe
+    // recommandé dans le même PATCH quand la sélection en applique un.
+    if (!type) { saveDraft({ transaction_type: key || null }); return }
+    // Parmi les codes acceptés du type, celui qui colle aux montants du document
+    // (« Achat local taxable » + TPS seule → « TPS ») ; sinon le recommandé générique.
+    const codeId = taxIdByName.get(bestCodeForType(type, receipt.tps, receipt.tvq))
+    if (codeId && codeId !== taxCodeId) changeDocCode(codeId, { transaction_type: key })
+    else saveDraft({ transaction_type: key })
   }
 
   if (loading) {
@@ -468,15 +632,15 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
         <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Type</label>
         <div className="flex gap-4">
           <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-            <input type="radio" data-testid="qb-type-purchase" checked={type === 'purchase'} onChange={() => markTouched(setType)('purchase')} />
+            <input type="radio" data-testid="qb-type-purchase" checked={type === 'purchase'} onChange={() => touchAndDraft(setType, 'quickbooks_type')('purchase')} />
             <span>Dépense payée (Purchase)</span>
           </label>
           <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-            <input type="radio" data-testid="qb-type-bill" checked={type === 'bill'} onChange={() => markTouched(setType)('bill')} />
+            <input type="radio" data-testid="qb-type-bill" checked={type === 'bill'} onChange={() => touchAndDraft(setType, 'quickbooks_type')('bill')} />
             <span>Facture à payer (Bill → Comptes fournisseurs)</span>
           </label>
           <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-            <input type="radio" data-testid="qb-type-cc-credit" checked={type === 'cc_credit'} onChange={() => markTouched(setType)('cc_credit')} />
+            <input type="radio" data-testid="qb-type-cc-credit" checked={type === 'cc_credit'} onChange={() => touchAndDraft(setType, 'quickbooks_type')('cc_credit')} />
             <span>Crédit sur carte de crédit (Credit Card Credit)</span>
           </label>
         </div>
@@ -510,7 +674,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
               testId="qb-vendor-select"
               value={vendorId}
               options={vendorOptions}
-              onChange={setVendorId}
+              onChange={v => { setVendorId(v); saveDraft({ vendor_id: v || null }) }}
               placeholder="— Aucun —"
             />
           ) : (
@@ -524,9 +688,14 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
             testId="qb-expense-select"
             value={expenseAccountId}
             options={expenseOptions}
-            onChange={markTouched(setExpenseAccountId)}
+            onChange={touchAndDraft(setExpenseAccountId, 'expense_account_id')}
             placeholder="— Sélectionner —"
           />
+          {partsApplied && !userTouchedRef.current && (
+            <p data-testid="qb-parts-account-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 mt-1.5 leading-snug">
+              Compte de <strong>pièces</strong> appliqué automatiquement : des lignes sont rattachées à des achats LIA (entrée au stock).
+            </p>
+          )}
         </div>
 
         {type !== 'bill' ? (
@@ -538,13 +707,95 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
               testId="qb-payment-select"
               value={paymentAccountId}
               options={type === 'cc_credit' ? creditCardOptions : paymentOptions}
-              onChange={markTouched(setPaymentAccountId)}
+              onChange={touchAndDraft(setPaymentAccountId, 'payment_account_id')}
               placeholder="— Sélectionner —"
             />
             {type === 'cc_credit' && (
               <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
                 Le montant sera crédité (remboursé) sur ce compte de carte de crédit — saisissez les montants du reçu en positif.
               </p>
+            )}
+            {type === 'purchase' && (
+              <div className={`mt-3 ${fieldFrame('bank_charged_total')}`}>
+                {!bankFieldOpen ? (
+                  <button
+                    type="button"
+                    data-testid="qb-bank-charged-toggle"
+                    onClick={() => setBankFieldOpen(true)}
+                    className="text-[11px] text-slate-400 hover:text-brand-600 underline decoration-dotted"
+                  >
+                    Montant débité différent du total de la facture ?
+                  </button>
+                ) : (
+                  <>
+                    <label className="text-[11px] text-slate-500 block mb-1.5">
+                      Montant passé à la banque
+                    </label>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      data-testid="qb-bank-charged"
+                      value={bankChargedTotal}
+                      onChange={e => setBankChargedTotal(e.target.value)}
+                      onBlur={() => {
+                        // Autosave brouillon au blur (pas à chaque frappe — saisie partielle).
+                        const v = bankChargedTotal === '' ? null : Number(bankChargedTotal)
+                        if (v !== null && (!Number.isFinite(v) || v < 0)) return
+                        if (v === (receipt.bank_charged_total ?? null)) return
+                        saveDraft({ bank_charged_total: v })
+                      }}
+                      placeholder={receipt.total != null ? Number(receipt.total).toFixed(2) : ''}
+                      className="input-field text-xs w-full"
+                    />
+                    {(() => {
+                      // Aperçu de l'écart : seulement quand la devise du reçu est celle de la
+                      // transaction (fournisseur QB) — sinon le serveur convertit d'abord et
+                      // l'écart exact est calculé là-bas.
+                      const bank = Number(bankChargedTotal)
+                      const vendorCur = vendorMode === 'existing'
+                        ? ((vendors.find(v => v.Id === vendorId)?.CurrencyRef?.value) || 'CAD').toUpperCase()
+                        : (receipt.currency || 'CAD').toUpperCase()
+                      const sameCur = vendorCur === (receipt.currency || 'CAD').toUpperCase()
+                      if (!bankChargedTotal || !Number.isFinite(bank) || bank <= 0 || receipt.total == null) {
+                        return (
+                          <p className="text-[11px] text-slate-400 mt-1.5 leading-snug">
+                            L'écart sera ajouté comme article « Frais de conversion » (Exonéré).
+                          </p>
+                        )
+                      }
+                      const fee = Math.round((bank - Number(receipt.total)) * 100) / 100
+                      if (!sameCur) return null
+                      if (fee === 0) {
+                        return (
+                          <p className="text-[11px] text-slate-400 mt-1.5 leading-snug" data-testid="qb-bank-charged-hint">
+                            Identique au total — aucun frais ajouté.
+                          </p>
+                        )
+                      }
+                      return (
+                        <p className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 mt-1.5 leading-snug" data-testid="qb-bank-charged-hint">
+                          Écart de <strong>{fee > 0 ? '+' : ''}{fee.toFixed(2)} {(receipt.currency || 'CAD').toUpperCase()}</strong> — voir
+                          l'article « Frais de conversion » ajouté ci-dessous.
+                        </p>
+                      )
+                    })()}
+                  </>
+                )}
+              </div>
+            )}
+            {/* Aiguillage : une facture libellée en devise étrangère ne se règle PAS
+                avec le champ ci-dessus (qui ajoute des frais) mais par une conversion
+                de tous les montants — d'où le raccourci vers le calculateur. */}
+            {(receipt.currency || 'CAD').toUpperCase() !== 'CAD' && (
+              <button
+                type="button"
+                onClick={onOpenConversion}
+                data-testid="qb-open-currency-conversion"
+                className="mt-3 text-[11px] text-slate-400 hover:text-brand-600 underline decoration-dotted"
+              >
+                Facture en {(receipt.currency || '').toUpperCase()} à comptabiliser en CAD ? Convertir les montants
+              </button>
             )}
           </div>
         ) : (
@@ -588,7 +839,28 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
               Obligatoire — détermine le statut fiscal et le code de taxe attendu.
             </p>
           )}
-          {selectedType && (
+          {/* Détection fiscale serveur (fiscalDetection.js) : type + code probables,
+              signal gagnant et niveau de confiance ; les signaux écartés parce qu'ils
+              contredisent les montants du document sont affichés comme conflits.
+              Une seule boîte affichée : la détection quand elle concorde avec le type
+              sélectionné (ou qu'aucun type n'est encore choisi), sinon le statut fiscal
+              attendu pour le type choisi manuellement. */}
+          {detection?.transaction_type && !receipt.quickbooks_id && (!selectedType || detection.transaction_type === transactionType) ? (
+            <div className="text-[11px] mt-1.5 leading-snug bg-slate-50 border border-slate-200 rounded px-2 py-1.5 flex items-start gap-1.5" data-testid="fiscal-detection">
+              <Sparkles size={11} className="text-brand-600 shrink-0 mt-0.5" />
+              <span className="min-w-0">
+                <span className="text-slate-500">Détection : </span>
+                <strong className="text-slate-700">{detection.type_label}</strong>
+                {detection.tax_code_name && <span className="text-slate-500"> → « {detection.tax_code_name} »</span>}
+                <span className="text-slate-400"> · {detection.source_label}</span>
+                <span className={`ml-1 px-1.5 py-px rounded-full font-medium ${
+                  detection.confidence === 'haute' ? 'bg-green-100 text-green-700'
+                    : detection.confidence === 'moyenne' ? 'bg-amber-100 text-amber-700'
+                    : 'bg-slate-200 text-slate-600'
+                }`}>confiance {detection.confidence}</span>
+              </span>
+            </div>
+          ) : selectedType && (
             <div className="text-[11px] mt-1.5 leading-snug bg-white border border-slate-200 rounded px-2 py-1.5" data-testid="qb-fiscal-expected">
               <span className="text-slate-500">Statut fiscal attendu : </span>
               <strong className="text-slate-700">{selectedType.statusLabel}</strong>
@@ -597,6 +869,21 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
               {selectedType.note && <span className="block text-slate-400 mt-0.5">{selectedType.note}</span>}
             </div>
           )}
+          {!detection?.transaction_type && (detection?.conflicts?.length || 0) > 0 && !receipt.quickbooks_id && (
+            <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded px-2 py-1 mt-1.5 leading-snug" data-testid="fiscal-detection-none">
+              Aucun type détecté de façon fiable ({detection.signature?.label}) — choisissez manuellement.
+            </p>
+          )}
+          {!receipt.quickbooks_id && (detection?.conflicts || []).map((c, i) => (
+            <p key={`c${i}`} className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1.5 leading-snug flex items-start gap-1" data-testid="fiscal-detection-conflict">
+              <AlertCircle size={11} className="shrink-0 mt-0.5" /> <span>{c.message}</span>
+            </p>
+          ))}
+          {!receipt.quickbooks_id && (detection?.warnings || []).map((w, i) => (
+            <p key={`w${i}`} className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1.5 leading-snug flex items-start gap-1" data-testid="fiscal-detection-warning">
+              <AlertCircle size={11} className="shrink-0 mt-0.5" /> <span>{w}</span>
+            </p>
+          ))}
         </div>
 
         <div className={fieldFrame('tax_code')}>
@@ -626,20 +913,63 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
         </div>
       </div>
 
-      {error && <p className="text-xs text-red-600 bg-red-100 rounded-lg px-3 py-2">{error}</p>}
+      {error && (
+        <div className="text-xs text-red-600 bg-red-100 rounded-lg px-3 py-2" data-testid="qb-publish-error">
+          <p>{error}</p>
+          {staleDays != null && (
+            <button
+              type="button"
+              data-testid="qb-publish-stale-override"
+              onClick={() => handlePublish(true)}
+              disabled={submitting}
+              className="mt-1.5 inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-red-700 bg-white border border-red-300 rounded hover:bg-red-50 transition-colors disabled:opacity-50"
+            >
+              <BookOpen size={11} /> Publier quand même
+            </button>
+          )}
+          {anomalyBlocked && (
+            <div className="mt-2 space-y-1.5" data-testid="qb-anomaly-override">
+              <input
+                type="text"
+                value={anomalyReason}
+                onChange={e => setAnomalyReason(e.target.value)}
+                placeholder="Pourquoi ce n'est pas un doublon (facultatif)"
+                data-testid="qb-anomaly-reason"
+                className="input-field text-[11px] w-full bg-white"
+              />
+              <button
+                type="button"
+                data-testid="qb-anomaly-override-publish"
+                onClick={() => doPublish(anomalyReason.trim() || 'Doublon vérifié par l\'opérateur — publication confirmée')}
+                disabled={submitting}
+                className="inline-flex items-center gap-1 px-2 py-1 text-[11px] font-medium text-red-700 bg-white border border-red-300 rounded hover:bg-red-50 transition-colors disabled:opacity-50"
+              >
+                <BookOpen size={11} /> Publier quand même
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="flex gap-2">
-        <button className="btn-primary text-xs py-1.5 px-3" data-testid="qb-publish-open" onClick={handlePublish} disabled={submitting}>
+        <button className="btn-primary text-xs py-1.5 px-3" data-testid="qb-publish-open" onClick={() => handlePublish()} disabled={submitting}>
           <BookOpen size={12} /> {submitting ? 'Publication…' : 'Publier sur QuickBooks'}
         </button>
       </div>
 
       {vendorHistory.length > 0 && (
-        <div className="border-t border-green-200 pt-3" data-testid="vendor-history">
-          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
-            Déjà comptabilisé pour « {receipt.company} »
-          </p>
-          <ul className="space-y-1.5">
+        <div className="border-t border-green-200 pt-2" data-testid="vendor-history">
+          <button
+            type="button"
+            onClick={() => setShowHistory(v => !v)}
+            data-testid="vendor-history-toggle"
+            className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-600 transition-colors"
+          >
+            <ChevronRight size={11} className={`transition-transform ${showHistory ? 'rotate-90' : ''}`} />
+            Comptabilisations passées de « {receipt.company} » ({vendorHistory.length}) — modèles à réutiliser
+          </button>
+          {showHistory && (<>
+          <ul className="space-y-1.5 mt-2">
             {vendorHistory.map(txn => {
               const acc = txn.expense_account_id ? accountById.get(txn.expense_account_id) : null
               const taxName = txn.tax_code_id ? taxNameById.get(txn.tax_code_id) : null
@@ -677,6 +1007,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
             })}
           </ul>
           <p className="text-[11px] text-slate-400 mt-1.5">« Utiliser » copie le type, le compte de dépense et le code de taxe dans le formulaire ci-dessus.</p>
+          </>)}
         </div>
       )}
 
@@ -756,7 +1087,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate }) {
               data-testid="qb-confirm-publish"
               className="btn-primary text-xs py-1.5 px-3"
               disabled={submitting || (!fiscalOk && !forceReason.trim())}
-              onClick={doPublish}
+              onClick={() => doPublish()}
             >
               {submitting ? <><RefreshCw size={12} className="animate-spin" /> Publication…</> : <><BookOpen size={12} /> {fiscalOk ? 'Confirmer et publier' : 'Forcer la publication'}</>}
             </button>
@@ -962,10 +1293,8 @@ function EditableMemoField({ receipt, onUpdate }) {
           disabled={savingDesc}
           className="w-full text-sm text-slate-700 bg-white border border-slate-300 hover:border-slate-400 focus:border-brand-500 rounded px-3 py-2 outline-none placeholder:text-slate-300"
         />
-        <p className="text-[11px] text-slate-400 mt-1.5 leading-snug">
-          Envoyée comme « Memo » dans QuickBooks. Le détail des articles reste sur les lignes de la transaction, mais n'encombre plus le mémo.
-        </p>
       </div>
+
     </div>
   )
 }
@@ -981,11 +1310,96 @@ function TotalRow({ label, value, bold }) {
   )
 }
 
+// Cellule « Achat LIA » d'une ligne d'article : sélecteur recherchable des achats du
+// fournisseur, lien vers la fiche de l'achat rattaché, et — quand l'appariement
+// automatique n'était pas assez sûr pour écrire la description — la suggestion à
+// accepter d'un clic. Un achat déjà facturé ailleurs (dépôt + solde, facture partielle)
+// reste sélectionnable mais est signalé.
+function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, onSelect }) {
+  const reused = linkedPurchase?.linked_receipts || []
+  return (
+    <div className="space-y-1">
+      <SearchableSelect
+        testId={`receipt-item-lia-${index}`}
+        value={item.purchase_id || ''}
+        options={options}
+        emptyOption="— Aucun achat —"
+        onChange={val => onSelect(val || null)}
+        placeholder="— Aucun achat —"
+      />
+      {item.purchase_id && (
+        <div className="flex items-center gap-1.5 px-1 text-[11px] min-w-0">
+          <Link to={`/purchases/${item.purchase_id}`} className="text-brand-600 hover:underline font-medium shrink-0">
+            {item.lia_ref || 'Achat'}
+          </Link>
+          {/* Rappel du nom de la pièce tel qu'il est dans la fiche Achat : c'est ce nom
+              qui est recopié derrière le code dans la description de la ligne. */}
+          {linkedPurchase?.part_name && (
+            <span className="text-slate-500 truncate" title={linkedPurchase.part_name}>{linkedPurchase.part_name}</span>
+          )}
+          {reused.length > 0 && (
+            <span
+              className="text-amber-600 shrink-0"
+              title={`Déjà rattaché à ${reused.map(r => r.receipt_number || r.receipt_date || r.receipt_id).join(', ')}`}
+            >
+              · déjà facturé
+            </span>
+          )}
+        </div>
+      )}
+      {/* Libellé imprimé sur la facture, remplacé par « code LIA + nom de la pièce » dans
+          la description : on le garde visible pour que la ligne reste identifiable à l'œil. */}
+      {item.purchase_id && item.source_description && (
+        <div className="px-1 text-[11px] text-slate-400 truncate" title={item.source_description}>
+          Facture : {item.source_description}
+        </div>
+      )}
+      {!item.purchase_id && suggestion && (
+        <button
+          type="button"
+          onClick={() => onSelect(suggestion.purchase_id)}
+          data-testid={`receipt-item-lia-suggest-${index}`}
+          title={[
+            `Confiance ${Math.round(suggestion.score * 100)} %`,
+            ...(suggestion.reasons || []),
+            // Hors section « À recevoir » : la commande est déjà reçue, sa facture
+            // n'était simplement pas encore entrée. On le dit plutôt que de le taire.
+            ...(suggestion.pending_reception === false ? ['achat déjà reçu — hors section « À recevoir »'] : []),
+          ].join(' · ')}
+          className="w-full flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-left text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded"
+        >
+          <CheckCircle size={11} className="shrink-0" />
+          <span className="truncate">{suggestion.lia_ref} · {suggestion.part_name}{suggestion.pending_reception === false && ' · reçu'}</span>
+          <span className="ml-auto shrink-0 tabular-nums opacity-70">{Math.round(suggestion.score * 100)}%</span>
+        </button>
+      )}
+      {/* Aucune proposition parce que l'achat qui correspond le mieux est déjà facturé :
+          on le dit plutôt que de proposer un code libre moins pertinent. Il reste
+          sélectionnable dans la liste (dépôt + solde, correction d'un rattachement). */}
+      {!item.purchase_id && !suggestion && blockedBy && (
+        <div
+          data-testid={`receipt-item-lia-blocked-${index}`}
+          title={[`${blockedBy.lia_ref} — ${blockedBy.reason}`, ...(blockedBy.receipts || []).map(r => r.receipt_number || r.receipt_date || r.receipt_id)].join(' · ')}
+          className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded"
+        >
+          <span className="truncate">{blockedBy.lia_ref} correspond, mais est déjà facturé</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
   const { addToast } = useToast()
   const [items, setItems] = useState(receipt.items || [])
   const [saving, setSaving] = useState(false)
   const initialJsonRef = useRef(JSON.stringify(receipt.items || []))
+  // Achats LIA du même fournisseur + suggestion par ligne (lecture seule côté serveur).
+  const [lia, setLia] = useState({ candidates: [], lines: [] })
+  // Sélecteur d'achat LIA cadré sur la section « À recevoir » ; l'historique complet du
+  // fournisseur est derrière ce dépliant (correction, dépôt + solde, facture partielle).
+  const [showAllLia, setShowAllLia] = useState(false)
+  const liaCandidates = lia.candidates
 
   // Sync depuis le serveur uniquement quand on change de reçu — sinon les
   // updates optimistes locaux (ajout/suppression/édition en cours) seraient
@@ -996,10 +1410,22 @@ function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [receipt.id])
 
+  // Suggestions d'achats LIA — best effort : indisponibles, l'éditeur fonctionne
+  // normalement (l'appariement reste une aide, jamais un prérequis).
+  const loadLia = useCallback(async () => {
+    try {
+      const d = await api.saleReceipts.liaMatches(receipt.id)
+      setLia({ candidates: d.candidates || [], lines: d.lines || [] })
+    } catch { /* pas bloquant */ }
+  }, [receipt.id])
+  useEffect(() => { loadLia() }, [loadLia])
+
+  // Montant de ligne SIGNÉ : une ligne de crédit (crédit de proration « Unused time
+  // on… », remise, retour) retranche du sous-total et doit rester négative.
   function parseNum(x) {
     if (x === '' || x == null) return null
     const n = Number(String(x).replace(',', '.'))
-    return Number.isFinite(n) && n >= 0 ? n : null
+    return Number.isFinite(n) ? n : null
   }
 
   function normalizeItems(list) {
@@ -1007,6 +1433,11 @@ function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
       description: it.description || '',
       total:       parseNum(it.total),
       tax_code_id: it.tax_code_id || null,
+      // Achat LIA rattaché (purchases.id) + son code, dupliqué pour l'affichage.
+      purchase_id: it.purchase_id || null,
+      lia_ref:     it.lia_ref || null,
+      // Libellé d'origine du fournisseur, conservé quand la description devient le code.
+      source_description: it.source_description || null,
     }))
   }
 
@@ -1020,6 +1451,32 @@ function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
 
   function addItem() {
     setItems(prev => [...prev, { description: '', total: null, tax_code_id: null }])
+  }
+
+  // Rattachement d'une ligne à un achat LIA : la description devient « LIA-1991⇥Nom de
+  // la pièce » (`label` du candidat) — c'est ce qui est publié sur la ligne QuickBooks,
+  // et ce qui rend le grand livre du compte 14000 lisible sans ouvrir la table Achats.
+  // Persiste immédiatement (le SearchableSelect n'émet pas de blur).
+  function setLiaPurchase(i, purchaseId) {
+    const p = purchaseId ? liaCandidates.find(c => c.id === purchaseId) : null
+    const next = items.map((it, idx) => {
+      if (idx !== i) return it
+      if (!p) return { ...it, purchase_id: null, lia_ref: null }
+      return {
+        ...it,
+        purchase_id: p.id,
+        lia_ref: p.lia_ref,
+        // Libellé imprimé par le fournisseur, mémorisé avant d'être remplacé par le
+        // libellé LIA : il apprend au moteur d'appariement comment CE fournisseur nomme
+        // CETTE pièce (côté serveur, learnLineAliases).
+        source_description: it.source_description || it.description || null,
+        // « LIA-1991⇥Nom de la pièce » : le code ET le nom, recopiés de la fiche Achat
+        // (p.label, cf. buildLiaLabel côté serveur). Airtable n'est pas touché.
+        description: p.label || p.lia_ref,
+      }
+    })
+    setItems(next)
+    commit(next)
   }
 
   // Sélection d'un code de taxe par ligne : persiste immédiatement (le SearchableSelect
@@ -1044,6 +1501,9 @@ function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
       const updated = await api.saleReceipts.update(receipt.id, payload)
       onUpdate?.(updated)
       initialJsonRef.current = JSON.stringify(updated.items || [])
+      // Les suggestions dépendent des lignes et des achats déjà consommés : on les
+      // recalcule après chaque enregistrement.
+      loadLia()
     } catch (e) {
       addToast({ message: 'Erreur: ' + e.message, type: 'error' })
       setItems(receipt.items || [])
@@ -1071,6 +1531,48 @@ function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
     ...taxCodes.map(c => ({ value: c.Id, label: c.Name })),
   ]
 
+  // Achats LIA proposés dans le sélecteur. Par défaut, la liste est celle de la section
+  // « À recevoir » d'Airtable : les commandes sans date de réception complète, c'est-à-dire
+  // celles dont la facture est attendue. L'historique du fournisseur (des centaines de
+  // codes déjà facturés) n'est pas une aide, il noie la liste — il reste accessible d'un
+  // clic (« Tous les achats du fournisseur ») pour les cas de correction ou de facture
+  // partielle. Les achats déjà rattachés à une ligne du reçu et ceux que le moteur
+  // propose restent toujours dans la liste, même hors « À recevoir ».
+  const liaLinkedIds = new Set(items.map(it => it.purchase_id).filter(Boolean))
+  const liaSuggestedIds = new Set(lia.lines.map(l => l.match?.purchase_id).filter(Boolean))
+  const liaVisible = liaCandidates.filter(c =>
+    showAllLia || c.pending_reception || liaLinkedIds.has(c.id) || liaSuggestedIds.has(c.id))
+  const liaHiddenCount = liaCandidates.length - liaVisible.length
+  const liaOptions = liaVisible.map(c => ({
+    value: c.id,
+    label: `${c.lia_ref} · ${c.part_name || '(pièce non liée)'}${c.qty_ordered ? ` — ${c.qty_ordered} u.` : ''}${c.order_date ? ` — ${c.order_date}` : ''}`
+      + (c.consumed ? ' · déjà facturé' : c.pending_reception ? ' · à recevoir' : ' · reçu')
+      // Filet « autre fournisseur » : le fournisseur est alors l'information décisive,
+      // puisque ces achats ne viennent pas du fournisseur du reçu.
+      + (c.other_vendor && c.supplier ? ` · ${c.supplier}` : ''),
+  }))
+  // Aucun achat rattaché à ce fournisseur : le serveur a ouvert la liste à tous les
+  // achats encore à recevoir (cf. listCandidatePurchases). Rien n'est proposé d'office
+  // dans ce cas — la sélection est manuelle, d'où la mention.
+  const liaOtherVendorOnly = liaCandidates.length > 0 && liaCandidates.every(c => c.other_vendor)
+  const suggestionFor = i => (lia.lines.find(l => l.index === i)?.match) || null
+  const blockedFor = i => (lia.lines.find(l => l.index === i)?.blocked_by) || null
+  const candidateById = id => liaCandidates.find(c => c.id === id) || null
+
+  // Aperçu de la ligne « Frais de conversion » que le push QB ajoutera (voir
+  // computeConversionFee côté serveur) — écart entre le total du reçu et le
+  // montant réellement débité à la banque. Le champ n'est saisissable que pour
+  // les Purchase, donc bank_charged_total n'est jamais renseigné pour un Bill.
+  const conversionFee = (() => {
+    if (receipt.bank_charged_total == null) return 0
+    const bank = Number(receipt.bank_charged_total)
+    const total = Number(receipt.total) || 0
+    if (!Number.isFinite(bank) || bank <= 0) return 0
+    const fee = Math.round((bank - total) * 100) / 100
+    return Math.abs(fee) < 0.005 ? 0 : fee
+  })()
+  const exemptCodeName = taxCodes.find(c => c.Name === 'Exonéré')?.Name || 'Exonéré'
+
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -1087,78 +1589,111 @@ function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
           </button>
         </div>
       </div>
-      <div className="border border-slate-200 rounded-lg overflow-hidden">
-        <table className="w-full text-sm">
-          <thead className="bg-slate-50">
-            <tr>
-              <th className="text-left px-3 py-2 text-slate-600 font-medium">Description</th>
-              <th className="text-left px-3 py-2 text-slate-600 font-medium w-44">Code de taxe</th>
-              <th className="text-right px-3 py-2 text-slate-600 font-medium w-28">Total</th>
-              <th className="w-8" />
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {items.length === 0 && (
-              <tr>
-                <td colSpan={4} className="px-3 py-4 text-center text-slate-400 text-xs">
-                  Aucun article — cliquez « Ajouter une ligne ».
-                </td>
-              </tr>
-            )}
-            {items.map((item, i) => (
-              <tr key={i} className="hover:bg-slate-50" data-testid={`receipt-item-row-${i}`}>
-                <td className="px-1 py-1">
-                  <input
-                    type="text"
-                    value={item.description || ''}
-                    onChange={e => updateItem(i, { description: e.target.value })}
-                    onBlur={() => commit()}
-                    placeholder="Description"
-                    className="w-full px-2 py-1 text-sm bg-transparent border border-transparent hover:border-slate-300 focus:border-brand-500 focus:bg-white rounded outline-none"
-                  />
-                </td>
-                <td className="px-1 py-1">
-                  <SearchableSelect
-                    testId={`receipt-item-taxcode-${i}`}
-                    value={item.tax_code_id || ''}
-                    options={taxCodeOptions}
-                    emptyOption="— Code du document —"
-                    onChange={val => setTaxCode(i, val)}
-                    placeholder="— Code du document —"
-                  />
-                </td>
-                <td className="px-1 py-1">
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    value={item.total ?? ''}
-                    onChange={e => updateItem(i, { total: e.target.value })}
-                    onBlur={() => commit()}
-                    placeholder="—"
-                    className="w-full px-2 py-1 text-sm text-right tabular-nums font-medium bg-transparent border border-transparent hover:border-slate-300 focus:border-brand-500 focus:bg-white rounded outline-none"
-                  />
-                </td>
-                <td className="px-1 py-1 text-center">
-                  <button
-                    type="button"
-                    onClick={() => removeItem(i)}
-                    data-testid={`receipt-item-remove-${i}`}
-                    title="Supprimer cette ligne"
-                    aria-label="Supprimer cette ligne"
-                    className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded"
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {/* Une ligne = un bloc de DEUX rangées, pas une rangée de tableau : la fiche vit
+          dans une demi-largeur d'écran (aperçu du document à gauche), où quatre colonnes
+          côte à côte rendaient la description illisible (~15 caractères visibles).
+          Rangée 1 : description pleine largeur + montant. Rangée 2 : achat LIA + code de
+          taxe, chacun avec assez de place pour montrer son libellé complet. */}
+      <div className="border border-slate-200 rounded-lg divide-y divide-slate-200 overflow-hidden">
+        {items.length === 0 && (
+          <div className="px-3 py-4 text-center text-slate-400 text-xs">
+            Aucun article — cliquez « Ajouter une ligne ».
+          </div>
+        )}
+        {items.map((item, i) => (
+          <div key={i} className="p-2 hover:bg-slate-50/70" data-testid={`receipt-item-row-${i}`}>
+            <div className="flex items-start gap-2">
+              <input
+                type="text"
+                value={item.description || ''}
+                onChange={e => updateItem(i, { description: e.target.value })}
+                onBlur={() => commit()}
+                placeholder="Description"
+                title={item.description || ''}
+                className="flex-1 min-w-0 px-2 py-1 text-sm bg-transparent border border-transparent hover:border-slate-300 focus:border-brand-500 focus:bg-white rounded outline-none"
+              />
+              <input
+                type="text"
+                inputMode="decimal"
+                value={item.total ?? ''}
+                onChange={e => updateItem(i, { total: e.target.value })}
+                onBlur={() => commit()}
+                placeholder="—"
+                aria-label="Total de la ligne"
+                className="w-28 shrink-0 px-2 py-1 text-sm text-right tabular-nums font-medium bg-transparent border border-transparent hover:border-slate-300 focus:border-brand-500 focus:bg-white rounded outline-none"
+              />
+              <button
+                type="button"
+                onClick={() => removeItem(i)}
+                data-testid={`receipt-item-remove-${i}`}
+                title="Supprimer cette ligne"
+                aria-label="Supprimer cette ligne"
+                className="shrink-0 p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+            <div className="flex items-start gap-2 mt-1 pl-2 pr-[2.375rem]">
+              <div className="flex-1 min-w-0">
+                <span className="block text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">Achat LIA</span>
+                <LiaCell
+                  index={i}
+                  item={item}
+                  options={liaOptions}
+                  suggestion={suggestionFor(i)}
+                  blockedBy={blockedFor(i)}
+                  linkedPurchase={candidateById(item.purchase_id)}
+                  onSelect={id => setLiaPurchase(i, id)}
+                />
+              </div>
+              <div className="w-44 shrink-0">
+                <span className="block text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">Code de taxe</span>
+                <SearchableSelect
+                  testId={`receipt-item-taxcode-${i}`}
+                  value={item.tax_code_id || ''}
+                  options={taxCodeOptions}
+                  emptyOption="— Code du document —"
+                  onChange={val => setTaxCode(i, val)}
+                  placeholder="— Code du document —"
+                />
+              </div>
+            </div>
+          </div>
+        ))}
+        {conversionFee !== 0 && (
+          <div className="p-2 bg-slate-50/60" data-testid="receipt-item-conversion-fee">
+            <div className="flex items-center gap-2">
+              <span className="flex-1 min-w-0 px-2 py-1 text-sm text-slate-600 truncate">Frais de conversion</span>
+              <span className="w-28 shrink-0 px-2 py-1 text-sm text-right tabular-nums font-medium text-slate-600">
+                {conversionFee > 0 ? '+' : ''}{conversionFee.toFixed(2)}
+              </span>
+              <span className="shrink-0 w-[26px]" />
+            </div>
+            <p className="text-[11px] text-slate-400 mt-0.5 pl-2">
+              Ajouté automatiquement à la publication (montant passé à la banque) — code de taxe <strong>{exemptCodeName}</strong>.
+            </p>
+          </div>
+        )}
       </div>
-      <p className="text-[11px] text-slate-400 mt-1.5 leading-snug">
-        Laissez « Code du document » pour suivre le code de taxe global choisi à la publication.
-        Choisissez un code par ligne pour les reçus mixtes (ex. pourboire <strong>Hors champ</strong> + repas <strong>TPS/TVQ repas</strong>).
-      </p>
+      {liaOtherVendorOnly && (
+        <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
+          Aucun achat n'est rattaché à ce fournisseur dans Achats : la liste est ouverte à
+          <strong> tous les achats à recevoir</strong>, tous fournisseurs confondus. Aucune
+          suggestion automatique dans ce cas — le fournisseur affiché est celui de l'achat.
+        </p>
+      )}
+      {liaCandidates.length > 0 && (liaHiddenCount > 0 || showAllLia) && (
+        <p className="text-[11px] mt-1.5 leading-snug">
+          <button
+            type="button"
+            data-testid="lia-show-all"
+            onClick={() => setShowAllLia(v => !v)}
+            className="text-brand-600 hover:underline"
+          >
+            {showAllLia ? 'Revenir à « À recevoir »' : 'Tous les achats du fournisseur'}
+          </button>
+        </p>
+      )}
     </div>
   )
 }
@@ -1247,19 +1782,37 @@ function EditableAmountRow({ receipt, field, label, bold, onUpdate, readOnly, hi
 //   à l'échelle par le ratio (nouveau sous-total / ancien sous-total). Ça préserve
 //   les cas particuliers (TPS seule, taux mixte, partiellement exonéré, 0 taxe).
 // - Le total = sous-total + taxes.
+// - Le ratio se calcule sur la BASE TAXABLE, pas sur le sous-total complet : une ligne
+//   qui porte un code de taxe explicite à 0 % (« Hors champ », « Détaxé », « Exonéré »,
+//   « aucune taxe ») est exclue des deux côtés du ratio. Sinon, ajouter un pourboire
+//   hors champ de 10 $ à un repas de 56 $ gonflerait la TPS/TVQ de 18 % — une taxe
+//   réclamée sur un montant jamais taxé.
 // Si aucune ligne ne porte de montant, on ne touche à rien (objet vide).
-// Si l'ancien sous-total est nul/absent, on ne peut pas déduire de taux : les
+// Si l'ancienne base taxable est nulle/absente, on ne peut pas déduire de taux : les
 // taxes existantes sont laissées telles quelles.
-function recalcAmountsFromItems(items, receipt) {
+function recalcAmountsFromItems(items, receipt, taxNameById) {
   const lineTotals = items.map(it => it.total).filter(n => n != null)
   if (lineTotals.length === 0) return {}
   const r = x => Math.round(x * 100) / 100
   const newSubtotal = r(lineTotals.reduce((a, b) => a + b, 0))
+  // Montant des lignes explicitement à 0 % (à retirer de la base taxable).
+  const zeroRated = list => (list || []).reduce((sum, it) => {
+    const code = it && it.tax_code_id
+    if (code == null || code === '') return sum
+    const rate = code === NO_TAX
+      ? 0
+      : TAX_RATE_BY_NAME.get(taxNameById ? taxNameById.get(code) : undefined)
+    return rate === 0 ? sum + (Number(it.total) || 0) : sum
+  }, 0)
+  const newTaxable = r(newSubtotal - zeroRated(items))
   const oldSubtotal = receipt.subtotal || 0
+  const oldTaxable = r(Math.max(0, oldSubtotal - zeroRated(receipt.items)))
   let tps = receipt.tps || 0, tvq = receipt.tvq || 0, other = receipt.other_taxes || 0
-  if (oldSubtotal > 0) {
-    const f = newSubtotal / oldSubtotal
+  if (oldTaxable > 0) {
+    const f = newTaxable / oldTaxable
     tps = r(tps * f); tvq = r(tvq * f); other = r(other * f)
+  } else if (newTaxable <= 0) {
+    tps = 0; tvq = 0; other = 0
   }
   return {
     subtotal: newSubtotal,
@@ -1440,6 +1993,10 @@ const HISTORY_ACTION_META = {
   archived:   { label: 'Archivé',               Icon: Archive,        color: 'text-amber-700 bg-amber-100' },
   unarchived: { label: 'Désarchivé',            Icon: ArchiveRestore, color: 'text-slate-700 bg-slate-200' },
   published:  { label: 'Publié sur QuickBooks', Icon: BookOpen,       color: 'text-green-700 bg-green-100' },
+  month_attached: { label: 'Joint aux transactions du mois', Icon: Paperclip, color: 'text-indigo-700 bg-indigo-100' },
+  qb_auto_matched: { label: 'Appariée par QuickBooks (apparaît payée)', Icon: AlertCircle, color: 'text-amber-700 bg-amber-100' },
+  anomaly_override: { label: 'Doublon ignoré (justifié)', Icon: AlertCircle, color: 'text-amber-700 bg-amber-100' },
+  fiscal_override: { label: 'Écart fiscal forcé', Icon: AlertCircle, color: 'text-amber-700 bg-amber-100' },
 }
 
 function HistoryTab({ events, loading }) {
@@ -1483,12 +2040,243 @@ function HistoryTab({ events, loading }) {
   )
 }
 
+// Kinds bloquants pour la publication QB (server/services/transactionAnomalies.js).
+// `already_in_qb` / `possible_duplicate_in_qb` = la pièce existe déjà au grand livre
+// QuickBooks : la comptabiliser de nouveau créerait une seconde dette fournisseur.
+const BLOCKING_ANOMALY_KINDS = new Set(['duplicate_number', 'duplicate_amount', 'already_in_qb', 'possible_duplicate_in_qb'])
+
+// Bandeau « document obsolète » : la pièce n'a rien à apporter à la comptabilité —
+// soit un document à 0 $ (facture soldée / confirmation de débit automatique), soit
+// la copie d'un document déjà publié sur QuickBooks. On montre POURQUOI (message de
+// l'anomalie), le lien vers la transaction QB existante pour vérifier d'un clic, et
+// l'archivage en un clic. « À comptabiliser quand même » rejette l'anomalie source.
+function ObsoleteBanner({ receipt, acting, onArchive, onDismissed }) {
+  const { addToast } = useToast()
+  const ob = receipt?.obsolete
+  if (!ob) return null
+  const isZero = ob.reason === 'zero_total'
+
+  async function dismiss() {
+    try {
+      await api.anomalies.dismiss(ob.anomaly_id, isZero
+        ? 'Document à 0 $ à traiter quand même (depuis la fiche du reçu)'
+        : 'Confirmé non-doublon depuis la fiche du reçu')
+      addToast({ message: 'Statut obsolète levé — le document redevient à traiter.', type: 'success' })
+      onDismissed?.()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  }
+
+  return (
+    <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3" data-testid="receipt-obsolete-banner">
+      <div className="flex items-start gap-3 py-1">
+        <FileX size={16} className="text-amber-600 shrink-0 mt-0.5" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-amber-900">
+            {isZero
+              ? 'Document sans objet comptable — rien à payer ni à comptabiliser'
+              : 'Document obsolète — déjà comptabilisé dans QuickBooks'}
+          </p>
+          <p className="text-sm text-amber-800 leading-snug mt-0.5">{ob.message}</p>
+          <div className="flex items-center gap-3 mt-1 flex-wrap">
+            {ob.qb_url && (
+              <a href={ob.qb_url} target="_blank" rel="noopener noreferrer" data-testid="receipt-obsolete-qb-link"
+                className="inline-flex items-center gap-1 text-xs text-amber-900 underline hover:no-underline">
+                <BookOpen size={11} /> Voir la transaction dans QuickBooks (#{ob.qb_id})
+              </a>
+            )}
+            {ob.other_receipt_id && (
+              <Link to={`/sale-receipts/${ob.other_receipt_id}`} className="text-xs text-amber-900 underline hover:no-underline">
+                Ouvrir le document original
+              </Link>
+            )}
+            {ob.achat_id && (
+              <Link to="/fournisseurs/achats" className="text-xs text-amber-900 underline hover:no-underline">
+                Voir dans les achats fournisseurs
+              </Link>
+            )}
+          </div>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            onClick={dismiss}
+            data-testid="receipt-obsolete-dismiss"
+            title="Ce document doit bien être traité — lever le statut obsolète"
+            className="text-xs font-medium text-amber-800 border border-amber-300 bg-white rounded-lg px-2.5 py-1.5 hover:bg-amber-100"
+          >
+            À comptabiliser quand même
+          </button>
+          <button
+            onClick={onArchive}
+            disabled={acting}
+            data-testid="receipt-obsolete-archive"
+            title="Classer ce document sans le comptabiliser"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-white bg-amber-600 rounded-lg px-2.5 py-1.5 hover:bg-amber-700 disabled:opacity-50"
+          >
+            <Archive size={12} /> Archiver ce document
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Bandeau anti-double-comptabilisation. Visible avant toute action sur le document :
+// la mise en garde ne doit pas attendre le clic sur « Publier ».
+// `excludeId` : anomalie déjà présentée par le bandeau « obsolète » — pas de doublon d'affichage.
+function DuplicateBanner({ receiptId, excludeId }) {
+  const [rows, setRows] = useState([])
+  const { addToast } = useToast()
+
+  const load = useCallback(() => {
+    if (!receiptId) return
+    api.anomalies.list({ status: 'open', entity_id: receiptId })
+      .then(out => setRows((out.data || []).filter(a => BLOCKING_ANOMALY_KINDS.has(a.kind) && a.id !== excludeId)))
+      .catch(() => setRows([]))
+  }, [receiptId, excludeId])
+
+  useEffect(() => { load() }, [load])
+
+  async function dismiss(a) {
+    try {
+      await api.anomalies.dismiss(a.id, 'Confirmé non-doublon depuis la fiche du reçu')
+      setRows(rs => rs.filter(r => r.id !== a.id))
+      addToast({ message: 'Alerte levée — la publication est débloquée.', type: 'success' })
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  }
+
+  if (!rows.length) return null
+  return (
+    <div className="mb-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3" data-testid="receipt-duplicate-banner">
+      {rows.map(a => (
+        <div key={a.id} className="flex items-start gap-3 py-1">
+          <AlertCircle size={16} className="text-red-600 shrink-0 mt-0.5" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-semibold text-red-800">
+              {a.kind === 'already_in_qb' ? 'Facture déjà comptabilisée — ne pas republier'
+                : a.kind === 'possible_duplicate_in_qb' ? 'Peut-être déjà comptabilisée — à vérifier'
+                  : 'Doublon probable — à vérifier'}
+            </p>
+            <p className="text-sm text-red-700 leading-snug mt-0.5">{a.message}</p>
+            {a.details?.achat_id && (
+              <Link to="/fournisseurs/achats" className="text-xs text-red-800 underline hover:no-underline">Voir dans les achats fournisseurs</Link>
+            )}
+            {a.details?.other_receipt_id && (
+              <Link to={`/sale-receipts/${a.details.other_receipt_id}`} className="text-xs text-red-800 underline hover:no-underline">Ouvrir l'autre reçu</Link>
+            )}
+          </div>
+          <button
+            onClick={() => dismiss(a)}
+            data-testid="receipt-duplicate-dismiss"
+            title="Lever l'alerte et autoriser la publication"
+            className="shrink-0 text-xs font-medium text-red-700 border border-red-300 bg-white rounded-lg px-2.5 py-1.5 hover:bg-red-100"
+          >
+            Ce n'est pas un doublon
+          </button>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Bandeau « relevé mensuel de fournisseur prépayé » (Twilio). Visible seulement
+// quand le serveur détecte ce type de document (receipt.prepaid_statement) : le
+// fournisseur est un compte prépayé, donc la dépense du mois est DÉJÀ comptabilisée
+// par les recharges. Rien à publier — un clic joint le document en pièce jointe aux
+// transactions QuickBooks du mois couvert. Le mois détecté reste modifiable.
+function PrepaidStatementBanner({ receipt, onDone }) {
+  const { addToast } = useToast()
+  const st = receipt?.prepaid_statement
+  const [month, setMonth] = useState(st?.month || '')
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => { setMonth(st?.month || '') }, [st?.month])
+
+  if (!st) return null
+  const last = st.attached_result
+  const sameMonth = st.attached_at && st.attached_month === month
+
+  async function attach() {
+    setBusy(true)
+    try {
+      const r = await api.saleReceipts.attachToMonthQb(receipt.id, month)
+      const ledgerNote = r.ledger_entry ? ` — facture de ${fmtCad(r.ledger_entry.amount)} enregistrée au solde prépayé` : ''
+      addToast({
+        message: r.transactions.length
+          ? `Joint à ${r.transactions.length} transaction(s) QuickBooks — ${r.attached} fichier(s) téléversé(s)${r.skipped ? `, ${r.skipped} déjà présent(s)` : ''}${ledgerNote}`
+          : 'Aucune transaction QuickBooks trouvée pour ce fournisseur dans ce mois',
+        type: r.transactions.length ? 'success' : 'error',
+      })
+      onDone?.()
+    } catch (e) {
+      addToast({ message: 'Erreur: ' + e.message, type: 'error' })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mb-4 rounded-lg border border-indigo-300 bg-indigo-50 px-4 py-3" data-testid="prepaid-statement-banner">
+      <div className="flex items-start gap-3 py-1">
+        <Paperclip size={16} className="text-indigo-600 shrink-0 mt-0.5" />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-indigo-900">
+            Relevé mensuel {st.vendor} — {st.month_label}
+          </p>
+          <p className="text-sm text-indigo-800 leading-snug mt-0.5">
+            Récapitulatif du mois : la dépense est déjà comptabilisée dans QuickBooks par les recharges de la période, rien à publier.
+            Ce document se joint en pièce jointe aux transactions QuickBooks du mois couvert
+            <span className="text-indigo-600"> (mois détecté d'après la {st.month_source})</span>.
+            {' '}S'il s'agit de la facture d'usage (pas du reçu de paiement), son montant met aussi à jour le solde du compte prépayé dans l'ERP.
+          </p>
+          {st.attached_at && (
+            <p className="text-xs text-indigo-700 mt-1" data-testid="prepaid-statement-last">
+              Dernier rattachement : {fmtDateTime(st.attached_at)} — {last?.transactions?.length || 0} transaction(s) de {st.attached_month}
+              {last?.ledger_entry && ` — facture de ${fmtCad(last.ledger_entry.amount)} enregistrée au solde prépayé`}
+              {(last?.transactions || []).map(t => t.qb_url && (
+                <a key={t.qb_txn_id} href={t.qb_url} target="_blank" rel="noopener noreferrer"
+                  className="ml-2 underline hover:no-underline">
+                  {t.entry_date} · {fmtCad(t.amount)}
+                </a>
+              ))}
+            </p>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <input
+            type="month"
+            value={month}
+            onChange={e => setMonth(e.target.value)}
+            data-testid="prepaid-statement-month"
+            title="Mois des transactions QuickBooks visées"
+            className="text-xs border border-indigo-300 rounded-lg px-2 py-1.5 bg-white text-indigo-900"
+          />
+          <button
+            onClick={attach}
+            disabled={busy || !month}
+            data-testid="prepaid-statement-attach"
+            title="Joindre ce document aux transactions QuickBooks du mois"
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-white bg-indigo-600 rounded-lg px-2.5 py-1.5 hover:bg-indigo-700 disabled:opacity-50"
+          >
+            <Paperclip size={12} />
+            {busy ? 'Rattachement…' : sameMonth ? 'Rejoindre aux transactions' : 'Joindre aux transactions QB'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function SaleReceiptDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const { addToast } = useToast()
   const confirm = useConfirm()
   const [receipt, setReceipt] = useState(null)
+  const [conversionOpen, setConversionOpen] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
   const [fileUrl, setFileUrl] = useState(null)
@@ -1537,8 +2325,23 @@ export default function SaleReceiptDetail() {
     }
   }
 
-  async function handleReExtract() {
+  // `ask` : demande confirmation avant de relancer. Depuis l'état d'erreur il n'y a
+  // rien à perdre (aucune donnée extraite) → appel direct. Depuis l'en-tête d'un
+  // document déjà lu, la relecture ÉCRASE les données extraites ET les corrections
+  // manuelles : on confirme, l'action n'est pas réversible.
+  async function handleReExtract({ ask = false } = {}) {
     if (!receipt) return
+    if (ask) {
+      const ok = await confirm({
+        title: 'Relire le document ?',
+        message: receipt.quickbooks_id
+          ? "L'IA relira le document et remplacera les données extraites — les corrections manuelles seront perdues. L'écriture déjà publiée dans QuickBooks n'est pas modifiée."
+          : "L'IA relira le document et remplacera les données extraites — les corrections manuelles seront perdues.",
+        confirmLabel: 'Relire',
+        danger: false,
+      })
+      if (!ok) return
+    }
     setActing(true)
     try {
       const updated = await api.saleReceipts.reExtract(receipt.id)
@@ -1750,6 +2553,18 @@ export default function SaleReceiptDetail() {
 
             <div className="w-px h-5 bg-slate-200 mx-1" />
 
+            {receipt.status !== 'processing' && receipt.status !== 'pending' && (
+              <button
+                onClick={() => handleReExtract({ ask: true })}
+                disabled={acting}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50"
+                data-testid="receipt-reread"
+                title="Relire le document par l'IA et réextraire les données (les corrections manuelles seront écrasées)"
+              >
+                <RefreshCw size={14} className={acting ? 'animate-spin' : ''} />
+                Relire
+              </button>
+            )}
             <button
               onClick={handleMarkUnread}
               disabled={acting}
@@ -1783,6 +2598,10 @@ export default function SaleReceiptDetail() {
           </div>
         </div>
 
+        <ObsoleteBanner receipt={receipt} acting={acting} onArchive={handleArchiveToggle} onDismissed={load} />
+        <DuplicateBanner receiptId={receipt.id} excludeId={receipt.obsolete?.anomaly_id} />
+        <PrepaidStatementBanner receipt={receipt} onDone={load} />
+
         {/* Onglets */}
         <div className="flex items-center gap-1 border-b border-slate-200 mb-5">
           <TabButton active={tab === 'details'} onClick={() => setTab('details')} testId="tab-details">Détails</TabButton>
@@ -1803,7 +2622,7 @@ export default function SaleReceiptDetail() {
             <p className="font-medium">Erreur d'extraction</p>
             {receipt.error_message && <p className="text-slate-500 text-sm text-center max-w-sm">{receipt.error_message}</p>}
             <button
-              onClick={handleReExtract}
+              onClick={() => handleReExtract()}
               disabled={acting}
               className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-600 border border-blue-200 rounded-lg hover:bg-blue-50 disabled:opacity-50"
               data-testid="receipt-re-extract"
@@ -1832,11 +2651,15 @@ export default function SaleReceiptDetail() {
                 <QBPublishForm
                   receipt={receipt}
                   onUpdate={setReceipt}
+                  onOpenConversion={() => setConversionOpen(true)}
                   onSuccess={(updated) => {
                     setReceipt(updated)
                     addToast({ message: 'Reçu publié sur QuickBooks', type: 'success' })
-                    // On sort du document et on revient à l'interface Extraction de données.
-                    navigate('/sale-receipts')
+                    // Enchaînement : on file directement au document suivant de la liste
+                    // (même ordre que les flèches ‹ › — vue filtrée/triée mémorisée au clic
+                    // sur la ligne) pour traiter la pile sans repasser par le menu. Dernier
+                    // document de la liste → retour à l'interface Extraction de données.
+                    navigate(nextId ? `/sale-receipts/${nextId}` : '/sale-receipts')
                   }}
                 />
               )}
@@ -1861,7 +2684,22 @@ export default function SaleReceiptDetail() {
                 return (
               <div>
                 <div className="flex items-baseline justify-between mb-2">
-                  <h3 className="text-sm font-semibold text-slate-700">Montants</h3>
+                  <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+                    Montants
+                    {/* Conversion de devise (ex-onglet USD_CAD du sheet CTB) : facture en USD
+                        payée sur une carte CAD → ventilation au taux réellement subi. */}
+                    <button
+                      type="button"
+                      onClick={() => setConversionOpen(true)}
+                      data-testid="open-currency-conversion"
+                      title="Conversion de devise — facture dans une devise, carte chargée dans une autre"
+                      aria-label="Conversion de devise"
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-normal text-slate-400 hover:text-brand-600 hover:bg-slate-100 transition-colors"
+                    >
+                      <ArrowLeftRight size={12} />
+                      {(receipt.currency || 'CAD').toUpperCase() === 'CAD' ? 'Convertir' : `Convertir en CAD`}
+                    </button>
+                  </h3>
                   <p className="text-[11px] text-slate-400">
                     {codeDriven ? 'Taxes calculées d’après le code de taxe (document + exceptions par ligne).' : 'Cliquez pour modifier.'}
                   </p>
@@ -1886,6 +2724,16 @@ export default function SaleReceiptDetail() {
           </div>
         ))}
       </div>
+
+      <CurrencyConversionModal
+        isOpen={conversionOpen}
+        onClose={() => setConversionOpen(false)}
+        receipt={receipt}
+        onApplied={updated => {
+          setReceipt(updated)
+          addToast({ message: 'Montants convertis', type: 'success' })
+        }}
+      />
     </Layout>
   )
 }

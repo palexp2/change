@@ -9,8 +9,12 @@ import { pushSaleReceiptToQB } from '../services/quickbooks.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { runExtractionAndUpdate } from '../services/saleReceiptExtraction.js'
-import { listTransactionTypes, suggestTransactionType } from '../services/fiscalStatus.js'
+import { syncReceiptAnomalies, receiptObsolescence } from '../services/transactionAnomalies.js'
+import { listTransactionTypes } from '../services/fiscalStatus.js'
+import { resolveFiscalDetection } from '../services/fiscalDetection.js'
 import { findVendorProfile, serializeProfile, profileDefaultsForCurrency } from '../services/vendorProfiles.js'
+import { matchReceiptItems, completeLiaDescription, LIA_AUTO_THRESHOLD, LIA_SUGGEST_THRESHOLD } from '../services/purchaseLiaMatch.js'
+import { detectPrepaidStatement, attachStatementToMonthQb, monthLabel } from '../services/prepaidStatementAttach.js'
 
 // Construit l'URL QB d'un reçu poussé. Les rangées antérieures au toggle
 // Purchase/Bill n'ont pas de quickbooks_type ; on les traite comme 'purchase'.
@@ -26,17 +30,6 @@ function serializeRow(row) {
   let items = []
   try { items = JSON.parse(row.items || '[]') }
   catch (e) { console.error(`sale_receipts.items malformed for id=${row.id}: ${e.message}`) }
-  // Suggestion de type de transaction (statut fiscal) calculée à la volée — sert de
-  // présélection à confirmer dans le formulaire de publication. Ne persiste rien :
-  // le type confirmé n'est écrit qu'à la publication (transaction_type).
-  let suggested_transaction_type = null
-  try {
-    suggested_transaction_type = suggestTransactionType({
-      company: row.company, currency: row.currency,
-      tps: row.tps, tvq: row.tvq,
-      generalDescription: row.general_description, items,
-    })
-  } catch (e) { console.error(`suggestTransactionType failed for id=${row.id}: ${e.message}`) }
   // Document multipage : page 1 = filename/file_type, pages suivantes = extra_pages.
   // On expose une liste unifiée `pages` (métadonnées seules, pas le binaire) + le compte,
   // pour que la fiche détail affiche chaque page via /:id/file?page=N.
@@ -64,12 +57,42 @@ function serializeRow(row) {
       }
     }
   } catch (e) { console.error(`vendor profile lookup failed for id=${row.id}: ${e.message}`) }
+  // Détection fiscale (type de transaction + code de taxe probables) calculée à la
+  // volée en croisant profil fournisseur, historique publié, classification IA du
+  // document et heuristiques — chaque signal validé contre les montants extraits
+  // (services/fiscalDetection.js). Sert de présélection à CONFIRMER : le type retenu
+  // n'est écrit qu'à la publication (transaction_type). suggested_transaction_type
+  // reste exposé (compat) et pointe désormais sur le type détecté.
+  let fiscal_detection = null
+  try {
+    fiscal_detection = resolveFiscalDetection({ ...row, items }, { profile: vendor_profile })
+  } catch (e) { console.error(`resolveFiscalDetection failed for id=${row.id}: ${e.message}`) }
+  // Obsolescence : document sans objet comptable — total 0 $ ou copie d'un document
+  // déjà publié sur QuickBooks (transactionAnomalies.receiptObsolescence). `qb_url`
+  // pointe la transaction QB EXISTANTE (celle du document original), pour vérifier
+  // d'un clic que la pièce est bien déjà comptabilisée avant de l'archiver.
+  let obsolete = null
+  try {
+    if (row.status === 'done' && !row.quickbooks_id && !row.archived_at) {
+      obsolete = receiptObsolescence(row.id)
+      if (obsolete) obsolete.qb_url = obsolete.qb_id ? qbEntityUrl(obsolete.qb_entity, obsolete.qb_id) : null
+    }
+  } catch (e) { console.error(`receiptObsolescence failed for id=${row.id}: ${e.message}`) }
+  // Relevé mensuel d'un fournisseur prépayé (Twilio) : document récapitulatif dont
+  // la dépense est déjà comptabilisée par les recharges du mois — non nul, l'UI
+  // propose de le joindre aux transactions QB du mois (prepaidStatementAttach.js).
+  let prepaid_statement = null
+  try { prepaid_statement = detectPrepaidStatement(row) }
+  catch (e) { console.error(`detectPrepaidStatement failed for id=${row.id}: ${e.message}`) }
   return {
     ...row,
     items,
     pages,
+    prepaid_statement,
     page_count: pages.length,
-    suggested_transaction_type,
+    fiscal_detection,
+    suggested_transaction_type: fiscal_detection?.transaction_type || null,
+    obsolete,
     quickbooks_url: buildQbUrl(row),
     vendor_profile,
     vendor_defaults: vendor_profile ? profileDefaultsForCurrency(vendor_profile, row.currency) : null,
@@ -99,9 +122,13 @@ const FIELD_LABELS = {
   payment_method: 'Mode de paiement', receipt_date: 'Date', currency: 'Devise',
   subtotal: 'Sous-total', tps: 'TPS', tvq: 'TVQ', other_taxes: 'Autres taxes',
   total: 'Total', items: 'Articles', memo: 'Mémo', general_description: 'Description générale',
+  service_period: 'Période couverte',
   quickbooks_id: 'Lien QuickBooks', quickbooks_type: 'Type QuickBooks',
   transaction_type: 'Type de transaction', fiscal_force_reason: 'Justification écart fiscal',
   due_date: 'Échéance', payment_terms_days: 'Termes de paiement (jours)',
+  expense_account_id: 'Compte de dépense', payment_account_id: 'Compte de paiement',
+  tax_code_id: 'Code de taxe', vendor_id: 'Fournisseur QB',
+  bank_charged_total: 'Montant passé à la banque',
 }
 
 const router = Router()
@@ -161,12 +188,16 @@ router.patch('/:id', (req, res) => {
   const row = db.prepare('SELECT id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
-  const editable = ['company', 'address', 'receipt_number', 'general_description', 'payment_method', 'receipt_date', 'currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'memo', 'quickbooks_id', 'quickbooks_type', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'transaction_type', 'due_date', 'payment_terms_days']
-  const numericFields = new Set(['subtotal', 'tps', 'tvq', 'other_taxes', 'total'])
-  // expense_account_id/payment_account_id/tax_code_id : modèle de comptabilisation
-  // mémorisé par fournisseur — éditables à la main pour corriger un modèle erroné.
+  const editable = ['company', 'address', 'receipt_number', 'general_description', 'service_period', 'payment_method', 'receipt_date', 'currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'memo', 'quickbooks_id', 'quickbooks_type', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'vendor_id', 'transaction_type', 'due_date', 'payment_terms_days', 'bank_charged_total']
+  // bank_charged_total : paramètre de publication (conversion de devise) — persisté
+  // comme brouillon pour être retrouvé au retour sur la facture.
+  const numericFields = new Set(['subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'bank_charged_total'])
+  // expense_account_id/payment_account_id/tax_code_id/vendor_id : modèle de
+  // comptabilisation mémorisé par fournisseur — éditables à la main pour corriger un
+  // modèle erroné, et autosauvegardés comme BROUILLON par le formulaire de publication
+  // (les choix faits avant de quitter la fiche sont retrouvés au retour).
   // transaction_type : statut fiscal — éditable pour corriger un classement a posteriori.
-  const textFields = new Set(['company', 'address', 'receipt_number', 'general_description', 'payment_method', 'memo', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'transaction_type'])
+  const textFields = new Set(['company', 'address', 'receipt_number', 'general_description', 'service_period', 'payment_method', 'memo', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'vendor_id', 'transaction_type'])
   const sets = []
   const values = []
   for (const key of editable) {
@@ -211,15 +242,39 @@ router.patch('/:id', (req, res) => {
             if (!Number.isFinite(n) || n < 0) throw new Error('items: nombres positifs attendus')
             return n
           }
+          // Montants signés : une ligne de CRÉDIT (crédit de proration « Unused time on… »,
+          // remise, retour) retranche du sous-total et doit pouvoir être négative. Seule la
+          // quantité reste positive.
+          const signed = x => {
+            if (x === '' || x == null) return null
+            const n = Number(x)
+            if (!Number.isFinite(n)) throw new Error('items: nombre attendu')
+            return n
+          }
           try {
             normalized.push({
-              description: it.description == null ? '' : String(it.description),
+              // Ligne rattachée à un achat LIA : la description porte le code SUIVI du nom
+              // de la pièce (« LIA-1991⇥PCB Module d'activation V2 »). Une ligne qui n'a que
+              // le code — saisie à la main, extraite d'une facture, ou écrite avant que le
+              // nom soit ajouté — est complétée ici, à l'enregistrement, en lisant le nom
+              // dans la table Achats. Rien n'est écrit côté Airtable : le nom est seulement
+              // recopié sur la ligne du reçu.
+              description: completeLiaDescription(it.description == null ? '' : String(it.description)),
               quantity:    num(it.quantity),
-              unit_price:  num(it.unit_price),
-              total:       num(it.total),
+              unit_price:  signed(it.unit_price),
+              total:       signed(it.total),
               // Code de taxe QB par ligne (Id QuickBooks) — facultatif. Vide/null =
               // la ligne suit le code de taxe global du document à la publication.
               tax_code_id: it.tax_code_id == null || it.tax_code_id === '' ? null : String(it.tax_code_id),
+              // Achat LIA rattaché à la ligne (purchases.id) et son code (purchases.at_id,
+              // dupliqué pour l'affichage). Posé par l'appariement automatique ou choisi
+              // à la main dans la fiche — cf. purchaseLiaMatch.js.
+              purchase_id: it.purchase_id == null || it.purchase_id === '' ? null : String(it.purchase_id),
+              lia_ref: it.lia_ref == null || it.lia_ref === '' ? null : String(it.lia_ref),
+              // Libellé imprimé par le fournisseur, mémorisé quand la description est
+              // remplacée par le code LIA : il n'est pas publié, mais il apprend le
+              // vocabulaire du fournisseur (purchaseLiaMatch.learnLineAliases).
+              source_description: it.source_description == null || it.source_description === '' ? null : String(it.source_description),
             })
           } catch (e) {
             return res.status(400).json({ error: e.message })
@@ -243,6 +298,9 @@ router.patch('/:id', (req, res) => {
 
   const changedLabels = editable.filter(k => k in req.body).map(k => FIELD_LABELS[k] || k)
   logReceiptEvent(req.params.id, req.user?.id, 'updated', changedLabels.join(', ') || null)
+
+  // Corriger un montant/fournisseur/numéro peut créer ou résoudre une anomalie.
+  try { syncReceiptAnomalies(req.params.id) } catch (e) { console.warn(`Anomaly re-scan ${req.params.id}: ${e.message}`) }
 
   const updated = fetchSaleReceiptRow(req.params.id)
   if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
@@ -402,11 +460,44 @@ router.get('/:id/vendor-history', (req, res) => {
   res.json({ data: rows.map(serializeRow) })
 })
 
+// Achats LIA rapprochables de ce reçu. Pour chaque ligne : la suggestion retenue
+// (si elle dépasse le seuil) et la liste des achats candidats du même fournisseur,
+// classés par pertinence — c'est cette liste qui alimente le sélecteur de la fiche.
+// Rien n'est écrit ici : la route est en lecture seule, l'opérateur confirme via PATCH.
+router.get('/:id/lia-matches', (req, res) => {
+  const rec = db.prepare('SELECT id, company, receipt_date, vendor_profile_id, items FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+  if (!rec) return res.status(404).json({ error: 'Not found' })
+  let items = []
+  try { items = JSON.parse(rec.items || '[]') } catch {}
+  try {
+    const { lines, candidates } = matchReceiptItems({
+      items,
+      company: rec.company,
+      vendorProfileId: rec.vendor_profile_id,
+      receiptDate: rec.receipt_date,
+      excludeReceiptId: rec.id,
+    })
+    res.json({
+      lines: lines.map(l => ({ index: l.index, locked: !!l.locked, match: l.match, blocked_by: l.blocked_by || null })),
+      candidates,
+      thresholds: { auto: LIA_AUTO_THRESHOLD, suggest: LIA_SUGGEST_THRESHOLD },
+    })
+  } catch (e) {
+    console.error(`lia-matches ${req.params.id}:`, e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
 router.post('/:id/push-to-qb', async (req, res) => {
   try {
-    const { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate, taxCodeId, transactionType, forceReason } = req.body
-    const qbId = await pushSaleReceiptToQB(req.params.id, { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate, taxCodeId, transactionType, forceReason })
-    logReceiptEvent(req.params.id, req.user?.id, 'published', `QuickBooks #${qbId} (${type === 'bill' ? 'facture' : type === 'cc_credit' ? 'crédit carte de crédit' : 'dépense'})`)
+    const { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate, taxCodeId, transactionType, forceReason, anomalyOverride, bankChargedTotal } = req.body
+    const qbId = await pushSaleReceiptToQB(req.params.id, { type, expenseAccountId, paymentAccountId, vendorId, newVendorName, dueDate, taxCodeId, transactionType, forceReason, anomalyOverride, bankChargedTotal })
+    // Trace quand l'opérateur a publié malgré une anomalie doublon ouverte.
+    if (anomalyOverride && String(anomalyOverride).trim()) {
+      logReceiptEvent(req.params.id, req.user?.id, 'anomaly_override', `Doublon probable ignoré : ${String(anomalyOverride).trim()}`)
+    }
+    const bankNote = bankChargedTotal ? ` — montant passé à la banque : ${Number(bankChargedTotal).toFixed(2)} (écart éventuel en ligne « Frais de conversion »)` : ''
+    logReceiptEvent(req.params.id, req.user?.id, 'published', `QuickBooks #${qbId} (${type === 'bill' ? 'facture' : type === 'cc_credit' ? 'crédit carte de crédit' : 'dépense'})${bankNote}`)
     // Trace distincte quand l'opérateur a forcé la publication malgré un écart de statut fiscal.
     if (forceReason && forceReason.trim()) {
       logReceiptEvent(req.params.id, req.user?.id, 'fiscal_override', `Écart fiscal forcé : ${forceReason.trim()}`)
@@ -416,6 +507,30 @@ router.post('/:id/push-to-qb', async (req, res) => {
     res.json({ ok: true, quickbooks_id: qbId })
   } catch (e) {
     res.status(400).json({ error: e.message, field: e.field || null })
+  }
+})
+
+// Joint le document (relevé mensuel d'un fournisseur prépayé) à toutes les
+// transactions QB de ce fournisseur datées dans le mois couvert. Rien n'est
+// comptabilisé dans QuickBooks : la dépense l'est déjà par les recharges du
+// mois. Le montant extrait de la facture (pas du reçu de paiement) alimente
+// en revanche le ledger prépayé de l'ERP — voir prepaidStatementAttach.js.
+router.post('/:id/attach-to-month-qb', async (req, res) => {
+  try {
+    const summary = await attachStatementToMonthQb(req.params.id, { month: req.body?.month || null })
+    const label = monthLabel(summary.month)
+    const ledgerNote = summary.ledger_entry
+      ? ` — facture de ${summary.ledger_entry.amount} enregistrée au solde prépayé`
+      : ''
+    logReceiptEvent(req.params.id, req.user?.id, 'month_attached',
+      `Joint à ${summary.transactions.length} transaction(s) QuickBooks de ${label}`
+      + ` — ${summary.attached} fichier(s) téléversé(s)${summary.skipped ? `, ${summary.skipped} déjà présent(s)` : ''}`
+      + ledgerNote)
+    const updated = fetchSaleReceiptRow(req.params.id)
+    if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
+    res.json({ ok: true, ...summary })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
   }
 })
 
@@ -441,6 +556,9 @@ router.post('/:id/archive', (req, res) => {
   db.prepare("UPDATE sale_receipts SET archived_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
     .run(req.params.id)
   logReceiptEvent(req.params.id, req.user?.id, 'archived')
+  // Copie archivée sans publication = doublon classé : ses anomalies ouvertes
+  // (zero_total, doublons) se résolvent immédiatement, sans attendre le scan.
+  try { syncReceiptAnomalies(req.params.id) } catch (e) { console.warn(`Anomaly re-scan ${req.params.id}: ${e.message}`) }
   const updated = fetchSaleReceiptRow(req.params.id)
   if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
   res.json(updated)
@@ -452,6 +570,8 @@ router.post('/:id/unarchive', (req, res) => {
   db.prepare("UPDATE sale_receipts SET archived_at=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
     .run(req.params.id)
   logReceiptEvent(req.params.id, req.user?.id, 'unarchived')
+  // Le reçu redevient actif : ses anomalies (doublons, 0 $) se re-détectent aussitôt.
+  try { syncReceiptAnomalies(req.params.id) } catch (e) { console.warn(`Anomaly re-scan ${req.params.id}: ${e.message}`) }
   const updated = fetchSaleReceiptRow(req.params.id)
   if (updated) emitEntity('sale_receipt', 'updated', req.params.id, updated, req.user?.id)
   res.json(updated)
@@ -502,6 +622,8 @@ router.delete('/:id', (req, res) => {
     db.prepare('DELETE FROM sale_receipts WHERE id=?').run(req.params.id)
     db.prepare('DELETE FROM sale_receipt_events WHERE receipt_id=?').run(req.params.id)
   }
+  // Le reçu n'existe plus : ses anomalies ouvertes (dont les paires de doublon) se résolvent.
+  try { syncReceiptAnomalies(req.params.id) } catch (e) { console.warn(`Anomaly re-scan ${req.params.id}: ${e.message}`) }
   emitEntity('sale_receipt', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })
 })

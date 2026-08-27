@@ -363,6 +363,31 @@ router.get('/:id/salary-expense/estimate', ensureHR, async (req, res) => {
   }
 })
 
+// Déductions du montant bancaire (remb. de dépenses par employé + téléphone),
+// connues dès la sélection de la paie — sans montant bancaire saisi.
+router.get('/:id/salary-expense/deductions', ensureHR, async (req, res) => {
+  try {
+    const { paieDeductions } = await import('../services/paieSalaryExpense.js')
+    res.json(paieDeductions(req.params.id))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Rafraîchit les items de paie depuis Airtable (colonne « Remb. dépenses »)
+// puis renvoie les déductions à jour. Le sync complet prend ~10 s : il est
+// déclenché à la demande, pas au chargement de la page.
+router.post('/:id/salary-expense/deductions/refresh', ensureHR, async (req, res) => {
+  try {
+    const { syncPaieItems } = await import('../services/airtable.js')
+    await syncPaieItems()
+    const { paieDeductions } = await import('../services/paieSalaryExpense.js')
+    res.json(paieDeductions(req.params.id))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 // Aperçu : { bank_amount, phone?, txn_date? } → lignes de la dépense.
 router.post('/:id/salary-expense/preview', ensureHR, async (req, res) => {
   try {
@@ -421,11 +446,23 @@ router.post('/:id/salary-expense/push', ensureHR, async (req, res) => {
   }
 })
 
+// Correction d'une dépense déjà publiée (items de paie complétés après coup).
+router.post('/:id/salary-expense/update', ensureHR, async (req, res) => {
+  try {
+    const { updatePaieSalaryExpense } = await import('../services/paieSalaryExpense.js')
+    const out = await updatePaieSalaryExpense(req.params.id, req.body || {})
+    emitEntity('paie', 'updated', req.params.id, buildPaieListRow(req.params.id), req.user?.id)
+    res.json(out)
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 // Assurance collective AGA : aperçu + publication (montant du paiement).
 router.post('/aga-repartition/preview', ensureHR, async (req, res) => {
   try {
     const { computeAgaRepartition } = await import('../services/paieRepartition.js')
-    res.json(computeAgaRepartition(req.body?.amount))
+    res.json(computeAgaRepartition(req.body?.amount, req.body?.txn_date || null))
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
@@ -433,8 +470,8 @@ router.post('/aga-repartition/preview', ensureHR, async (req, res) => {
 
 router.post('/aga-repartition/push', ensureHR, async (req, res) => {
   try {
-    const { pushAgaRepartitionJE } = await import('../services/paieRepartition.js')
-    res.json(await pushAgaRepartitionJE(req.body?.amount, req.body?.txn_date || null))
+    const { pushAgaRepartition } = await import('../services/paieRepartition.js')
+    res.json(await pushAgaRepartition(req.body?.amount, req.body?.txn_date || null))
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

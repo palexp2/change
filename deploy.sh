@@ -2,6 +2,14 @@
 set -e
 cd /home/ec2-user/erp
 
+# ─── PATH ────────────────────────────────────────────────────────────────────
+# cron ne fournit que PATH=/sbin:/bin:/usr/sbin:/usr/bin — /usr/local/bin en est
+# absent, donc `pm2` (installé dans /usr/local/bin) était introuvable sous cron.
+# Combiné à `set -e`, le script mourait juste avant le restart : le front était
+# rebuildé toutes les heures mais le serveur ne redémarrait jamais et le commit
+# déployé n'était jamais enregistré. 3578 builds, 0 déploiement complet.
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+
 # ─── Garde anti-interruption d'une tâche de l'agent autonome ──────────────────
 # Redémarrer erp-server pendant qu'une tâche de l'agent s'exécute la fait passer
 # en « bloquée » (garde-fou anti-boucle de taskRunner.js) — il faut alors la
@@ -62,9 +70,23 @@ npm run build
 cd ..
 
 # Restart server
-pm2 restart erp-server
+# Volontairement non fatal : un pm2 absent ou en erreur ne doit pas avaler
+# silencieusement la fin du script (enregistrement du commit changelog).
+if ! command -v pm2 >/dev/null 2>&1; then
+  echo "❌ pm2 introuvable dans le PATH ($PATH) — serveur NON redémarré."
+  echo "   Le build front est en place mais server/src n'est pas rechargé."
+  DEPLOY_INCOMPLETE=1
+elif ! pm2 restart erp-server; then
+  echo "❌ 'pm2 restart erp-server' a échoué — serveur possiblement non rechargé."
+  DEPLOY_INCOMPLETE=1
+fi
 
 # Enregistre le commit déployé comme base pour la prochaine vérification changelog.
 node server/src/scripts/check-changelog.js --record || true
+
+if [ "${DEPLOY_INCOMPLETE:-0}" = "1" ]; then
+  echo "⚠️  Deploy INCOMPLET at $(date) — voir l'erreur pm2 ci-dessus."
+  exit 1
+fi
 
 echo "✅ Deploy done at $(date)"

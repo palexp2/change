@@ -80,8 +80,11 @@ describe('Paramètres — customisation du menu de gauche', () => {
   test('décocher un item à plat le cache de la sidebar (live + persistance)', async () => {
     await page.goto(URL + '/settings', { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('[data-testid="settings-section-menu"]', { timeout: 10000 })
-    // Item à plat « Fichiers publics » = /public-files : visible au départ.
+    // La colonne de gauche est contextuelle : afficher la section « Autres
+    // outils », qui contient « Fichiers publics » (/public-files).
+    await page.click('nav button:has-text("Autres outils")')
     const navLink = page.locator('nav a[href$="/public-files"]')
+    await navLink.waitFor({ state: 'visible', timeout: 5000 })
     assert.equal(await navLink.count(), 1, 'Fichiers publics présent dans la sidebar au départ')
 
     await page.click('[data-testid="nav-toggle-/public-files"]')

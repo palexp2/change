@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import api from './api.js'
 import { useAuth } from './auth.jsx'
 import { applyFilter, applyFilterGroup } from './tableFilters.js'
@@ -38,6 +39,7 @@ export function applySort(data, sorts, colTypes = {}) {
 }
 
 export function useTableView({ table, columns, data, searchFields = [], forceAllView = false }) {
+  const [searchParams] = useSearchParams()
   const { user } = useAuth()
   const userName = user?.name || null
   const [activeViewId, setActiveViewIdRaw] = useState(null)
@@ -74,9 +76,13 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
         } else if (pills.length > 0 && !forceAllView) {
           // Restore last selected view from localStorage, or fall back to first by sort_order.
           // Legacy `savedId === 'null'` (ancienne vue « Tous » retirée) → première pill.
+          // `?vue=<id>` (sous-menu de la sidebar, lien partagé) a priorité sur
+          // le souvenir local.
+          const askedId = new URLSearchParams(window.location.search).get('vue')
+          const askedView = askedId ? pills.find(p => p.id === askedId) : null
           const savedId = localStorage.getItem(`erp_lastView_${table}`)
           const savedView = (savedId && savedId !== 'null') ? pills.find(p => p.id === savedId) : null
-          const targetView = savedView || [...pills].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))[0]
+          const targetView = askedView || savedView || [...pills].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))[0]
           setActiveViewIdRaw(targetView.id)
           setSorts(targetView.sort?.length > 0 ? targetView.sort : (config.default_sort || []))
           setFilters(targetView.filters || [])
@@ -116,6 +122,16 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
       }
     }
   }
+
+  // `?vue=<id>` qui change alors que la table est déjà montée (clic dans le
+  // sous-menu de la sidebar depuis la page elle-même) : on suit l'URL.
+  const askedViewId = searchParams.get('vue')
+  useEffect(() => {
+    if (!askedViewId || askedViewId === activeViewId) return
+    if (!views.some(v => v.id === askedViewId)) return
+    setActiveViewId(askedViewId)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askedViewId, views])
 
   const activeView = activeViewId === null ? null : (views.find(v => v.id === activeViewId) || null)
 

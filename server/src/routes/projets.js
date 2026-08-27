@@ -4,7 +4,7 @@ import path from 'path'
 import Stripe from 'stripe'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { postRevenueRecognitionJE, reconcileFactureRevenueRecognition, factureHasPendingStripeDeposit } from '../services/quickbooks.js'
+import { postRevenueRecognitionJE, reconcileFactureRevenueRecognition, factureHasPendingStripeDeposit, auditFactureReconciliation } from '../services/quickbooks.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { computeCanadaTaxes } from '../services/taxes.js'
@@ -439,6 +439,33 @@ router.get('/factures', (req, res) => {
   const total = merged.length
   const sliced = limitAll ? merged : merged.slice(offset, offset + limitVal)
   res.json({ data: sliced, total, page: parseInt(page), limit: parseInt(limit) })
+})
+
+// GET /api/projets/factures/reconciliation-audit
+// Audit read-only de la constatation des revenus : agrège, à partir des seules
+// colonnes locales (aucun appel QuickBooks), toutes les factures dont l'état de
+// constatation est orphelin/incohérent. Accessible à tout utilisateur connecté
+// (lecture seule — les corrections, elles, restent derrière les routes admin).
+// Chaque run est tracé dans sync_log pour rester dans la philosophie
+// « visibilité sur les side effects ». Doit rester déclaré AVANT /factures/:id.
+router.get('/factures/reconciliation-audit', (req, res) => {
+  const t0 = Date.now()
+  try {
+    const result = auditFactureReconciliation()
+    logSync('facture_reconciliation_audit', 'manual', {
+      status: 'success',
+      modified: result.summary.flagged,
+      durationMs: Date.now() - t0,
+    })
+    res.json(result)
+  } catch (e) {
+    logSync('facture_reconciliation_audit', 'manual', {
+      status: 'error',
+      error: e.message,
+      durationMs: Date.now() - t0,
+    })
+    res.status(500).json({ error: e.message })
+  }
 })
 
 router.get('/factures/:id', async (req, res) => {

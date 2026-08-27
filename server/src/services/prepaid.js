@@ -51,6 +51,120 @@ export function ledgerBalance(accountId) {
   return rows.length ? rows[rows.length - 1].running_balance : 0
 }
 
+// ── Détection automatique des recharges Twilio depuis le rapprochement bancaire ──
+//
+// Demande de Charles (2026-08-11) : une sortie Twilio sur le compte bancaire
+// Venn USD est toujours une recharge du crédit prépayé, jamais une dépense
+// consommée directement. À chaque import bancaire (services/bankReconciliation.js) :
+//   1. un brouillon `achats_fournisseurs` (type purchase, fournisseur
+//      « Twilio  USD » — le vendor QB réel des recharges, distinct du
+//      `qb_vendor_name` du compte prépayé, voir gotcha ci-dessous) est créé et
+//      apparié à la transaction, ce qui « propose » la comptabilisation QB —
+//      publiée par l'utilisateur via le bouton existant, jamais automatique ;
+//   2. le ledger prépayé Twilio est ajusté tout de suite (type='recharge'),
+//      sans attendre la publication QB.
+// Comme wageSubsidyReceipts.detectBankReceipts : jamais deux fois la même
+// transaction (bank_transaction_id, UNIQUE), une entrée supprimée à la main
+// (faux positif) n'est jamais recréée.
+const TWILIO_BANK_ACCOUNT_NAME = 'Venn USD'
+const TWILIO_QB_VENDOR_NAME = 'Twilio  USD' // gotcha : « Twilio » (Id 109, CAD) ≠ « Twilio  USD » (Id 976, USD, double espace) — voir reference_prepaid_statement_attach
+
+// Libellé publié sur QuickBooks — à la fois dans le « Memo » de la dépense
+// (PrivateNote, via la colonne `qb_memo`) et sur la Description de la ligne.
+// Demande de Charles (2026-08-11) : garder le strict essentiel — la NATURE de la
+// dépense. Le détail de provenance (compte bancaire, libellé du relevé) reste côté
+// ERP sur l'entrée du ledger prépayé, il n'a rien à faire dans les livres.
+export const TWILIO_RECHARGE_DESCRIPTION = 'Recharge de crédit Twilio'
+
+function normalizeTwilioLabel(s) {
+  return String(s || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
+}
+function isTwilioLabel(bankLabel) {
+  return normalizeTwilioLabel(bankLabel).includes('twilio')
+}
+
+// Compte de dépense QB à mémoriser sur le brouillon, pour que le bouton
+// « Comptabiliser » du rapprochement fonctionne du premier coup sans exiger de
+// config globale — demande de Charles (2026-08-11) après un échec « Compte de
+// dépense QuickBooks non configuré ». On reprend le compte de la DERNIÈRE
+// comptabilisation Twilio déjà publiée (son détail de ligne QB, conservé dans
+// `lines` au moment de l'import CDC — voir services/quickbooks.js:extractLines),
+// pas une config par défaut qui pourrait ne rien avoir à voir avec Twilio.
+function lastTwilioExpenseAccountId() {
+  const row = db.prepare(`
+    SELECT lines FROM achats_fournisseurs
+    WHERE LOWER(TRIM(vendor)) = LOWER(TRIM(?)) AND quickbooks_id IS NOT NULL AND lines IS NOT NULL
+    ORDER BY date_achat DESC, created_at DESC LIMIT 1
+  `).get(TWILIO_QB_VENDOR_NAME)
+  if (!row) return null
+  try {
+    return JSON.parse(row.lines)?.[0]?.account_id || null
+  } catch { return null }
+}
+
+export function detectTwilioBankRecharges() {
+  const account = db.prepare(`
+    SELECT * FROM prepaid_accounts WHERE deleted_at IS NULL AND active = 1 AND lower(vendor) = 'twilio'
+  `).get()
+  if (!account) return []
+  const bankAccount = db.prepare('SELECT id, qb_account_id FROM bank_accounts WHERE name = ?').get(TWILIO_BANK_ACCOUNT_NAME)
+  if (!bankAccount) return []
+  // L'argent sort réellement de Venn USD ici (pas de la carte utilisée par les
+  // recharges historiques) : le compte de paiement QB est celui du compte
+  // bancaire lui-même, pas une reprise de l'historique. `qb_account_id` peut
+  // contenir plusieurs ids séparés par virgule (compte scindé côté QB) — on
+  // prend le premier, comme ailleurs dans le module de rapprochement.
+  const paymentAccountId = bankAccount.qb_account_id ? bankAccount.qb_account_id.split(',')[0].trim() : null
+  const expenseAccountId = lastTwilioExpenseAccountId()
+
+  const candidates = db.prepare(`
+    SELECT id, txn_date, amount, COALESCE(NULLIF(details, ''), description) AS label
+    FROM bank_transactions
+    WHERE account_id = ? AND deleted_at IS NULL AND status = 'a_traiter' AND matched_id IS NULL AND amount < 0
+  `).all(bankAccount.id)
+
+  const inserted = []
+  for (const txn of candidates) {
+    if (!isTwilioLabel(txn.label)) continue
+    const amount = Math.round(Math.abs(txn.amount) * 100) / 100
+    const ledgerDescription = `Recharge auto détectée — banque ${TWILIO_BANK_ACCOUNT_NAME} (${txn.label || 'Twilio'})`
+    try {
+      const ledgerId = randomUUID()
+      const achatId = randomUUID()
+      // La contrainte UNIQUE sur bank_transaction_id fait échouer tout l'INSERT
+      // (donc toute la transaction db) si une course concurrente l'a déjà traitée.
+      db.transaction(() => {
+        db.prepare(`
+          INSERT INTO prepaid_ledger_entries (id, account_id, entry_date, type, amount, description, source, bank_transaction_id)
+          VALUES (?,?,?,'recharge',?,?,'import',?)
+        `).run(ledgerId, account.id, txn.txn_date, amount, ledgerDescription, txn.id)
+
+        // « Comptant » → PaymentType 'Cash' → DÉPENSE dans QBO, comme les cinq
+        // recharges Twilio précédentes (Purchase 17202/17410/17530/17604/17711).
+        // Surtout pas « Virement »/« Chèque » : QB en ferait un CHÈQUE.
+        db.prepare(`
+          INSERT INTO achats_fournisseurs
+            (id, type, date_achat, vendor, description, qb_memo, payment_method, amount_cad, tax_cad, total_cad, currency, status,
+             expense_account_id, payment_account_id)
+          VALUES (?, 'purchase', ?, ?, ?, ?, 'Comptant', ?, 0, ?, 'USD', 'Approuvé', ?, ?)
+        `).run(achatId, txn.txn_date, TWILIO_QB_VENDOR_NAME, TWILIO_RECHARGE_DESCRIPTION, TWILIO_RECHARGE_DESCRIPTION,
+          amount, amount, expenseAccountId, paymentAccountId)
+
+        db.prepare(`
+          UPDATE bank_transactions
+          SET matched_type = 'achat', matched_id = ?, match_method = 'auto', match_confidence = 1,
+              status = 'facture_recue', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          WHERE id = ?
+        `).run(achatId, txn.id)
+      })()
+      inserted.push({ bank_transaction_id: txn.id, ledger_entry_id: ledgerId, achat_id: achatId })
+    } catch (e) {
+      if (!String(e.message).includes('UNIQUE')) throw e
+    }
+  }
+  return inserted
+}
+
 // Classification d'un Purchase QB détecté pour le fournisseur du compte.
 // La convention comptable propre : la recharge est une dépense payée de la carte
 // dont la catégorie est le compte d'actif prépayé (Dr actif / Cr carte) ; la
@@ -302,12 +416,18 @@ export async function fetchProviderBalance(account) {
 const monthKey = d => d.toISOString().slice(0, 7)
 const daysInMonth = (y, m1) => new Date(Date.UTC(y, m1, 0)).getUTCDate()
 
-// Cédule calculée d'un item (méthode prorata_jours) : chaque mois couvert reçoit
-// montant × jours couverts du mois / jours totaux, arrondi au cent — sauf le
-// dernier mois qui absorbe le résidu (convention du fichier FPA_Continuité :
-// ex. Intact 3 835 $ sur 223 jours → 7 × 515,91 + 223,63).
+// Méthodes dont la cédule est calculée à partir d'une période (par opposition à
+// 'manuel' / 'aucun', où seuls les mois matérialisés existent).
+const COMPUTED_METHODS = new Set(['prorata_jours', 'mensuel_fixe'])
+
+// Cédule calculée d'un item, sur la période amort_start → amort_end :
+//   • 'mensuel_fixe'  — le même montant chaque mois (colonne du fichier
+//     FPA_Continuité : Intact 3 835 $ → 7 × 515,91 puis 223,63 en novembre).
+//     C'est la convention de la comptable, et donc celle qui fait foi.
+//   • 'prorata_jours' — montant × jours couverts du mois / jours totaux.
+// Dans les deux cas le dernier mois absorbe le résidu, au cent près.
 export function computeSchedule(expense) {
-  if (expense.method !== 'prorata_jours' || !expense.amort_start || !expense.amort_end) return []
+  if (!COMPUTED_METHODS.has(expense.method) || !expense.amort_start || !expense.amort_end) return []
   const start = new Date(`${expense.amort_start}T00:00:00Z`)
   const end = new Date(`${expense.amort_end}T00:00:00Z`)
   if (!(start <= end)) return []
@@ -324,6 +444,22 @@ export function computeSchedule(expense) {
     months.push({ month: monthKey(mStart), days })
     cur = new Date(Date.UTC(y, m + 1, 1))
   }
+  if (expense.method === 'mensuel_fixe') {
+    const monthly = Math.round((Number(expense.monthly_amount) || 0) * 100) / 100
+    if (!(monthly > 0)) return []
+    const out = []
+    let remaining = Math.round((Number(expense.amount) || 0) * 100) / 100
+    for (let i = 0; i < months.length && remaining > 0; i++) {
+      // Le dernier mois de la période prend tout ce qui reste ; en cours de
+      // route, un reliquat plus petit que la mensualité solde l'item d'un coup
+      // plutôt que de laisser traîner un montant négatif au mois suivant.
+      const amount = (i === months.length - 1 || remaining <= monthly) ? remaining : monthly
+      out.push({ month: months[i].month, amount })
+      remaining = Math.round((remaining - amount) * 100) / 100
+    }
+    return out
+  }
+
   let allocated = 0
   return months.map((m, i) => {
     let amount
@@ -352,11 +488,11 @@ export function effectiveSchedule(expense) {
     schedule.set(r.month, { month: r.month, amount: r.amount, source: r.source, qb_je_id: r.qb_je_id, pushed_at: r.pushed_at, id: r.id })
   }
   const out = [...schedule.values()].sort((a, b) => a.month.localeCompare(b.month))
-  // Prorata : si le dernier mois est encore calculé (non matérialisé), il
-  // absorbe le résidu de la cédule EFFECTIVE — les mois historiques importés
+  // Cédule calculée : si le dernier mois est encore calculé (non matérialisé),
+  // il absorbe le résidu de la cédule EFFECTIVE — les mois historiques importés
   // (arrondis différemment par la comptable) ne doivent pas laisser un solde
   // de fermeture non nul.
-  if (expense.method === 'prorata_jours' && out.length && out[out.length - 1].source === 'auto') {
+  if (COMPUTED_METHODS.has(expense.method) && out.length && out[out.length - 1].source === 'auto') {
     const others = out.slice(0, -1).reduce((s, m) => s + m.amount, 0)
     out[out.length - 1].amount = Math.round((expense.amount - others) * 100) / 100
   }
@@ -410,6 +546,7 @@ export function buildFpaMonth(month) {
       expense_id: e.id, label: e.label, amount: s.amount,
       expense_acctnum: e.expense_acctnum, fpa_acctnum: e.fpa_acctnum || '13000',
       source: s.source, qb_je_id: s.qb_je_id, pushed_at: s.pushed_at,
+      qb_je_url: s.qb_je_id ? qbEntityUrl('journal', s.qb_je_id) : null,
     })
   }
   const publishable = lines.filter(l => !l.pushed_at)

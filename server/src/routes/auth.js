@@ -8,11 +8,15 @@ import { JWT_SECRET } from '../config/secrets.js';
 
 const router = Router();
 
+// Durée de vie volontairement très longue (10 ans) : app single-tenant interne,
+// pas de mécanisme de refresh token, et les déconnexions au bout de 7 jours
+// étaient vécues comme un bug. Le rôle n'est pas figé pour autant — requireAuth
+// le relit en DB à chaque requête, et désactiver un compte le coupe côté login.
 function generateToken(user) {
   return jwt.sign(
     { id: user.id, role: user.role, name: user.name },
     JWT_SECRET,
-    { expiresIn: '7d' }
+    { expiresIn: '10y' }
   );
 }
 
@@ -110,6 +114,23 @@ function readNavHidden(userId) {
   return Array.isArray(navHidden) ? navHidden : [];
 }
 
+// Ordre personnalisé du menu : { "<conteneur>": ["<clé>", …] }.
+function readNavOrder(userId) {
+  const row = db.prepare('SELECT nav_order FROM users WHERE id = ?').get(userId);
+  let order = {};
+  try { order = JSON.parse(row?.nav_order || '{}'); } catch { order = {}; }
+  return order && typeof order === 'object' && !Array.isArray(order) ? order : {};
+}
+
+function validNavOrder(obj) {
+  if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  return Object.entries(obj).every(([k, v]) => (
+    typeof k === 'string' && k.length > 0 && k.length <= 120
+    && Array.isArray(v) && v.length <= 200
+    && v.every((key) => typeof key === 'string' && key.length > 0 && key.length <= 200)
+  ));
+}
+
 function readDecimalPreferences(userId) {
   const row = db.prepare('SELECT decimal_preferences FROM users WHERE id = ?').get(userId);
   let prefs = {};
@@ -137,6 +158,7 @@ function validDecimalPreferences(obj) {
 router.get('/preferences', requireAuth, (req, res) => {
   res.json({
     nav_hidden: readNavHidden(req.user.id),
+    nav_order: readNavOrder(req.user.id),
     decimal_preferences: readDecimalPreferences(req.user.id),
     peek_width: readPeekWidth(req.user.id),
   });
@@ -144,12 +166,18 @@ router.get('/preferences', requireAuth, (req, res) => {
 
 // PATCH /api/auth/preferences — maj des préférences UI (menu de gauche, décimales, largeur side-peek, etc.)
 router.patch('/preferences', requireAuth, (req, res) => {
-  const { nav_hidden, decimal_preferences, peek_width } = req.body || {};
+  const { nav_hidden, nav_order, decimal_preferences, peek_width } = req.body || {};
   if (nav_hidden !== undefined) {
     if (!Array.isArray(nav_hidden) || !nav_hidden.every((k) => typeof k === 'string')) {
       return res.status(400).json({ error: 'nav_hidden doit être un tableau de chaînes' });
     }
     db.prepare('UPDATE users SET nav_hidden = ? WHERE id = ?').run(JSON.stringify(nav_hidden), req.user.id);
+  }
+  if (nav_order !== undefined) {
+    if (!validNavOrder(nav_order)) {
+      return res.status(400).json({ error: 'nav_order doit être un objet { "conteneur": ["clé", …] }' });
+    }
+    db.prepare('UPDATE users SET nav_order = ? WHERE id = ?').run(JSON.stringify(nav_order), req.user.id);
   }
   if (decimal_preferences !== undefined) {
     if (!validDecimalPreferences(decimal_preferences)) {
@@ -166,6 +194,7 @@ router.patch('/preferences', requireAuth, (req, res) => {
   }
   res.json({
     nav_hidden: readNavHidden(req.user.id),
+    nav_order: readNavOrder(req.user.id),
     decimal_preferences: readDecimalPreferences(req.user.id),
     peek_width: readPeekWidth(req.user.id),
   });

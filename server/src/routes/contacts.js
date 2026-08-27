@@ -21,14 +21,24 @@ function buildContactRow(id) {
 }
 
 // GET /api/contacts/lookup — minimal list for dropdowns
+//
+// `company_ids` liste TOUTES les entreprises du contact (liens
+// `contact_companies` + l'entreprise principale legacy `contacts.company_id`).
+// Un contact lié à plusieurs entreprises est courant : filtrer un picker sur
+// `company_id` seul le rendait invisible depuis les autres entreprises.
 router.get('/lookup', (req, res) => {
   const rows = db.prepare(
-    `SELECT id, first_name, last_name, company_id
-     FROM contacts
-     WHERE deleted_at IS NULL
-     ORDER BY first_name COLLATE NOCASE, last_name COLLATE NOCASE`
+    `SELECT ct.id, ct.first_name, ct.last_name, ct.company_id,
+            (SELECT group_concat(cc.company_id, ',')
+             FROM contact_companies cc WHERE cc.contact_id = ct.id) AS linked_company_ids
+     FROM contacts ct
+     WHERE ct.deleted_at IS NULL
+     ORDER BY ct.first_name COLLATE NOCASE, ct.last_name COLLATE NOCASE`
   ).all()
-  res.json(rows)
+  res.json(rows.map(({ linked_company_ids, ...r }) => ({
+    ...r,
+    company_ids: [...new Set([r.company_id, ...(linked_company_ids || '').split(',')].filter(Boolean))],
+  })))
 })
 
 function loadCompanies(contactId) {
@@ -65,6 +75,8 @@ router.get('/', (req, res) => {
 
   const contacts = db.prepare(
     `SELECT ct.*, c.name as company_name,
+            (SELECT group_concat(cc2.company_id, ',')
+             FROM contact_companies cc2 WHERE cc2.contact_id = ct.id) AS linked_company_ids,
             ${CC_PERMISSION_SELECT},
             EXISTS (
               SELECT 1 FROM adresses a
@@ -79,7 +91,12 @@ router.get('/', (req, res) => {
   ).all(...params, limitVal, offset);
 
   const total = limitAll ? contacts.length : db.prepare(`SELECT COUNT(*) as c FROM contacts ct ${where}`).get(...params).c;
-  res.json({ data: contacts, total, page: parseInt(page), limit: parseInt(limit) });
+  // Voir /lookup : `company_ids` = toutes les entreprises du contact.
+  const data = contacts.map(({ linked_company_ids, ...ct }) => ({
+    ...ct,
+    company_ids: [...new Set([ct.company_id, ...(linked_company_ids || '').split(',')].filter(Boolean))],
+  }));
+  res.json({ data, total, page: parseInt(page), limit: parseInt(limit) });
 });
 
 // GET /api/contacts/duplicates — correspondances potentielles (nom complet /

@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
-import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent, ShoppingCart, User } from 'lucide-react'
+import { useState, useEffect, useCallback } from 'react'
+import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent, ShoppingCart, User, Instagram } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
 import AirtableConfig from './AirtableConfig.jsx'
@@ -14,6 +15,7 @@ import { DataTable } from '../components/DataTable.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDateTime } from '../lib/formatDate.js'
+import { HubSpotExportModal } from '../components/HubSpotExportModal.jsx'
 
 function WhisperConfig() {
   const { addToast } = useToast()
@@ -329,7 +331,98 @@ const CONNECTORS = [
   { id: 'novoxpress', name: 'Novoxpress',  icon: Truck,      color: 'bg-orange-50 text-orange-600', apiKeyManaged: true },
   { id: 'hubspot',    name: 'HubSpot',     icon: Users,      color: 'bg-rose-50 text-rose-600',     apiKeyManaged: true },
   { id: 'amazon',     name: 'Amazon Business', icon: ShoppingCart, color: 'bg-orange-50 text-orange-700' },
+  { id: 'instagram',  name: 'Instagram',   icon: Instagram,  color: 'bg-pink-50 text-pink-600',    apiKeyManaged: true },
 ]
+
+/**
+ * Instagram — cookie de session pour la lecture des commentaires.
+ *
+ * Instagram n'offre aucune API qui donne les commentaires d'un compte sans une
+ * revue d'application Meta. On passe donc par l'API web privée, celle du site,
+ * qui demande le cookie d'un compte connecté. Le cookie expire environ une fois
+ * par an : quand la page Prospects Instagram signale une erreur 401, c'est ici
+ * qu'on en recolle un frais.
+ */
+function InstagramConfig() {
+  const { addToast } = useToast()
+  const [state, setState] = useState(null)          // { configured, hint, ds_user_id }
+  const [sessionid, setSessionid] = useState('')
+  const [dsUserId, setDsUserId] = useState('')
+  const [showKey, setShowKey] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const confirm = useConfirm()
+
+  const load = useCallback(() => {
+    api.instagram.session().then(s => { setState(s); setDsUserId(s.ds_user_id || '') }).catch(() => {})
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  const save = async () => {
+    setSaving(true)
+    try {
+      await api.instagram.setSession({ sessionid, ds_user_id: dsUserId })
+      setSessionid('')
+      addToast({ message: 'Cookie Instagram enregistré', type: 'success' })
+      load()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setSaving(false) }
+  }
+
+  const remove = async () => {
+    if (!(await confirm('Supprimer le cookie Instagram ? La lecture automatique des commentaires cessera de fonctionner.'))) return
+    try {
+      await api.instagram.setSession({ sessionid: '', ds_user_id: '' })
+      setDsUserId('')
+      load()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Cookie de session</p>
+        {state?.configured
+          ? <p className="text-sm text-green-600 font-medium flex items-center gap-1.5"><CheckCircle size={14} /> Cookie configuré ({state.hint})</p>
+          : <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5"><XCircle size={14} /> Aucun cookie — la lecture des commentaires ne peut pas tourner</p>
+        }
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <input
+              type={showKey ? 'text' : 'password'}
+              className="input pr-8 font-mono text-sm"
+              placeholder="sessionid"
+              value={sessionid}
+              onChange={e => setSessionid(e.target.value)}
+            />
+            <button onClick={() => setShowKey(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+              {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+          <input
+            className="input font-mono text-sm w-40"
+            placeholder="ds_user_id"
+            value={dsUserId}
+            onChange={e => setDsUserId(e.target.value)}
+          />
+          <button onClick={save} disabled={saving || !sessionid} className="btn-primary btn-sm">
+            {saving ? 'Sauvegarde…' : state?.configured ? 'Mettre à jour' : 'Enregistrer'}
+          </button>
+          {state?.configured && (
+            <button onClick={remove} className="btn-secondary btn-sm text-red-500 hover:text-red-600">
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+        <p className="text-xs text-slate-400">
+          Dans un Chrome connecté au compte Instagram : DevTools → Application → Cookies → instagram.com → copier
+          <code className="mx-1">sessionid</code> et <code className="mx-1">ds_user_id</code>.
+          Le cookie expire environ une fois par an — le recoller ici quand la page{' '}
+          <Link to="/prospects-instagram" className="underline hover:text-slate-600">Prospects Instagram</Link> signale une erreur 401.
+        </p>
+      </div>
+    </div>
+  )
+}
 
 function SyncBtn({ label, syncKey, syncStatus, onSync }) {
   const serverRunning = syncStatus?.[syncKey]?.running
@@ -376,11 +469,95 @@ function parseDriveFolders(config) {
   return []
 }
 
+function parseAutoDetect(config) {
+  try {
+    const list = JSON.parse(config?.invoice_autodetect_mailboxes || '[]')
+    return Array.isArray(list) ? list.map(e => String(e).toLowerCase()) : []
+  } catch { return [] }
+}
+
+function parseTrashAfterImport(config) {
+  try {
+    const list = JSON.parse(config?.invoice_trash_after_import_mailboxes || '[]')
+    return Array.isArray(list) ? list.map(e => String(e).toLowerCase()) : []
+  } catch { return [] }
+}
+
+function parseInvoiceOnly(config) {
+  try {
+    const list = JSON.parse(config?.invoice_only_mailboxes || '[]')
+    return Array.isArray(list) ? list.map(e => String(e).toLowerCase()) : []
+  } catch { return [] }
+}
+
+function parseAutoDetectSenders(config) {
+  try {
+    const map = JSON.parse(config?.invoice_autodetect_senders || '{}')
+    return map && typeof map === 'object' && !Array.isArray(map) ? map : {}
+  } catch { return {} }
+}
+
 function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
   const [folders, setFolders] = useState(() => parseDriveFolders(config))
+  const [autoDetect, setAutoDetect] = useState(() => parseAutoDetect(config))
+  const [trashAfterImport, setTrashAfterImport] = useState(() => parseTrashAfterImport(config))
+  const [invoiceOnly, setInvoiceOnly] = useState(() => parseInvoiceOnly(config))
+  const [senders, setSenders] = useState(() => parseAutoDetectSenders(config))
+  const [newAccount, setNewAccount] = useState('')
   const [_users, setUsers] = useState([])
   const [saving, setSaving] = useState(false)
   const confirm = useConfirm()
+
+  // Autosave immédiat (règle autosave) : les interrupteurs par boîte n'attendent
+  // pas le bouton Enregistrer, qui ne sert qu'aux dossiers Drive.
+  async function toggleAutoDetect(email) {
+    const key = (email || '').toLowerCase()
+    const next = autoDetect.includes(key) ? autoDetect.filter(e => e !== key) : [...autoDetect, key]
+    setAutoDetect(next)
+    try {
+      await api.connectors.saveConfig('google', { invoice_autodetect_mailboxes: JSON.stringify(next) })
+    } catch {
+      setAutoDetect(autoDetect)
+    }
+  }
+
+  async function toggleTrashAfterImport(email) {
+    const key = (email || '').toLowerCase()
+    const next = trashAfterImport.includes(key) ? trashAfterImport.filter(e => e !== key) : [...trashAfterImport, key]
+    setTrashAfterImport(next)
+    try {
+      await api.connectors.saveConfig('google', { invoice_trash_after_import_mailboxes: JSON.stringify(next) })
+    } catch {
+      setTrashAfterImport(trashAfterImport)
+    }
+  }
+
+  async function toggleInvoiceOnly(email) {
+    const key = (email || '').toLowerCase()
+    const next = invoiceOnly.includes(key) ? invoiceOnly.filter(e => e !== key) : [...invoiceOnly, key]
+    setInvoiceOnly(next)
+    try {
+      await api.connectors.saveConfig('google', { invoice_only_mailboxes: JSON.stringify(next) })
+    } catch {
+      setInvoiceOnly(invoiceOnly)
+    }
+  }
+
+  // Liste blanche d'expéditeurs saisie en clair, séparée par virgules.
+  // Autosave au blur (règle autosave) : pas de bouton pour cette ligne.
+  async function saveSenders(email, raw) {
+    const key = (email || '').toLowerCase()
+    const list = raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+    const next = { ...senders }
+    if (list.length) next[key] = list
+    else delete next[key]
+    setSenders(next)
+    try {
+      await api.connectors.saveConfig('google', { invoice_autodetect_senders: JSON.stringify(next) })
+    } catch {
+      setSenders(senders)
+    }
+  }
 
   async function disconnect(account) {
     const ok = await confirm({
@@ -426,17 +603,56 @@ function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
         <div>
           <div className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Comptes connectés</div>
           {accounts.map(a => (
-            <div key={a.id} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg mb-1">
-              <span className="text-sm text-slate-700">{a.account_email}</span>
+            <div key={a.id} className="p-2 bg-slate-50 rounded-lg mb-1">
+             <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3 min-w-0 flex-wrap">
+                <span className="text-sm text-slate-700 truncate">{a.account_email}</span>
+                <label
+                  className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer whitespace-nowrap"
+                  title="Ingère automatiquement dans les reçus toute facture reçue dans cette boîte (30 derniers jours), sans label ni passage par factures@orisha.io"
+                >
+                  <input
+                    type="checkbox"
+                    checked={autoDetect.includes((a.account_email || '').toLowerCase())}
+                    onChange={() => toggleAutoDetect(a.account_email)}
+                    className="rounded border-slate-300"
+                  />
+                  Détection auto des factures
+                </label>
+                <label
+                  className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer whitespace-nowrap"
+                  title="Après ingestion d'une facture de cette boîte par l'extracteur (import ou doublon déjà importé), le courriel est mis à la corbeille Gmail (récupérable 30 jours). Nécessite de reconnecter le compte après activation pour accorder la permission Gmail « modifier »."
+                >
+                  <input
+                    type="checkbox"
+                    checked={trashAfterImport.includes((a.account_email || '').toLowerCase())}
+                    onChange={() => toggleTrashAfterImport(a.account_email)}
+                    className="rounded border-slate-300"
+                  />
+                  Corbeille après import
+                </label>
+                <label
+                  className="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer whitespace-nowrap"
+                  title="Boîte connectée uniquement pour router des factures : le sync des courriels (emails, interactions, création automatique de contacts) est désactivé pour ce compte. À cocher pour toute boîte personnelle — sinon la correspondance privée atterrit dans le CRM."
+                >
+                  <input
+                    type="checkbox"
+                    checked={invoiceOnly.includes((a.account_email || '').toLowerCase())}
+                    onChange={() => toggleInvoiceOnly(a.account_email)}
+                    className="rounded border-slate-300"
+                  />
+                  Boîte factures seulement
+                </label>
+              </div>
               <div className="flex gap-2">
                 <SyncBtn label="Gmail" syncKey="gmail" syncStatus={syncStatus} onSync={() => api.connectors.syncGmail()} />
                 <button
                   onClick={() => {
                     const token = localStorage.getItem('erp_token')
-                    window.location.href = `/erp/api/connectors/google/connect?token=${token}`
+                    window.location.href = `/erp/api/connectors/google/connect?token=${token}&account=${encodeURIComponent(a.account_email || '')}`
                   }}
                   className="btn-secondary btn-sm text-xs flex items-center gap-1"
-                  title="Relance le consentement Google pour rafraîchir les scopes (ex: gmail.send)"
+                  title="Relance le consentement Google pour ce compte afin de rafraîchir ses scopes (ex: gmail.send, gmail.compose)"
                 >
                   <Link2 size={12} /> Reconnecter
                 </button>
@@ -444,16 +660,43 @@ function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
                   <Trash2 size={14} />
                 </button>
               </div>
+             </div>
+             {autoDetect.includes((a.account_email || '').toLowerCase()) && (
+               <div className="flex items-center gap-2 mt-2 pl-1">
+                 <span className="text-xs text-slate-400 whitespace-nowrap">Expéditeurs autorisés</span>
+                 <input
+                   type="text"
+                   defaultValue={(senders[(a.account_email || '').toLowerCase()] || []).join(', ')}
+                   onBlur={e => saveSenders(a.account_email, e.target.value)}
+                   placeholder="tous les expéditeurs"
+                   className="input text-xs py-1 flex-1 min-w-0"
+                   title="Limite la détection auto de cette boîte à ces expéditeurs (domaine ou adresse complète, séparés par des virgules). Vide = aucune restriction. Le label ERP/Factures et factures@orisha.io ne sont jamais filtrés."
+                 />
+               </div>
+             )}
             </div>
           ))}
         </div>
       )}
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 items-center">
+        {/* L'adresse est transmise en login_hint : elle pré-sélectionne le compte
+            chez Google ET détermine les scopes demandés (corbeille, brouillons),
+            qui se lisent dans la config par boîte. Connecter sans la préciser
+            oblige à reconnecter le compte ensuite pour élargir le consentement. */}
+        <input
+          type="email"
+          value={newAccount}
+          onChange={e => setNewAccount(e.target.value)}
+          placeholder="adresse du compte à connecter (optionnel)"
+          className="input text-xs py-1 w-72"
+        />
         <button
           onClick={() => {
             const token = localStorage.getItem('erp_token')
-            window.location.href = `/erp/api/connectors/google/connect?token=${token}`
+            const hint = newAccount.trim().toLowerCase()
+            window.location.href = `/erp/api/connectors/google/connect?token=${token}` +
+              (hint ? `&account=${encodeURIComponent(hint)}` : '')
           }}
           className="btn-secondary btn-sm"
         >
@@ -886,6 +1129,7 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
   const [saving, setSaving] = useState(false)
   const [info, setInfo] = useState(null)
   const [loadingInfo, setLoadingInfo] = useState(false)
+  const [showSegmentModal, setShowSegmentModal] = useState(false)
   const confirm = useConfirm()
 
   const loadInfo = async () => {
@@ -1044,6 +1288,15 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
               Resync complète
             </button>
           </div>
+
+          <div className="bg-slate-50 rounded-xl p-4 space-y-2">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Segment à partir d'une liste d'emails</p>
+            <p className="text-xs text-slate-500">Colle une liste d'emails pour créer une liste statique HubSpot (matche les contacts existants, n'en crée aucun).</p>
+            <button onClick={() => setShowSegmentModal(true)} className="btn-secondary btn-sm py-1 text-xs">
+              Créer un segment
+            </button>
+          </div>
+          <HubSpotExportModal isOpen={showSegmentModal} onClose={() => setShowSegmentModal(false)} />
         </>
       )}
     </div>
@@ -1063,7 +1316,10 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
       )
     : connectorAccounts.length > 0
 
-  const needsOAuth = !connector.apiKeyManaged && !connector.alwaysConnected && !isConnected
+  // Amazon Business : pas de clés API tant que l'onboarding développeur n'est pas approuvé —
+  // on masque « Connecter » (sinon le flux OAuth échoue avec une erreur JSON brute).
+  const blockedNoCredentials = connector.id === 'amazon' && !amazonConfigured
+  const needsOAuth = !connector.apiKeyManaged && !connector.alwaysConnected && !isConnected && !blockedNoCredentials
 
   return (
     <div className="card overflow-hidden">
@@ -1077,7 +1333,9 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
         <span className="font-medium text-slate-900 flex-1">{connector.name}</span>
         {isConnected
           ? <Badge color="green" size="sm">Connecté</Badge>
-          : <Badge color="slate" size="sm">Non connecté</Badge>
+          : blockedNoCredentials
+            ? <Badge color="yellow" size="sm">Non configuré</Badge>
+            : <Badge color="slate" size="sm">Non connecté</Badge>
         }
         {needsOAuth ? (
           <button
@@ -1122,6 +1380,9 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
           {connector.id === 'hubspot' && (
             <HubSpotConfig configured={hubspotConfigured} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
+          {connector.id === 'instagram' && (
+            <InstagramConfig />
+          )}
           {connector.id === 'amazon' && (
             <AmazonConfig accounts={connectorAccounts} configured={amazonConfigured} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
@@ -1142,6 +1403,7 @@ const MODULE_LABELS = {
   soumissions: 'Soumissions', retours: 'Retours', retour_items: 'Items retour',
   adresses: 'Adresses', bom: 'BOM', serial_changes: 'Changements série',
   assemblages: 'Assemblages', factures: 'Factures', amazon: 'Amazon Business',
+  instagram: 'Prospects Instagram',
 }
 
 const SYNC_LOG_RENDERS = {

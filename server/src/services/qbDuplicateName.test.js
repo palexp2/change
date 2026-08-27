@@ -31,3 +31,20 @@ test('robuste aux entrées vides / nulles', () => {
   assert.equal(parseDuplicateNameId(null), null)
   assert.equal(parseDuplicateNameId(undefined), null)
 })
+
+// buildQbApiError (connectors/quickbooks.js) traduit le Fault QB en message FR concis
+// avant qu'il n'atteigne createVendorHandlingDuplicate — le texte ne contient alors ni
+// "Nom en double" ni "Duplicate Name" ni "code":"6240" littéralement. C'est err.qbCode
+// (posé par buildQbApiError) qui doit faire foi, avec l'Id toujours extrait du message.
+test('détecte le conflit via qbCode même quand le message est déjà traduit en FR', () => {
+  const msg = 'QuickBooks : ce nom existe déjà dans QuickBooks (les noms sont uniques entre Clients, Fournisseurs et Employés). Détail : Ce nom existe déjà. : Id=1122'
+  assert.equal(parseDuplicateNameId(msg, '6240'), '1122')
+})
+
+test('qbCode 6240 sans Id exploitable reste null', () => {
+  assert.equal(parseDuplicateNameId('QuickBooks : ce nom existe déjà dans QuickBooks.', '6240'), null)
+})
+
+test('qbCode absent retombe sur la détection par regex du message', () => {
+  assert.equal(parseDuplicateNameId('autre erreur', '610'), null)
+})

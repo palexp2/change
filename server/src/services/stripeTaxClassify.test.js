@@ -34,3 +34,32 @@ test('Taux inconnu non harmonisé → null (pas de faux positif)', () => {
   assert.equal(classifyTaxRate({ display_name: 'PST BC', percentage: 7 }), null)
   assert.equal(classifyTaxRate(null), null)
 })
+
+// Régression : une facture sans AUCUN tax_rate (automatic_tax désactivé sur
+// l'abonnement Stripe) sortait avec qb_tax_code NULL — le filet « Détaxé » vivait
+// à l'intérieur du bloc qui exige des tax_rates. Cas fondateur : 92E2BD27-0016
+// (Way Farms, US-OH) sur le Deposit 17831 du 10 août 2026, ligne poussée sans
+// TaxCodeRef, et EA8C6BB7-0003 (Ferme Quatre-Temps, QC) facturée sans TPS/TVQ.
+
+const { resolveZeroTaxCode } = await import('./stripe.js')
+
+test('Aucun tax_rate + client hors Canada → Détaxé (cas Way Farms US-OH)', () => {
+  assert.equal(resolveZeroTaxCode({ taxDetails: [], country: 'US' }), '4')
+})
+
+test('tax_rate à 0 + client hors Canada → Détaxé (comportement historique préservé)', () => {
+  assert.equal(resolveZeroTaxCode({ taxDetails: [{ tax_rate: 'txr_x', amount: 0 }], country: 'us' }), '4')
+})
+
+test('Aucun tax_rate + client canadien → null (anomalie, bloque le push auto)', () => {
+  assert.equal(resolveZeroTaxCode({ taxDetails: [], country: 'CA' }), null)
+})
+
+test('Pays inconnu → Détaxé (pas de bruit sur les factures sans adresse)', () => {
+  assert.equal(resolveZeroTaxCode({ taxDetails: [] }), '4')
+})
+
+test('Taxe réellement perçue → aucun code forcé', () => {
+  assert.equal(resolveZeroTaxCode({ taxDetails: [{ amount: 425 }, { amount: 0 }], country: 'CA' }), null)
+  assert.equal(resolveZeroTaxCode({ taxDetails: [{ amount: 425 }], country: 'US' }), null)
+})

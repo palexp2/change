@@ -19,7 +19,6 @@ export const TABLE_LABELS = {
   serial_numbers: 'Numéros de série',
   retours:        'Retours',
   factures:       'Factures',
-  payments:       'Paiements',
   project_factures: 'Factures (projet)',
   project_soumissions: 'Soumissions (projet)',
   company_contacts: 'Contacts (entreprise)',
@@ -58,6 +57,7 @@ export const TABLE_LABELS = {
   activity_log: 'Feed des opérations',
   activity_codes: "Codes d'activité",
   payments: 'Paiements',
+  bank_transactions: 'Rapprochement bancaire',
 }
 
 // Chaque entrée : { id, label, field, type?, options?, sortable?, filterable?, groupable?, defaultVisible?, description? }
@@ -95,21 +95,6 @@ const CC_PERMISSION_COLUMNS = [
 ]
 
 export const TABLE_COLUMN_META = {
-  // Paiements clients (encaissements/remboursements appliqués aux factures).
-  // Pas de page DataTable dédiée — sert de libellés FR dans la modale de champ
-  // custom (lookup/rollup depuis les factures, ex: « Date de paiement »).
-  payments: [
-    { id: 'received_at', label: 'Date de paiement', field: 'received_at', type: 'date' },
-    { id: 'amount',      label: 'Montant',          field: 'amount',      type: 'number' },
-    { id: 'amount_cad',  label: 'Montant CAD',      field: 'amount_cad',  type: 'number' },
-    { id: 'currency',    label: 'Devise',           field: 'currency' },
-    { id: 'method',      label: 'Mode de paiement', field: 'method',      type: 'single_select', options: ['stripe', 'cheque', 'virement_bancaire', 'interac', 'comptant', 'autre'] },
-    { id: 'direction',   label: 'Direction',        field: 'direction',   type: 'single_select', options: ['in', 'out'] },
-    { id: 'notes',       label: 'Notes',            field: 'notes' },
-    { id: 'facture_id',  label: 'Facture',          field: 'facture_id' },
-    { id: 'created_at',  label: 'Créé le',          field: 'created_at',  type: 'date' },
-  ],
-
   // Feed des opérations — journal d'activité (qui / quoi / quand). Lecture seule.
   // Les options single_select reflètent les valeurs brutes émises par
   // emitEntity/emitOrder/emitCompany (server/src/services/realtimeEmitters.js) ;
@@ -242,6 +227,7 @@ export const TABLE_COLUMN_META = {
     { id: 'type',          label: 'Type',       field: 'type',   type: 'single_select', options: ['question', 'bug', 'feature', 'installation', 'maintenance', 'autre'] },
     { id: 'assigned_name', label: 'Assigné à',  field: 'assigned_name', type: 'user' },
     { id: 'duration_minutes', label: 'Durée (min)', field: 'duration_minutes', type: 'number', defaultVisible: false, description: 'Temps total passé sur le billet, en minutes.' },
+    { id: 'survey_rating', label: 'Satisfaction', field: 'survey_rating', type: 'number', defaultVisible: false, description: 'Note du sondage de satisfaction envoyé par SMS (1 à 5). Vide = sondage non envoyé ou sans réponse.' },
     { id: 'created_at', label: 'Créé le', field: 'created_at', type: 'date' },
   ],
 
@@ -460,6 +446,10 @@ export const TABLE_COLUMN_META = {
 
   vendor_subscriptions: [
     { id: 'vendor',         label: 'Fournisseur',    field: 'vendor' },
+    // Volontairement en 2e position : en bout de ligne le bouton tombait hors
+    // écran (11 colonnes → défilement horizontal) et n'était donc visible que
+    // dans la fiche.
+    { id: 'actions',        label: 'Action',         field: 'actions',    sortable: false, filterable: false, groupable: false, alwaysVisible: true, description: 'Bouton « Se désabonner » / « Réactiver » — ouvre la page d\'annulation du fournisseur.' },
     { id: 'plan',           label: 'Plan/Forfait',   field: 'plan' },
     { id: 'currency',       label: 'Devise',         field: 'currency',   type: 'single_select', options: ['CAD', 'USD', 'Euro'] },
     { id: 'variable',       label: 'Fixe/Variable',  field: 'variable',   type: 'single_select', options: ['Fixe', 'Variable'] },
@@ -482,10 +472,13 @@ export const TABLE_COLUMN_META = {
     { id: 'transaction_type',     label: 'Type de transaction', field: 'default_transaction_type' },
     { id: 'tax_codes',            label: 'Codes de taxe',      field: 'default_tax_code_id_cad' },
     { id: 'payment_terms_days',   label: 'Termes (jours)',     field: 'payment_terms_days', type: 'number' },
-    { id: 'directory_currency',   label: 'Devise (répertoire)', field: 'directory_currency', defaultVisible: false },
-    { id: 'directory_category',   label: 'Catégorie ctb',      field: 'directory_category', defaultVisible: false },
-    { id: 'directory_particularites', label: 'Particularités', field: 'directory_particularites', defaultVisible: false },
+    { id: 'usual_currency',       label: 'Devise habituelle',  field: 'usual_currency', defaultVisible: false },
+    { id: 'payment_method',       label: 'Mode de paiement',   field: 'payment_method', defaultVisible: false },
+    { id: 'qb_category',          label: 'Catégorie ctb',      field: 'qb_category', defaultVisible: false },
+    { id: 'description',          label: 'Description',        field: 'description', defaultVisible: false },
+    { id: 'particularites',       label: 'Particularités',     field: 'particularites', defaultVisible: false },
     { id: 'active_subscriptions', label: 'Abonnements',        field: 'active_subscriptions', type: 'number', defaultVisible: false },
+    { id: 'receipt_count',        label: 'Nb reçus',           field: 'receipt_count', type: 'number', defaultVisible: false },
     { id: 'last_receipt_date',    label: 'Dernier document',   field: 'last_receipt_date', type: 'date' },
     { id: 'notes',                label: 'Notes',              field: 'notes', defaultVisible: false },
   ],
@@ -499,6 +492,20 @@ export const TABLE_COLUMN_META = {
     { id: 'status',          label: 'Statut',       field: 'status', type: 'single_select', options: ['À envoyer', 'Envoyé'] },
     { id: 'shipped_at',      label: 'Envoyé le',    field: 'shipped_at',  type: 'date' },
     { id: 'created_at',      label: 'Créé le',      field: 'created_at',  type: 'date' },
+  ],
+
+  bank_transactions: [
+    { id: 'txn_date',     label: 'Date',        field: 'txn_date',    type: 'date' },
+    { id: 'description',  label: 'Libellé',     field: 'label',       description: "« Autres détails » du relevé (la nature réelle : bénéficiaire, fournisseur…), avec la description de la banque en dessous. Les relevés sans « Autres détails » affichent la description." },
+    { id: 'bank_description', label: 'Description banque', field: 'description', defaultVisible: false },
+    { id: 'reference',    label: 'Référence',   field: 'reference',   defaultVisible: false },
+    { id: 'amount',       label: 'Montant',     field: 'amount',      type: 'number' },
+    { id: 'balance',      label: 'Solde',       field: 'balance',     type: 'number', defaultVisible: false },
+    { id: 'status',       label: 'Statut',      field: 'status',      type: 'single_select', options: ['a_traiter', 'facture_recue', 'comptabilise', 'rapproche', 'ignore'], description: "Dérivé automatiquement : rouge = aucun document trouvé (facture manquante), bleu = document apparié pas encore publié à QB, jaune = publié à QB, vert = rapproché avec le relevé." },
+    { id: 'matched_label', label: 'Document',   field: 'matched_label' },
+    { id: 'match_confidence', label: 'Confiance', field: 'match_confidence', type: 'number', defaultVisible: false },
+    { id: 'comment',      label: 'Commentaire', field: 'comment' },
+    { id: 'reconciled_by_name', label: 'Rapproché par', field: 'reconciled_by_name', type: 'user', defaultVisible: false },
   ],
 
   stock_movements: [
@@ -569,6 +576,17 @@ export const TABLE_COLUMN_META = {
     { id: 'valuation',       label: 'Valeur',         field: 'valuation_source', type: 'single_select', options: ['manufacture_value', 'product_cost', 'fixed_amount'] },
     { id: 'active',          label: 'Actif',          field: 'active_label',     type: 'single_select', options: ['Oui', 'Non'] },
     { id: 'action',          label: '',               field: null, sortable: false, filterable: false, groupable: false },
+  ],
+
+  // Mouvements bruts (une ligne par changement d'état) — les champs custom de
+  // serial_state_changes se fusionnent automatiquement (CUSTOM_FIELD_TABLES).
+  serial_state_changes: [
+    { id: 'changed_at',      label: 'Date',           field: 'changed_at',      type: 'date' },
+    { id: 'serial',          label: 'Serial',         field: 'serial' },
+    { id: 'product_name',    label: 'Produit',        field: 'product_name' },
+    { id: 'company_name',    label: 'Client',         field: 'company_name' },
+    { id: 'previous_status', label: 'État précédent', field: 'previous_status' },
+    { id: 'new_status',      label: 'Nouvel état',    field: 'new_status' },
   ],
 
   serial_missing_valuations: [

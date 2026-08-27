@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Upload, RefreshCw, AlertCircle, CheckCircle, Clock, Camera, BookOpen, Trash2, Archive, ArchiveRestore, Receipt, Mail, MailOpen } from 'lucide-react'
+import { Upload, RefreshCw, AlertCircle, CheckCircle, Clock, Camera, BookOpen, Trash2, Archive, ArchiveRestore, Receipt, Mail, MailOpen, FileX } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -19,23 +19,35 @@ function StatusBadge({ status }) {
   return <span className="inline-flex items-center gap-1 text-xs text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full"><Clock size={10} /> En attente</span>
 }
 
-function UploadZone({ onUpload, uploading, compact }) {
+const UPLOAD_MIMES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf']
+const UPLOAD_EXTS  = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf']
+
+function isAcceptedFile(file) {
+  const ext = (file.name || '').split('.').pop().toLowerCase()
+  return UPLOAD_MIMES.includes(file.type) || UPLOAD_EXTS.includes(ext)
+}
+
+function UploadZone({ onUpload, uploading, progress, compact }) {
   const { addToast } = useToast()
   const [dragOver, setDragOver] = useState(false)
   const inputRef = useRef()
 
-  function handleFiles(files) {
-    if (!files?.length) return
-    const file = files[0]
-    const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf']
-    const ext = file.name.split('.').pop().toLowerCase()
-    if (!allowed.includes(file.type) && !['jpg','jpeg','png','gif','webp','pdf'].includes(ext)) {
-      addToast({ message: 'Formats acceptés : JPG, PNG, GIF, WEBP, PDF', type: 'error' })
-      return
+  // Sélection/glisser multiple : chaque fichier devient un document distinct.
+  function handleFiles(fileList) {
+    const files = Array.from(fileList || [])
+    if (!files.length) return
+    const accepted = files.filter(isAcceptedFile)
+    const rejected = files.length - accepted.length
+    if (rejected) {
+      addToast({
+        message: rejected === files.length
+          ? 'Formats acceptés : JPG, PNG, GIF, WEBP, PDF'
+          : `${rejected} fichier${rejected > 1 ? 's' : ''} ignoré${rejected > 1 ? 's' : ''} — formats acceptés : JPG, PNG, GIF, WEBP, PDF`,
+        type: 'error',
+      })
     }
-    const fd = new FormData()
-    fd.append('file', file)
-    onUpload(fd)
+    if (!accepted.length) return
+    onUpload(accepted)
   }
 
   return (
@@ -49,17 +61,28 @@ function UploadZone({ onUpload, uploading, compact }) {
       onClick={() => inputRef.current?.click()}
       data-testid="upload-zone"
     >
-      <input ref={inputRef} type="file" accept=".jpg,.jpeg,.png,.gif,.webp,.pdf" className="hidden" onChange={e => handleFiles(e.target.files)} />
+      <input
+        ref={inputRef}
+        type="file"
+        multiple
+        accept=".jpg,.jpeg,.png,.gif,.webp,.pdf"
+        className="hidden"
+        onChange={e => { handleFiles(e.target.files); e.target.value = '' }}
+      />
       {uploading ? (
         <div className="flex items-center justify-center gap-2 text-slate-600">
           <RefreshCw size={16} className="text-brand-500 animate-spin" />
-          <span className="text-sm font-medium">Téléversement en cours…</span>
+          <span className="text-sm font-medium" data-testid="upload-progress">
+            {progress?.total > 1
+              ? `Téléversement ${Math.min(progress.done + 1, progress.total)} / ${progress.total}…`
+              : 'Téléversement en cours…'}
+          </span>
         </div>
       ) : (
         <div className="flex items-center justify-center gap-3 text-slate-600">
           <Upload size={18} className="text-brand-600" />
-          <span className="text-sm font-medium">Glissez un fichier ici ou cliquez pour parcourir</span>
-          <span className="text-xs text-slate-400">JPG, PNG, GIF, WEBP, PDF — max 20 Mo</span>
+          <span className="text-sm font-medium">Glissez un ou plusieurs fichiers ici ou cliquez pour parcourir</span>
+          <span className="text-xs text-slate-400">JPG, PNG, GIF, WEBP, PDF — max 20 Mo par fichier</span>
         </div>
       )}
     </div>
@@ -215,7 +238,22 @@ const RENDERS = {
     ? <span className="font-mono text-xs text-slate-600">{row.currency}</span>
     : <span className="text-slate-300">—</span>,
   payment_method: row => <span className="text-slate-600">{row.payment_method || '—'}</span>,
-  status: row => <StatusBadge status={row.status} />,
+  // `obsolete` (serveur) : document sans objet comptable — 0 $ ou copie d'un document
+  // déjà publié sur QB. Le badge signale dès la liste ce qui peut être archivé.
+  status: row => (
+    <span className="inline-flex items-center gap-1.5">
+      <StatusBadge status={row.status} />
+      {row.obsolete && (
+        <span
+          className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full"
+          title={row.obsolete.message}
+          data-testid="receipt-obsolete-pill"
+        >
+          <FileX size={10} /> Obsolète
+        </span>
+      )}
+    </span>
+  ),
   quickbooks_id: row => row.quickbooks_id
     ? (row.quickbooks_url
         ? <a href={row.quickbooks_url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
@@ -241,6 +279,7 @@ export default function SaleReceipts() {
   const [receipts, setReceipts]       = useState([])
   const [loading, setLoading]         = useState(true)
   const [uploading, setUploading]     = useState(false)
+  const [uploadProgress, setUploadProgress] = useState(null) // { done, total } en import multiple
   const [webcamOpen, setWebcamOpen]   = useState(false)
   const [toDelete, setToDelete]       = useState(null)
   const displayedIdsRef               = useRef([])
@@ -266,6 +305,36 @@ export default function SaleReceipts() {
       addToast({ message: 'Erreur: ' + err.message, type: 'error' })
     } finally {
       setUploading(false)
+    }
+  }
+
+  // Import multi-documents : un fichier = un document (une extraction chacun).
+  // Séquentiel pour garder un compteur de progression fiable et ne pas lancer
+  // vingt extractions IA d'un coup ; l'extraction reste async côté serveur.
+  async function handleUploadFiles(files) {
+    if (!files?.length) return
+    setUploading(true)
+    setUploadProgress({ done: 0, total: files.length })
+    const failed = []
+    let ok = 0
+    for (const file of files) {
+      try {
+        const fd = new FormData()
+        fd.append('file', file)
+        await api.saleReceipts.upload(fd)
+        ok++
+      } catch (err) {
+        failed.push(`${file.name} (${err.message})`)
+      }
+      setUploadProgress(p => ({ total: files.length, done: (p?.done || 0) + 1 }))
+    }
+    await load()
+    setUploadProgress(null)
+    setUploading(false)
+    if (failed.length) {
+      addToast({ message: `Erreur sur ${failed.length} document${failed.length > 1 ? 's' : ''} : ${failed.slice(0, 3).join(', ')}`, type: 'error' })
+    } else if (ok > 1) {
+      addToast({ message: `${ok} documents importés — extraction en cours`, type: 'success' })
     }
   }
 
@@ -400,7 +469,7 @@ export default function SaleReceipts() {
 
         <div className="flex items-stretch gap-3 mb-4">
           <div className="flex-1">
-            <UploadZone onUpload={handleUpload} uploading={uploading} compact />
+            <UploadZone onUpload={handleUploadFiles} uploading={uploading} progress={uploadProgress} compact />
           </div>
           <button
             type="button"
@@ -440,7 +509,7 @@ export default function SaleReceipts() {
             } catch {}
             navigate(`/sale-receipts/${row.id}`)
           }}
-          emptyState={{ icon: Receipt, title: 'Aucun reçu de vente', description: "Aucun reçu n'a encore été importé. Téléverse un fichier ci-dessus ou prends une photo d'un reçu.", cta: { label: 'Prendre en photo', icon: Camera, onClick: () => setWebcamOpen(true) } }}
+          emptyState={{ icon: Receipt, title: 'Aucun reçu de vente', description: "Aucun reçu n'a encore été importé. Téléverse un ou plusieurs fichiers ci-dessus ou prends une photo d'un reçu.", cta: { label: 'Prendre en photo', icon: Camera, onClick: () => setWebcamOpen(true) } }}
         />
       </div>
 

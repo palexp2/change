@@ -299,7 +299,6 @@ function PaieRepartitionSection({ paie }) {
   useEffect(() => { load() }, [paie.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function push() {
-    if (!confirm('Publier l\'écriture de répartition sur QuickBooks ?')) return
     setPushing(true)
     setError(null)
     try {
@@ -347,14 +346,16 @@ function PaieRepartitionSection({ paie }) {
             </div>
             <div>
               <label className="text-xs text-slate-500 block">Téléphone Martin (76000)</label>
-              <input type="number" step="0.01" min="0" className="input w-24"
+              {/* text + inputMode : un input number rejette la virgule décimale
+                  fr-CA (valeur vide) — le serveur normalise via parseAmount. */}
+              <input type="text" inputMode="decimal" className="input w-24"
                 value={phone ?? preview.phone}
                 onChange={e => setPhone(e.target.value)}
                 onBlur={e => load({ phone: e.target.value })} />
             </div>
             <div>
               <label className="text-xs text-slate-500 block">Repas séjour (75930)</label>
-              <input type="number" step="0.01" min="0" className="input w-24"
+              <input type="text" inputMode="decimal" className="input w-24"
                 value={meals ?? preview.meals}
                 onChange={e => setMeals(e.target.value)}
                 onBlur={e => load({ meals: e.target.value })} />

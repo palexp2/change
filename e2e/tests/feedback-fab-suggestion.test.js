@@ -1,10 +1,12 @@
-// Bulle d'aide (FeedbackFab) — flux complet suggestion → implémentation directe
-// (opus, effort élevé, sans proposition ni approbation) → fiche en file sur la
-// page agent.
+// Bulle d'aide (FeedbackFab) — flux complet demande → item dans la file de la
+// section Travaux → fiche visible sur /travaux.
 //
-// L'agent est forcé OFF (capturé/restauré) : la tâche est créée `approved`
-// mais NE spawn AUCUNE exécution (queue automatique via busy). Tout est
-// nettoyé en after() : tâche + suggestion supprimées via l'API.
+// Destination unique depuis la fusion des deux boutons : l'envoi dépose toujours
+// un prompt dans la file (il part tout de suite si rien ne tourne, sinon il
+// attend son tour en fin de file).
+//
+// L'agent est forcé OFF (capturé/restauré) : l'item reste `queued` et NE spawn
+// AUCUNE exécution. Nettoyé en after() : prompt supprimé via l'API.
 
 const { test, describe, before, after } = require('node:test')
 const assert = require('node:assert/strict')
@@ -35,11 +37,10 @@ async function api(page, method, p, body) {
   }, { method, path: p, body })
 }
 
-describe('Bulle d\'aide — suggestion → implémentation directe', () => {
+describe('Bulle d\'aide — demande → file Travaux', () => {
   let browser, ctx, page
   let originalEnabled = false
-  let itemId = null
-  let taskId = null
+  let promptId = null
 
   before(async () => {
     browser = await chromium.launch()
@@ -52,14 +53,13 @@ describe('Bulle d\'aide — suggestion → implémentation directe', () => {
   })
 
   after(async () => {
-    // Cleanup même en cas d'échec : tâche, suggestion, puis toggle restauré.
-    try { if (taskId && page) await api(page, 'DELETE', `/agent/tasks/${taskId}`) } catch {}
-    try { if (itemId && page) await api(page, 'DELETE', `/agent/backlog/${itemId}`) } catch {}
+    // Cleanup même en cas d'échec : item de file, puis toggle restauré.
+    try { if (promptId && page) await api(page, 'DELETE', `/travaux/prompts/${promptId}`) } catch {}
     try { if (page) await api(page, 'PUT', '/agent/settings', { enabled: originalEnabled }) } catch {}
     await browser?.close()
   })
 
-  test('soumission → tâche approuvée en file (opus/high, sans approbation manuelle)', async () => {
+  test('soumission → item en file Travaux (agent OFF, rien ne démarre)', async () => {
     await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
 
     // 1. Ouvrir la bulle → le formulaire s'ouvre directement (demande générale).
@@ -69,32 +69,25 @@ describe('Bulle d\'aide — suggestion → implémentation directe', () => {
     await page.fill('[data-testid="feedback-fab-text"]', text)
     await page.click('[data-testid="feedback-fab-submit"]')
 
-    // 2. Confirmation immédiate d'implémentation (pas de proposition à approuver).
-    await page.waitForSelector('[data-testid="feedback-approved"]', { timeout: 10000 })
+    // 2. La modale se referme d'elle-même (aucun écran de confirmation).
+    await page.waitForSelector('[data-testid="feedback-fab-text"]', { state: 'detached', timeout: 10000 })
 
-    // 3. Suggestion créée côté API, avec contexte, et déjà liée à une tâche.
+    // 3. Item créé côté API, dans la file finance, avec la page d'origine dans
+    //    le prompt — et rien au backlog agent.
+    const { prompts } = await api(page, 'GET', '/travaux/prompts')
+    const item = (prompts || []).find(p => (p.prompt || '').includes(text))
+    assert.ok(item, 'l\'item doit exister dans la file Travaux')
+    promptId = item.id
+    assert.equal(item.space, 'finance', 'file de la section Travaux (/travaux)')
+    assert.equal(item.status, 'queued', 'agent OFF → l\'item attend, rien ne démarre')
+    assert.ok(item.prompt.includes('/dashboard'), 'la page d\'origine doit être jointe au prompt')
+    assert.ok(item.created_by, 'l\'auteur doit être enregistré')
     const backlog = await api(page, 'GET', '/agent/backlog')
-    const item = backlog.find(i => i.text === text)
-    assert.ok(item, 'la suggestion doit exister côté API')
-    itemId = item.id
-    assert.ok(item.context.includes('/dashboard'), 'la page d\'origine doit être jointe en contexte')
-    assert.ok(item.author, 'l\'auteur doit être enregistré')
-    assert.ok(item.task_id, 'la suggestion doit être liée à une tâche immédiatement')
-    taskId = item.task_id
+    assert.ok(!backlog.some(i => (i.text || '').includes(text)),
+      'plus rien ne part vers le backlog agent')
 
-    // 4. Tâche approuvée d'office, toujours opus/effort élevé (agent OFF → aucune exécution).
-    const task = (await api(page, 'GET', '/agent/tasks')).find(t => t.id === taskId)
-    assert.ok(task, 'la tâche doit exister')
-    assert.equal(task.status, 'approved', 'la tâche doit être approuvée automatiquement')
-    assert.equal(task.kind, 'suggestion', 'kind=suggestion attendu')
-    assert.equal(task.model, 'opus', 'implémentation directe → modèle opus')
-    assert.equal(task.effort, 'high', 'implémentation directe → effort high')
-
-    // 5. Lien vers la page agent → fiche visible avec statut « En file ».
-    await page.click('[data-testid="feedback-open-agent"]')
-    await page.waitForURL(u => u.toString().endsWith('/agent'), { timeout: 10000 })
-    const card = page.locator('[data-testid="suggestion-card"]', { hasText: 'E2E fab' })
-    await card.first().waitFor({ timeout: 10000 })
-    assert.ok((await card.first().innerText()).includes('En file'), 'la fiche doit afficher « En file »')
+    // 4. Suivi dans la section Travaux : l'item est bien dans la file.
+    await page.goto(URL + '/travaux', { waitUntil: 'networkidle' })
+    await page.locator(`[data-prompt-id="${item.id}"]`).first().waitFor({ timeout: 15000 })
   })
 })

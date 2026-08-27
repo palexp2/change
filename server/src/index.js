@@ -92,6 +92,8 @@ import stripeInvoiceItemsRouter from './routes/stripe-invoice-items.js'
 import novoxpressRouter from './routes/novoxpress.js'
 import trackRouter from './routes/track.js'
 import installationFeedbackRouter from './routes/installation-feedback.js'
+import telnyxWebhooksRouter from './routes/telnyx-webhooks.js'
+import ticketSurveysPublicRouter from './routes/ticket-surveys-public.js'
 import { publicFilesRouter, publicFileServeRouter } from './routes/public-files.js'
 import recordsRouter from './routes/records.js'
 import activityRouter from './routes/activity.js'
@@ -178,6 +180,14 @@ app.use('/api/stripe-webhooks', express.raw({ type: 'application/json' }), (req,
   req.body = JSON.parse(req.body)
   next()
 }, stripeWebhooksRouter)
+
+// Telnyx signe `${timestamp}|${rawBody}` en Ed25519 — même contrainte de corps
+// brut que Stripe, donc même montage avant express.json.
+app.use('/api/hooks/telnyx', express.raw({ type: 'application/json' }), (req, res, next) => {
+  req.rawBody = req.body
+  try { req.body = JSON.parse(req.body) } catch { req.body = {} }
+  next()
+}, telnyxWebhooksRouter)
 
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
@@ -356,6 +366,7 @@ app.use('/api/novoxpress/labels', express.static(path.join(process.cwd(), proces
 app.use('/api/novoxpress', novoxpressRouter)
 app.use('/api/track', trackRouter)
 app.use('/api/public/installation-feedback', installationFeedbackRouter)
+app.use('/api/public/ticket-survey', ticketSurveysPublicRouter)
 app.use('/api/interaction-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'interactions')))
 app.use('/api/public-files', publicFilesRouter)
 // Fichiers publics — URL non auth /erp/p/<token>/<filename>. Doit être monté
@@ -796,18 +807,20 @@ const server = app.listen(PORT, () => {
   setTimeout(runQbClearSync, 210_000)
   setInterval(runQbClearSync, 60 * 60 * 1000)
 
-  // Sync horaire du fichier TRX_Orisha (relevés des 11 comptes bancaires) vers
-  // le rapprochement bancaire : import des nouvelles transactions, matching
+  // Sync aux 20 minutes du fichier TRX_Orisha (relevés des 11 comptes bancaires)
+  // vers le rapprochement bancaire : import des nouvelles transactions, matching
   // auto, liaison QuickBooks et audit d'anomalies (alerte Slack sur du neuf).
   // Coupe-circuit si l'automation sys_bank_trx_sheet est désactivée ;
-  // journalise lui-même chaque passage (sync_log + automation_logs).
+  // journalise lui-même chaque passage (sync_log + automation_logs). Un passage
+  // plus long que l'intervalle ne se chevauche pas : scheduledTrxSheetSync
+  // ignore l'appel si la sync précédente tourne encore.
   const runTrxSheetSync = () => {
     import('./services/bankTrxSheet.js')
       .then(({ scheduledTrxSheetSync }) => scheduledTrxSheetSync())
       .catch(e => console.error('trx sheet sync:', e.message))
   }
   setTimeout(runTrxSheetSync, 240_000)
-  setInterval(runTrxSheetSync, 60 * 60 * 1000)
+  setInterval(runTrxSheetSync, 20 * 60 * 1000)
 
   // Sync quotidienne de l'onglet « Fournisseurs_TPS_TVQ_Anomalies » (Sheet du
   // mentor comptable) vers les profils fournisseurs : chaque correction de
@@ -847,10 +860,13 @@ const server = app.listen(PORT, () => {
   // pourrait travailler dans l'ERP — un Chromium headless par compte, en série.
   // Les comptes dont la 2FA n'est pas couverte par un secret TOTP peuvent finir
   // en attente d'un code : la page /collecte le signale.
-  cron.schedule('0 9 * * *', () => {
-    import('./services/scrapers/index.js')
-      .then(({ runAllScrapers }) => runAllScrapers('scheduled'))
-      .catch(e => console.error('scrapers cron:', e.message))
+  cron.schedule('0 9 * * *', async () => {
+    try {
+      const { isSystemAutomationActive } = await import('./services/systemAutomations.js')
+      if (!isSystemAutomationActive('sys_invoice_collection')) return
+      const { runAllScrapers } = await import('./services/scrapers/index.js')
+      await runAllScrapers('scheduled')
+    } catch (e) { console.error('scrapers cron:', e.message) }
   })
 
   // Rappel mensuel de paiement des cartes (Visa CAD / USD) : scan quotidien à

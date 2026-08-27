@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronLeft, ChevronRight, Plus, Trash2, Clock, Search, Copy } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Trash2, Clock, Search, Copy, Maximize2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -349,24 +349,147 @@ function EndTimeInput({ value, startMin, onCommitDuration, disabled }) {
   )
 }
 
-function TextCell({ value, onCommit, disabled, placeholder }) {
+function TextCell({ value, onCommit, disabled, placeholder, expandTitle = 'Description', testId }) {
   const [local, setLocal] = useState(value ?? '')
+  const [focused, setFocused] = useState(false)
+  const [expanded, setExpanded] = useState(false)
+  const [pos, setPos] = useState(null)
+  const wrapRef = useRef(null)
+  const popRef = useRef(null)
+  const taRef = useRef(null)
   useEffect(() => { setLocal(value ?? '') }, [value])
+  // `local` est lu dans les handlers globaux (clic extérieur) : une ref évite de
+  // re-brancher les listeners à chaque frappe.
+  const localRef = useRef(local)
+  localRef.current = local
+  // La fermeture de l'overlay et le blur du textarea peuvent se suivre dans le
+  // même geste : on mémorise la dernière valeur envoyée pour ne pas PATCHer deux fois.
+  const sentRef = useRef(value ?? '')
+  useEffect(() => { sentRef.current = value ?? '' }, [value])
   const commit = () => {
-    const v = (local || '').trim()
-    if (v === (value ?? '')) return
+    const v = (localRef.current || '').trim()
+    if (v === (value ?? '') || v === sentRef.current) return
+    sentRef.current = v
     onCommit(v === '' ? null : v)
   }
+  const commitRef = useRef(commit)
+  commitRef.current = commit
+
+  // Overlay ancré sur la cellule (à la Airtable) : petit cadre flottant qui
+  // recouvre le champ et s'étend vers le bas, ou vers le haut si le bas manque.
+  const computePos = useCallback(() => {
+    const rect = wrapRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const PANEL = 200
+    const spaceBelow = window.innerHeight - rect.top
+    const openUp = spaceBelow < PANEL && rect.bottom > PANEL
+    const width = Math.max(rect.width, 300)
+    setPos({
+      top: openUp ? undefined : rect.top,
+      bottom: openUp ? window.innerHeight - rect.bottom : undefined,
+      left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+      width,
+    })
+  }, [])
+
+  const closeExpanded = useCallback(({ refocus = false } = {}) => {
+    setExpanded(false)
+    commitRef.current()
+    if (refocus) wrapRef.current?.querySelector('input')?.focus()
+  }, [])
+
+  const openExpanded = () => { computePos(); setExpanded(true) }
+
+  useEffect(() => {
+    if (!expanded) return
+    // Focus en fin de texte pour continuer à écrire directement.
+    const ta = taRef.current
+    if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length) }
+    function onDown(e) {
+      if (popRef.current?.contains(e.target)) return
+      if (wrapRef.current?.contains(e.target)) return
+      closeExpanded()
+    }
+    function onReflow() { computePos() }
+    document.addEventListener('mousedown', onDown)
+    window.addEventListener('scroll', onReflow, true)
+    window.addEventListener('resize', onReflow)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      window.removeEventListener('scroll', onReflow, true)
+      window.removeEventListener('resize', onReflow)
+    }
+  }, [expanded, computePos, closeExpanded])
+
+  // L'input mono-ligne ne peut pas rendre de retours de ligne (le navigateur les
+  // supprime du value) : on affiche donc une version aplatie, la valeur réelle
+  // reste dans `local` et n'est écrasée que si l'utilisateur édite en ligne.
+  const flat = (local ?? '').replace(/\s*\n+\s*/g, ' ')
+  const showExpand = (focused || expanded) && !disabled
   return (
-    <input
-      className={inp}
-      value={local ?? ''}
-      placeholder={placeholder}
-      onChange={e => setLocal(e.target.value)}
-      onBlur={commit}
-      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-      disabled={disabled}
-    />
+    <div className="relative" ref={wrapRef}>
+      <input
+        className={inp + (showExpand ? ' pr-7' : '')}
+        value={flat}
+        placeholder={placeholder}
+        onChange={e => setLocal(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => { setFocused(false); if (!expanded) commit() }}
+        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+        disabled={disabled}
+        data-testid={testId}
+      />
+      {showExpand && (
+        <button
+          type="button"
+          // preventDefault sur mousedown : garde le focus dans l'input, sinon le
+          // bouton disparaît avant que le clic soit traité.
+          onMouseDown={e => e.preventDefault()}
+          onClick={() => (expanded ? closeExpanded({ refocus: true }) : openExpanded())}
+          className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
+          title="Agrandir (édition multiligne)"
+          aria-label="Agrandir"
+          data-testid={testId ? `${testId}-expand` : undefined}
+        >
+          <Maximize2 size={12} />
+        </button>
+      )}
+      {expanded && pos && createPortal(
+        <div
+          ref={popRef}
+          role="dialog"
+          aria-label={expandTitle}
+          style={{ position: 'fixed', top: pos.top, bottom: pos.bottom, left: pos.left, width: pos.width, zIndex: 60 }}
+          className="bg-white border border-brand-400 rounded-lg shadow-xl ring-4 ring-brand-100/60 p-1"
+          data-testid={testId ? `${testId}-overlay` : undefined}
+        >
+          <textarea
+            ref={taRef}
+            className="w-full min-h-[110px] max-h-[45vh] px-1.5 py-1 text-sm text-slate-900 bg-transparent border-0 focus:outline-none resize-y leading-relaxed"
+            value={local ?? ''}
+            placeholder={placeholder}
+            onChange={e => setLocal(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeExpanded({ refocus: true }) }
+            }}
+            onBlur={commit}
+            data-testid={testId ? `${testId}-textarea` : undefined}
+          />
+          <div className="flex items-center justify-between gap-2 px-1.5 pb-0.5 pt-1 border-t border-slate-100">
+            <span className="text-[10px] text-slate-400">Entrée : nouvelle ligne · Échap : fermer</span>
+            {/* Pas un bouton d'enregistrement : l'autosave se fait au blur / à la fermeture. */}
+            <button
+              type="button"
+              onClick={() => closeExpanded({ refocus: true })}
+              className="text-[11px] text-slate-500 hover:text-slate-800 px-1.5 py-0.5 rounded hover:bg-slate-100 transition-colors"
+            >
+              Fermer
+            </button>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </div>
   )
 }
 
@@ -799,7 +922,7 @@ function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPa
                       disabled={saving[`entry-${e.id}-duration_minutes`]}
                     />
                   </td>
-                  <td className="px-2 py-1.5"><TextCell value={e.description} onCommit={v => onPatchEntry(e.id, { description: v })} disabled={saving[`entry-${e.id}-description`]} placeholder="Tâche / activité" /></td>
+                  <td className="px-2 py-1.5"><TextCell value={e.description} onCommit={v => onPatchEntry(e.id, { description: v })} disabled={saving[`entry-${e.id}-description`]} placeholder="Tâche / activité" expandTitle="Tâche / activité" testId={`entry-description-${e.id}`} /></td>
                   <td className="px-2 py-1.5 text-right text-slate-500 tabular-nums">{formatMinutes(e.duration_minutes || 0)}</td>
                   <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={!!e.rsde} onChange={ev => onPatchEntry(e.id, { rsde: ev.target.checked ? 1 : 0 })} className="rounded" data-testid={`entry-rsde-${e.id}`} /></td>
                   <td className="px-1"><button onClick={() => onDeleteEntry(e.id)} className="p-1 text-slate-300 hover:text-red-500" title="Supprimer"><Trash2 size={14} /></button></td>
@@ -817,6 +940,11 @@ function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPa
     </div>
   )
 }
+
+// Une cellule du rapport RSDE = une seule ligne : un saut de ligne ou une tabulation
+// dans une description créerait une nouvelle rangée / colonne au collage du TSV.
+// Tout le texte est conservé, les séparateurs deviennent des espaces.
+const oneLine = (s) => String(s ?? '').replace(/\s+/g, ' ').trim()
 
 function RsdeReport({ history }) {
   const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7))
@@ -842,8 +970,8 @@ function RsdeReport({ history }) {
       if (!day.date || !day.date.startsWith(month)) continue
       for (const e of day.entries || []) {
         if (!e.rsde) continue
-        const codeName = e.activity_code_name || ''
-        const desc = (e.description || '').trim()
+        const codeName = oneLine(e.activity_code_name)
+        const desc = oneLine(e.description)
         const part = [codeName, desc].filter(Boolean).join(' — ')
         const minutes = Number(e.duration_minutes) || 0
         if (!byDate.has(day.date)) byDate.set(day.date, { minutes: 0, parts: [] })
@@ -871,7 +999,7 @@ function RsdeReport({ history }) {
   const fmtH = (h) => h.toFixed(2).replace('.', ',')
 
   const copyAsTsv = async () => {
-    const lines = rows.map(r => `${r.date}\t${fmtH(r.hours)}\t${r.description}`)
+    const lines = rows.map(r => `${r.date}\t${fmtH(r.hours)}\t${oneLine(r.description)}`)
     try {
       await navigator.clipboard.writeText(lines.join('\n'))
       setCopied(true)

@@ -9,6 +9,7 @@ const cmdKey = isMac ? '⌘' : 'Ctrl'
 // plus de NAV_SHORTCUTS pour que la modale documente tout le comportement.
 const SYSTEM_SHORTCUTS = [
   { keys: [cmdKey, 'K'], label: 'Recherche globale' },
+  { keys: [cmdKey, '/'], label: 'File de travaux (ajouter un prompt, répondre à Claude)' },
   { keys: ['?'], label: 'Afficher cette aide' },
 ]
 

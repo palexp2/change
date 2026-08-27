@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, Building2, Users, TrendingUp, ShoppingCart, Package, LifeBuoy, MessageSquare, X, Barcode, FileText, Receipt, CornerDownLeft, Clock, Truck, RotateCcw, Boxes, UserRound } from 'lucide-react'
+import { Search, Building2, Users, TrendingUp, ShoppingCart, Package, LifeBuoy, MessageSquare, X, Barcode, FileText, Receipt, CornerDownLeft, Clock, Truck, RotateCcw, Boxes, UserRound, BookUser, RefreshCw } from 'lucide-react'
 import api from '../lib/api.js'
 import { defaultNavItems } from '../lib/navItems.js'
 import { useRecentRecords, clearRecentRecords } from '../lib/useRecentRecords.js'
@@ -23,6 +23,8 @@ const TYPE_ICON = {
   shipment: Truck,
   sale_receipt: Receipt,
   employee: UserRound,
+  vendor_profile: BookUser,
+  vendor_subscription: RefreshCw,
 }
 
 const TYPE_LABEL = {
@@ -42,6 +44,25 @@ const TYPE_LABEL = {
   shipment: 'Envoi',
   sale_receipt: 'Reçu de vente',
   employee: 'Employé',
+  vendor_profile: 'Fournisseur',
+  vendor_subscription: 'Abonnement fourn.',
+}
+
+// Commandes slash — restreignent la recherche à un seul type de record, sans le
+// bruit des pages/autres records (ex. `/fournisseur acme`, `/abonnements twilio`).
+// Le nom peut être singulier ou pluriel ; le texte après l'espace filtre la liste.
+const SLASH_COMMANDS = [
+  { re: /^\/(fournisseurs?)\b\s*(.*)$/i, type: 'vendor_profile', label: 'Fournisseurs' },
+  { re: /^\/(abonnements?)\b\s*(.*)$/i, type: 'vendor_subscription', label: 'Abonnements fournisseurs' },
+]
+
+function parseSlashCommand(raw) {
+  const q = raw.trim()
+  for (const c of SLASH_COMMANDS) {
+    const m = q.match(c.re)
+    if (m) return { type: c.type, label: c.label, filterText: (m[2] || '').trim() }
+  }
+  return null
 }
 
 // Liste à plat de toutes les pages navigables, dérivée de la même définition de
@@ -50,15 +71,23 @@ const TYPE_LABEL = {
 // du routage interne.
 const PAGE_ITEMS = (() => {
   const pages = []
-  for (const item of defaultNavItems) {
-    if (item.external) continue
-    if (item.group) {
-      for (const sub of item.items) {
-        pages.push({ to: sub.to, label: sub.label, icon: sub.icon, group: item.group })
+  // Une entrée à sous-menu flottant (Espace finance) n'est pas navigable
+  // elle-même : ce sont ses sections qui le sont, sous son propre libellé.
+  const push = (item, group) => {
+    if (item.flyoutGroups) {
+      for (const sub of item.flyoutGroups) {
+        for (const s of sub.items) {
+          pages.push({ to: s.to, label: s.label, icon: s.icon, group: item.label })
+        }
       }
     } else if (item.to) {
-      pages.push({ to: item.to, label: item.label, icon: item.icon, group: null })
+      pages.push({ to: item.to, label: item.label, icon: item.icon, group })
     }
+  }
+  for (const item of defaultNavItems) {
+    if (item.external) continue
+    if (item.group) for (const sub of item.items) push(sub, item.group)
+    else push(item, null)
   }
   return pages
 })()
@@ -76,6 +105,8 @@ function matchPages(query) {
     .slice(0, MAX_PAGE_MATCHES)
 }
 
+const MAX_COMMAND_MATCHES = 20
+
 export function GlobalSearch({ open, onClose }) {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
@@ -85,12 +116,18 @@ export function GlobalSearch({ open, onClose }) {
   const navigate = useNavigate()
   const timerRef = useRef(null)
   const recent = useRecentRecords()
+  // Caches des commandes slash (`/fournisseur`, `/abonnement`) — chargées une
+  // fois par ouverture de palette, puis filtrées localement à chaque frappe.
+  const vendorProfilesCacheRef = useRef(null)
+  const vendorSubsCacheRef = useRef(null)
 
   useEffect(() => {
     if (open) {
       setQuery('')
       setResults([])
       setSelected(0)
+      vendorProfilesCacheRef.current = null
+      vendorSubsCacheRef.current = null
       setTimeout(() => inputRef.current?.focus(), 50)
     }
   }, [open])
@@ -106,23 +143,69 @@ export function GlobalSearch({ open, onClose }) {
     }
   }, [])
 
+  const loadVendorProfiles = useCallback(async () => {
+    if (!vendorProfilesCacheRef.current) {
+      const r = await api.vendorProfiles.list()
+      vendorProfilesCacheRef.current = (r.data || []).map(p => ({
+        type: 'vendor_profile', id: p.id, label: p.name, sub: p.qb_category || '',
+        url: `/fournisseurs?open=${p.id}`,
+      }))
+    }
+    return vendorProfilesCacheRef.current
+  }, [])
+
+  const loadVendorSubscriptions = useCallback(async () => {
+    if (!vendorSubsCacheRef.current) {
+      const rows = await api.vendorSubscriptions.list()
+      vendorSubsCacheRef.current = (rows || []).map(s => ({
+        type: 'vendor_subscription', id: s.id, label: s.vendor, sub: s.plan || '',
+        url: `/fournisseurs/abonnements?open=${s.id}`,
+      }))
+    }
+    return vendorSubsCacheRef.current
+  }, [])
+
+  function filterCommandList(list, text) {
+    if (!text) return list.slice(0, MAX_COMMAND_MATCHES)
+    const t = norm(text)
+    return list
+      .filter(item => norm(item.label).includes(t) || norm(item.sub).includes(t))
+      .slice(0, MAX_COMMAND_MATCHES)
+  }
+
+  function runCommandSearch(cmd) {
+    setLoading(true)
+    const loader = cmd.type === 'vendor_profile' ? loadVendorProfiles : loadVendorSubscriptions
+    loader()
+      .then(list => setResults(filterCommandList(list, cmd.filterText)))
+      .finally(() => setLoading(false))
+  }
+
   function handleChange(e) {
     const q = e.target.value
     setQuery(q)
     setSelected(0)
     clearTimeout(timerRef.current)
+    const cmd = parseSlashCommand(q)
+    if (cmd) { runCommandSearch(cmd); return }
     timerRef.current = setTimeout(() => search(q), 220)
   }
+
+  // En mode commande slash, la palette ne montre que les records du type ciblé —
+  // pas de pages ni de récents, pour éviter le bruit dont voulait se débarrasser
+  // l'utilisateur.
+  const command = parseSlashCommand(query)
 
   // Liste combinée récents + pages + records, dans l'ordre d'affichage, pour la
   // navigation clavier (un seul index `selected` couvre toutes les sections).
   // Le fil « Récemment consultés » n'apparaît que lorsque la requête est vide.
   const queryEmpty = query.trim() === ''
-  const recentItems = queryEmpty ? recent.map(r => ({ ...r, kind: 'record' })) : []
-  const pageMatches = matchPages(query)
+  const recentItems = (queryEmpty && !command) ? recent.map(r => ({ ...r, kind: 'record' })) : []
+  const pageMatches = command ? [] : matchPages(query)
   const pageItems = pageMatches.map(p => ({ ...p, kind: 'page' }))
   const recordItems = results.map(r => ({ ...r, kind: 'record' }))
   const allItems = [...recentItems, ...pageItems, ...recordItems]
+  const resultsLabel = command ? command.label : 'Résultats'
 
   function go(item) {
     if (!item) return
@@ -237,7 +320,7 @@ export function GlobalSearch({ open, onClose }) {
             })}
 
             {recordItems.length > 0 && (
-              <li className="px-4 pt-2 pb-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider select-none">Résultats</li>
+              <li className="px-4 pt-2 pb-1 text-[11px] font-semibold text-slate-400 uppercase tracking-wider select-none">{resultsLabel}</li>
             )}
             {recordItems.map((r, i) => {
               const Icon = TYPE_ICON[r.type] || Search
@@ -264,8 +347,10 @@ export function GlobalSearch({ open, onClose }) {
           </ul>
         )}
 
-        {query.length >= 2 && !loading && allItems.length === 0 && (
-          <div className="py-10 text-center text-slate-400 text-sm">Aucun résultat pour « {query} »</div>
+        {(command || query.length >= 2) && !loading && allItems.length === 0 && (
+          <div className="py-10 text-center text-slate-400 text-sm">
+            {command ? `Aucun résultat dans « ${command.label} »` : `Aucun résultat pour « ${query} »`}
+          </div>
         )}
       </div>
     </div>

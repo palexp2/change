@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { Plus, LifeBuoy } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Plus, LifeBuoy, Star } from 'lucide-react'
 import api from '../lib/api.js'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
@@ -12,6 +12,8 @@ import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { contactsForCompany } from '../lib/contactCompanies'
+import TicketDetail from './TicketDetail.jsx'
 
 function fmtDuration(mins) {
   if (!mins) return '—'
@@ -36,6 +38,17 @@ const RENDERS = {
   type: row => row.type ? <Badge color="gray">{row.type}</Badge> : null,
   duration_minutes: row => <span className="text-slate-500">{fmtDuration(row.duration_minutes)}</span>,
   created_at: row => row.created_at ? <span className="text-slate-500 text-sm">{fmtDate(row.created_at)}</span> : null,
+  // Sondage envoyé mais sans réponse : un tiret plutôt que rien, pour
+  // distinguer « en attente » de « jamais sollicité » (colonne vide).
+  survey_rating: row => {
+    if (!row.survey_rating) return row.survey_sent_at ? <span className="text-slate-300 text-sm">—</span> : null
+    return (
+      <span className="inline-flex items-center gap-1 text-sm" title={`${row.survey_rating}/5`}>
+        <Star size={13} className="text-amber-400" fill="currentColor" strokeWidth={1.5} />
+        <span className="text-slate-700 tabular-nums">{row.survey_rating}</span>
+      </span>
+    )
+  },
 }
 
 const COLUMNS = TABLE_COLUMN_META.tickets.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
@@ -58,7 +71,7 @@ function TicketForm({ initial = {}, meta = {}, companies = [], users = [], conta
     finally { setSaving(false) }
   }
 
-  const filteredContacts = form.company_id ? contacts.filter(c => c.company_id === form.company_id) : contacts
+  const filteredContacts = contactsForCompany(contacts, form.company_id)
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
@@ -147,7 +160,6 @@ function TicketForm({ initial = {}, meta = {}, companies = [], users = [], conta
 export default function Tickets() {
   const [meta, setMeta] = useState({ types: [], statuses: [] })
   const [showModal, setShowModal] = useState(false)
-  const navigate = useNavigate()
 
   const ticketsRaw = useTable('tickets')
   const companies = useTable('companies')
@@ -193,7 +205,13 @@ export default function Tickets() {
           columns={COLUMNS}
           data={tickets}
           loading={loading}
-          onRowClick={row => navigate(`/tickets/${row.id}`)}
+          peek={{
+            title: row => row.title || 'Billet',
+            subtitle: row => row.company_name || row.contact_name || '',
+            to: row => `/tickets/${row.id}`,
+            width: 720,
+            render: (row, { close }) => <TicketDetail recordId={row.id} embedded onClose={close} />,
+          }}
           searchFields={['title', 'company_name', 'contact_name', 'assigned_name']}
           emptyState={{ icon: LifeBuoy, title: 'Aucun ticket', description: "Aucune demande de support n'est ouverte. Crée un ticket pour suivre une demande client.", cta: { label: 'Nouveau ticket', icon: Plus, onClick: () => setShowModal(true) } }}
         />

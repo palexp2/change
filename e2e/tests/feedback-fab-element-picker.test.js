@@ -13,13 +13,13 @@
 //   2. FAB → « Cibler un élément » → bandeau de ciblage ; clic sur le h1 de la
 //      page → retour au formulaire avec le chip « Élément ciblé » ; le clic
 //      intercepté ne déclenche PAS l'action de l'élément ; soumission → le
-//      contexte du backlog contient la route + le descriptif de l'élément.
+//      prompt déposé en file contient la route + le descriptif de l'élément.
 //   3. Le chip est retirable (×) et Échap pendant le ciblage revient au
 //      formulaire sans chip.
 //
-// L'agent est forcé OFF (capturé/restauré en after()) : les suggestions créées
-// sont liées à des tâches `approved` mais AUCUNE exécution n'est spawnée.
-// Cleanup : tâches + suggestions supprimées via l'API, réglage restauré.
+// L'agent est forcé OFF (capturé/restauré en after()) : les items créés restent
+// `queued` et AUCUNE exécution n'est spawnée. Cleanup : items de file supprimés
+// via l'API, réglage restauré.
 
 const { test, describe, before, after } = require('node:test')
 const assert = require('node:assert/strict')
@@ -67,13 +67,12 @@ describe('FeedbackFab — ciblage d\'élément avant le formulaire', () => {
   })
 
   after(async () => {
-    // Cleanup même en cas d'échec : toutes les suggestions du test (et leurs
-    // tâches liées), puis le toggle agent restauré.
+    // Cleanup même en cas d'échec : tous les items de file du test, puis le
+    // toggle agent restauré.
     try {
-      const backlog = await api(page, 'GET', '/agent/backlog')
-      for (const item of backlog.filter(i => (i.text || '').includes(MARKER))) {
-        try { if (item.task_id) await api(page, 'DELETE', `/agent/tasks/${item.task_id}`) } catch {}
-        try { await api(page, 'DELETE', `/agent/backlog/${item.id}`) } catch {}
+      const { prompts } = await api(page, 'GET', '/travaux/prompts')
+      for (const item of (prompts || []).filter(p => (p.prompt || '').includes(MARKER))) {
+        try { await api(page, 'DELETE', `/travaux/prompts/${item.id}`) } catch {}
       }
     } catch {}
     try { await api(page, 'PUT', '/agent/settings', { enabled: originalEnabled }) } catch {}
@@ -97,14 +96,14 @@ describe('FeedbackFab — ciblage d\'élément avant le formulaire', () => {
     const text = `${MARKER} — demande générale`
     await page.fill('[data-testid="feedback-fab-text"]', text)
     await page.click('[data-testid="feedback-fab-submit"]')
-    await page.waitForSelector('[data-testid="feedback-approved"]', { timeout: 10000 })
-    await page.click('[role="dialog"] button:has-text("Fermer")')
+    // La modale se referme d'elle-même — plus d'écran de confirmation.
+    await page.waitForSelector('[data-testid="feedback-fab-text"]', { state: 'detached', timeout: 10000 })
 
-    const backlog = await api(page, 'GET', '/agent/backlog')
-    const item = backlog.find(i => i.text === text)
-    assert.ok(item, 'la suggestion doit exister côté API')
-    assert.ok(item.context.includes('/factures'), 'la route doit être jointe en contexte')
-    assert.ok(!item.context.includes('élément ciblé'), 'pas de descriptif élément pour une demande générale')
+    const { prompts } = await api(page, 'GET', '/travaux/prompts')
+    const item = (prompts || []).find(p => (p.prompt || '').includes(text))
+    assert.ok(item, 'l\'item doit exister côté API')
+    assert.ok(item.prompt.includes('/factures'), 'la route doit être jointe en contexte')
+    assert.ok(!item.prompt.includes('élément ciblé'), 'pas de descriptif élément pour une demande générale')
   })
 
   test('« Cibler un élément » → clic sur un élément → descriptif joint en contexte', async () => {
@@ -129,19 +128,19 @@ describe('FeedbackFab — ciblage d\'élément avant le formulaire', () => {
     // Le clic intercepté ne doit pas avoir navigué ailleurs.
     assert.ok(page.url().includes('/factures'), 'le clic de ciblage ne doit pas déclencher de navigation')
 
-    // Soumettre → le contexte du backlog contient route + descriptif d'élément.
+    // Soumettre → le prompt déposé contient route + descriptif d'élément.
     const text = `${MARKER} — élément ciblé`
     await page.fill('[data-testid="feedback-fab-text"]', text)
     await page.click('[data-testid="feedback-fab-submit"]')
-    await page.waitForSelector('[data-testid="feedback-approved"]', { timeout: 10000 })
-    await page.click('[role="dialog"] button:has-text("Fermer")')
+    // La modale se referme d'elle-même — plus d'écran de confirmation.
+    await page.waitForSelector('[data-testid="feedback-fab-text"]', { state: 'detached', timeout: 10000 })
 
-    const backlog = await api(page, 'GET', '/agent/backlog')
-    const item = backlog.find(i => i.text === text)
-    assert.ok(item, 'la suggestion doit exister côté API')
-    assert.ok(item.context.includes('/factures'), 'la route doit être jointe en contexte')
-    assert.ok(item.context.includes('élément ciblé par l\'utilisateur'), 'le contexte doit contenir le marqueur élément')
-    assert.ok(item.context.includes('<h1'), 'le contexte doit contenir le descriptif de l\'élément cliqué')
+    const { prompts } = await api(page, 'GET', '/travaux/prompts')
+    const item = (prompts || []).find(p => (p.prompt || '').includes(text))
+    assert.ok(item, 'l\'item doit exister côté API')
+    assert.ok(item.prompt.includes('/factures'), 'la route doit être jointe en contexte')
+    assert.ok(item.prompt.includes('élément ciblé par l\'utilisateur'), 'le prompt doit contenir le marqueur élément')
+    assert.ok(item.prompt.includes('<h1'), 'le prompt doit contenir le descriptif de l\'élément cliqué')
   })
 
   test('chip retirable + Échap revient au formulaire', async () => {

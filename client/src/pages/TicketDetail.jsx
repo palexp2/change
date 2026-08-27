@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Trash2, ChevronDown, ChevronUp, ExternalLink, Plus, CheckCircle2, Circle, Clock, X } from 'lucide-react'
+import { ArrowLeft, Trash2, ChevronDown, ChevronUp, ExternalLink, Plus, CheckCircle2, Circle, Clock, X, Star, MessageSquare, Phone, AlertTriangle, Copy } from 'lucide-react'
 import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
 import { Layout } from '../components/Layout.jsx'
@@ -15,8 +15,10 @@ import TaskForm from '../components/TaskForm.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import WeatherPanel from '../components/WeatherPanel.jsx'
 import { useRecordKeyNav } from '../lib/useRecordKeyNav.js'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
+import { contactsForCompany } from '../lib/contactCompanies'
 
 
 // requestIdleCallback avec fallback setTimeout pour browsers qui ne le supportent pas.
@@ -33,8 +35,13 @@ function fmtDuration(mins) {
   return h === 0 ? `${m}m` : `${h}h${m > 0 ? m + 'm' : ''}`
 }
 
-export default function TicketDetail() {
-  const { id } = useParams()
+// `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
+// (RecordPeekDrawer) sans le chrome de page (Layout, bouton retour, nav
+// clavier prev/next). En mode route normale, l'`id` vient de l'URL.
+// `onClose` ferme le drawer (utilisé après suppression du billet).
+export default function TicketDetail({ recordId, embedded = false, onClose }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
   const { user } = useAuth()
   const [ticket, setTicket] = useState(null)
@@ -45,6 +52,7 @@ export default function TicketDetail() {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
   const [reloadKey, setReloadKey] = useState(0)
+  const [surveyKey, setSurveyKey] = useState(0)
   const [fieldSaving, setFieldSaving] = useState({})
   const [ticketIds, setTicketIds] = useState([])
   const [linkedInteractions, setLinkedInteractions] = useState([])
@@ -125,9 +133,10 @@ export default function TicketDetail() {
   const nextId = currentIdx >= 0 && currentIdx < ticketIds.length - 1 ? ticketIds[currentIdx + 1] : null
 
   // Navigation clavier entre billets (j/↓ suivant · k/↑ précédent).
+  // Désactivée en mode embarqué : naviguer quitterait le drawer.
   useRecordKeyNav({
-    prev: prevId ? `/tickets/${prevId}` : null,
-    next: nextId ? `/tickets/${nextId}` : null,
+    prev: !embedded && prevId ? `/tickets/${prevId}` : null,
+    next: !embedded && nextId ? `/tickets/${nextId}` : null,
   })
 
   useEffect(() => {
@@ -174,7 +183,8 @@ export default function TicketDetail() {
     if (!(await confirm('Supprimer ce billet ?'))) return
     try {
       await api.tickets.delete(id)
-      navigate('/tickets')
+      if (embedded) onClose?.()
+      else navigate('/tickets')
     } catch (err) {
       addToast({ message: err.message || 'Erreur lors de la suppression', type: 'error' })
     }
@@ -198,9 +208,7 @@ export default function TicketDetail() {
     loadTasks()
   }
 
-  const filteredContacts = ticket?.company_id
-    ? contacts.filter(c => c.company_id === ticket.company_id)
-    : contacts
+  const filteredContacts = contactsForCompany(contacts, ticket?.company_id)
 
   // Seed pickers avec un placeholder dérivé du ticket joint pour que le label
   // s'affiche immédiatement, avant l'arrivée des lookups en arrière-plan.
@@ -223,54 +231,65 @@ export default function TicketDetail() {
     return [...users, { id: ticket.assigned_to, name: ticket.assigned_name || '…' }]
   }, [users, ticket?.assigned_to, ticket?.assigned_name])
 
+  // En mode embarqué (side-peek), pas de Layout — le drawer fournit son propre
+  // chrome. Sinon, page pleine classique.
+  const shell = (content) => (embedded ? content : <Layout>{content}</Layout>)
+
   if (loading) {
-    return <Layout><Spinner center /></Layout>
+    return shell(<Spinner center />)
   }
   if (loadError && !ticket) {
-    return <Layout><DetailLoadError message={loadError} onRetry={() => setReloadKey(k => k + 1)} /></Layout>
+    return shell(<DetailLoadError message={loadError} onRetry={() => setReloadKey(k => k + 1)} />)
   }
   if (!ticket) {
-    return <Layout><div className="p-6 text-slate-500">Billet introuvable.</div></Layout>
+    return shell(<div className="p-6 text-slate-500">Billet introuvable.</div>)
   }
 
-  return (
-    <Layout>
-      <div className="p-6 max-w-3xl mx-auto">
+  return shell(
+    <>
+      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-3xl mx-auto'}>
         {/* Header */}
         <div className="flex items-start gap-4 mb-6">
-          <button onClick={() => navigate('/tickets')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-            <ArrowLeft size={18} />
-          </button>
+          {!embedded && (
+            <button onClick={() => navigate('/tickets')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div className="flex-1">
-            <h1 className="text-2xl font-bold text-slate-900">{ticket.title}</h1>
+            {!embedded && <h1 className="text-2xl font-bold text-slate-900">{ticket.title}</h1>}
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               <Badge color={ticketStatusColor(ticket.status)}>{ticket.status}</Badge>
               {ticket.type && <Badge color="gray">{ticket.type}</Badge>}
               <OrishaLinks controllers={ticket.central_controllers} />
             </div>
           </div>
-          <div className="flex items-center gap-1">
-            <button
-              onClick={() => prevId && navigate(`/tickets/${prevId}`)}
-              disabled={!prevId}
-              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-              title="Billet précédent (k / ↑)"
-            >
-              <ChevronUp size={16} />
-            </button>
-            <button
-              onClick={() => nextId && navigate(`/tickets/${nextId}`)}
-              disabled={!nextId}
-              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-              title="Billet suivant (j / ↓)"
-            >
-              <ChevronDown size={16} />
-            </button>
-          </div>
+          <SurveySection ticketId={id} onSent={() => setSurveyKey(k => k + 1)} />
+          {!embedded && (
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => prevId && navigate(`/tickets/${prevId}`)}
+                disabled={!prevId}
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                title="Billet précédent (k / ↑)"
+              >
+                <ChevronUp size={16} />
+              </button>
+              <button
+                onClick={() => nextId && navigate(`/tickets/${nextId}`)}
+                disabled={!nextId}
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                title="Billet suivant (j / ↓)"
+              >
+                <ChevronDown size={16} />
+              </button>
+            </div>
+          )}
           <button onClick={handleDelete} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Supprimer">
             <Trash2 size={16} />
           </button>
         </div>
+
+        <SurveyCard ticketId={id} refreshKey={surveyKey} />
 
         {/* Info card */}
         <div className="card p-5 mb-6">
@@ -389,6 +408,11 @@ export default function TicketDetail() {
           </div>
         </div>
 
+        {/* Météo au site — conditions à l'adresse du client autour de l'ouverture du billet */}
+        <div className="mb-6">
+          <WeatherPanel companyId={ticket.company_id} at={ticket.created_at} markerLabel="Ouverture du billet" />
+        </div>
+
         {/* Meta */}
         <div className="text-xs text-slate-400 flex gap-4">
           <span>Cree: {fmtDateTime(ticket.created_at)}</span>
@@ -470,7 +494,7 @@ export default function TicketDetail() {
       <Modal isOpen={showTaskModal} title="Nouvelle tâche" onClose={() => setShowTaskModal(false)}>
         <TaskForm
           companies={companies}
-          contacts={ticket?.company_id ? contacts.filter(c => c.company_id === ticket.company_id) : contacts}
+          contacts={contactsForCompany(contacts, ticket?.company_id)}
           users={users}
           tickets={[{ id: ticket?.id, title: ticket?.title }]}
           initial={{
@@ -505,7 +529,234 @@ export default function TicketDetail() {
           </div>
         </Modal>
       )}
-    </Layout>
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Sondage de satisfaction par SMS
+// ---------------------------------------------------------------------------
+
+function fmtPhone(e164) {
+  const d = String(e164 || '').replace(/\D/g, '')
+  const local = d.length === 11 && d.startsWith('1') ? d.slice(1) : d
+  if (local.length !== 10) return e164 || '—'
+  return `(${local.slice(0, 3)}) ${local.slice(3, 6)}-${local.slice(6)}`
+}
+
+function Stars({ n, size = 15 }) {
+  return (
+    <span className="inline-flex items-center gap-0.5 align-middle">
+      {[1, 2, 3, 4, 5].map(i => (
+        <Star key={i} size={size} strokeWidth={1.5}
+              className={i <= n ? 'text-amber-400' : 'text-slate-200'}
+              fill={i <= n ? 'currentColor' : 'none'} />
+      ))}
+    </span>
+  )
+}
+
+const SEND_STATUS_LABEL = {
+  pending: 'En attente',
+  sent: 'Envoyé',
+  delivered: 'Livré',
+  failed: 'Échec de livraison',
+}
+
+// Bouton + modale + encart de résultat. Un seul composant : les trois vues
+// partagent le même état serveur, les séparer forcerait à le recharger deux fois.
+function SurveySection({ ticketId, onSent }) {
+  const { addToast } = useToast()
+  const [state, setState] = useState(null)     // { eligibility, survey, survey_url }
+  const [loading, setLoading] = useState(true)
+  const [open, setOpen] = useState(false)
+  const [phone, setPhone] = useState('')
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState(null)
+
+  const load = useCallback(async () => {
+    try { setState(await api.tickets.survey(ticketId)) }
+    catch { /* silencieux : le sondage n'est pas la raison d'être de la page */ }
+    finally { setLoading(false) }
+  }, [ticketId])
+
+  useEffect(() => { load() }, [load])
+
+  const elig = state?.eligibility
+  const survey = state?.survey
+  const alreadySent = !!survey?.sent_at
+  // Un envoi précédemment échoué ne doit pas bloquer : c'est justement le cas
+  // où l'on veut corriger le numéro et réessayer.
+  const canSend = !!elig?.eligible || (!!elig && elig.reason === 'Aucun numéro de téléphone pour ce contact')
+
+  function openModal() {
+    setPhone(survey?.phone || elig?.phone || '')
+    setError(null)
+    setOpen(true)
+  }
+
+  async function send() {
+    setSending(true)
+    setError(null)
+    try {
+      const res = await api.tickets.sendSurvey(ticketId, phone || null)
+      setState(s => ({ ...s, survey: res.survey, survey_url: res.survey_url }))
+      setOpen(false)
+      addToast({
+        message: res.simulated
+          ? 'Sondage enregistré (SMS simulé — Telnyx non configuré)'
+          : `Sondage envoyé au ${fmtPhone(res.survey.phone)}`,
+        type: 'success',
+      })
+      onSent?.()
+    } catch (err) {
+      setError(err.message || "Échec de l'envoi")
+    } finally {
+      setSending(false)
+    }
+  }
+
+  if (loading) return null
+
+  return (
+    <>
+      <button
+        onClick={openModal}
+        disabled={!canSend}
+        title={canSend
+          ? (alreadySent ? 'Renvoyer le sondage de satisfaction par SMS' : 'Envoyer un sondage de satisfaction par SMS')
+          : elig?.reason || 'Envoi impossible'}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-sm text-slate-600 hover:text-brand-700 hover:bg-brand-50 rounded-lg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 disabled:cursor-not-allowed"
+        data-testid="ticket-survey-button"
+      >
+        <MessageSquare size={16} />
+        <span className="hidden sm:inline">{alreadySent ? 'Renvoyer le sondage' : 'Sondage'}</span>
+      </button>
+
+      {open && (
+        <Modal isOpen title={alreadySent ? 'Renvoyer le sondage de satisfaction' : 'Sondage de satisfaction'} onClose={() => setOpen(false)}>
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">
+              Un message texte sera envoyé à <strong>{elig?.contact_name || 'ce contact'}</strong> avec un lien
+              vers le sondage, en <strong>{elig?.language === 'English' ? 'anglais' : 'français'}</strong>.
+            </p>
+
+            <div>
+              <label className="label">Numéro de téléphone</label>
+              <input
+                value={phone}
+                onChange={e => setPhone(e.target.value)}
+                placeholder="(514) 555-1234"
+                className="input w-full"
+                data-testid="ticket-survey-phone"
+              />
+              <p className="text-xs text-slate-400 mt-1">
+                {elig?.phone_source === 'phone'
+                  ? "Aucun cellulaire au dossier — c'est le téléphone fixe qui est proposé."
+                  : 'Modifiable pour un envoi ponctuel : la fiche du contact n\'est pas touchée.'}
+              </p>
+            </div>
+
+            {alreadySent && (
+              <div className="flex gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
+                <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+                <span>
+                  Un sondage a déjà été envoyé le {fmtDate(survey.sent_at)}. Le renvoi réutilise le même lien —
+                  une réponse déjà donnée reste enregistrée.
+                </span>
+              </div>
+            )}
+
+            {error && <p className="text-sm text-red-600">{error}</p>}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setOpen(false)} className="btn-secondary">Annuler</button>
+              {/* Action sortante irréversible (un SMS parti ne se rappelle pas) :
+                  bouton explicite plutôt qu'autosave, conformément à l'exception
+                  prévue par la règle « autosave partout ». */}
+              <button onClick={send} disabled={sending || !phone.trim()} className="btn-primary" data-testid="ticket-survey-send">
+                {sending ? 'Envoi…' : alreadySent ? 'Renvoyer' : 'Envoyer'}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </>
+  )
+}
+
+// Encart de résultat — n'apparaît que si un sondage existe pour ce billet.
+function SurveyCard({ ticketId, refreshKey }) {
+  const { addToast } = useToast()
+  const [state, setState] = useState(null)
+
+  useEffect(() => {
+    api.tickets.survey(ticketId).then(setState).catch(() => {})
+  }, [ticketId, refreshKey])
+
+  const s = state?.survey
+  if (!s) return null
+
+  const failed = s.send_status === 'failed'
+  const answered = !!s.responded_at
+
+  return (
+    <div className="card p-5 mb-6" data-testid="ticket-survey-card">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold text-slate-700">Sondage de satisfaction</h2>
+        <span className={`text-xs ${failed ? 'text-red-600' : 'text-slate-400'}`}>
+          {SEND_STATUS_LABEL[s.send_status] || s.send_status}
+          {s.sent_at && ` le ${fmtDateTime(s.sent_at)}`}
+          {s.send_count > 1 && ` · ${s.send_count} envois`}
+        </span>
+      </div>
+
+      {failed && s.send_error && (
+        <p className="text-xs text-red-600 mb-3">{s.send_error}</p>
+      )}
+
+      {answered ? (
+        <div className="space-y-2.5">
+          <div className="flex items-center gap-2.5">
+            <Stars n={s.rating} size={18} />
+            <span className="text-sm text-slate-500">{s.rating}/5</span>
+            <span className="text-xs text-slate-400">· répondu le {fmtDateTime(s.responded_at)}</span>
+            {s.response_count > 1 && (
+              <span className="text-xs text-amber-600">· modifié {s.response_count - 1}×</span>
+            )}
+          </div>
+          {s.accepts_call === 1 && (
+            <div className="flex items-center gap-1.5 text-sm text-emerald-700">
+              <Phone size={14} /> Accepte d'être contacté par téléphone
+            </div>
+          )}
+          {s.accepts_call === 0 && (
+            <div className="text-sm text-slate-400">Ne souhaite pas être contacté par téléphone</div>
+          )}
+          {s.comment && (
+            <p className="text-sm text-slate-700 bg-slate-50 border border-slate-100 rounded-lg p-3 whitespace-pre-wrap">
+              « {s.comment} »
+            </p>
+          )}
+        </div>
+      ) : (
+        <p className="text-sm text-slate-400">
+          Envoyé au {fmtPhone(s.phone)} — en attente de réponse.
+        </p>
+      )}
+
+      {state.survey_url && (
+        <button
+          onClick={() => {
+            navigator.clipboard?.writeText(state.survey_url)
+            addToast({ message: 'Lien du sondage copié', type: 'success' })
+          }}
+          className="mt-3 inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-brand-600"
+        >
+          <Copy size={12} /> Copier le lien du sondage
+        </button>
+      )}
+    </div>
   )
 }
 

@@ -132,6 +132,46 @@ function purgeOrphans(table, records) {
   return toDelete.length
 }
 
+// Table Airtable « Fournisseurs » (liée depuis Achats). Son champ primaire porte le nom
+// EXACT du fournisseur QuickBooks (« Takachi USD », « Mouser Electronics »…) et « ID »
+// contient l'Id du vendor QB — c'est la source de vérité pour savoir de quel fournisseur
+// vient un achat LIA. Le single-select « Fournisseur - LEGACY » auquel purchases.supplier
+// est mappé est gelé depuis 2026 : il est vide sur tous les achats récents.
+const AIRTABLE_VENDORS_TABLE = 'tblsJKllughNYKSuR'
+// Champ lié « Fournisseur » de la table Achats (≠ « Fournisseur - LEGACY »).
+const ACHATS_VENDOR_LINK_FIELD = 'Fournisseur'
+
+// Rafraîchit le cache rec id → { name, qb_vendor_id }. Best effort : en cas d'échec on
+// garde le cache précédent (la résolution retombera dessus) plutôt que de casser le sync.
+async function refreshVendorLinkCache(baseId, accessToken) {
+  try {
+    const records = await fetchAllRecords(baseId, AIRTABLE_VENDORS_TABLE, accessToken, 'fournisseurs')
+    const up = db.prepare(`
+      INSERT INTO airtable_vendor_links (airtable_id, name, qb_vendor_id, updated_at)
+      VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      ON CONFLICT(airtable_id) DO UPDATE SET
+        name=excluded.name, qb_vendor_id=excluded.qb_vendor_id, updated_at=excluded.updated_at
+    `)
+    db.transaction(recs => {
+      for (const rec of recs) {
+        const name = typeof rec.fields?.Name === 'string' ? rec.fields.Name.trim() : null
+        if (!name) continue
+        const qbId = rec.fields?.ID != null ? String(rec.fields.ID).trim() || null : null
+        up.run(rec.id, name, qbId)
+      }
+    })(records)
+    return records.length
+  } catch (e) {
+    console.warn(`⚠️  Fournisseurs Airtable: cache non rafraîchi (${e.message})`)
+    return 0
+  }
+}
+
+function vendorLinkMap() {
+  const rows = db.prepare('SELECT airtable_id, name, qb_vendor_id FROM airtable_vendor_links').all()
+  return new Map(rows.map(r => [r.airtable_id, r]))
+}
+
 async function fetchAllRecords(baseId, tableId, accessToken, syncKey, recordIds = null) {
   const records = []
   if (recordIds) {
@@ -734,6 +774,19 @@ export async function syncAchats(changes = null) {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'achats', _recordIds)
     let fieldMap = config.field_map ? JSON.parse(config.field_map) : null
 
+    // Fournisseur lié (table Fournisseurs) — cache rafraîchi sur sync complète, ou sur
+    // sync incrémentale dès qu'un achat pointe vers un fournisseur encore inconnu.
+    let vendors = vendorLinkMap()
+    const linkedVendorIds = new Set()
+    for (const rec of records) {
+      const raw = rec.fields?.[ACHATS_VENDOR_LINK_FIELD]
+      if (Array.isArray(raw)) for (const v of raw) if (typeof v === 'string') linkedVendorIds.add(v)
+    }
+    if (!changes || [...linkedVendorIds].some(id => !vendors.has(id))) {
+      await refreshVendorLinkCache(config.base_id, accessToken)
+      vendors = vendorLinkMap()
+    }
+
     // Field map computed from the UNION of keys across all fetched records, not a
     // single sample. Airtable omits empty fields per-record, so auto-detecting from
     // the first record alone made fields (notably "Date de réception complète")
@@ -813,9 +866,20 @@ export async function syncAchats(changes = null) {
         const status = STATUS_MAP[rawStatus.toLowerCase()] || (receivedDate ? 'Reçu' : 'Commandé')
         const qtyReceived = mappedQtyReceived ?? (status === 'Reçu' ? qtyOrdered : 0)
 
+        // Fournisseur : le champ LIÉ fait foi (nom = raison sociale QB exacte). Le
+        // single-select legacy ne sert plus que de repli pour les achats antérieurs à
+        // la bascule. On ne l'ÉCRASE pas dans `supplier` (colonne héritée utilisée par
+        // les vues/filtres existants) : on ne la remplit que si elle est vide.
+        const legacySupplier = getVal(rec.fields, fieldMap?.supplier)
+        const rawVendorLink = rec.fields?.[ACHATS_VENDOR_LINK_FIELD]
+        const linkedVendorId = Array.isArray(rawVendorLink) ? rawVendorLink[0] : null
+        const linkedVendor = linkedVendorId ? vendors.get(linkedVendorId) : null
+
         const payload = {
+          supplier_vendor_name:  linkedVendor?.name || null,
+          supplier_qb_vendor_id: linkedVendor?.qb_vendor_id || null,
           product_id:     productId,
-          supplier:       getVal(rec.fields, fieldMap?.supplier),
+          supplier:       legacySupplier || linkedVendor?.name || null,
           reference:      getVal(rec.fields, fieldMap?.reference),
           order_date:     getVal(rec.fields, fieldMap?.order_date),
           expected_date:  getVal(rec.fields, fieldMap?.expected_date),
@@ -829,12 +893,12 @@ export async function syncAchats(changes = null) {
 
         const existing = db.prepare('SELECT id FROM purchases WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE purchases SET product_id=?, supplier=?, reference=?, order_date=?, expected_date=?, received_date=?, qty_ordered=?, qty_received=?, unit_cost=?, status=?, notes=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-            .run(payload.product_id, payload.supplier, payload.reference, payload.order_date, payload.expected_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes, existing.id)
+          db.prepare(`UPDATE purchases SET product_id=?, supplier=?, supplier_vendor_name=?, supplier_qb_vendor_id=?, reference=?, order_date=?, expected_date=?, received_date=?, qty_ordered=?, qty_received=?, unit_cost=?, status=?, notes=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
+            .run(payload.product_id, payload.supplier, payload.supplier_vendor_name, payload.supplier_qb_vendor_id, payload.reference, payload.order_date, payload.expected_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes, existing.id)
           updated++
         } else {
-          db.prepare(`INSERT INTO purchases (id, airtable_id, product_id, supplier, reference, order_date, expected_date, received_date, qty_ordered, qty_received, unit_cost, status, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(uuid(), rec.id, payload.product_id, payload.supplier, payload.reference, payload.order_date, payload.expected_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes)
+          db.prepare(`INSERT INTO purchases (id, airtable_id, product_id, supplier, supplier_vendor_name, supplier_qb_vendor_id, reference, order_date, expected_date, received_date, qty_ordered, qty_received, unit_cost, status, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(uuid(), rec.id, payload.product_id, payload.supplier, payload.supplier_vendor_name, payload.supplier_qb_vendor_id, payload.reference, payload.order_date, payload.expected_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes)
           imported++
         }
       }
@@ -1202,6 +1266,75 @@ export async function syncBillets(changes = null) {
 
     await evaluateFieldRules({ erpTable: 'tickets', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Billets sync:', e.message) }
+}
+
+/**
+ * Prospects Instagram — sync Airtable → ERP VOLONTAIREMENT PARTIELLE.
+ *
+ * L'ERP est la source de vérité : la fiche est créée par l'appel de ManyChat, pas
+ * par Airtable. Trois écarts assumés par rapport aux autres modules :
+ *
+ *  • AUCUNE CRÉATION — un record Airtable sans contrepartie ERP est ignoré. Une
+ *    ligne ajoutée à la main par Philippe n'a ni IGSID ni nom d'usager fiable,
+ *    donc aucune clé de dédup : l'importer polluerait la liste et pourrait faire
+ *    envoyer un DM à un fantôme.
+ *  • PAS DE purgeOrphans — c'est un DELETE dur. Une ligne supprimée dans Airtable
+ *    ne doit ni effacer un prospect capté, ni faire perdre la mémoire du DM déjà
+ *    envoyé (ce qui rouvrirait la porte à un second contact).
+ *  • CHAMPS RESTREINTS — seuls follow_up_status et notes remontent. Tous les
+ *    autres champs sont poussés par le système (cf. airtable_field_directions).
+ */
+export async function syncInstagramProspects(changes = null) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='instagram'").get()
+  if (!config?.base_id || !config?.table_id) return
+
+  const _recordIds = changes?.[config.table_id]?.recordIds
+  if (changes && !_recordIds?.length) return
+
+  let accessToken
+  try { accessToken = await getAccessToken() }
+  catch (e) { console.error('❌ Airtable token:', e.message); return }
+
+  try {
+    const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'instagram', _recordIds)
+    const fieldMap = config.field_map ? JSON.parse(config.field_map) : {}
+    let updated = 0, ignored = 0
+
+    db.transaction((recs) => {
+      for (const rec of recs) {
+        const existingRow = db.prepare('SELECT id, contacted, contacted_at FROM instagram_prospects WHERE airtable_id=? AND deleted_at IS NULL').get(rec.id)
+        if (!existingRow) { ignored++; continue }
+        // Nos propres écritures reviennent par le webhook Airtable : les ignorer.
+        if (consumeWritebackEcho(rec.id, rec.fields)) continue
+
+        const payload = {}
+        for (const key of ['follow_up_status', 'notes', 'contacted']) {
+          if (fieldMapDirection('instagram', key) === 'push') continue
+          const atField = fieldMap[key]
+          if (!atField) continue
+          const val = getVal(rec.fields, atField)
+          if (val === undefined) continue
+          // La case « Contacté » revient en booléen ; better-sqlite3 refuse les
+          // booléens et la colonne est un INTEGER. On horodate au passage pour
+          // que la coche faite dans Airtable soit datée comme celle de l'ERP.
+          if (key === 'contacted') {
+            payload.contacted = val === true || val === 1 || val === '1' ? 1 : 0
+            if (payload.contacted && !existingRow?.contacted_at) payload.contacted_at = new Date().toISOString()
+            if (!payload.contacted) payload.contacted_at = null
+            continue
+          }
+          payload[key] = val === '' ? null : val
+        }
+        if (!Object.keys(payload).length) continue
+
+        upsertRecord('instagram_prospects', rec.id, payload)
+        updated++
+      }
+      db.prepare(`UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='instagram'`).run()
+    })(records)
+
+    console.log(`📸 Prospects Instagram: ${updated} suivi(s) mis à jour${ignored ? `, ${ignored} record(s) Airtable sans fiche ERP ignoré(s)` : ''}`)
+  } catch (e) { console.error('❌ Instagram prospects sync:', e.message) }
 }
 
 // Sentinel thrown by upsertProjectRecord when a project links to a company that
@@ -1844,6 +1977,7 @@ export async function syncSerialStateChanges(changes = null) {
       db.prepare("UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='serial_changes'").run()
     })(records)
     console.log(`🔄 Serial state changes: ${imported} importés`)
+    await syncDynamicFields('serial_changes', 'serial_state_changes', config.base_id, config.table_id, fm, records)
     if (!changes) purgeOrphans('serial_state_changes', records)
   } catch (e) { console.error('❌ Serial changes sync:', e.message) }
 }

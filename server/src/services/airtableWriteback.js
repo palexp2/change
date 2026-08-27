@@ -98,6 +98,18 @@ const WRITEBACK_MODULES = {
       employee_link: (row) => { const id = linkedAirtableId('employees', row.employee_id); return id ? [id] : null },
     },
   },
+  // Prospects Instagram : l'ERP est la source de vérité, Airtable n'est qu'une
+  // surface d'édition pour Philippe. `skipKeys` est VOLONTAIREMENT vide —
+  // contrairement à l'intuition, y mettre une clé la force en 'pull' (Airtable →
+  // ERP), soit l'inverse du besoin. La protection des champs système passe par
+  // le seed de airtable_field_directions (schema.js) : 'push' partout sauf
+  // follow_up_status et notes en 'both'. Sans ce seed, fieldMapDirection
+  // renverrait 'both' par défaut et une édition Airtable pourrait écraser
+  // dm_sent — donc faire recontacter quelqu'un.
+  instagram: {
+    erpTable: 'instagram_prospects',
+    skipKeys: new Set(),
+  },
   // Commandes : write-back best-effort du champ Notes (bidirectionnel par défaut,
   // sens configurable par l'utilisateur — cf. airtable_field_directions). Les
   // autres champs (numéro, entreprise/projet/adresse liés, statut traduit,

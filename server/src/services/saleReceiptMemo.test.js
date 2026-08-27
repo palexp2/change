@@ -69,3 +69,39 @@ test('troncature à 4000 caractères', () => {
   const long = 'x'.repeat(5000)
   assert.equal(buildReceiptMemo(long, '').length, 4000)
 })
+
+// ── Période de service (abonnements, télécom, licences…) ─────────────────────
+// Reportée en queue de mémo pour qu'en fin d'année on sache quelle facture couvre
+// quel mois. Jamais dupliquée si la description la mentionne déjà.
+
+test('période reportée en queue de mémo', () => {
+  assert.equal(
+    buildReceiptMemo(null, 'Abonnement Slack', [], 'juillet 2026'),
+    'Abonnement Slack\nPériode : juillet 2026',
+  )
+  assert.equal(
+    buildReceiptMemo('Projet X', 'Abonnement Slack', [], 'juillet 2026'),
+    'Projet X\nAbonnement Slack\nPériode : juillet 2026',
+  )
+})
+
+test('période déjà présente dans la description : pas de doublon', () => {
+  assert.equal(
+    buildReceiptMemo(null, 'Abonnement Slack — juillet 2026', [], 'juillet 2026'),
+    'Abonnement Slack — juillet 2026',
+  )
+  // Comparaison insensible à la casse et aux accents.
+  assert.equal(
+    buildReceiptMemo(null, 'Forfait cellulaire Aout 2026', [], 'août 2026'),
+    'Forfait cellulaire Aout 2026',
+  )
+})
+
+test('sans période : mémo inchangé (achat ponctuel)', () => {
+  assert.equal(buildReceiptMemo(null, 'Pièces de plomberie', [], null), 'Pièces de plomberie')
+  assert.equal(buildReceiptMemo(null, 'Pièces de plomberie', [], '  '), 'Pièces de plomberie')
+})
+
+test('période seule, sans mémo ni description', () => {
+  assert.equal(buildReceiptMemo(null, '', [], 'juillet 2026'), 'Période : juillet 2026')
+})

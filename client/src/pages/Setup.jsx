@@ -45,8 +45,9 @@ export default function Setup() {
     }
   }
 
+  // `theme-light` : écran déjà conçu sombre — il garde son rendu en mode nuit.
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-900 to-brand-900 flex items-center justify-center p-4">
+    <div className="theme-light min-h-screen bg-gradient-to-br from-slate-900 to-brand-900 flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">

@@ -246,7 +246,7 @@ export function importTransactions(accountId, rows, userId) {
 
 const DATE_WINDOW_DAYS = 7
 
-function normalizeLabel(s) {
+export function normalizeLabel(s) {
   return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, ' ').trim()
 }
 

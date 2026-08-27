@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Upload, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, ChevronRight, FileSpreadsheet, BookOpen } from 'lucide-react'
+import { Upload, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, ChevronRight, FileSpreadsheet, BookOpen, Download } from 'lucide-react'
 import api from '../lib/api.js'
 import { invalidate } from '../lib/prefetch.js'
 import { Layout } from '../components/Layout.jsx'
@@ -124,15 +124,31 @@ function TxnPeek({ txn, currency, onChanged }) {
   const [busy, setBusy] = useState(false)
   const [comment, setComment] = useState(txn.comment || '')
   const [pushError, setPushError] = useState(null)
+  // Besoin de collecte : y a-t-il un portail fournisseur à interroger pour cette
+  // ligne ? null = pas encore chargé, false = aucun collecteur.
+  const [need, setNeed] = useState(null)
+  const [collecting, setCollecting] = useState(false)
 
   useEffect(() => {
     setComment(txn.comment || '')
     setSuggestions(null)
     setPushError(null)
+    setNeed(null)
     if (!txn.matched_id) {
       api.bank.suggestions(txn.id).then(setSuggestions).catch(() => setSuggestions([]))
+      api.scrapers.needForTransaction(txn.id).then(n => setNeed(n || false)).catch(() => setNeed(false))
     }
   }, [txn.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const collectInvoice = async () => {
+    setCollecting(true)
+    try {
+      await api.scrapers.collectForTransaction(txn.id)
+      setPushError(null)
+    } catch (e) {
+      setPushError(e.message)
+    } finally { setCollecting(false) }
+  }
 
   const act = async (fn) => {
     setBusy(true)
@@ -226,6 +242,24 @@ function TxnPeek({ txn, currency, onChanged }) {
           {suggestions?.length === 0 && (
             <div className="text-slate-500">Aucun document au même montant à ±7 jours — probablement une <strong>facture manquante</strong>.</div>
           )}
+          {need && need.scraper_account_id && need.account_enabled ? (
+            <div className="flex items-center gap-2 bg-brand-50 border border-brand-200 rounded-lg p-2">
+              <div className="min-w-0 flex-1">
+                <div className="text-xs text-slate-700">
+                  {need.vendor_name} a un portail branché — la facture peut être récupérée automatiquement.
+                </div>
+                {need.note && <div className="text-[11px] text-slate-500 truncate">Dernière tentative : {need.note}</div>}
+              </div>
+              <button className="shrink-0 inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+                disabled={collecting} onClick={collectInvoice}>
+                <Download size={12} /> {collecting ? 'Lancement…' : 'Chercher la facture'}
+              </button>
+            </div>
+          ) : need && need.vendor_name ? (
+            <div className="text-xs text-slate-500">
+              Fournisseur reconnu ({need.vendor_name}), mais aucun portail n'est branché pour lui.
+            </div>
+          ) : null}
           {suggestions?.map((s) => (
             <div key={`${s.type}:${s.id}`} className="flex items-center justify-between gap-2 bg-slate-50 rounded-lg p-2">
               <div className="min-w-0">
@@ -544,7 +578,7 @@ function TrxSheetBanner({ onSynced, onGoToAccount }) {
           <FileSpreadsheet size={15} className="text-green-700" /> Fichier TRX_Orisha (Drive)
         </span>
         {status.active
-          ? <Badge color="green" size="xs">sync auto horaire</Badge>
+          ? <Badge color="green" size="xs">sync auto aux 20 min</Badge>
           : <Badge color="gray" size="xs">automation désactivée</Badge>}
         {last ? (
           <span className="text-slate-500">

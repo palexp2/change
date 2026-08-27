@@ -33,6 +33,7 @@ const ENTITY_TABLES = {
   shipments: 'shipments',
   serial_numbers: 'serial_numbers',
   returns: 'returns',
+  work_ideas: 'work_ideas',
 }
 
 function sanitizeFileName(name) {

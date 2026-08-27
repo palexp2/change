@@ -3,6 +3,7 @@ import { requireAuth } from '../middleware/auth.js'
 import {
   isHubSpotConfigured,
   lookupContactsByEmail,
+  createContacts,
   createStaticContactList,
   addContactsToList,
   getPortalId,
@@ -12,15 +13,16 @@ const router = Router()
 router.use(requireAuth)
 
 // POST /api/hubspot/contact-segment
-// Body : { name: string, emails: string[] }
+// Body : { name: string, emails: string[], createMissing?: boolean }
 // Crée une liste statique HubSpot avec les contacts dont l'email matche
-// un contact existant. Ne crée PAS de nouveaux contacts. Retourne les
-// statistiques de matching et l'URL de la liste dans HubSpot.
+// un contact existant. Si createMissing est vrai, les emails sans contact
+// existant sont créés dans HubSpot avant d'être ajoutés à la liste.
+// Retourne les statistiques de matching/création et l'URL de la liste.
 router.post('/contact-segment', async (req, res) => {
   if (!isHubSpotConfigured()) {
     return res.status(400).json({ error: 'HubSpot non configuré' })
   }
-  const { name, emails } = req.body || {}
+  const { name, emails, createMissing } = req.body || {}
   if (!name || typeof name !== 'string') {
     return res.status(400).json({ error: 'name requis' })
   }
@@ -34,8 +36,17 @@ router.post('/contact-segment', async (req, res) => {
 
   try {
     const vidByEmail = await lookupContactsByEmail(requested)
+    let notFound = requested.filter(e => !vidByEmail.has(e))
+
+    let createdCount = 0
+    if (createMissing && notFound.length > 0) {
+      const createdMap = await createContacts(notFound)
+      for (const [email, id] of createdMap) vidByEmail.set(email, id)
+      createdCount = createdMap.size
+      notFound = requested.filter(e => !vidByEmail.has(e))
+    }
+
     const matchedEmails = requested.filter(e => vidByEmail.has(e))
-    const notFound = requested.filter(e => !vidByEmail.has(e))
     const vids = matchedEmails.map(e => vidByEmail.get(e))
 
     if (vids.length === 0) {
@@ -43,6 +54,7 @@ router.post('/contact-segment', async (req, res) => {
         error: 'Aucun email ne matche un contact HubSpot existant',
         requested: requested.length,
         matched: 0,
+        created: 0,
         not_found: notFound.length,
         not_found_sample: notFound.slice(0, 20),
       })
@@ -64,7 +76,8 @@ router.post('/contact-segment', async (req, res) => {
       listId,
       listUrl,
       requested: requested.length,
-      matched: matchedEmails.length,
+      matched: matchedEmails.length - createdCount,
+      created: createdCount,
       not_found: notFound.length,
       not_found_sample: notFound.slice(0, 20),
       added,

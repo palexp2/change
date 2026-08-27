@@ -32,6 +32,19 @@ export function fmtCad(amount, opts = {}) {
   return fmtMoney(amount, 'CAD', opts)
 }
 
+// Pendant de fmtCad à la saisie : « 2 737,95 $ » → 2737.95. Accepte la virgule
+// décimale (clavier fr-CA), les espaces (fines, insécables) et le symbole $.
+// Retourne null si la saisie est vide ou illisible — jamais NaN.
+export function parseAmountInput(value) {
+  if (value == null) return null
+  let s = String(value).replace(/[\s\u00a0\u202f$]/g, '')
+  if (!s) return null
+  // « 1 234,56 » / « 1.234,56 » → la virgule est le séparateur décimal.
+  if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.')
+  const n = Number(s)
+  return Number.isFinite(n) ? n : null
+}
+
 export function formatRelativeTime(dateStr) {
   if (!dateStr) return '—'
   const diff = Date.now() - new Date(dateStr).getTime()

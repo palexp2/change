@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Plus, Sparkles, BookUser } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { VendorTabs } from '../components/VendorTabs.jsx'
-import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
@@ -11,10 +11,13 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 
-// Profils fournisseurs : défauts comptables appris à chaque publication QB et
-// éditables ici. C'est ce qui pré-remplit le formulaire de publication de
-// l'extracteur de données (fournisseur QB dans la bonne devise, comptes, statut
-// fiscal, code de taxe, termes de paiement).
+// Fiche fournisseur — source de vérité unique de l'ERP (le Google Doc
+// « Fournisseurs_Particularités » n'est plus synchronisé, tout s'édite ici) :
+//  - défauts comptables appris à chaque publication QB, qui pré-remplissent le
+//    formulaire de publication de l'extracteur (vendor QB dans la bonne devise,
+//    comptes, statut fiscal, code de taxe, termes de paiement) ;
+//  - particularités du fournisseur (devise habituelle, mode de paiement, catégorie
+//    comptable, description, particularités de facturation/taxes).
 
 const NO_TAX = '__none__'
 const QB_TYPE_LABELS = { purchase: 'Dépense payée', bill: 'Facture à payer', cc_credit: 'Crédit carte de crédit' }
@@ -57,38 +60,19 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
     </div>
   )
 
+  const text = (k, label, { placeholder } = {}) => (
+    <div>
+      <label className={labelCls}>{label}</label>
+      <input className={inputCls} value={form[k] ?? ''} placeholder={placeholder}
+        onChange={e => set(k, e.target.value)}
+        onBlur={e => save(k, e.target.value.trim() === '' ? null : e.target.value.trim())} />
+    </div>
+  )
+
   const taxOptions = [{ value: NO_TAX, label: '— Aucune taxe —' }, ...qb.taxCodes.map(c => ({ value: c.Id, label: c.Name }))]
 
   return (
     <Modal isOpen onClose={onClose} title={form.name} size="lg">
-      {(() => {
-        // N'afficher du répertoire Drive que ce qui n'est pas déjà couvert par les
-        // champs structurés du profil, pour éviter la redondance : la devise est
-        // implicite dès qu'un vendor QB est configuré dans cette devise, le mode de
-        // paiement dès qu'un compte de paiement l'est, la catégorie dès qu'un compte
-        // de dépense l'est.
-        const dirCur = (form.directory_currency || '').toUpperCase()
-        const currencyCovered = dirCur.includes('USD') ? !!form.qb_vendor_id_usd : (dirCur ? !!form.qb_vendor_id_cad : true)
-        const paymentCovered = dirCur.includes('USD') ? !!form.default_payment_account_id_usd : !!form.default_payment_account_id_cad
-        const showCurrency = form.directory_currency && !currencyCovered
-        const showPayment = form.directory_payment_method && !paymentCovered
-        const showCategory = form.directory_category && !form.default_expense_account_id
-        const show = showCurrency || showPayment || showCategory || form.directory_particularites
-        return show && (
-          <div className="mb-4 rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-600 space-y-0.5">
-            <p className="font-medium text-slate-500 uppercase tracking-wide text-[10px]">Répertoire Fournisseurs_Particularités (Drive — lecture seule)</p>
-            {(showCurrency || showPayment) && (
-              <p>
-                {showCurrency && <>Devise habituelle : <strong>{form.directory_currency}</strong></>}
-                {showCurrency && showPayment && ' · '}
-                {showPayment && <>Paiement : {form.directory_payment_method}</>}
-              </p>
-            )}
-            {showCategory && <p>Catégorie comptable : <strong>{form.directory_category}</strong></p>}
-            {form.directory_particularites && <p>Particularités : {form.directory_particularites}</p>}
-          </div>
-        )
-      })()}
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className={labelCls}>Nom canonique</label>
@@ -102,6 +86,19 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
             onChange={e => set('aliases', e.target.value.split('\n'))}
             onBlur={e => save('aliases', e.target.value.split('\n').map(s => s.trim()).filter(Boolean))}
           />
+        </div>
+        <div>
+          <label className={labelCls}>Motifs du relevé bancaire (un par ligne)</label>
+          <textarea className={inputCls} rows={2}
+            value={(form.bank_label_patterns || []).join('\n')}
+            onChange={e => set('bank_label_patterns', e.target.value.split('\n'))}
+            onBlur={e => save('bank_label_patterns', e.target.value.split('\n').map(s => s.trim()).filter(Boolean))}
+          />
+          <p className="text-[11px] text-slate-400 mt-1">
+            Comment ce fournisseur apparaît sur un relevé (« AMZN », « SQ *LE CAFE »).
+            Sert à reconnaître ses transactions bancaires et à aller chercher la facture
+            sur son portail. À ne pas confondre avec les alias, qui servent à lire les documents.
+          </p>
         </div>
         {pick('qb_vendor_id_cad', 'Vendor QuickBooks — CAD', qb.vendorOptionsCad)}
         {pick('qb_vendor_id_usd', 'Vendor QuickBooks — USD', qb.vendorOptionsUsd,
@@ -122,6 +119,28 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
         </div>
         {pick('default_tax_code_id_cad', 'Code de taxe — CAD', taxOptions)}
         {pick('default_tax_code_id_usd', 'Code de taxe — USD', taxOptions)}
+
+        {/* Particularités du fournisseur — rapatriées du Google Doc
+            « Fournisseurs_Particularités », l'ERP en est la seule source de vérité.
+            Ces champs alimentent le prompt d'extraction (devise habituelle, catégorie). */}
+        <div className="col-span-2 pt-1">
+          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wide border-t border-slate-100 pt-3">Particularités du fournisseur</p>
+        </div>
+        {text('usual_currency', 'Devise habituelle', { placeholder: 'CAD, USD, CAD/USD…' })}
+        {text('payment_method', 'Mode de paiement', { placeholder: 'Master, BNC, Venn USD…' })}
+        {/* Re-proposé automatiquement dans /paiements-emis dès qu'on saisit ce
+            fournisseur, et ré-appris à chaque commentaire de paiement saisi. */}
+        {text('payment_note', 'Commentaire de paiement habituel', { placeholder: 'Virement Interac, chèque post-daté…' })}
+        {text('qb_category', 'Catégorie comptable', { placeholder: '76000 Serv. web & Téléphonie' })}
+        {text('description', 'Description', { placeholder: 'Ce que fournit ce fournisseur' })}
+        <div className="col-span-2">
+          <label className={labelCls}>Particularités (facturation, taxes, accès…)</label>
+          <textarea className={inputCls} rows={3} value={form.particularites ?? ''}
+            onChange={e => set('particularites', e.target.value)}
+            onBlur={e => save('particularites', e.target.value.trim() === '' ? null : e.target.value)}
+          />
+        </div>
+
         <div className="col-span-2">
           <label className={labelCls}>Notes</label>
           <textarea className={inputCls} rows={2} value={form.notes ?? ''}
@@ -133,7 +152,6 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
       <div className="flex items-center justify-between mt-4">
         <button
           onClick={async () => {
-            if (!confirm(`Supprimer le profil « ${profile.name} » ?`)) return
             try {
               await api.vendorProfiles.delete(profile.id)
               onDeleted(profile.id)
@@ -183,6 +201,19 @@ function CreateModal({ onClose, onCreated }) {
   )
 }
 
+// Survivant proposé par défaut dans un groupe de doublons : le profil le plus
+// renseigné (défauts comptables + particularités), à défaut le premier (ordre alpha).
+const SURVIVOR_WEIGHTED = [
+  'qb_vendor_id_cad', 'qb_vendor_id_usd', 'default_qb_type', 'default_expense_account_id',
+  'default_payment_account_id_cad', 'default_payment_account_id_usd', 'default_transaction_type',
+  'default_tax_code_id_cad', 'default_tax_code_id_usd', 'payment_terms_days',
+  'usual_currency', 'payment_method', 'qb_category', 'description', 'particularites',
+]
+function defaultSurvivor(group) {
+  const score = p => SURVIVOR_WEIGHTED.filter(k => p[k] != null && p[k] !== '').length
+  return group.reduce((best, p) => (score(p) > score(best) ? p : best), group[0])
+}
+
 // Doublons probables (noms normalisés en préfixe l'un de l'autre, ex. DigiKey /
 // DigiKey Electronics) — choisir le profil survivant puis fusionner : les autres
 // deviennent des alias, leurs défauts remplissent les champs vides du survivant.
@@ -192,6 +223,7 @@ function DuplicatesSection({ onMerged, onInspect }) {
   const [excluded, setExcluded] = useState(new Set()) // ids de profils exclus de leur fusion
   const [merging, setMerging] = useState(null)
   const [dismissed, setDismissed] = useState(new Set())
+  const [dismissing, setDismissing] = useState(null)
   const { addToast } = useToast()
 
   const load = useCallback(async () => {
@@ -206,8 +238,7 @@ function DuplicatesSection({ onMerged, onInspect }) {
   if (!groups || !visible.length) return null
 
   const merge = async (idx, group) => {
-    // Survivant par défaut : le profil présent dans le répertoire Drive, sinon le premier.
-    const targetId = survivors[idx] || group.find(p => p.in_directory)?.id || group[0].id
+    const targetId = survivors[idx] || defaultSurvivor(group).id
     const sourceIds = group.filter(p => p.id !== targetId && !excluded.has(p.id)).map(p => p.id)
     if (!sourceIds.length) { addToast({ message: 'Aucun profil à absorber — tout est exclu.', type: 'error' }); return }
     setMerging(idx)
@@ -219,6 +250,18 @@ function DuplicatesSection({ onMerged, onInspect }) {
     } catch (e) {
       addToast({ message: `Fusion échouée : ${e.message}`, type: 'error' })
     } finally { setMerging(null) }
+  }
+
+  // « Pas un doublon » — persistant côté serveur : le groupe ne sera re-proposé que
+  // si sa composition change (ex. un nouveau profil homonyme est créé plus tard).
+  const dismiss = async (idx, group) => {
+    setDismissing(idx)
+    try {
+      await api.vendorProfiles.dismissDuplicates(group.map(p => p.id))
+      setDismissed(d => new Set([...d, idx]))
+    } catch (e) {
+      addToast({ message: `Échec : ${e.message}`, type: 'error' })
+    } finally { setDismissing(null) }
   }
 
   return (
@@ -235,7 +278,7 @@ function DuplicatesSection({ onMerged, onInspect }) {
           <div key={group.map(p => p.id).join('-')} className="flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-md bg-white/70 border border-amber-100 px-3 py-2">
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1 flex-1 min-w-0">
               {group.map(p => {
-                const isSurvivor = (survivors[idx] || group.find(x => x.in_directory)?.id || group[0].id) === p.id
+                const isSurvivor = (survivors[idx] || defaultSurvivor(group).id) === p.id
                 const isExcluded = !isSurvivor && excluded.has(p.id)
                 return (
                   <span key={p.id} className={`flex items-center gap-1.5 text-sm text-amber-900 ${isExcluded ? 'opacity-40' : ''}`}>
@@ -251,7 +294,6 @@ function DuplicatesSection({ onMerged, onInspect }) {
                       className={`font-medium hover:underline decoration-amber-400 underline-offset-2 text-left ${isExcluded ? 'line-through' : ''}`}
                       title="Voir les détails de ce profil"
                     >{p.name}</button>
-                    {p.in_directory && <Badge color="blue">Répertoire</Badge>}
                     {!isSurvivor && (
                       <button
                         onClick={() => setExcluded(x => { const n = new Set(x); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n })}
@@ -265,10 +307,11 @@ function DuplicatesSection({ onMerged, onInspect }) {
             </div>
             <div className="flex items-center gap-2 ml-auto">
               <button
-                onClick={() => setDismissed(d => new Set([...d, idx]))}
-                className="px-2 py-1 text-xs text-amber-700 hover:bg-amber-100 rounded"
-                title="Pas un doublon — ignorer pour cette session"
-              >Ignorer</button>
+                onClick={() => dismiss(idx, group)}
+                disabled={dismissing != null}
+                className="px-2 py-1 text-xs text-amber-700 hover:bg-amber-100 rounded disabled:opacity-50"
+                title="Pas un doublon — ne plus proposer ce groupe"
+              >{dismissing === idx ? 'Ignorer…' : 'Ignorer'}</button>
               <button
                 onClick={() => merge(idx, group)}
                 disabled={merging != null}
@@ -278,6 +321,92 @@ function DuplicatesSection({ onMerged, onInspect }) {
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+// Fournisseurs sans activité récente : aucun abonnement actif ET aucun reçu depuis
+// 12 mois (ou aucun reçu du tout — l'historique de reçus de l'ERP est jeune, d'où le
+// libellé distinct). Archivage en lot ; sans risque : un profil archivé se recrée
+// automatiquement, défauts réappris, à la prochaine publication QB de ce fournisseur.
+const INACTIVE_MONTHS = 12
+function InactiveSection({ profiles, onArchived }) {
+  const [open, setOpen] = useState(false)
+  const [selected, setSelected] = useState(new Set())
+  const [archiving, setArchiving] = useState(false)
+  const { addToast } = useToast()
+
+  const cutoff = useMemo(() => {
+    const d = new Date()
+    d.setMonth(d.getMonth() - INACTIVE_MONTHS)
+    return d.toISOString().slice(0, 10)
+  }, [])
+  const inactive = useMemo(
+    () => profiles.filter(p => !p.active_subscriptions && (!p.last_receipt_date || p.last_receipt_date < cutoff)),
+    [profiles, cutoff],
+  )
+  if (!inactive.length) return null
+
+  const toggle = id => setSelected(s => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const allSelected = inactive.every(p => selected.has(p.id))
+
+  const archive = async () => {
+    const ids = inactive.filter(p => selected.has(p.id)).map(p => p.id)
+    if (!ids.length) return
+    setArchiving(true)
+    let done = 0
+    try {
+      for (const id of ids) { await api.vendorProfiles.delete(id); done++ }
+      addToast({ message: `${done} profil(s) archivé(s)`, type: 'success' })
+    } catch (e) {
+      addToast({ message: `Archivage interrompu après ${done} profil(s) : ${e.message}`, type: 'error' })
+    } finally {
+      setArchiving(false)
+      setSelected(new Set())
+      onArchived()
+    }
+  }
+
+  return (
+    <div className="mb-5 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3" data-testid="vendor-inactive">
+      <div className="flex items-center justify-between gap-3">
+        <button onClick={() => setOpen(o => !o)} className="text-sm font-medium text-slate-700 hover:text-slate-900 text-left">
+          <span className="inline-block w-4 text-slate-400">{open ? '▾' : '▸'}</span>
+          {inactive.length} fournisseur(s) sans activité récente
+          <span className="font-normal text-slate-500"> — aucun abonnement actif ni reçu depuis {INACTIVE_MONTHS} mois</span>
+        </button>
+        {open && (
+          <button
+            onClick={archive}
+            disabled={archiving || !selected.size}
+            className="px-2.5 py-1 text-xs font-medium text-white bg-slate-600 hover:bg-slate-700 rounded disabled:opacity-40"
+            data-testid="vendor-inactive-archive"
+          >{archiving ? 'Archivage…' : `Archiver la sélection${selected.size ? ` (${selected.size})` : ''}`}</button>
+        )}
+      </div>
+      {open && (
+        <div className="mt-3">
+          <label className="flex items-center gap-2 text-xs text-slate-500 mb-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={allSelected}
+              onChange={() => setSelected(allSelected ? new Set() : new Set(inactive.map(p => p.id)))}
+            />
+            Tout sélectionner
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-1 max-h-72 overflow-y-auto pr-1">
+            {inactive.map(p => (
+              <label key={p.id} className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer min-w-0" data-testid={`vendor-inactive-row-${p.id}`}>
+                <input type="checkbox" checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
+                <span className="truncate">{p.name}</span>
+                <span className="text-xs text-slate-400 whitespace-nowrap ml-auto">
+                  {p.last_receipt_date ? `dernier reçu ${fmtDate(p.last_receipt_date)}` : 'aucun reçu dans l\'ERP'}
+                </span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -295,6 +424,7 @@ export default function VendorProfiles() {
   const { addToast } = useToast()
   const mounted = useRef(true)
   useEffect(() => () => { mounted.current = false }, [])
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const load = useCallback(async () => {
     try {
@@ -304,6 +434,16 @@ export default function VendorProfiles() {
       if (mounted.current) setLoading(false)
     }
   }, [])
+
+  // Ouverture directe d'une fiche depuis la recherche globale (?open=<id>) —
+  // consommé une fois puis retiré de l'URL pour ne pas rouvrir au retour arrière.
+  useEffect(() => {
+    const openId = searchParams.get('open')
+    if (!openId || !profiles.length) return
+    const found = profiles.find(p => p.id === openId)
+    if (found) setEditing(found)
+    setSearchParams(params => { params.delete('open'); return params }, { replace: true })
+  }, [searchParams, profiles, setSearchParams])
 
   useEffect(() => {
     load()
@@ -352,12 +492,7 @@ export default function VendorProfiles() {
       )
     }
     return {
-      name: row => (
-        <span className="font-medium text-slate-800">
-          {row.name}
-          {row.in_directory && <span className="ml-1.5 align-middle" title="Présent dans Fournisseurs_Particularités"><Badge color="blue">Répertoire</Badge></span>}
-        </span>
-      ),
+      name: row => <span className="font-medium text-slate-800">{row.name}</span>,
       qb_vendors: row => duo(vendName(row.qb_vendor_id_cad), vendName(row.qb_vendor_id_usd)),
       default_qb_type: row => <span className="text-slate-600">{QB_TYPE_LABELS[row.default_qb_type] || '—'}</span>,
       expense_account: row => <span className="text-slate-600 text-xs">{accName(row.default_expense_account_id) || '—'}</span>,
@@ -365,10 +500,11 @@ export default function VendorProfiles() {
       transaction_type: row => <span className="text-slate-600 text-xs">{row.default_transaction_type ? (qb.txTypeByKey.get(row.default_transaction_type)?.label || row.default_transaction_type) : '—'}</span>,
       tax_codes: row => duo(taxName(row.default_tax_code_id_cad), taxName(row.default_tax_code_id_usd)),
       payment_terms_days: row => <span className="tabular-nums text-slate-600">{row.payment_terms_days != null ? `Net ${row.payment_terms_days}` : '—'}</span>,
-      directory_currency: row => <span className="text-slate-600">{row.directory_currency || '—'}</span>,
-      directory_category: row => <span className="text-slate-600">{row.directory_category || '—'}</span>,
-      directory_particularites: row => <span className="text-slate-500 text-xs">{row.directory_particularites || '—'}</span>,
+      usual_currency: row => <span className="text-slate-600">{row.usual_currency || '—'}</span>,
+      qb_category: row => <span className="text-slate-600">{row.qb_category || '—'}</span>,
+      particularites: row => <span className="text-slate-500 text-xs">{row.particularites || '—'}</span>,
       active_subscriptions: row => <span className="tabular-nums text-slate-600">{row.active_subscriptions || 0}</span>,
+      receipt_count: row => <span className="tabular-nums text-slate-600">{row.receipt_count || 0}</span>,
       last_receipt_date: row => <span className="text-slate-600">{row.last_receipt_date ? fmtDate(row.last_receipt_date) : '—'}</span>,
       notes: row => <span className="text-slate-500 text-xs">{row.notes || '—'}</span>,
     }
@@ -398,14 +534,14 @@ export default function VendorProfiles() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2"><BookUser size={22} className="text-brand-600" /> Fournisseurs</h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Défauts comptables par fournisseur — appris à chaque publication QuickBooks et utilisés pour pré-remplir l'extraction de données (vendor par devise, comptes, statut fiscal, code de taxe, échéance).
+              Fiche unique par fournisseur : défauts comptables appris à chaque publication QuickBooks (vendor par devise, comptes, statut fiscal, code de taxe, échéance) et particularités (devise habituelle, mode de paiement, catégorie, facturation/taxes). Le tout pré-remplit l'extraction de données.
             </p>
           </div>
           <div className="flex items-center gap-2">
             <button
               onClick={seed}
               disabled={seeding}
-              title="Créer/enrichir les profils depuis le répertoire Drive et l'historique des transactions publiées (n'écrase rien)"
+              title="Créer/enrichir les profils depuis l'historique des transactions publiées (n'écrase rien)"
               className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200 rounded-lg disabled:opacity-50"
             >
               <Sparkles size={14} /> {seeding ? 'Amorçage…' : 'Amorcer depuis l\'historique'}
@@ -420,6 +556,7 @@ export default function VendorProfiles() {
         </div>
 
         <DuplicatesSection onMerged={load} onInspect={setEditing} />
+        <InactiveSection profiles={profiles} onArchived={load} />
 
         <DataTable
           table="vendor_profiles"
@@ -427,7 +564,7 @@ export default function VendorProfiles() {
           columns={columns}
           data={profiles}
           loading={loading}
-          searchFields={['name', 'notes', 'directory_category', 'directory_particularites']}
+          searchFields={['name', 'notes', 'qb_category', 'description', 'particularites']}
           onRowClick={row => setEditing(row)}
         />
 

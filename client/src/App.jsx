@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import { useEffect } from 'react'
 import { AuthProvider, useAuth } from './lib/auth.jsx'
 import { NavPrefsProvider } from './lib/navPrefs.jsx'
@@ -10,9 +10,11 @@ import { inspectStore } from './lib/dataStore.js'
 import { ToastProvider } from './contexts/ToastContext.jsx'
 import { ConfirmProvider } from './components/ConfirmProvider.jsx'
 import { UndoSendProvider } from './components/UndoSendProvider.jsx'
+import { TravauxQuickProvider } from './components/TravauxQuickPanel.jsx'
 import ServerOfflineOverlay from './components/ServerOfflineOverlay.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import { useFavicon } from './hooks/useFavicon.js'
+import { legacyFinanceTarget } from './lib/financeSections.js'
 
 import Login from './pages/Login.jsx'
 import Setup from './pages/Setup.jsx'
@@ -38,6 +40,7 @@ import RetourDetail from './pages/RetourDetail.jsx'
 import Factures from './pages/Factures.jsx'
 import FactureDetail from './pages/FactureDetail.jsx'
 import Paiements from './pages/Paiements.jsx'
+import PaiementsEmis from './pages/PaiementsEmis.jsx'
 import ItemsVendus from './pages/ItemsVendus.jsx'
 import Abonnements from './pages/Abonnements.jsx'
 import AbonnementMouvements from './pages/AbonnementMouvements.jsx'
@@ -57,12 +60,19 @@ import AchatsFournisseurs from './pages/AchatsFournisseurs.jsx'
 import VendorSubscriptions from './pages/VendorSubscriptions.jsx'
 import VendorProfiles from './pages/VendorProfiles.jsx'
 import PrepaidAccounts from './pages/PrepaidAccounts.jsx'
+import DriveInventory from './pages/DriveInventory.jsx'
+import FinDeMois from './pages/FinDeMois.jsx'
+import Travaux from './pages/Travaux.jsx'
 import DettesLT from './pages/DettesLT.jsx'
+import InvoiceCollection from './pages/InvoiceCollection.jsx'
+import MarketingBudget from './pages/MarketingBudget.jsx'
+import InstagramProspects from './pages/InstagramProspects.jsx'
 import ComptaDashboard from './pages/ComptaDashboard.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
 import SaleReceiptDetail from './pages/SaleReceiptDetail.jsx'
 import JournalEntries from './pages/JournalEntries.jsx'
 import StockMovements from './pages/StockMovements.jsx'
+import RapprochementBancaire from './pages/RapprochementBancaire.jsx'
 import Employees from './pages/Employees.jsx'
 import EmployeeDetail from './pages/EmployeeDetail.jsx'
 import FeuilleDeTemps from './pages/FeuilleDeTemps.jsx'
@@ -77,6 +87,7 @@ import StripePayouts from './pages/StripePayouts.jsx'
 import StripePayoutDetail from './pages/StripePayoutDetail.jsx'
 import DirectDepositDetail from './pages/DirectDepositDetail.jsx'
 import CustomerPostPayment from './pages/CustomerPostPayment.jsx'
+import TicketSurvey from './pages/TicketSurvey.jsx'
 import DiscoveryForms from './pages/DiscoveryForms.jsx'
 import PublicFiles from './pages/PublicFiles.jsx'
 import Settings from './pages/Settings.jsx'
@@ -89,6 +100,13 @@ import Architecture from './pages/Architecture.jsx'
 // blanc). Inoffensive — protégée par auth admin et jamais liée dans le menu.
 function CrashTest() {
   throw new Error('Crash test volontaire (route /__boom) — vérifie l\'ErrorBoundary')
+}
+
+// Compat : /finance/<section> (première version de l'Espace finance, qui avait
+// une page d'accueil à rail) → la page pleine largeur correspondante.
+function LegacyFinanceRedirect() {
+  const { '*': rest } = useParams()
+  return <Navigate to={legacyFinanceTarget(rest)} replace />
 }
 
 function ProtectedRoute({ children, adminOnly = false, hrOnly = false }) {
@@ -137,6 +155,8 @@ function AppRoutes() {
       <Route path="/customer/post-payment" element={<CustomerPostPayment />} />
       {/* Lien public court vers le formulaire de découverte technique — accessible sans login. */}
       <Route path="/d/:token" element={<CustomerPostPayment />} />
+      {/* Sondage de satisfaction envoyé par SMS — public, le jeton est le secret. */}
+      <Route path="/s/:token" element={<TicketSurvey />} />
 
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/dashboard/:section" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
@@ -169,6 +189,8 @@ function AppRoutes() {
       <Route path="/factures" element={<ProtectedRoute><Factures /></ProtectedRoute>} />
       <Route path="/factures/:id" element={<ProtectedRoute><FactureDetail /></ProtectedRoute>} />
       <Route path="/paiements" element={<ProtectedRoute><Paiements /></ProtectedRoute>} />
+      {/* Paiements ÉMIS (remplace l'onglet Pmt_Suivi) — distinct de /paiements (encaissements clients) */}
+      <Route path="/paiements-emis" element={<ProtectedRoute><PaiementsEmis /></ProtectedRoute>} />
       <Route path="/items-vendus" element={<ProtectedRoute><ItemsVendus /></ProtectedRoute>} />
       <Route path="/abonnements" element={<ProtectedRoute><Abonnements /></ProtectedRoute>} />
       <Route path="/abonnements/mouvements" element={<ProtectedRoute><AbonnementMouvements /></ProtectedRoute>} />
@@ -183,8 +205,21 @@ function AppRoutes() {
       <Route path="/achats-fournisseurs" element={<Navigate to="/fournisseurs/achats" replace />} />
       <Route path="/abonnements-fournisseurs" element={<Navigate to="/fournisseurs/abonnements" replace />} />
       <Route path="/comptes-prepayes" element={<ProtectedRoute><PrepaidAccounts /></ProtectedRoute>} />
+      <Route path="/inventaire-drive" element={<ProtectedRoute><DriveInventory /></ProtectedRoute>} />
+      <Route path="/fin-de-mois" element={<ProtectedRoute><FinDeMois /></ProtectedRoute>} />
+      <Route path="/travaux" element={<ProtectedRoute><Travaux /></ProtectedRoute>} />
       <Route path="/dettes-lt" element={<ProtectedRoute><DettesLT /></ProtectedRoute>} />
+      <Route path="/collecte-factures" element={<ProtectedRoute><InvoiceCollection /></ProtectedRoute>} />
+      <Route path="/budget-marketing" element={<ProtectedRoute><MarketingBudget /></ProtectedRoute>} />
+      <Route path="/prospects-instagram" element={<ProtectedRoute><InstagramProspects /></ProtectedRoute>} />
+      {/* Douanes (ASFC) : le suivi CARM est devenu un onglet des Comptes prépayés
+          — c'est un compte prépayé comme un autre. L'ancienne URL suit. */}
+      <Route path="/douanes" element={<Navigate to="/comptes-prepayes?onglet=douanes" replace />} />
       <Route path="/comptabilite" element={<ProtectedRoute><ComptaDashboard /></ProtectedRoute>} />
+      {/* Espace finance : plus de page d'accueil — l'entrée de menu déploie ses
+          sections au survol et mène droit aux pages ci-dessus. Les anciennes
+          URLs /finance/<section> redirigent vers la page correspondante. */}
+      <Route path="/finance/*" element={<ProtectedRoute><LegacyFinanceRedirect /></ProtectedRoute>} />
       <Route path="/depenses" element={<Navigate to="/fournisseurs/achats" replace />} />
       <Route path="/factures-fournisseurs" element={<Navigate to="/fournisseurs/achats" replace />} />
       <Route path="/sale-receipts" element={<ProtectedRoute><SaleReceipts /></ProtectedRoute>} />
@@ -194,6 +229,7 @@ function AppRoutes() {
       <Route path="/depots-directs/:id" element={<ProtectedRoute><DirectDepositDetail /></ProtectedRoute>} />
       <Route path="/journal-entries" element={<ProtectedRoute><JournalEntries /></ProtectedRoute>} />
       <Route path="/stock-movement" element={<ProtectedRoute><StockMovements /></ProtectedRoute>} />
+      <Route path="/rapprochement" element={<ProtectedRoute><RapprochementBancaire /></ProtectedRoute>} />
       <Route path="/employees" element={<ProtectedRoute hrOnly><Employees /></ProtectedRoute>} />
       <Route path="/employees/:id" element={<ProtectedRoute hrOnly><EmployeeDetail /></ProtectedRoute>} />
       <Route path="/feuille-de-temps" element={<ProtectedRoute><FeuilleDeTemps /></ProtectedRoute>} />
@@ -215,6 +251,9 @@ function AppRoutes() {
       <Route path="/automations" element={<ProtectedRoute><Automations /></ProtectedRoute>} />
       <Route path="/automations/:id" element={<ProtectedRoute><AutomationDetail /></ProtectedRoute>} />
       <Route path="/agent" element={<ProtectedRoute><Agent /></ProtectedRoute>} />
+      {/* File de prompts propre à la section Agent — même page que /travaux, mais
+          liste distincte (space='agent') ; suggestions et idées partagées. */}
+      <Route path="/agent/travaux" element={<ProtectedRoute><Travaux space="agent" /></ProtectedRoute>} />
 
       <Route path="/__boom" element={<ProtectedRoute adminOnly><CrashTest /></ProtectedRoute>} />
 
@@ -232,7 +271,12 @@ export default function App() {
           <ToastProvider>
             <ConfirmProvider>
               <UndoSendProvider>
-                <AppRoutes />
+                {/* File de travaux joignable de partout (bouton de la barre de
+                    gauche + ⌘/Ctrl + /) : monté ici, au-dessus des routes, pour
+                    survivre à la navigation — Layout, lui, est remonté à chaque page. */}
+                <TravauxQuickProvider>
+                  <AppRoutes />
+                </TravauxQuickProvider>
                 <ServerOfflineOverlay />
               </UndoSendProvider>
             </ConfirmProvider>

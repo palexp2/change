@@ -272,7 +272,7 @@ export const CUSTOM_FIELD_TABLES = new Set([
   'returns', 'sale_receipts', 'serial_numbers', 'interactions',
   'order_items', 'abonnements', 'retours', 'return_items', 'adresses',
   'soumissions', 'assemblages', 'paies', 'paie_items', 'bom_items', 'company_serials',
-  'payments',
+  'payments', 'serial_state_changes',
 ])
 
 // Colonne DataTable dérivée d'un champ custom — mapping partagé entre les pages

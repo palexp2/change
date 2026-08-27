@@ -1,7 +1,12 @@
-import { randomBytes } from 'crypto'
+import { randomBytes, randomInt } from 'crypto'
 
 // Crockford base32 — sans I, L, O, U pour éviter confusion à l'oral.
 const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'
+
+// Base62 — format des identifiants Airtable (ex: B4Fehk9jYd4s4B). Réservé aux
+// jetons qui voyagent dans une URL et que personne ne dicte à l'oral : la casse
+// mixte double l'entropie mais rend le jeton illisible au téléphone.
+const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 
 // Confusion classique → chiffre/lettre canonique (insensible à la casse).
 const NORMALIZE_MAP = {
@@ -18,6 +23,15 @@ export function generateShortToken(length = 10) {
   for (let i = 0; i < length; i++) {
     out += ALPHABET[bytes[i] % 32]
   }
+  return out
+}
+
+// Jeton base62 de 14 caractères, format Airtable (~83 bits d'entropie).
+// randomInt plutôt que randomBytes % 62 : 256 n'est pas un multiple de 62, le
+// modulo biaiserait les 8 premiers caractères de l'alphabet.
+export function generateBase62Token(length = 14) {
+  let out = ''
+  for (let i = 0; i < length; i++) out += BASE62[randomInt(BASE62.length)]
   return out
 }
 

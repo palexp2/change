@@ -2,6 +2,15 @@
   "_comment": "Journal des nouveautés affiché dans l'app (/changelog). Fichier versionné : ajouter une entrée en TÊTE du tableau `entries` à chaque livraison notable de fonctionnalité. Format d'une entrée — date: 'YYYY-MM-DD' (date métier, sans heure), title: titre court, category: étiquette de domaine (ex. Comptabilité, Envois, Ventes…), changes: liste de { type, text }. type ∈ 'new' (nouveauté), 'improved' (amélioration), 'fixed' (correction). Les entrées sont triées par date décroissante à l'affichage, pas besoin de les ranger ici.",
   "entries": [
     {
+      "date": "2026-08-27",
+      "title": "Stabilité : l'app ne se fige plus pendant que l'agent travaille",
+      "category": "Application",
+      "changes": [
+        { "type": "fixed", "text": "Une tâche de l'agent autonome pouvait saturer le serveur au point de rendre l'ERP totalement inaccessible (le 27 août, 1 h 34 d'indisponibilité). Chaque exécution est désormais plafonnée en mémoire, en CPU et en nombre de processus : elle ralentit toute seule au lieu d'emporter l'application avec elle." },
+        { "type": "fixed", "text": "Le déploiement automatique horaire reconstruisait bien l'interface mais ne redémarrait jamais le serveur : les corrections côté serveur n'étaient appliquées qu'au redémarrage manuel suivant." }
+      ]
+    },
+    {
       "date": "2026-06-18",
       "title": "Journal des nouveautés",
       "category": "Application",

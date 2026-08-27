@@ -1,0 +1,28 @@
+{
+  "//": "Settings additionnels passés via --settings aux exécutions détachées de l'agent (taskRunner.runDetachedExecution). Branche le hook de steering : les messages envoyés depuis la carte /travaux pendant la tâche sont livrés à Claude après le prochain outil (PostToolUse) ou juste avant la fin (Stop). Le script sort en silence quand ERP_AGENT_TASK_ID est absent.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /home/ec2-user/erp/server/scripts/agent-steer-hook.mjs",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /home/ec2-user/erp/server/scripts/agent-steer-hook.mjs",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

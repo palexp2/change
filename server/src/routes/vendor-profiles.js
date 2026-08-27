@@ -2,48 +2,52 @@ import { Router } from 'express'
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { normalizeVendorKey } from '../services/vendorDirectory.js'
-import { serializeProfile, seedVendorProfiles, mergeVendorProfiles, findDuplicateProfileGroups } from '../services/vendorProfiles.js'
+import { normalizeVendorKey, serializeProfile, seedVendorProfiles, mergeVendorProfiles, findDuplicateProfileGroups, dismissDuplicateGroup } from '../services/vendorProfiles.js'
 
 const router = Router()
 router.use(requireAuth)
 
-// Enrichit un profil des infos du répertoire Drive (lecture seule), du nombre
-// d'abonnements actifs et de la dernière comptabilisation connue.
-function enrich(profile, { directory, subsByKey, lastByKey }) {
-  const key = normalizeVendorKey(profile.name)
-  const dir = directory.get(key) || null
+// Enrichit un profil du nombre d'abonnements actifs, du nombre de reçus et de la
+// dernière comptabilisation connue (les particularités vivent sur le profil lui-même).
+function enrich(profile, { subsByProfile, receiptsByProfile }) {
+  const r = receiptsByProfile.get(profile.id)
   return {
     ...profile,
-    directory_currency: dir?.currency || null,
-    directory_payment_method: dir?.payment_method || null,
-    directory_category: dir?.qb_category || null,
-    directory_particularites: dir?.particularites || null,
-    in_directory: !!dir,
-    active_subscriptions: subsByKey.get(key) || 0,
-    last_receipt_date: lastByKey.get(key)?.date || null,
-    last_receipt_total: lastByKey.get(key)?.total ?? null,
+    active_subscriptions: subsByProfile.get(profile.id) || 0,
+    receipt_count: r?.count || 0,
+    last_receipt_date: r?.date || null,
+    last_receipt_total: r?.total ?? null,
   }
 }
 
+// Les reçus sont rattachés par vendor_profile_id quand il est posé (survit aux
+// fusions/renommages), sinon par nom d'entreprise (nom canonique OU alias du profil).
 function buildContext() {
-  const directory = new Map(
-    db.prepare('SELECT * FROM vendor_directory WHERE deleted_at IS NULL').all()
-      .map(d => [normalizeVendorKey(d.name), d]),
-  )
-  const subsByKey = new Map()
+  const profiles = db.prepare('SELECT id, name, aliases FROM vendor_profiles WHERE deleted_at IS NULL').all().map(serializeProfile)
+  const idByKey = new Map()
+  for (const p of profiles) {
+    const set = (k) => { if (k && !idByKey.has(k)) idByKey.set(k, p.id) }
+    set(normalizeVendorKey(p.name))
+    for (const a of p.aliases) set(normalizeVendorKey(a))
+  }
+  const subsByProfile = new Map()
   for (const s of db.prepare('SELECT vendor, COUNT(*) c FROM vendor_subscriptions WHERE deleted_at IS NULL AND active=1 GROUP BY vendor').all()) {
-    const k = normalizeVendorKey(s.vendor)
-    subsByKey.set(k, (subsByKey.get(k) || 0) + s.c)
+    const pid = idByKey.get(normalizeVendorKey(s.vendor))
+    if (pid) subsByProfile.set(pid, (subsByProfile.get(pid) || 0) + s.c)
   }
-  const lastByKey = new Map()
+  const receiptsByProfile = new Map()
   for (const r of db.prepare(`
-    SELECT company, MAX(COALESCE(receipt_date, substr(created_at,1,10))) date, total
-    FROM sale_receipts WHERE deleted_at IS NULL AND company IS NOT NULL GROUP BY LOWER(TRIM(company))
+    SELECT vendor_profile_id pid, company, COALESCE(receipt_date, substr(created_at,1,10)) date, total
+    FROM sale_receipts WHERE deleted_at IS NULL
   `).all()) {
-    lastByKey.set(normalizeVendorKey(r.company), { date: r.date, total: r.total })
+    const pid = r.pid || (r.company ? idByKey.get(normalizeVendorKey(r.company)) : null)
+    if (!pid) continue
+    const cur = receiptsByProfile.get(pid) || { count: 0, date: null, total: null }
+    cur.count++
+    if (!cur.date || r.date > cur.date) { cur.date = r.date; cur.total = r.total }
+    receiptsByProfile.set(pid, cur)
   }
-  return { directory, subsByKey, lastByKey }
+  return { subsByProfile, receiptsByProfile }
 }
 
 router.get('/', (req, res) => {
@@ -52,7 +56,7 @@ router.get('/', (req, res) => {
   res.json({ data: rows.map(r => enrich(serializeProfile(r), ctx)) })
 })
 
-// Amorçage : profils créés depuis le répertoire Drive + l'historique publié,
+// Amorçage : profils créés depuis l'historique publié,
 // défauts remplis depuis la dernière transaction par devise. Idempotent.
 router.post('/seed', (req, res) => {
   try {
@@ -62,10 +66,28 @@ router.post('/seed', (req, res) => {
   }
 })
 
-// Groupes de doublons probables (clés normalisées en préfixe l'une de l'autre).
+// Groupes de doublons probables (clés normalisées en préfixe l'une de l'autre ou
+// identiques une fois les suffixes légaux retirés). Les groupes ignorés sont tus.
 router.get('/duplicates', (req, res) => {
   const ctx = buildContext()
   res.json({ data: findDuplicateProfileGroups().map(g => g.map(p => enrich(p, ctx))) })
+})
+
+// Marque un groupe « pas des doublons » (persistant) : il ne sera re-proposé que si
+// sa composition change (un nouveau profil rejoint le groupe). Body : { ids: [] }.
+router.post('/duplicates/dismiss', (req, res) => {
+  const ids = req.body?.ids
+  if (!Array.isArray(ids) || ids.length < 2 || ids.some(i => typeof i !== 'string')) {
+    return res.status(400).json({ error: 'ids: tableau d\'au moins 2 ids attendu' })
+  }
+  res.status(201).json({ id: dismissDuplicateGroup(ids) })
+})
+
+// Ré-active la détection pour un groupe précédemment ignoré.
+router.delete('/duplicates/dismissals/:id', (req, res) => {
+  const r = db.prepare(`UPDATE vendor_duplicate_dismissals SET deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=? AND deleted_at IS NULL`).run(req.params.id)
+  if (!r.changes) return res.status(404).json({ error: 'Not found' })
+  res.json({ ok: true })
 })
 
 // Fusionne des profils doublons dans le profil cible :id. Body : { sourceIds: [] }.
@@ -96,6 +118,10 @@ const TEXT_FIELDS = new Set([
   'name', 'qb_vendor_id_cad', 'qb_vendor_id_usd', 'default_qb_type',
   'default_expense_account_id', 'default_payment_account_id_cad', 'default_payment_account_id_usd',
   'default_transaction_type', 'default_tax_code_id_cad', 'default_tax_code_id_usd', 'notes',
+  // Particularités du fournisseur (ex-Google Doc « Fournisseurs_Particularités »).
+  'usual_currency', 'payment_method', 'qb_category', 'description', 'particularites',
+  // Commentaire type du paiement émis (re-proposé dans /paiements-emis).
+  'payment_note',
 ])
 
 router.patch('/:id', (req, res) => {
@@ -119,10 +145,10 @@ router.patch('/:id', (req, res) => {
         if (!Number.isInteger(v) || v < 0 || v > 365) return res.status(400).json({ error: 'payment_terms_days: entier 0-365 attendu' })
       }
       sets.push('payment_terms_days=?'); values.push(v)
-    } else if (key === 'aliases') {
+    } else if (key === 'aliases' || key === 'bank_label_patterns') {
       const v = req.body[key]
-      if (!Array.isArray(v) || v.some(a => typeof a !== 'string')) return res.status(400).json({ error: 'aliases: tableau de chaînes attendu' })
-      sets.push('aliases=?'); values.push(JSON.stringify(v.map(a => a.trim()).filter(Boolean)))
+      if (!Array.isArray(v) || v.some(a => typeof a !== 'string')) return res.status(400).json({ error: `${key}: tableau de chaînes attendu` })
+      sets.push(`${key}=?`); values.push(JSON.stringify(v.map(a => a.trim()).filter(Boolean)))
     }
   }
   if (!sets.length) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })

@@ -102,6 +102,12 @@ function open() {
       window.dispatchEvent(new CustomEvent('agent:backlog:updated', { detail: msg }))
       return
     }
+    // Travaux (file de prompts, suggestions, travaux récurrents) : un seul
+    // événement par liste, la page recharge la liste concernée.
+    if (msg.type?.startsWith('travaux:')) {
+      window.dispatchEvent(new CustomEvent(msg.type, { detail: msg }))
+      return
+    }
     if (msg.type === 'sync:progress') {
       window.dispatchEvent(new CustomEvent('sync:progress', { detail: msg }))
       return

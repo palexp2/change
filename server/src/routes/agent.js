@@ -6,11 +6,13 @@ import { fileURLToPath } from 'url'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { AGENT_INTERNAL_SECRET } from '../config/secrets.js'
 import { getClaudeUsage } from '../services/claudeUsage.js'
+import { KNOWN_MODELS } from '../services/agentModel.js'
 import {
   runNextTask, isRunnerBusy, getCurrentTaskId, getCurrentActivity, getStreamBuffer,
   getSettings, setSettings, readBacklog, addBacklogItem, deleteBacklogItem,
   updateBacklogItem, generateInstantProposal, approveBacklogItem,
   requestReply, PROMPT_TEMPLATE_DEFAULTS, DEFAULT_GENERAL_PROMPT,
+  getSessionLimitResetAt, getAgentModelState,
 } from '../services/taskRunner.js'
 
 function safeEqualSecret(provided, expected) {
@@ -80,6 +82,14 @@ router.put('/settings', (req, res) => {
   const patch = {}
   if ('enabled' in req.body) patch.enabled = !!req.body.enabled
   if ('autoApprove' in req.body) patch.autoApprove = !!req.body.autoApprove
+  // Modèle préféré de l'agent (sélecteur du bandeau quotas) — valeur fermée.
+  if ('preferredModel' in req.body) {
+    const model = String(req.body.preferredModel || '').toLowerCase()
+    if (!KNOWN_MODELS.includes(model)) {
+      return res.status(400).json({ error: `preferredModel invalide — choix possibles : ${KNOWN_MODELS.join(', ')}` })
+    }
+    patch.preferredModel = model
+  }
   for (const key of ['generalPrompt', 'instantPrompt', 'conversationPrompt', 'executionPrompt', 'questionPrompt']) {
     if (key in req.body) patch[key] = String(req.body[key] ?? '')
   }
@@ -220,11 +230,24 @@ router.post('/tasks/:id/message', (req, res) => {
   requestReply(task.id) // agent replies live (read-only), independent of the hourly clock
 })
 
-// GET /api/agent/usage — utilisation Claude (session 5 h + semaine 7 j), agrégée
-// depuis les transcriptions locales de Claude Code. Résultat mis en cache 60 s.
+// GET /api/agent/usage — quotas de l'abonnement Claude (fenêtre glissante de 5 h,
+// total hebdomadaire, plafond hebdo d'un modèle) + jetons consommés, agrégés depuis
+// les transcriptions locales de Claude Code. Résultat mis en cache 60 s.
+//
+// On y joint l'état de l'ordonnanceur : quand une exécution s'est heurtée au quota,
+// le runner se met en pause tout seul jusqu'à la réinitialisation. Sans cette
+// information, la page Travaux montrait une file immobile sans dire pourquoi.
 router.get('/usage', async (req, res) => {
   try {
-    res.json(await getClaudeUsage())
+    const usage = await getClaudeUsage()
+    const at = getSessionLimitResetAt()
+    res.json({
+      ...usage,
+      schedulerLimitResetAt: at > Date.now() ? new Date(at).toISOString() : null,
+      // Modèle de l'agent : le préféré (fable), celui réellement actif (opus quand le
+      // plafond hebdomadaire de fable est épuisé) et les quotas par modèle en cours.
+      agentModel: getAgentModelState(),
+    })
   } catch (err) {
     res.status(500).json({ error: 'Impossible de calculer l\'utilisation Claude : ' + err.message })
   }

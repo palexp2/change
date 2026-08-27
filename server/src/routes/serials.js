@@ -55,6 +55,34 @@ router.get('/accounting/transitions', (req, res) => {
   res.json({ data: rows })
 })
 
+// GET /api/serials/state-changes
+// Mouvements bruts (une ligne par changement d'état), avec les colonnes custom
+// de serial_state_changes (sc.* les inclut) pour affichage dans le DataTable
+// de la page Mouvements numéros de série.
+router.get('/state-changes', (req, res) => {
+  const { since, limit = 2000 } = req.query
+  const params = []
+  let where = ''
+  if (since) { where = 'WHERE COALESCE(sc.changed_at, sc.created_at) >= ?'; params.push(since) }
+  const rows = db.prepare(`
+    SELECT
+      sc.*,
+      sn.serial,
+      pr.name_fr as product_name,
+      pr.sku as product_sku,
+      co.name as company_name
+    FROM serial_state_changes sc
+    LEFT JOIN serial_numbers sn ON sn.id = sc.serial_id
+    LEFT JOIN products pr ON pr.id = sn.product_id
+    LEFT JOIN companies co ON co.id = sn.company_id
+    ${where}
+    ORDER BY COALESCE(sc.changed_at, sc.created_at) DESC
+    LIMIT ?
+  `).all(...params, parseInt(limit))
+  const total = db.prepare(`SELECT COUNT(*) as c FROM serial_state_changes sc ${where}`).get(...params).c
+  res.json({ data: rows, total })
+})
+
 // Liste des changements d'état problématiques: une règle s'applique mais la valeur
 // de fabrication du serial est nulle/manquante. Bloquerait l'agrégation hebdomadaire.
 router.get('/accounting/missing-valuations', (req, res) => {

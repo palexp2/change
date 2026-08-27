@@ -1,13 +1,14 @@
 // Dettes à long terme — cédules de remboursement (BDC, DEC, Ville de Québec…)
 // et comptabilisation des versements dans QB (Dr dette · Dr intérêts · Cr banque).
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Upload, CheckCircle2, Landmark, ExternalLink } from 'lucide-react'
+import { Plus, Upload, CheckCircle2, Landmark, ExternalLink, Calculator, Unlink } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
 
 const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
 const labelCls = 'block text-xs font-medium text-slate-500 mb-1'
@@ -107,7 +108,6 @@ function DebtModal({ debt, onClose, onSaved, onDeleted }) {
           <>
             <button
               onClick={async () => {
-                if (!confirm(`Supprimer la dette « ${debt.label} » et sa cédule ?`)) return
                 try { await api.ltDebts.delete(debt.id); onDeleted(debt.id); onClose() }
                 catch (e) { addToast({ message: e.message, type: 'error' }) }
               }}
@@ -198,6 +198,176 @@ function ImportModal({ debt, onClose, onImported }) {
   )
 }
 
+const FREQUENCIES = [
+  { value: 'monthly', label: 'Mensuelle' },
+  { value: 'quarterly', label: 'Trimestrielle' },
+  { value: 'biweekly', label: 'Aux 2 semaines' },
+  { value: 'weekly', label: 'Hebdomadaire' },
+]
+
+// Génération de la cédule d'amortissement à partir des paramètres du prêt.
+// L'aperçu est calculé par le serveur (même code que l'insertion) pour qu'on ne
+// puisse pas confirmer une cédule différente de celle affichée.
+function GenerateModal({ debt, onClose, onGenerated }) {
+  const [form, setForm] = useState({
+    opening_balance: debt.remaining_balance ?? debt.principal ?? '',
+    annual_rate: debt.annual_rate ?? '',
+    frequency: debt.payment_frequency || 'monthly',
+    payment_amount: debt.payment_amount ?? '',
+    n_payments: '',
+    first_payment_date: debt.next_payment_date || today(),
+  })
+  const [preview, setPreview] = useState(null)
+  const [error, setError] = useState(null)
+  const [replace, setReplace] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const { addToast } = useToast()
+  const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  useEffect(() => {
+    let cancelled = false
+    const t = setTimeout(async () => {
+      try {
+        const r = await api.ltDebts.generatePayments(debt.id, { ...form, preview: true })
+        if (!cancelled) { setPreview(r); setError(null) }
+      } catch (e) {
+        if (!cancelled) { setPreview(null); setError(e.message) }
+      }
+    }, 350)
+    return () => { cancelled = true; clearTimeout(t) }
+  }, [debt.id, form])
+
+  async function generate() {
+    setSaving(true)
+    try {
+      const r = await api.ltDebts.generatePayments(debt.id, { ...form, replace })
+      addToast({
+        message: `${r.inserted} versement(s) générés${r.skipped ? `, ${r.skipped} ignoré(s) (date déjà présente)` : ''}`,
+        type: 'success',
+      })
+      onGenerated()
+      onClose()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const num = (k, label, props = {}) => (
+    <div>
+      <label className={labelCls}>{label}</label>
+      <input className={inputCls} type="number" value={form[k] ?? ''} data-testid={`gen-${k}`}
+        onChange={e => set(k, e.target.value)} {...props} />
+    </div>
+  )
+  const rows = preview?.rows || []
+
+  return (
+    <Modal isOpen onClose={onClose} title={`Générer la cédule — ${debt.label}`} size="lg">
+      <div className="grid grid-cols-3 gap-3">
+        {num('opening_balance', "Solde d'ouverture", { step: '0.01', autoFocus: true })}
+        {num('annual_rate', 'Taux annuel (%)', { step: '0.0001' })}
+        <div>
+          <label className={labelCls}>Fréquence</label>
+          <select className={inputCls} value={form.frequency} data-testid="gen-frequency"
+            onChange={e => set('frequency', e.target.value)}>
+            {FREQUENCIES.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className={labelCls}>Premier versement</label>
+          <input className={inputCls} type="date" value={form.first_payment_date || ''} data-testid="gen-first_payment_date"
+            onChange={e => set('first_payment_date', e.target.value)} />
+        </div>
+        {num('payment_amount', 'Montant du versement', { step: '0.01', placeholder: 'ou nombre de versements' })}
+        {num('n_payments', 'Nombre de versements', { step: '1', min: '1', placeholder: 'si montant inconnu' })}
+      </div>
+
+      <div className="mt-3 border border-slate-200 rounded-lg overflow-hidden" data-testid="gen-preview">
+        {error && <div className="p-3 text-sm text-amber-700 bg-amber-50">{error}</div>}
+        {!error && !preview && <div className="p-3 text-sm text-slate-400">Calcul…</div>}
+        {!error && preview && (
+          <>
+            <div className="px-3 py-2 text-xs text-slate-600 bg-slate-50 border-b border-slate-100">
+              <span data-testid="gen-count">{preview.totals.count} versement(s)</span>
+              {' '}du {fmtDate(preview.totals.first_date)} au {fmtDate(preview.totals.last_date)} ·
+              capital {fmtMoney(preview.totals.principal, debt.currency)} ·
+              intérêts <span data-testid="gen-interest">{fmtMoney(preview.totals.interest, debt.currency)}</span> ·
+              total {fmtMoney(preview.totals.total, debt.currency)}
+            </div>
+            <table className="w-full text-xs">
+              <tbody>
+                {[...rows.slice(0, 3), ...(rows.length > 4 ? [null] : []), ...(rows.length > 3 ? rows.slice(-1) : [])].map((p, i) => (
+                  p === null ? (
+                    <tr key="gap"><td colSpan={4} className="px-3 py-1 text-center text-slate-300">⋯</td></tr>
+                  ) : (
+                    <tr key={p.payment_date + i} className="border-t border-slate-50">
+                      <td className="px-3 py-1 whitespace-nowrap">{fmtDate(p.payment_date)}</td>
+                      <td className="px-3 py-1 text-right tabular-nums">{fmtMoney(p.principal, debt.currency)}</td>
+                      <td className="px-3 py-1 text-right tabular-nums">{fmtMoney(p.interest, debt.currency)}</td>
+                      <td className="px-3 py-1 text-right tabular-nums text-slate-500">{fmtMoney(p.balance_after, debt.currency)}</td>
+                    </tr>
+                  )
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+      </div>
+
+      <label className="flex items-center gap-1.5 mt-2 text-xs text-slate-600">
+        <input type="checkbox" checked={replace} onChange={e => setReplace(e.target.checked)} data-testid="gen-replace" />
+        Remplacer les versements non comptabilisés existants
+      </label>
+      {/* Bouton requis : action transactionnelle (écriture en lot de la cédule) */}
+      <div className="flex justify-end gap-2 mt-4">
+        <button onClick={onClose} className="px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg">Annuler</button>
+        <button onClick={generate} disabled={saving || !preview} data-testid="gen-submit"
+          className="px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50">
+          {saving ? 'Génération…' : `Générer ${preview?.totals.count || 0} versement(s)`}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// Contrôle de concordance : le solde restant de la cédule doit égaler le solde
+// du compte de dette dans QuickBooks. Lecture seule — un écart signale une
+// cédule décalée (versement oublié, intérêts capitalisés non repris…).
+function QbBalanceCheck({ debt }) {
+  const [state, setState] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    setState(null)
+    if (!debt.qb_debt_acctnum) return undefined
+    api.ltDebts.qbBalance(debt.id)
+      .then(r => { if (!cancelled) setState(r) })
+      .catch(e => { if (!cancelled) setState({ error: e.message }) })
+    return () => { cancelled = true }
+  }, [debt.id, debt.qb_debt_acctnum, debt.payment_count, debt.pushed_count])
+
+  if (!debt.qb_debt_acctnum) return null
+  if (!state) return <span className="text-xs text-slate-400" data-testid="qb-balance-check">Vérification du solde QB…</span>
+  if (state.error) {
+    return <span className="text-xs text-slate-400" data-testid="qb-balance-check">Solde QB indisponible : {state.error}</span>
+  }
+  return (
+    <span className="text-xs" data-testid="qb-balance-check">
+      {state.matches ? (
+        <span className="text-emerald-600">
+          Solde concordant avec QuickBooks #{state.acctnum} ({fmtMoney(state.qb_balance, debt.currency)})
+        </span>
+      ) : (
+        <span className="text-amber-600">
+          Écart avec QuickBooks #{state.acctnum} : cédule {fmtMoney(state.erp_balance, debt.currency)} · QB {fmtMoney(state.qb_balance, debt.currency)} ({state.delta > 0 ? '+' : ''}{fmtMoney(state.delta, debt.currency)})
+        </span>
+      )}
+    </span>
+  )
+}
+
 function PublishModal({ debt, payment, onClose, onPublished }) {
   const [publishing, setPublishing] = useState(false)
   const { addToast } = useToast()
@@ -208,7 +378,7 @@ function PublishModal({ debt, payment, onClose, onPublished }) {
     try {
       const r = await api.ltDebts.publishPayment(payment.id)
       addToast({
-        message: r.warning || `Écriture publiée dans QB (JE #${r.qb_je_id}) — cédule jointe en PDF`,
+        message: r.warning || `Dépense publiée dans QB (#${r.qb_txn_id}) — cédule jointe en PDF`,
         type: r.warning ? 'error' : 'success',
       })
       onPublished()
@@ -232,7 +402,7 @@ function PublishModal({ debt, payment, onClose, onPublished }) {
   return (
     <Modal isOpen onClose={onClose} title={`Comptabiliser le versement du ${fmtDate(payment.payment_date)}`} size="md">
       <p className="text-sm text-slate-600 mb-3">
-        Écriture de journal qui sera publiée dans QuickBooks ({debt.label}{debt.loan_number ? ` · prêt ${debt.loan_number}` : ''}) :
+        Dépense qui sera publiée dans QuickBooks ({debt.label}{debt.loan_number ? ` · prêt ${debt.loan_number}` : ''}) :
       </p>
       <table className="w-full text-sm">
         <thead>
@@ -257,7 +427,7 @@ function PublishModal({ debt, payment, onClose, onPublished }) {
       {payment.balance_after != null && (
         <p className="text-xs text-slate-500 mt-2">Solde de la dette après ce versement : {fmtMoney(payment.balance_after, debt.currency)}</p>
       )}
-      {/* Bouton requis : action transactionnelle (publication d'une écriture dans QB) */}
+      {/* Bouton requis : action transactionnelle (publication d'une dépense dans QB) */}
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onClose} className="px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg">Annuler</button>
         <button onClick={publish} disabled={publishing}
@@ -269,8 +439,12 @@ function PublishModal({ debt, payment, onClose, onPublished }) {
   )
 }
 
-function paymentStatus(p) {
-  if (p.qb_je_id) return { label: `Publié · JE #${p.qb_je_id}`, color: 'green' }
+// `qbMissing` = versements dont la transaction QB a été supprimée dans
+// QuickBooks : rien n'est comptabilisé, on n'affiche donc pas « Publié ».
+function paymentStatus(p, qbMissing) {
+  const txnLabel = `${p.qb_txn_type === 'purchase' ? 'Dépense' : 'JE'} #${p.qb_txn_id}`
+  if (p.qb_txn_id && qbMissing?.has(p.id)) return { label: `Non comptabilisé · ${txnLabel} supprimée dans QB`, color: 'red', missing: true }
+  if (p.qb_txn_id) return { label: `Publié · ${txnLabel}`, color: 'green' }
   if (p.pushed_at) return { label: 'Comptabilisé', color: 'green' }
   if (p.payment_date <= today()) return { label: 'À comptabiliser', color: 'amber' }
   return { label: 'À venir', color: 'gray' }
@@ -283,9 +457,12 @@ export default function DettesLT() {
   const [editingDebt, setEditingDebt] = useState(null)
   const [creating, setCreating] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [generating, setGenerating] = useState(false)
   const [publishing, setPublishing] = useState(null)
   const [showFuture, setShowFuture] = useState(false)
+  const [qbMissing, setQbMissing] = useState(null)
   const { addToast } = useToast()
+  const confirm = useConfirm()
 
   const loadDebts = useCallback(async () => {
     const rows = await api.ltDebts.list()
@@ -302,6 +479,20 @@ export default function DettesLT() {
   useEffect(() => { loadDebts().catch(e => addToast({ message: e.message, type: 'error' })) }, [loadDebts, addToast])
   useEffect(() => { loadDetail(selectedId).catch(e => addToast({ message: e.message, type: 'error' })) }, [selectedId, loadDetail, addToast])
 
+  // Contrôle en arrière-plan : les transactions QB des versements publiés
+  // existent-elles toujours ? Supprimée dans QB = rien n'est comptabilisé.
+  // Silencieux si QB est indisponible — on garde alors le statut tel quel.
+  const pushedCount = detail?.payments?.filter(p => p.qb_txn_id).length || 0
+  useEffect(() => {
+    let cancelled = false
+    setQbMissing(null)
+    if (!selectedId || !pushedCount) return undefined
+    api.ltDebts.qbCheck(selectedId)
+      .then(r => { if (!cancelled) setQbMissing(new Set(r.missing || [])) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [selectedId, pushedCount])
+
   const refresh = () => { loadDebts(); loadDetail(selectedId) }
 
   async function markBooked(p) {
@@ -311,6 +502,28 @@ export default function DettesLT() {
   async function unmarkBooked(p) {
     try { await api.ltDebts.unmarkBooked(p.id); refresh() }
     catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+  // Délier la transaction QB : réversible (on peut republier), donc pas de
+  // confirmation — sauf si QB répond que la transaction existe encore.
+  async function unpublish(p) {
+    try {
+      await api.ltDebts.unpublishPayment(p.id)
+      setQbMissing(m => { if (!m) return m; const n = new Set(m); n.delete(p.id); return n })
+      refresh()
+    } catch (e) {
+      if (/existe encore/i.test(e.message)) {
+        const force = await confirm({
+          title: 'Délier quand même ?',
+          message: `${e.message.replace(/ Supprime-la.*$/, '')} Délier quand même laissera la transaction dans QuickBooks sans lien avec ce versement.`,
+          confirmLabel: 'Délier',
+        })
+        if (!force) return
+        try { await api.ltDebts.unpublishPayment(p.id, { force: true }); refresh() }
+        catch (e2) { addToast({ message: e2.message, type: 'error' }) }
+      } else {
+        addToast({ message: e.message, type: 'error' })
+      }
+    }
   }
 
   const debt = detail?.debt
@@ -378,11 +591,25 @@ export default function DettesLT() {
                     {(!debt.qb_debt_acctnum || !debt.qb_interest_acctnum || !debt.qb_bank_acctnum) &&
                       <span className="text-amber-600 ml-1">· comptes QB incomplets</span>}
                   </div>
+                  {debt.annual_rate != null && (
+                    <div className="text-xs text-slate-500 mt-0.5" data-testid="debt-terms">
+                      {String(debt.annual_rate).replace('.', ',')} % ·
+                      {' '}{(FREQUENCIES.find(f => f.value === debt.payment_frequency)?.label || '—').toLowerCase()}
+                      {debt.payment_amount != null && ` · ${fmtMoney(debt.payment_amount, debt.currency)} par versement`}
+                    </div>
+                  )}
+                  <div className="mt-0.5"><QbBalanceCheck debt={debt} /></div>
                 </div>
-                <button onClick={() => setImporting(true)}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 border border-slate-200 hover:bg-slate-50 rounded-lg">
-                  <Upload size={13} /> Importer une cédule
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button onClick={() => setGenerating(true)} data-testid="debt-generate"
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 border border-slate-200 hover:bg-slate-50 rounded-lg">
+                    <Calculator size={13} /> Générer une cédule
+                  </button>
+                  <button onClick={() => setImporting(true)}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 border border-slate-200 hover:bg-slate-50 rounded-lg">
+                    <Upload size={13} /> Importer une cédule
+                  </button>
+                </div>
               </div>
 
               <table className="w-full text-sm">
@@ -405,18 +632,18 @@ export default function DettesLT() {
                     </td></tr>
                   )}
                   {shownPayments.map(p => {
-                    const st = paymentStatus(p)
+                    const st = paymentStatus(p, qbMissing)
                     return (
-                      <tr key={p.id} className={`border-b border-slate-50 ${st.color === 'amber' ? 'bg-amber-50/40' : ''}`}>
+                      <tr key={p.id} className={`border-b border-slate-50 ${st.color === 'amber' ? 'bg-amber-50/40' : st.missing ? 'bg-red-50/40' : ''}`}>
                         <td className="px-4 py-2 text-slate-400">{p.seq}</td>
                         <td className="px-2 py-2 whitespace-nowrap">{fmtDate(p.payment_date)}</td>
                         <td className="px-2 py-2 text-right tabular-nums">{fmtMoney(p.principal, debt.currency)}</td>
                         <td className="px-2 py-2 text-right tabular-nums">{fmtMoney(p.interest, debt.currency)}</td>
                         <td className="px-2 py-2 text-right tabular-nums font-medium">{fmtMoney(p.principal + p.interest, debt.currency)}</td>
                         <td className="px-2 py-2 text-right tabular-nums text-slate-500">{fmtMoney(p.balance_after, debt.currency)}</td>
-                        <td className="px-2 py-2">
-                          {p.qb_je_url ? (
-                            <a href={p.qb_je_url} target="_blank" rel="noreferrer" title="Ouvrir l'écriture dans QuickBooks"
+                        <td className="px-2 py-2" data-testid={`payment-status-${p.id}`}>
+                          {p.qb_txn_url && !st.missing ? (
+                            <a href={p.qb_txn_url} target="_blank" rel="noreferrer" title="Ouvrir dans QuickBooks"
                               className="inline-flex items-center gap-1 group">
                               <Badge color={st.color}>
                                 {st.label} <ExternalLink size={11} className="inline -mt-0.5 ml-0.5 opacity-60 group-hover:opacity-100" />
@@ -437,10 +664,17 @@ export default function DettesLT() {
                               </button>
                             </>
                           )}
-                          {p.pushed_at && !p.qb_je_id && (
+                          {p.pushed_at && !p.qb_txn_id && (
                             <button onClick={() => unmarkBooked(p)}
                               className="px-2 py-1 text-xs text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-md">
                               Démarquer
+                            </button>
+                          )}
+                          {p.qb_txn_id && (
+                            <button onClick={() => unpublish(p)} data-testid={`payment-unpublish-${p.id}`}
+                              title="La transaction n'existe plus dans QuickBooks — délier pour pouvoir recomptabiliser"
+                              className={`px-2 py-1 text-xs rounded-md hover:bg-slate-50 ${st.missing ? 'text-red-600 hover:text-red-700' : 'text-slate-400 hover:text-slate-600'}`}>
+                              <Unlink size={13} className="inline -mt-0.5" /> Délier
                             </button>
                           )}
                         </td>
@@ -476,6 +710,9 @@ export default function DettesLT() {
       )}
       {importing && debt && (
         <ImportModal debt={debt} onClose={() => setImporting(false)} onImported={refresh} />
+      )}
+      {generating && debt && (
+        <GenerateModal debt={debt} onClose={() => setGenerating(false)} onGenerated={refresh} />
       )}
       {publishing && debt && (
         <PublishModal debt={debt} payment={publishing} onClose={() => setPublishing(null)} onPublished={refresh} />

@@ -69,12 +69,18 @@ async function waitFor(fn, timeoutMs = 12000) {
 // une VRAIE exécution (l'agent de prod tourne sur la même DB/le même store). On écrit
 // directement le fichier de settings, en sauvegardant/restaurant la valeur réelle.
 let originalSettingsRaw
+// `.agent-pid` est PARTAGÉ avec l'exécution réelle en cours (prod = dev ici) et
+// deploy.sh s'en sert pour attendre l'agent. Le détruire faisait déclarer « bloquée »
+// au redémarrage suivant une tâche parfaitement vivante, et libérait son slot. On
+// sauvegarde donc son contenu et on le restaure à l'identique.
+let originalPidRaw = null
 function writeSettingsAtomic(obj) {
   const tmp = SETTINGS_FILE + '.exectest.tmp'
   writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', 'utf8')
   renameSync(tmp, SETTINGS_FILE)
 }
 before(() => {
+  originalPidRaw = existsSync(PID_FILE) ? readFileSync(PID_FILE, 'utf8') : null
   originalSettingsRaw = existsSync(SETTINGS_FILE) ? readFileSync(SETTINGS_FILE, 'utf8') : null
   // Forcer OFF pendant le test : finalize()→releaseSlot()→kick() lit ce fichier et ne
   // doit donc rien démarrer.
@@ -84,7 +90,12 @@ before(() => {
 after(() => {
   // Restaurer le fichier de settings réel à l'identique (sans déclencher kick()).
   if (originalSettingsRaw !== null) writeSettingsAtomic(JSON.parse(originalSettingsRaw))
-  try { if (existsSync(PID_FILE)) unlinkSync(PID_FILE) } catch {}
+  // Rendre le fichier PID à son propriétaire (exécution réelle en cours), ou le
+  // retirer s'il n'en avait pas avant le test.
+  try {
+    if (originalPidRaw !== null) writeFileSync(PID_FILE, originalPidRaw, 'utf8')
+    else if (existsSync(PID_FILE)) unlinkSync(PID_FILE)
+  } catch {}
 })
 
 test('exit code 0 → done avec rapport (réussite préservée malgré un restart)', async () => {
@@ -133,5 +144,30 @@ test('process mort sans .code (crash) → blocked', async () => {
     const t = await waitFor(() => { const x = getTask(id); return x && x.status !== 'in_progress' ? x : null }, 15000)
     assert.equal(t.status, 'blocked', 'crash sans code → blocked')
     assert.match(t.agent_result, /sans code de sortie/, 'message de blocage explicite attendu')
+  } finally { cleanupTask(id) }
+})
+
+// Régression du 9 août 2026 : `.agent-pid` est unique pour toute la voie exec. La
+// finalisation d'une tâche le supprimait sans regarder à qui il appartenait —
+// l'exécution réellement en cours perdait son fichier de suivi et le redémarrage
+// suivant la déclarait « bloquée » alors qu'elle tournait toujours (et libérait son
+// slot : une 2e implémentation démarrait dans le même arbre de travail).
+test('la finalisation ne supprime pas le fichier PID d\'une AUTRE exécution', async () => {
+  const id = `e2e-exec-pid-${Date.now()}`
+  const foreign = `e2e-exec-autre-${Date.now()}`
+  try {
+    seedInProgress(id)
+    writeFileSync(LOG(id), transcript('rapport'), 'utf8')
+    writeFileSync(CODE(id), '0\n', 'utf8')
+    // Le fichier PID porte une AUTRE tâche (comme lorsqu'une exécution suivante a
+    // déjà démarré, ou qu'un test l'a réécrit).
+    writeFileSync(PID_FILE, `${DEAD_PID}\n${foreign}`, 'utf8')
+
+    monitorExecution(id, DEAD_PID)
+
+    const t = await waitFor(() => { const x = getTask(id); return x && x.status !== 'in_progress' ? x : null })
+    assert.equal(t.status, 'done')
+    assert.ok(existsSync(PID_FILE), 'le fichier PID de l\'autre exécution doit survivre')
+    assert.match(readFileSync(PID_FILE, 'utf8'), new RegExp(foreign), 'il doit toujours porter l\'autre tâche')
   } finally { cleanupTask(id) }
 })

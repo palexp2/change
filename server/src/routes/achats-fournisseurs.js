@@ -149,6 +149,13 @@ function notifyCtbFacturePayee(prevStatus, row, source) {
     vendor: row.vendor, total: row.total_cad, currency: row.currency || 'CAD',
     dueDate: row.due_date || null, source,
   })).catch(() => {})
+  // Trésorerie : « payée » ne veut pas dire « sortie du compte ». On inscrit un
+  // paiement en attente de passage à la banque, sinon la facture s'évapore de la
+  // projection alors que l'argent y est encore (virement Interac du 1er août
+  // 2026 aux Jardins d'Inverness : invisible partout).
+  import('../services/treasuryPayments.js')
+    .then(({ syncFromAchat }) => syncFromAchat(row, row.created_by || null))
+    .catch(e => console.error('treasuryPayments.syncFromAchat:', e.message))
 }
 
 router.put('/:id', (req, res) => {

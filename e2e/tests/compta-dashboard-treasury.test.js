@@ -40,7 +40,9 @@ describe('Dashboard comptabilité — projection BNC + saisie de solde', () => {
   test('la page /comptabilite affiche les sections attendues', async () => {
     await page.goto(URL + '/comptabilite', { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('h1:has-text("Dashboard comptabilité")', { timeout: 15000 })
-    for (const id of ['treasury-section', 'compta-deferred-revenue', 'compta-missing-receipts']) {
+    // « Revenus reportés » a quitté le dashboard compta : les sections restantes
+    // sont la trésorerie, les anomalies, la paie, l'AGA et les reçus manquants.
+    for (const id of ['treasury-section', 'compta-anomalies', 'compta-paie', 'compta-missing-receipts']) {
       await page.waitForSelector(`[data-testid="${id}"]`, { state: 'attached', timeout: 20000 })
     }
     // La section « Banques & cartes de crédit » a été retirée du dashboard compta.

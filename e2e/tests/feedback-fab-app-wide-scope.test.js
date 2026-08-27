@@ -1,10 +1,10 @@
 // Bulle d'aide (FeedbackFab) — bouton de portée « Toute l'application ».
 // Par défaut la demande est liée à la page courante ; un bouton permet de
-// basculer la portée vers l'ensemble de l'app. Le contexte joint à la
-// suggestion reflète ce choix.
+// basculer la portée vers l'ensemble de l'app. Le contexte joint au prompt
+// déposé dans la file Travaux reflète ce choix.
 //
-// Agent forcé OFF (capturé/restauré) : la tâche est créée `approved` mais NE
-// spawn AUCUNE exécution. Nettoyage en after() : tâche + suggestion supprimées.
+// Agent forcé OFF (capturé/restauré) : l'item reste `queued` et NE spawn AUCUNE
+// exécution. Nettoyage en after() : item de file supprimé.
 
 const { test, describe, before, after } = require('node:test')
 const assert = require('node:assert/strict')
@@ -38,8 +38,7 @@ async function api(page, method, p, body) {
 describe('Bulle d\'aide — portée « Toute l\'application »', () => {
   let browser, ctx, page
   let originalEnabled = false
-  let itemId = null
-  let taskId = null
+  let promptId = null
 
   before(async () => {
     browser = await chromium.launch()
@@ -52,8 +51,7 @@ describe('Bulle d\'aide — portée « Toute l\'application »', () => {
   })
 
   after(async () => {
-    try { if (taskId && page) await api(page, 'DELETE', `/agent/tasks/${taskId}`) } catch {}
-    try { if (itemId && page) await api(page, 'DELETE', `/agent/backlog/${itemId}`) } catch {}
+    try { if (promptId && page) await api(page, 'DELETE', `/travaux/prompts/${promptId}`) } catch {}
     try { if (page) await api(page, 'PUT', '/agent/settings', { enabled: originalEnabled }) } catch {}
     await browser?.close()
   })
@@ -77,17 +75,18 @@ describe('Bulle d\'aide — portée « Toute l\'application »', () => {
     const text = `E2E fab scope ${Date.now()} : uniformiser la police des titres partout dans l'app.`
     await page.fill('[data-testid="feedback-fab-text"]', text)
     await page.click('[data-testid="feedback-fab-submit"]')
-    await page.waitForSelector('[data-testid="feedback-approved"]', { timeout: 10000 })
+    // La modale se referme d'elle-même — plus d'écran de confirmation.
+    await page.waitForSelector('[data-testid="feedback-fab-text"]', { state: 'detached', timeout: 10000 })
 
-    // La suggestion existe et son contexte mentionne l'ensemble de l'application.
-    const backlog = await api(page, 'GET', '/agent/backlog')
-    const item = backlog.find(i => i.text === text)
-    assert.ok(item, 'la suggestion doit exister côté API')
-    itemId = item.id
-    taskId = item.task_id
+    // L'item existe dans la file Travaux et son contexte mentionne l'ensemble
+    // de l'application.
+    const { prompts } = await api(page, 'GET', '/travaux/prompts')
+    const item = (prompts || []).find(p => (p.prompt || '').includes(text))
+    assert.ok(item, 'l\'item doit exister côté API')
+    promptId = item.id
     assert.ok(
-      /ensemble de l'application/i.test(item.context),
-      `le contexte doit mentionner l'ensemble de l'application (reçu: ${item.context})`
+      /ensemble de l'application/i.test(item.prompt),
+      `le contexte doit mentionner l'ensemble de l'application (reçu: ${item.prompt})`
     )
   })
 })

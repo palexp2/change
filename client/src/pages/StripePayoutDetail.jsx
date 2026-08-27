@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, RefreshCw, ExternalLink, CheckCircle2, AlertCircle, Eye, Send, X } from 'lucide-react'
+import { ArrowLeft, RefreshCw, ExternalLink, CheckCircle2, AlertCircle, Info, Eye, Send, X } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
@@ -436,7 +436,7 @@ export default function StripePayoutDetail() {
 }
 
 function PreviewPanel({ preview, currency }) {
-  const { summary, warnings, deposit, lineAccounts, lineRefs } = preview
+  const { summary, warnings, notices, deposit, lineAccounts, lineRefs } = preview
   const [factureModalId, setFactureModalId] = useState(null)
   return (
     <div className="border border-slate-200 rounded-lg overflow-hidden">
@@ -484,6 +484,17 @@ function PreviewPanel({ preview, currency }) {
           </div>
           <ul className="text-xs text-amber-900 list-disc list-inside space-y-0.5">
             {warnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {notices && notices.length > 0 && (
+        <div className="border-t border-sky-200 bg-sky-50 px-4 py-2 space-y-1">
+          <div className="text-xs font-semibold text-sky-800 flex items-center gap-1.5">
+            <Info size={12} /> Signalements ({notices.length}) — n'empêchent pas le push
+          </div>
+          <ul className="text-xs text-sky-900 list-disc list-inside space-y-0.5">
+            {notices.map((n, i) => <li key={i}>{n}</li>)}
           </ul>
         </div>
       )}

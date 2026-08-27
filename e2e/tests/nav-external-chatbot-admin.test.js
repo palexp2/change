@@ -22,6 +22,10 @@ describe('Nav — lien externe "Admin Chatbot"', () => {
     await page.click('button:has-text("Se connecter")')
     await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 10000 })
     await page.goto(URL + '/dashboard', { waitUntil: 'networkidle' })
+    // Le groupe « Autres outils » (qui porte le lien externe Admin Chatbot)
+    // est replié par défaut : on le déplie comme le ferait l'utilisateur.
+    await page.click('nav button:has-text("Autres outils")')
+    await page.waitForSelector('[data-testid="nav-external"]', { timeout: 5000 })
   })
 
   after(async () => {

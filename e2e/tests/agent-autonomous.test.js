@@ -6,9 +6,10 @@
 //   3. Une sous-tâche seedée (kind proposal, sans backlog_id) rend dans la zone
 //      « Sous-tâches de l'agent » avec son badge de risque, supporte le fil de
 //      discussion (agent OFF → message stocké sans spawn) et peut être rejetée.
-//   4. Le formulaire « Nouvelle suggestion » a été RETIRÉ de la page — la création
-//      passe par la bulle « Modifier le système » (FeedbackFab). Le test vérifie
-//      l'absence du formulaire, crée une fiche via la bulle, puis la supprime.
+//   4. Le formulaire « Nouvelle suggestion » a été RETIRÉ de la page. Le test
+//      vérifie son absence, crée une fiche directement par l'API (la bulle
+//      « Modifier le système » dépose désormais dans la file Travaux, pas ici),
+//      puis la supprime.
 //
 // The agent is forced OFF for the whole run so NO execution/conversation Claude is
 // spawned (la suggestion est auto-approuvée en tâche, mais le runner est en pause).
@@ -58,6 +59,13 @@ async function apiPut(page, p, body) {
   return page.evaluate(async ({ path, body }) => {
     const tok = localStorage.getItem('erp_token')
     const r = await fetch('/erp/api' + path, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` }, body: JSON.stringify(body) })
+    return r.json()
+  }, { path: p, body })
+}
+async function apiPost(page, p, body) {
+  return page.evaluate(async ({ path, body }) => {
+    const tok = localStorage.getItem('erp_token')
+    const r = await fetch('/erp/api' + path, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` }, body: JSON.stringify(body) })
     return r.json()
   }, { path: p, body })
 }
@@ -149,14 +157,11 @@ describe('Agent autonome — UI', () => {
     assert.equal(await page.locator('[data-testid="new-suggestion-text"]').count(), 0, 'le champ du formulaire Nouvelle suggestion ne doit plus exister sur /agent')
     assert.equal(await page.locator('[data-testid="new-suggestion-submit"]').count(), 0, 'le bouton du formulaire Nouvelle suggestion ne doit plus exister sur /agent')
 
-    // Création via la bulle (FeedbackFab, montée dans Layout donc visible ici).
+    // Création directe par l'API : la bulle « Modifier le système » dépose
+    // maintenant dans la file de la section Travaux (destination unique), plus
+    // dans le backlog agent. Le cycle de vie de la fiche reste testé ici.
     const ideaText = `E2E suggestion ${Date.now()}`
-    await page.click('[data-testid="feedback-fab"]') // ouvre directement le formulaire (demande générale)
-    await page.waitForSelector('[data-testid="feedback-fab-text"]', { timeout: 5000 })
-    await page.fill('[data-testid="feedback-fab-text"]', ideaText)
-    await page.click('[data-testid="feedback-fab-submit"]')
-    await page.waitForSelector('[data-testid="feedback-approved"]', { timeout: 10000 })
-    await page.click('button:has-text("Fermer")')
+    await apiPost(page, '/agent/backlog', { text: ideaText, context: '/agent' })
 
     // La fiche doit apparaître sur /agent (rechargement pour rafraîchir la liste).
     await page.reload({ waitUntil: 'networkidle' })

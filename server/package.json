@@ -25,6 +25,7 @@
     "node-cron": "^4.2.1",
     "pdf-lib": "^1.17.1",
     "pdfkit": "^0.18.0",
+    "playwright-core": "^1.59.1",
     "postmark": "^4.0.7",
     "sharp": "^0.34.5",
     "stripe": "^21.0.1",

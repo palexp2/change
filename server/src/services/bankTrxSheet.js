@@ -916,8 +916,16 @@ export function trxSheetStatus() {
   }
 }
 
-// Sync horaire (index.js) — coupe-circuit si l'automation est désactivée.
+// Sync aux 20 minutes (index.js) — coupe-circuit si l'automation est
+// désactivée. À cette cadence un passage lent (Drive + grand livre QB des 11
+// comptes) peut déborder sur le suivant : on saute alors le tour plutôt que de
+// lancer deux imports concurrents sur les mêmes lignes.
+let trxSheetSyncRunning = false
 export async function scheduledTrxSheetSync() {
   if (!isSystemAutomationActive(TRX_SHEET_AUTOMATION_ID)) return
-  await syncTrxSheet({ trigger: 'scheduled', apply: true })
+  if (trxSheetSyncRunning) return
+  trxSheetSyncRunning = true
+  try {
+    await syncTrxSheet({ trigger: 'scheduled', apply: true })
+  } finally { trxSheetSyncRunning = false }
 }

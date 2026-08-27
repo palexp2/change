@@ -15,6 +15,7 @@ deploy.log
 
 # Agent autonome — fichiers transitoires (le store .json reste versionné)
 .agent-pid
+.agent-qpid-*
 .agent-exec-*
 agent-tasks.json.tmp
 agent-backlog.json.tmp
@@ -24,3 +25,11 @@ agent-settings.json.tmp
 .env.*
 server/.env*
 !server/.env.example
+
+# Artéfacts temporaires de mise au point (jamais versionnés)
+_tmp_shot.js
+e2e/chk-tmp.cjs
+e2e/test-results/
+server/logs-openai-check.log
+server/src/scripts/tmp-qb-check.js
+.last-deploy-commit

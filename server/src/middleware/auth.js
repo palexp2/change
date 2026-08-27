@@ -3,7 +3,7 @@ import { JWT_SECRET } from '../config/secrets.js';
 import { requestContext } from '../utils/requestContext.js';
 import db from '../db/database.js';
 
-// Le rôle encodé dans le JWT (7 jours) devient périmé dès qu'on modifie le
+// Le rôle encodé dans le JWT (10 ans) devient périmé dès qu'on modifie le
 // compte : on relit donc le rôle courant en DB à chaque requête. Fallback sur
 // le payload si le user n'existe plus (tokens de test signés sans record).
 function currentRole(payload) {

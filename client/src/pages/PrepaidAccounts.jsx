@@ -1,9 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { RefreshCw, Plus, Settings, CheckCircle2, AlertTriangle, ChevronLeft, ChevronRight, ExternalLink, ShieldCheck } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { useQbAccounts } from '../lib/qbAccounts.js'
+import DouanesCarmPanel from './DouanesCarm.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 
@@ -133,7 +137,6 @@ function AccountModal({ account, onClose, onSaved, onDeleted }) {
           <>
             <button
               onClick={async () => {
-                if (!confirm(`Supprimer le compte « ${account.vendor} » et son historique ?`)) return
                 try { await api.prepaid.accounts.delete(account.id); onDeleted(account.id); onClose() }
                 catch (e) { addToast({ message: e.message, type: 'error' }) }
               }}
@@ -510,7 +513,6 @@ function LedgerTab() {
                           {e.source !== 'qb' && (
                             <button
                               onClick={async () => {
-                                if (!confirm('Supprimer cette entrée ?')) return
                                 try { await api.prepaid.entries.delete(e.id); await loadLedger(); await loadAccounts() }
                                 catch (err) { addToast({ message: err.message, type: 'error' }) }
                               }}
@@ -564,6 +566,7 @@ function ExpenseModal({ expense, onClose, onChanged }) {
   })
   const [saving, setSaving] = useState(false)
   const { addToast } = useToast()
+  const { options: acctOptions, accountName } = useQbAccounts()
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
   const save = async (k, v) => {
@@ -604,6 +607,25 @@ function ExpenseModal({ expense, onClose, onChanged }) {
     </div>
   )
 
+  // Sélecteur de compte QB (numéro + nom, recherchable). Persiste immédiatement :
+  // le SearchableSelect n'émet pas de blur.
+  const acctField = (k, label) => (
+    <div>
+      <label className={labelCls}>{label}</label>
+      <SearchableSelect
+        testId={`fpa-${k}`}
+        value={form[k] ?? ''}
+        options={acctOptions}
+        emptyOption="— Aucun compte —"
+        placeholder="— Aucun compte —"
+        onChange={v => { set(k, v || null); save(k, v || null) }}
+      />
+      {form[k] && !accountName(form[k]) && (
+        <p className="text-[11px] text-amber-600 mt-1">Compte #{form[k]} introuvable dans QuickBooks.</p>
+      )}
+    </div>
+  )
+
   return (
     <Modal isOpen onClose={onClose} title={isNew ? 'Nouveau frais payé d\'avance' : form.label} size="lg">
       <div className="grid grid-cols-2 gap-3">
@@ -615,18 +637,30 @@ function ExpenseModal({ expense, onClose, onChanged }) {
           <select className={inputCls} value={form.method} data-testid="fpa-method"
             onChange={e => { set('method', e.target.value); save('method', e.target.value) }}>
             <option value="prorata_jours">Prorata des jours (période)</option>
+            <option value="mensuel_fixe">Montant mensuel fixe (période)</option>
             <option value="manuel">Montants manuels par mois</option>
             <option value="aucun">Aucun (dépôt, imputation ponctuelle)</option>
           </select>
         </div>
-        {form.method === 'prorata_jours' && (
+        {(form.method === 'prorata_jours' || form.method === 'mensuel_fixe') && (
           <>
             {field('amort_start', 'Début de la période', { type: 'date', 'data-testid': 'fpa-start' })}
             {field('amort_end', 'Fin de la période', { type: 'date', 'data-testid': 'fpa-end' })}
           </>
         )}
-        {field('expense_acctnum', 'Compte de dépense QB (Dr)', { placeholder: 'ex. 54100' })}
-        {field('fpa_acctnum', 'Compte FPA QB (Cr)', { placeholder: '13000' })}
+        {form.method === 'mensuel_fixe' && (
+          <div className="col-span-2">
+            {field('monthly_amount', 'Montant imputé chaque mois', { type: 'number', step: '0.01', min: '0', 'data-testid': 'fpa-monthly' })}
+            <p className="text-[11px] text-slate-400 mt-1">
+              Le même montant est imputé tous les mois de la période ; le dernier mois absorbe le résidu.
+            </p>
+          </div>
+        )}
+        {/* Comptes choisis dans le plan comptable QB, pas tapés de mémoire : le compte
+            de débit est le compte de DÉPENSE (ex. « 60000 · Assurances »), jamais un
+            compte au nom du fournisseur. */}
+        {acctField('expense_acctnum', 'Compte de dépense QB (Dr)')}
+        {acctField('fpa_acctnum', 'Compte FPA QB (Cr)')}
         <div className="col-span-2">
           <label className={labelCls}>Description</label>
           <textarea className={inputCls} rows={2} value={form.description ?? ''} onChange={e => set('description', e.target.value)}
@@ -657,7 +691,6 @@ function ExpenseModal({ expense, onClose, onChanged }) {
           <>
             <button
               onClick={async () => {
-                if (!confirm(`Supprimer « ${expense.label} » de la cédule ?`)) return
                 try { await api.prepaid.expenses.delete(expense.id); onChanged(); onClose() }
                 catch (e) { addToast({ message: e.message, type: 'error' }) }
               }}
@@ -686,6 +719,9 @@ function FpaTab() {
   const [editing, setEditing] = useState(null)
   const [creating, setCreating] = useState(false)
   const { addToast } = useToast()
+  // Le numéro seul ne dit pas où l'imputation atterrit (le libellé de l'item est un
+  // fournisseur, pas un compte) : on affiche le nom du compte QB à côté du numéro.
+  const { accountName } = useQbAccounts()
 
   const load = useCallback(async () => {
     setView(await api.prepaid.expenses.list(fy))
@@ -698,7 +734,6 @@ function FpaTab() {
   useEffect(() => { loadMonth().catch(() => setMonthData(null)) }, [loadMonth])
 
   async function handlePublish() {
-    if (!confirm(`Publier l'écriture FPA de ${monthLabel(month)} dans QuickBooks ?\nDr dépenses / Cr 13000 — total ${fmtMoney(monthData.publishable_total)}`)) return
     setPublishing(true)
     try {
       const out = await api.prepaid.fpaPublish(month)
@@ -750,7 +785,10 @@ function FpaTab() {
               {monthData.lines.map(l => (
                 <tr key={l.expense_id} className="border-t border-slate-50">
                   <td className="py-1.5 pr-4">{l.label}</td>
-                  <td className="py-1.5 pr-4 text-xs text-slate-500">Dr #{l.expense_acctnum || '?'} / Cr #{l.fpa_acctnum}</td>
+                  <td className="py-1.5 pr-4 text-xs text-slate-500">
+                    Dr #{l.expense_acctnum || '?'}{accountName(l.expense_acctnum) ? ` ${accountName(l.expense_acctnum)}` : ''}
+                    {' / '}Cr #{l.fpa_acctnum}{accountName(l.fpa_acctnum) ? ` ${accountName(l.fpa_acctnum)}` : ''}
+                  </td>
                   <td className="py-1.5 pr-4 text-right tabular-nums">{fmtMoney(l.amount)}</td>
                   <td className="py-1.5 text-right">
                     {l.pushed_at
@@ -847,8 +885,22 @@ function FpaTab() {
 
 // ── Page ────────────────────────────────────────────────────────────────────
 
+// Le compte CARM de l'ASFC est un compte prépayé de plus (avances de fonds
+// consommées par les déclarations) : son suivi vit ici, en troisième onglet,
+// plutôt que sur une page isolée.
+const TABS = [
+  ['ledger', 'Soldes fournisseurs'],
+  ['fpa', 'Cédule FPA'],
+  ['douanes', 'Douanes (ASFC)'],
+]
+
 export default function PrepaidAccounts() {
-  const [tab, setTab] = useState('ledger')
+  // Onglet piloté par l'URL (?onglet=) : partageable, et le sous-menu de la
+  // sidebar peut y sauter même quand la page est déjà affichée.
+  const [params, setParams] = useSearchParams()
+  const asked = params.get('onglet')
+  const tab = TABS.some(([k]) => k === asked) ? asked : 'ledger'
+  const setTab = (v) => setParams({ onglet: v }, { replace: true })
   return (
     <Layout>
       <div className="p-6">
@@ -856,11 +908,11 @@ export default function PrepaidAccounts() {
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Comptes prépayés</h1>
             <p className="text-xs text-slate-500 mt-0.5">
-              Soldes fournisseurs à recharges (ex-Twilio_Suivi) et cédule de continuité des frais payés d'avance #13000 (ex-FPA_Continuité).
+              Soldes fournisseurs à recharges (ex-Twilio_Suivi), cédule de continuité des frais payés d'avance #13000 (ex-FPA_Continuité) et compte de douanes ASFC.
             </p>
           </div>
           <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
-            {[['ledger', 'Soldes fournisseurs'], ['fpa', 'Cédule FPA']].map(([k, label]) => (
+            {TABS.map(([k, label]) => (
               <button key={k} onClick={() => setTab(k)} data-testid={`tab-${k}`}
                 className={`px-3 py-1.5 text-sm rounded-md ${tab === k ? 'bg-white shadow-sm font-medium text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}>
                 {label}
@@ -868,7 +920,9 @@ export default function PrepaidAccounts() {
             ))}
           </div>
         </div>
-        {tab === 'ledger' ? <LedgerTab /> : <FpaTab />}
+        {tab === 'ledger' && <LedgerTab />}
+        {tab === 'fpa' && <FpaTab />}
+        {tab === 'douanes' && <DouanesCarmPanel />}
       </div>
     </Layout>
   )

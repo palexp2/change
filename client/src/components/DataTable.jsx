@@ -732,10 +732,36 @@ export function DataTable({
     else setGroupOrderRaw([v])
   }, [])
 
+  // Colonnes `alwaysVisible: true` (colonnes d'ACTION, pas de données) : elles
+  // sont réinjectées dans toute liste de colonnes restaurée. Sans ça, une liste
+  // mémorisée AVANT l'ajout de la colonne (localStorage `erp_allView_cols_*`,
+  // pill, ou config admin) la masque définitivement pour cet utilisateur —
+  // le bouton n'apparaît jamais alors qu'il est bien dans le code.
+  const withAlwaysVisible = useCallback(cols => {
+    const forced = mergedColumns.filter(c => c.alwaysVisible).map(c => c.id)
+    if (!forced.length) return cols
+    const missing = forced.filter(id => !cols.includes(id))
+    if (!missing.length) return cols
+    // Insérée juste après sa voisine de gauche déclarée dans le meta, pour ne
+    // pas casser l'ordre de colonnes que l'utilisateur a pu réorganiser.
+    const order = mergedColumns.map(c => c.id)
+    const next = [...cols]
+    for (const id of missing) {
+      const metaIdx = order.indexOf(id)
+      let at = 0
+      for (let i = metaIdx - 1; i >= 0; i--) {
+        const pos = next.indexOf(order[i])
+        if (pos !== -1) { at = pos + 1; break }
+      }
+      next.splice(at, 0, id)
+    }
+    return next
+  }, [mergedColumns])
+
   // Apply view config when active view changes
   useEffect(() => {
     if (!view.configReady) return
-    setVisibleCols(view.viewVisibleColumns)
+    setVisibleCols(withAlwaysVisible(view.viewVisibleColumns))
     const rules = view.activeView?.color_rules
     setColorRules(Array.isArray(rules) ? rules : [])
     if (!forceAllView) {

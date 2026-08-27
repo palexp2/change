@@ -167,6 +167,30 @@ export async function addContactsToList(listId, contactIds) {
 }
 
 /**
+ * Crée des contacts HubSpot par email (batch upsert, 100 par appel).
+ * On utilise upsert plutôt que create : entre le lookup initial et cet
+ * appel, un contact peut avoir été créé ailleurs (ou exister déjà sous une
+ * forme fusionnée/archivée non retournée par batch/read) — batch/create
+ * échoue alors sur toute la tranche avec un 409 CONFLICT, alors qu'upsert
+ * par idProperty=email retrouve simplement le contact existant sans erreur.
+ * Retourne Map<email_lowercase, contactId>.
+ */
+export async function createContacts(emails) {
+  const out = new Map()
+  const unique = [...new Set(emails.map(e => String(e || '').trim().toLowerCase()).filter(Boolean))]
+  for (let i = 0; i < unique.length; i += 100) {
+    const chunk = unique.slice(i, i + 100)
+    const body = { inputs: chunk.map(email => ({ idProperty: 'email', id: email, properties: { email } })) }
+    const data = await hsFetch('/crm/v3/objects/contacts/batch/upsert', { method: 'POST', body })
+    for (const result of data?.results || []) {
+      const email = result.properties?.email
+      if (email) out.set(email.toLowerCase(), result.id)
+    }
+  }
+  return out
+}
+
+/**
  * Retourne l'ID du portail HubSpot (utilisé pour construire l'URL de la
  * liste dans l'UI HubSpot).
  */

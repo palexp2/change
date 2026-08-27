@@ -786,6 +786,17 @@ async function mappingDataHandler(moduleKey, req, res) {
   const defByAtName = new Map()
   for (const d of defs) defByAtName.set(d.airtable_field_name, d)
 
+  // Champs personnalisés actifs de la table ERP. Lookup indépendant des mappings
+  // Airtable : un champ créé nativement (source='native') n'a aucune ligne dans
+  // airtable_field_mappings, donc le JOIN ci-dessus ne le trouve jamais et la
+  // colonne retombait sur son nom technique (ex. "cf_vendu") + type "text".
+  const cfByColumn = new Map()
+  for (const cf of db.prepare(`
+    SELECT id, column_name, name, type, options
+    FROM custom_fields
+    WHERE erp_table = ? AND deleted_at IS NULL
+  `).all(erpTable)) cfByColumn.set(cf.column_name, cf)
+
   // Colonnes vivantes de la table ERP (PRAGMA)
   const liveCols = new Set(db.prepare(`PRAGMA table_info(${erpTable})`).all().map(c => c.name))
 
@@ -801,24 +812,33 @@ async function mappingDataHandler(moduleKey, req, res) {
   const SYSTEM = new Set(['id', 'airtable_id', 'created_at', 'updated_at', 'deleted_at'])
   const erp_columns = [...liveCols]
     .filter(c => !SYSTEM.has(c))
+    // Colonnes cf_* orphelines : résidus physiques de champs personnalisés
+    // soft-deletés (la colonne SQLite n'est jamais droppée). Sans custom_fields
+    // actif ni mapping, elles ne sont plus rien pour l'utilisateur.
+    .filter(c => !(c.startsWith('cf_') && !cfByColumn.has(c) && !defByColumn.has(c)))
     .map(c => {
       const d = defByColumn.get(c)
+      const cf = cfByColumn.get(c)
       const isNative = d && (d.airtable_field_id || '').startsWith('native_')
       const isMapped = d && !isNative && d.import_disabled !== 1
       let opts = {}
       try { opts = JSON.parse(d?.options || '{}') } catch {}
+      let cfOpts = {}
+      try { cfOpts = JSON.parse(cf?.options || '{}') } catch {}
       return {
         column_name: c,
-        // Label affiché : display_label utilisateur prime, puis airtable_field_name
-        // (qui pour une native vaut le label hardcodé, ex. "Statut").
-        label: d?.display_label || d?.airtable_field_name || c,
-        display_label: d?.display_label || null,
-        field_type: d?.field_type || 'text',
-        target_table: opts.link_target_table || opts.target_table || null,
+        // Label affiché : nom du champ personnalisé, puis display_label du mapping,
+        // puis airtable_field_name (qui pour une native vaut le label hardcodé,
+        // ex. "Statut").
+        label: cf?.name || d?.display_label || d?.airtable_field_name || c,
+        display_label: cf?.name || d?.display_label || null,
+        field_type: cf?.type || d?.field_type || 'text',
+        target_table: opts.link_target_table || opts.target_table
+          || cfOpts.link_target_table || cfOpts.target_table || null,
         mapped: isMapped,
         // Métadonnées pour la page de gestion :
         def_id: d?.id || null,
-        cf_id: d?.cf_id || null,
+        cf_id: cf?.id || d?.cf_id || null,
         is_native: !!isNative,
         mapped_airtable_field: isMapped ? d.airtable_field_name : null,
         airtable_field_id: isMapped ? d.airtable_field_id : null,

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { Plus, Trash2, AlertCircle, CheckCircle2, Ban, SlidersHorizontal } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
@@ -222,6 +223,7 @@ function RuleForm({ initial, transition, accounts, onSave, onCancel }) {
 
 export default function SerialAccountingRules() {
   const [transitions, setTransitions] = useState([])
+  const [movements, setMovements] = useState({ data: [], total: 0 })
   const [rules, setRules] = useState([])
   const [missingVals, setMissingVals] = useState({ data: [], total: 0 })
   const [showMissing, setShowMissing] = useState(false)
@@ -237,17 +239,20 @@ export default function SerialAccountingRules() {
     setLoading(true)
     try {
       const since = new Date(Date.now() - windowDays * 86400000).toISOString().slice(0, 10)
-      const [tRes, rRes, mRes] = await Promise.allSettled([
+      const [tRes, rRes, mRes, mvRes] = await Promise.allSettled([
         api.serials.accounting.transitions({ since }),
         api.serials.accounting.listRules(),
         api.serials.accounting.missingValuations({ since, limit: 500 }),
+        api.serials.stateChanges({ since }),
       ])
       setTransitions(tRes.status === 'fulfilled' ? (tRes.value.data || []) : [])
       setRules(rRes.status === 'fulfilled' ? (rRes.value.data || []) : [])
       setMissingVals(mRes.status === 'fulfilled' ? mRes.value : { data: [], total: 0 })
+      setMovements(mvRes.status === 'fulfilled' ? mvRes.value : { data: [], total: 0 })
       if (tRes.status === 'rejected') console.error('transitions error', tRes.reason)
       if (rRes.status === 'rejected') console.error('rules error', rRes.reason)
       if (mRes.status === 'rejected') console.error('missing error', mRes.reason)
+      if (mvRes.status === 'rejected') console.error('movements error', mvRes.reason)
     } finally {
       setLoading(false)
     }
@@ -382,6 +387,30 @@ export default function SerialAccountingRules() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // Mouvements bruts — changed_at replié sur created_at pour le tri/affichage.
+  const movementRows = useMemo(() => (movements.data || []).map(m => ({
+    ...m,
+    changed_at: m.changed_at || m.created_at,
+  })), [movements])
+
+  const movementColumns = useMemo(() => {
+    const RENDERS = {
+      changed_at:      m => <span className="text-slate-500 text-xs">{fmtDate(m.changed_at)}</span>,
+      serial:          m => m.serial_id
+        ? <Link to={`/serials/${m.serial_id}`} className="text-brand-600 hover:underline">{m.serial || m.serial_id}</Link>
+        : <span className="text-slate-300">—</span>,
+      product_name:    m => <span className="text-slate-500 text-xs">{m.product_name || '—'}</span>,
+      company_name:    m => <span className="text-slate-500 text-xs">{m.company_name || '—'}</span>,
+      previous_status: m => <span className="text-slate-700">{statusLabel(m.previous_status)}</span>,
+      new_status:      m => <span className="text-slate-900 font-medium">{statusLabel(m.new_status)}</span>,
+    }
+    return TABLE_COLUMN_META.serial_state_changes.map(meta => ({
+      ...meta,
+      render: RENDERS[meta.id],
+      ...(meta.id === 'previous_status' || meta.id === 'new_status' ? { formatGroupKey: statusLabel } : {}),
+    }))
+  }, [])
+
   const missingColumns = useMemo(() => {
     const RENDERS = {
       date:   m => <span className="text-slate-500 text-xs">{fmtDate(m.changed_at)}</span>,
@@ -415,13 +444,22 @@ export default function SerialAccountingRules() {
               Chaque transition d'état produit une ligne débit/crédit. L'agrégation hebdomadaire poussera une écriture de journal QuickBooks combinant toutes les transitions de la semaine.
             </p>
           </div>
-          <button
-            onClick={() => setShowFieldMap(true)}
-            className="btn-secondary btn-sm py-1 flex-shrink-0 flex items-center gap-1.5"
-            title="Choisir quels champs Airtable alimentent les changements d'état et les numéros de série"
-          >
-            <SlidersHorizontal size={13} /> Sync Airtable
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <Link
+              to="/airtable/fields/serial_changes"
+              className="btn-secondary btn-sm py-1 flex items-center gap-1.5"
+              title="Ajouter et mapper des champs Airtable supplémentaires sur les changements d'état"
+            >
+              <SlidersHorizontal size={13} /> Gérer les champs
+            </Link>
+            <button
+              onClick={() => setShowFieldMap(true)}
+              className="btn-secondary btn-sm py-1 flex items-center gap-1.5"
+              title="Choisir quels champs Airtable alimentent les changements d'état et les numéros de série"
+            >
+              <SlidersHorizontal size={13} /> Sync Airtable
+            </button>
+          </div>
         </div>
 
         {accountsError && (
@@ -484,6 +522,24 @@ export default function SerialAccountingRules() {
           height="calc(100vh - 460px)"
           emptyState={{ icon: AlertCircle, title: 'Aucune transition ni règle', description: "Aucune transition d'état observée dans la fenêtre et aucune règle définie." }}
         />
+
+        <div className="mt-8">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="text-base font-semibold text-slate-900">Mouvements ({movements.total})</h2>
+            {movements.data.length < movements.total && (
+              <span className="text-xs text-slate-400">{movements.data.length} affichés sur {movements.total} dans la fenêtre</span>
+            )}
+          </div>
+          <DataTable
+            table="serial_state_changes"
+            columns={movementColumns}
+            data={movementRows}
+            loading={loading}
+            searchFields={['serial', 'product_name', 'company_name', 'previous_status', 'new_status']}
+            height="calc(100vh - 460px)"
+            emptyState={{ icon: AlertCircle, title: 'Aucun mouvement', description: "Aucun changement d'état dans la fenêtre d'analyse." }}
+          />
+        </div>
 
         <div className="mt-8">
           <div className="flex items-center justify-between mb-2">

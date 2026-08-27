@@ -3864,6 +3864,51 @@ export function initSchema() {
   try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN duty_amount REAL`) } catch {}
   try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN gst_amount REAL`) } catch {}
 
+  // Comptabilisation automatique (moteur ASFC → QuickBooks).
+  //   party  : « fournisseur » du relevé — dit QUI paie (Orisha, FedEx, UPS, Axxess…)
+  //   detail : description détaillée du portail — dit CE QUE c'est (TPS, droits, surtaxe…)
+  // De ces deux colonnes découlent kind / payer / ventilation droits-TPS, posées
+  // automatiquement à l'import (split_source='auto') et jamais réécrites une fois
+  // que l'utilisateur a corrigé à la main (split_source='manuel').
+  // Modèle comptable : le compte ASFC EST le solde du fournisseur ASFC dans le
+  // compte 21000 (Comptes fournisseurs) — charges en factures fournisseur, nos
+  // paiements en dépense imputée à 21000. Les lignes payées par un courtier ne
+  // sont jamais poussées : la dépense et la TPS arrivent par sa facture.
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN party TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN detail TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN kind TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN payer TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN broker TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN split_source TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN split_rule TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN offset_txn_id TEXT REFERENCES carm_transactions(id)`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN posting_state TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN skip_reason TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN posting_error TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN posting_group TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN qb_txn_id TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN qb_txn_type TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE carm_transactions ADD COLUMN qb_pushed_at TEXT`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_carm_posting_state ON carm_transactions(posting_state, deleted_at)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_carm_posting_group ON carm_transactions(posting_group)`) } catch {}
+
+  // Lettrage paiement → charges (FIFO), pour EXPLIQUER le relevé : quelles charges
+  // un versement règle, combien reste en crédit au portail. Aucune écriture n'en
+  // dépend — la double-entrée (dépense vers 21000 / factures depuis 21000) suffit.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS carm_allocations (
+      id TEXT PRIMARY KEY,
+      payment_txn_id TEXT NOT NULL REFERENCES carm_transactions(id),
+      charge_txn_id TEXT NOT NULL REFERENCES carm_transactions(id),
+      amount REAL NOT NULL,
+      method TEXT NOT NULL DEFAULT 'fifo' CHECK(method IN ('fifo','manuel')),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_carm_alloc_pair ON carm_allocations(payment_txn_id, charge_txn_id) WHERE deleted_at IS NULL`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_carm_alloc_charge ON carm_allocations(charge_txn_id, deleted_at)`) } catch {}
+
   // ── Écritures de fin de mois (provisions) ──────────────────────────────────
   // Remplace les fichiers Drive « Provisions_mensuelles_CTB » et
   // « R&D_Suivi_Feuilles de temps ». Deux provisions récurrentes :
@@ -4540,6 +4585,28 @@ export function initSchema() {
   try { db.exec(`ALTER TABLE instagram_prospects ADD COLUMN source TEXT`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_ig_prospect_week ON instagram_prospects(week_key) WHERE deleted_at IS NULL`) } catch {}
 
+  // contacted_source distingue COMMENT on a su qu'une fiche est contactée :
+  // 'manual' (case cochée dans l'ERP/Airtable), 'public_reply' (un compte
+  // maison a déjà répondu publiquement au commentaire), 'dm_history' (un fil
+  // de conversation existe déjà dans l'inbox Instagram). Sert uniquement à
+  // afficher POURQUOI dans l'UI — ne change pas la logique de dédup.
+  try { db.exec(`ALTER TABLE instagram_prospects ADD COLUMN contacted_source TEXT`) } catch {}
+
+  // Historique des DM Instagram (@orisha_auto), utilisé pour détecter qu'un
+  // prospect a déjà un fil de conversation — donc qu'il ne faut pas le
+  // recontacter — sans appel API par prospect : un seul balayage paginé de
+  // l'inbox (instagramDmHistory.js), puis une jointure locale sur ig_user_id.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS instagram_dm_threads (
+      ig_user_id TEXT PRIMARY KEY,
+      username TEXT,
+      thread_id TEXT,
+      last_activity_at TEXT,
+      first_seen_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+
   // Journal brut des appels ManyChat. Porte l'idempotence (event_key unique :
   // un rejeu ne regonfle pas les compteurs), l'historique « a commenté 4 fois »
   // et le diagnostic quand un flow ManyChat est mal configuré.
@@ -4678,6 +4745,154 @@ export function initSchema() {
   `)
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_scraper_docs_external ON scraper_documents(vendor, external_id)`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_scraper_docs_receipt ON scraper_documents(sale_receipt_id) WHERE sale_receipt_id IS NOT NULL`) } catch {}
+
+
+  // Motifs propres au RELEVÉ BANCAIRE (« AMZN », « SQ *LE CAFE »…), volontairement
+  // séparés de `aliases` : ces derniers servent à reconnaître un fournisseur sur un
+  // DOCUMENT, et y glisser « AMZN » ferait résoudre de travers les factures extraites.
+  // Lus par services/scrapers/vendorFromBankLabel.js pour l'opération inverse —
+  // du libellé bancaire vers le profil.
+  try { db.exec(`ALTER TABLE vendor_profiles ADD COLUMN bank_label_patterns TEXT DEFAULT '[]'`) } catch {}
+
+  // Rattache un compte de collecte au fournisseur dont il ramène les factures :
+  // c'est ce lien qui permet de partir d'une ligne bancaire et de savoir quel
+  // portail interroger. `collect_mode` : 'ciblee' = piloté par les transactions
+  // non comptabilisées ; 'fenetre' = tout ce que le portail expose (repli manuel).
+  try { db.exec(`ALTER TABLE scraper_accounts ADD COLUMN vendor_profile_id TEXT REFERENCES vendor_profiles(id)`) } catch {}
+  try { db.exec(`ALTER TABLE scraper_accounts ADD COLUMN collect_mode TEXT DEFAULT 'ciblee'`) } catch {}
+
+  // Une ligne = « cette transaction bancaire attend sa facture ». Sert à trois
+  // choses : ne pas re-balayer chaque nuit les mêmes centaines de lignes, rendre
+  // l'échec visible (pourquoi rien n'a été trouvé), et espacer les nouvelles
+  // tentatives — un fournisseur publie parfois sa facture plusieurs jours après
+  // avoir débité.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS invoice_needs (
+      id TEXT PRIMARY KEY,
+      bank_txn_id TEXT NOT NULL REFERENCES bank_transactions(id),
+      scraper_account_id TEXT REFERENCES scraper_accounts(id),
+      vendor_profile_id TEXT REFERENCES vendor_profiles(id),
+      amount REAL,
+      currency TEXT,
+      txn_date TEXT,
+      status TEXT NOT NULL DEFAULT 'en_attente'
+        CHECK(status IN ('en_attente','trouvee','introuvable','ambigue','devise_differente','sans_collecteur')),
+      sale_receipt_id TEXT REFERENCES sale_receipts(id),
+      attempts INTEGER DEFAULT 0,
+      last_attempt_at TEXT,
+      note TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_needs_txn ON invoice_needs(bank_txn_id)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_invoice_needs_account ON invoice_needs(scraper_account_id, status)`) } catch {}
+
+  // Motifs de relevé pour les fournisseurs déjà collectés. INSERT-like : on ne
+  // touche pas un profil que l'utilisateur a édité (motifs déjà présents).
+  // « AMZN » est indispensable — la moitié des débits Amazon arrivent sous
+  // « AMZN MKTP CA*… », que le nom canonique « Amazon.ca » ne reconnaît pas.
+  try {
+    const seedPatterns = db.prepare(`
+      UPDATE vendor_profiles SET bank_label_patterns = ?
+      WHERE name = ? AND deleted_at IS NULL
+        AND (bank_label_patterns IS NULL OR bank_label_patterns IN ('', '[]'))
+    `)
+    seedPatterns.run(JSON.stringify(['AMZN', 'AMAZON']), 'Amazon.ca')
+    seedPatterns.run(JSON.stringify(['WIX']), 'Wix.com')
+    // « BELL MOBILITY » au relevé, « Bell Mobilité » au répertoire : l'alias
+    // couvre déjà le cas, le motif le rend explicite et insensible aux variantes.
+    seedPatterns.run(JSON.stringify(['BELL MOBILITY', 'BELL MOBILITE']), 'Bell Mobilité')
+    // Rattachement par défaut du collecteur à son fournisseur : sans ce lien la
+    // collecte ciblée ne sait pas quelles transactions concernent ce portail.
+    // Posé une seule fois — l'utilisateur peut le changer dans la fiche du compte.
+    const bindCollector = db.prepare(`
+      UPDATE scraper_accounts SET vendor_profile_id =
+        (SELECT id FROM vendor_profiles WHERE name = ? AND deleted_at IS NULL)
+      WHERE vendor = ? AND vendor_profile_id IS NULL AND deleted_at IS NULL
+    `)
+    bindCollector.run('Amazon.ca', 'amazon')
+    bindCollector.run('Wix.com', 'wix')
+    bindCollector.run('Bell Mobilité', 'bell')
+  } catch {}
+
+
+  // Paiement mensuel des cartes de crédit Visa (CAD et USD).
+  //
+  // Ces cartes se paient vers le 25 et leur solde n'est disponible nulle part
+  // automatiquement : il se saisit à la main. Il manquait donc un état « à
+  // payer, pas encore émis » pour autre chose qu'une facture fournisseur —
+  // `treasury_payments` signifie « paiement émis » (la ligne y pèse aussitôt
+  // sur la projection du solde) et les occurrences de `recurring_outflows` ne
+  // sont jamais rendues comme des lignes payables dans la cédule.
+  //
+  // Une ligne = un mois × une carte. UNIQUE(period, card_account) porte
+  // l'idempotence : la génération tourne à chaque affichage de la cédule.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS card_payment_dues (
+      id TEXT PRIMARY KEY,
+      period TEXT NOT NULL,
+      card_account TEXT NOT NULL,
+      pay_account TEXT NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'CAD',
+      label TEXT,
+      due_date TEXT NOT NULL,
+      amount REAL,
+      payment_date TEXT,
+      treasury_payment_id TEXT REFERENCES treasury_payments(id),
+      dismissed_at TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_card_dues_period ON card_payment_dues(period, card_account) WHERE deleted_at IS NULL`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_card_dues_open ON card_payment_dues(due_date) WHERE treasury_payment_id IS NULL AND deleted_at IS NULL`) } catch {}
+
+  // Sondages de satisfaction envoyés par SMS (Telnyx) depuis la fiche d'un
+  // billet. Une ligne = un billet : le renvoi réutilise le MÊME jeton, sinon le
+  // premier SMS pointerait vers un lien mort. D'où UNIQUE(ticket_id).
+  //
+  // Le jeton est le SEUL rempart de la page publique /s/:token (aucune auth) :
+  // 14 caractères base62 ≈ 83 bits, jamais séquentiel, jamais devinable.
+  //
+  // `rating` NULL = envoyé, pas encore répondu. La réponse reste modifiable
+  // jusqu'à expiration ; `response_count` distingue la première réponse d'un
+  // changement d'avis (Slack envoie alors un message différent).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ticket_surveys (
+      id TEXT PRIMARY KEY,
+      ticket_id TEXT NOT NULL REFERENCES tickets(id),
+      contact_id TEXT REFERENCES contacts(id),
+      token TEXT NOT NULL,
+      language TEXT NOT NULL CHECK(language IN ('French','English')),
+      phone TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+
+      send_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(send_status IN ('pending','sent','delivered','failed')),
+      send_error TEXT,
+      telnyx_message_id TEXT,
+      sent_at TEXT,
+      sent_by TEXT REFERENCES users(id),
+      delivered_at TEXT,
+      send_count INTEGER NOT NULL DEFAULT 0,
+
+      rating INTEGER CHECK(rating BETWEEN 1 AND 5),
+      accepts_call INTEGER,
+      comment TEXT,
+      responded_at TEXT,
+      response_count INTEGER NOT NULL DEFAULT 0,
+
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_surveys_token ON ticket_surveys(token)`) } catch {}
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_surveys_ticket ON ticket_surveys(ticket_id) WHERE deleted_at IS NULL`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_ticket_surveys_msgid ON ticket_surveys(telnyx_message_id)`) } catch {}
 
   console.log('Database schema initialized');
 }

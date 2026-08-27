@@ -1,4 +1,4 @@
-import {
+import { DownloadCloud,
   LayoutDashboard,
   Landmark,
   FolderOpen,
@@ -35,6 +35,10 @@ import {
   Zap,
   Bot,
   LogIn,
+  Ship,
+  Megaphone,
+  HardDrive,
+  Instagram,
 } from 'lucide-react'
 
 // Order matters: most specific patterns first.
@@ -58,8 +62,14 @@ const ROUTES = [
   [/^\/factures/, FileText],
   [/^\/paiements/, Banknote],
   [/^\/items-vendus/, Tag],
+  [/^\/finance/, Landmark],
   [/^\/comptes-prepayes/, Wallet],
+  [/^\/inventaire-drive/, HardDrive],
   [/^\/dettes-lt/, Landmark],
+  [/^\/budget-marketing/, Megaphone],
+  [/^\/prospects-instagram/, Instagram],
+  [/^\/douanes/, Ship],
+  [/^\/collecte-factures/, DownloadCloud],
   [/^\/abonnements/, RefreshCw],
   [/^\/comptabilite/, Landmark],
   [/^\/fournisseurs/, Receipt],

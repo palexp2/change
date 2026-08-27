@@ -1441,13 +1441,15 @@ function AnomaliesCard() {
 
   useEffect(() => { load() }, [load])
 
+  // Un clic = rejeté. Action réversible (l'anomalie se rouvre depuis la fiche du
+  // reçu), donc pas de fenêtre de confirmation : la ligne disparaît tout de suite
+  // et revient si le serveur refuse.
   async function dismiss(a) {
-    const reason = prompt('Rejeter cette anomalie (faux positif) — raison (optionnelle) :')
-    if (reason === null) return
+    setRows(rs => rs.filter(r => r.id !== a.id))
     try {
-      await api.anomalies.dismiss(a.id, reason)
-      setRows(rs => rs.filter(r => r.id !== a.id))
+      await api.anomalies.dismiss(a.id, null)
     } catch (e) {
+      setRows(rs => [a, ...rs])
       addToast({ message: e.message, type: 'error' })
     }
   }

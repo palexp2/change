@@ -1734,14 +1734,18 @@ onQbMutation(() => bankAccountsCache.clear())
 // trésorerie affichée sur le dashboard. Valeur métier fournie par Orisha.
 const CREDIT_LINE_LIMIT = 360000
 
+// Comptes qui composent la trésorerie : banques + cartes/marges de crédit.
+// Même définition pour le solde du jour et pour l'historique mensuel, sinon les
+// deux chiffres ne parleraient pas du même périmètre.
+const QB_CASH_ACCOUNTS_QUERY = "SELECT * FROM Account WHERE AccountType IN ('Bank', 'Credit Card') AND Active = true MAXRESULTS 300"
+
 router.get('/bank-accounts', async (req, res) => {
   try {
     if (!req.query.refresh) {
       const hit = bankAccountsCache.get('default')
       if (hit) return res.json(hit)
     }
-    const query = "SELECT * FROM Account WHERE AccountType IN ('Bank', 'Credit Card') AND Active = true MAXRESULTS 300"
-    const q = new URLSearchParams({ query })
+    const q = new URLSearchParams({ query: QB_CASH_ACCOUNTS_QUERY })
     const data = await qbGet(`/query?${q}`)
     const rawAccounts = data.QueryResponse?.Account || []
 
@@ -1802,6 +1806,111 @@ router.get('/bank-accounts', async (req, res) => {
     res.json(payload)
   } catch (e) {
     console.error('[dashboard/bank-accounts]', e)
+    res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
+  }
+})
+
+// GET /api/dashboard/bank-accounts/history?months=12
+// Évolution mensuelle de la trésorerie (banques − cartes & marges de crédit).
+//
+// Source : rapport BalanceSheet QuickBooks en colonnes mensuelles
+// (`summarize_column_by=Month`) — chaque colonne donne le solde de FIN de mois
+// de chaque compte. Les comptes retenus sont exactement ceux du panneau du jour
+// (AccountType Bank / Credit Card), appariés par Id de compte plutôt que par
+// nom de section : les libellés du rapport sont localisés (« Cartes de crédit »),
+// donc non fiables comme clé.
+//
+// Convention de signe : dans le BalanceSheet, un passif dû est POSITIF, alors
+// que `Account.CurrentBalance` est négatif pour ce même solde. La trésorerie est
+// donc `banques − cartes` ici, là où le panneau du jour fait une addition.
+//
+// Note FX : le rapport exprime les comptes en devise étrangère à leur valeur
+// aux livres (taux des transactions), pas au taux spot du jour — l'historique
+// peut donc s'écarter légèrement du solde instantané affiché au-dessus.
+const bankHistoryCache = new Map()
+onQbMutation(() => bankHistoryCache.clear())
+
+router.get('/bank-accounts/history', async (req, res) => {
+  try {
+    const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
+    const cacheKey = `m${months}`
+    if (!req.query.refresh) {
+      const hit = bankHistoryCache.get(cacheKey)
+      if (hit) return res.json(hit)
+    }
+
+    const accQ = new URLSearchParams({ query: QB_CASH_ACCOUNTS_QUERY })
+    const accData = await qbGet(`/query?${accQ}`)
+    const typeById = new Map()
+    for (const a of (accData.QueryResponse?.Account || [])) typeById.set(String(a.Id), a.AccountType)
+
+    // Fenêtre glissante : `months` mois finissant par le mois courant (partiel).
+    const now = new Date()
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1))
+    const params = new URLSearchParams({
+      accounting_method: 'Accrual',
+      summarize_column_by: 'Month',
+      start_date: start.toISOString().slice(0, 10),
+      end_date: new Date().toISOString().slice(0, 10),
+    })
+    const data = await qbGet(`/reports/BalanceSheet?${params}`)
+    const report = data?.Report || data
+
+    // Colonnes : la première est le libellé de compte, les suivantes les mois.
+    const cols = (report?.Columns?.Column || []).map(c => {
+      const meta = {}
+      for (const m of (c.MetaData || [])) meta[m.Name] = m.Value
+      return { type: c.ColType, title: c.ColTitle, start: meta.StartDate || null, end: meta.EndDate || null }
+    })
+    const monthCols = cols
+      .map((c, idx) => ({ ...c, idx }))
+      .filter(c => c.type === 'Money' && c.start)
+      .map(c => ({ ...c, month: c.start.slice(0, 7) }))
+
+    const bank = new Array(monthCols.length).fill(0)
+    const creditCard = new Array(monthCols.length).fill(0)
+
+    // Seules les lignes de données portent un Id de compte exploitable ; les
+    // en-têtes/summary de Section sont ignorés pour ne pas double-compter les
+    // comptes parents multidevises.
+    const walk = rows => {
+      for (const row of (rows?.Row || [])) {
+        if (row.type === 'Section') { walk(row.Rows); continue }
+        const cd = row.ColData || []
+        const type = typeById.get(String(cd[0]?.id || ''))
+        if (!type) continue
+        monthCols.forEach((c, i) => {
+          const raw = cd[c.idx]?.value
+          const v = raw === '' || raw == null ? 0 : Number(raw)
+          if (!Number.isFinite(v)) return
+          if (type === 'Bank') bank[i] += v
+          else creditCard[i] += v
+        })
+      }
+    }
+    walk(report?.Rows)
+
+    const round = v => Math.round(v * 100) / 100
+    const currentMonth = new Date().toISOString().slice(0, 7)
+    const series = monthCols.map((c, i) => ({
+      month: c.month,
+      period_end: c.end,
+      bank: round(bank[i]),
+      credit_card: round(creditCard[i]),
+      treasury: round(bank[i] - creditCard[i]),
+      is_current_month: c.month === currentMonth,
+    }))
+
+    const payload = {
+      currency: report?.Header?.Currency || 'CAD',
+      generated_at: new Date().toISOString(),
+      months: series,
+      credit_limit: CREDIT_LINE_LIMIT,
+    }
+    bankHistoryCache.set(cacheKey, payload)
+    res.json(payload)
+  } catch (e) {
+    console.error('[dashboard/bank-accounts/history]', e)
     res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
   }
 })

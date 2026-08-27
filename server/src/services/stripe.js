@@ -444,6 +444,20 @@ export function proRateRefundTax(fullTax, refundGross, invoiceGross) {
   return Math.round(fullTax * ratio * 100) / 100
 }
 
+// Code de taxe QB à retenir quand une facture ne porte AUCUNE taxe effective.
+// Hors Canada → « Détaxé » (code 4) : exports de biens, services/licences à
+// non-résidents, à déclarer à la ligne 101 de la TPS. Pas persisté dans
+// stripe_qb_tax_mapping : le même tax_rate peut redevenir non-nul si Orisha
+// s'inscrit dans cette juridiction.
+// Client canadien sans la moindre taxe → anomalie (taxes jamais facturées, cf.
+// facture EA8C6BB7-0003 Ferme Quatre-Temps) : on retourne null pour que
+// buildDepositFromPayout lève un warning et bloque le push automatique du payout,
+// plutôt que de poster une ligne muette dans les livres.
+export function resolveZeroTaxCode({ taxDetails = [], country = null } = {}) {
+  if (!taxDetails.every(t => (t.amount || 0) === 0)) return null
+  return String(country || '').toUpperCase() === 'CA' ? null : '4'
+}
+
 // Pulls all balance_transactions for a payout with source expansion.
 // Classifies each charge as subscription vs one-time sale and resolves tax mapping.
 export async function syncStripeBalanceTransactions(payoutStripeId) {
@@ -596,14 +610,21 @@ export async function syncStripeBalanceTransactions(payoutStripeId) {
           }
         }
       }
-      // Stripe Tax attache un tax_rate (ex. US state tax) mais la taxe effective est 0 —
-      // client non-résident non facturable pour Orisha. Code QB "Détaxé" (exports de biens,
-      // services/licences à non-résidents), pour que la vente apparaisse à la ligne 101 de
-      // la déclaration TPS. Pas persisté en mapping: le même tax_rate peut redevenir non-nul
-      // si Orisha s'inscrit dans cette juridiction.
-      if (!qbTaxCode && taxDetails.every(t => (t.amount || 0) === 0)) {
-        qbTaxCode = '4'
-      }
+    }
+
+    // Aucune taxe effective sur la facture. Deux formes :
+    //   - Stripe Tax a bien attaché un tax_rate mais à 0 (client non-résident non
+    //     facturable pour Orisha) → tax_details = [{ amount: 0 }].
+    //   - automatic_tax désactivé côté Stripe → AUCUN tax_rate → tax_details = [].
+    //     (abonnements créés à la main dans le dashboard : facture 92E2BD27-0016
+    //     Way Farms, Deposit 17831 du 10 août 2026, poussée sans code de taxe.)
+    // Le second cas passait avant à travers le filet, qui vivait à l'intérieur du
+    // bloc `if (taxEntries.length)`.
+    if (!qbTaxCode && invoice) {
+      qbTaxCode = resolveZeroTaxCode({
+        taxDetails,
+        country: invoice.customer_address?.country || customer?.address?.country,
+      })
     }
     // For refunds, invoice taxes flow back out — invert signs so the stored value
     // reflects the BT direction. Proratise au brut effectivement remboursé : un

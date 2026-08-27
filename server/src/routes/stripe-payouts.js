@@ -78,8 +78,8 @@ router.post('/:stripeId/sync-transactions', async (req, res) => {
 // Preview the QB Deposit payload without sending
 router.get('/:stripeId/preview-deposit', async (req, res) => {
   try {
-    const { deposit, summary, warnings, lineAccounts, lineRefs } = await buildDepositFromPayout(req.params.stripeId)
-    res.json({ deposit, summary, warnings, lineAccounts, lineRefs })
+    const { deposit, summary, warnings, notices, lineAccounts, lineRefs } = await buildDepositFromPayout(req.params.stripeId)
+    res.json({ deposit, summary, warnings, notices, lineAccounts, lineRefs })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

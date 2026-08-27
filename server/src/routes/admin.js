@@ -7,10 +7,9 @@ import { readFileSync, statSync, existsSync } from 'fs';
 import { execSync } from 'child_process';
 import os from 'os';
 import Stripe from 'stripe';
-import { postPaymentDeposit, stripeInvoiceNetHtCents, auditFactureReconciliation } from '../services/quickbooks.js';
+import { postPaymentDeposit, stripeInvoiceNetHtCents } from '../services/quickbooks.js';
 import { qbGet } from '../connectors/quickbooks.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
-import { logSync } from '../services/syncLog.js';
 
 const router = Router();
 router.use(requireAdmin);
@@ -279,30 +278,9 @@ function buildRawUpdate(tableName, body) {
   return { updates, params, applied, rejected, hasUpdatedAt: schemaByName.has('updated_at') }
 }
 
-// GET /api/admin/facture-reconciliation-audit
-// Audit read-only de la constatation des revenus : agrège, à partir des seules
-// colonnes locales (aucun appel QuickBooks), toutes les factures dont l'état de
-// constatation est orphelin/incohérent. Chaque run est tracé dans sync_log pour
-// rester dans la philosophie « visibilité sur les side effects ».
-router.get('/facture-reconciliation-audit', (req, res) => {
-  const t0 = Date.now()
-  try {
-    const result = auditFactureReconciliation()
-    logSync('facture_reconciliation_audit', 'manual', {
-      status: 'success',
-      modified: result.summary.flagged,
-      durationMs: Date.now() - t0,
-    })
-    res.json(result)
-  } catch (e) {
-    logSync('facture_reconciliation_audit', 'manual', {
-      status: 'error',
-      error: e.message,
-      durationMs: Date.now() - t0,
-    })
-    res.status(500).json({ error: e.message })
-  }
-})
+// L'audit de réconciliation factures↔QB (ex-GET /facture-reconciliation-audit)
+// vit désormais sous GET /api/projets/factures/reconciliation-audit — lecture
+// seule, accessible à tout utilisateur connecté, plus seulement admin.
 
 router.get('/factures/:id/raw-schema', (req, res) => {
   const exists = db.prepare('SELECT id FROM factures WHERE id=?').get(req.params.id)
@@ -435,6 +413,7 @@ router.get('/users', (req, res) => {
            TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,'')) as employee_name
     FROM users u
     LEFT JOIN employees e ON u.employee_id = e.id
+    WHERE u.deleted_at IS NULL
     ORDER BY u.name
   `).all();
   res.json(users);
@@ -467,7 +446,7 @@ router.post('/users', async (req, res) => {
 
 // PUT /api/admin/users/:id
 router.put('/users/:id', async (req, res) => {
-  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
+  const user = db.prepare('SELECT id FROM users WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const { name, email, role, active, password, employee_id } = req.body;
@@ -509,7 +488,7 @@ router.put('/users/:id', async (req, res) => {
 
 // POST /api/admin/users/:id/reset-password
 router.post('/users/:id/reset-password', async (req, res) => {
-  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
+  const user = db.prepare('SELECT id FROM users WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
   const { password } = req.body;
   if (!password || password.length < 8) return res.status(400).json({ error: 'Minimum 8 caractères' });
@@ -518,16 +497,24 @@ router.post('/users/:id/reset-password', async (req, res) => {
   res.json({ ok: true });
 });
 
-// DELETE /api/admin/users/:id
+// DELETE /api/admin/users/:id — soft delete : le compte disparaît de la liste
+// et son adresse email est tombstonée pour rester réutilisable malgré UNIQUE(email).
 router.delete('/users/:id', (req, res) => {
   // Can't delete yourself
   if (req.params.id === req.user.id) {
     return res.status(400).json({ error: 'Cannot delete your own account' });
   }
-  const user = db.prepare('SELECT id FROM users WHERE id = ?').get(req.params.id);
+  const user = db.prepare('SELECT id FROM users WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  db.prepare('UPDATE users SET active=0 WHERE id = ?').run(req.params.id);
-  res.json({ message: 'User deactivated' });
+  db.prepare(`
+    UPDATE users
+    SET active = 0,
+        deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+        email = email || '.deleted.' || id,
+        employee_id = NULL
+    WHERE id = ?
+  `).run(req.params.id);
+  res.json({ message: 'User deleted' });
 });
 
 // GET /api/admin/health

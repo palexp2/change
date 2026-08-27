@@ -136,6 +136,18 @@ router.get('/', requireAuth, (req, res) => {
     })
   })
 
+  // Profils fournisseurs (nom canonique ou alias)
+  const vendorProfiles = db.prepare(`
+    SELECT id, name, qb_category FROM vendor_profiles
+    WHERE deleted_at IS NULL AND (name LIKE ? OR aliases LIKE ?)
+    LIMIT 6
+  `).all(like, like)
+  vendorProfiles.forEach(r => results.push({
+    type: 'vendor_profile', id: r.id, label: r.name,
+    sub: r.qb_category || '',
+    url: `/fournisseurs?open=${r.id}`
+  }))
+
   res.json({ results })
 })
 

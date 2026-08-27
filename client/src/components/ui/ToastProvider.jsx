@@ -39,6 +39,7 @@ function ToastContainer({ toasts, onDismiss }) {
           className={`flex items-center gap-3 px-4 py-3 rounded-lg shadow-lg text-sm animate-slide-in-up ${
             toast.type === 'success' ? 'bg-green-600 text-white' :
             toast.type === 'error'   ? 'bg-red-600 text-white' :
+            toast.type === 'warning' ? 'bg-amber-600 text-white' :
             toast.type === 'undo'    ? 'bg-gray-800 text-white' :
                                        'bg-gray-700 text-white'
           }`}>

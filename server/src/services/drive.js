@@ -1,4 +1,4 @@
-import { createWriteStream, existsSync, mkdirSync } from 'fs'
+import { createReadStream, createWriteStream, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
@@ -55,6 +55,34 @@ async function downloadFile(drive, fileId, destPath) {
     dest.on('finish', resolve)
     dest.on('error', reject)
   })
+}
+
+/**
+ * Dépose un fichier local dans le Drive du compte Google connecté.
+ *
+ * Scope `drive.file` : l'ERP ne peut toucher QUE les fichiers qu'il a lui-même créés —
+ * déposer est possible, fouiller le Drive de quelqu'un ne l'est pas. Un compte connecté
+ * avant l'ajout du scope doit être reconnecté depuis la page Connecteurs, sinon Google
+ * répond ACCESS_TOKEN_SCOPE_INSUFFICIENT.
+ *
+ * `parentId` absent = racine de « Mon Drive ». `convertToGoogleDoc` transforme le
+ * contenu en Google Doc (lisible dans le Drive) au lieu de le garder en fichier brut.
+ */
+export async function uploadFileToDrive(connectorOAuthId, {
+  path, name = null, mimeType = 'text/plain', parentId = null, convertToGoogleDoc = false,
+}) {
+  if (!existsSync(path)) throw new Error(`fichier introuvable: ${path}`)
+  const drive = await getDriveClient(connectorOAuthId)
+  const res = await drive.files.create({
+    requestBody: {
+      name: name || path.split('/').pop(),
+      ...(parentId ? { parents: [parentId] } : {}),
+      ...(convertToGoogleDoc ? { mimeType: 'application/vnd.google-apps.document' } : {}),
+    },
+    media: { mimeType, body: createReadStream(path) },
+    fields: 'id, name, webViewLink, size, mimeType',
+  })
+  return res.data
 }
 
 async function syncFolder(drive, folderId, userId) {

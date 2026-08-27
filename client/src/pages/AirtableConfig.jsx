@@ -61,6 +61,7 @@ const SYNC_ALL_MODULES = [
 const FIELD_MODULE_TABS = new Set([
   'contacts', 'companies', 'adresses', 'soumissions', 'pieces', 'serials',
   'assemblages', 'orders', 'achats', 'envois', 'billets', 'retours', 'retour_items',
+  'serial_changes',
 ])
 
 function SyncBtn({ label, syncKey, syncStatus, onSync }) {

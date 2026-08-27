@@ -7,18 +7,29 @@ import { buildPartialUpdate } from '../utils/partialUpdate.js';
 import { checkForeignKeys } from '../utils/fkExists.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
 import { notifyAssignment } from '../services/notifications.js';
+import { surveyEligibility, getSurveyByTicket, sendTicketSurvey, surveyUrl } from '../services/ticketSurveys.js';
 
 const router = Router();
 router.use(requireAuth);
 
+// Sondage de satisfaction : le rating remonte sur CHAQUE ligne de billet pour
+// alimenter la colonne « Satisfaction » (masquée par défaut) sans second appel.
+// LEFT JOIN plutôt que sous-requête : idx_ticket_surveys_ticket est unique, il
+// ne peut donc pas multiplier les lignes.
+const SURVEY_JOIN = `
+     LEFT JOIN ticket_surveys tsv ON tsv.ticket_id = t.id AND tsv.deleted_at IS NULL`
+const SURVEY_COLS = `,
+      tsv.rating as survey_rating, tsv.send_status as survey_send_status,
+      tsv.responded_at as survey_responded_at, tsv.sent_at as survey_sent_at`
+
 function buildTicketRow(id) {
   const r = db.prepare(
     `SELECT t.*, c.name as company_name, u.name as assigned_name,
-      ct.first_name || ' ' || ct.last_name as contact_name
+      ct.first_name || ' ' || ct.last_name as contact_name${SURVEY_COLS}
      FROM tickets t
      LEFT JOIN companies c ON t.company_id = c.id
      LEFT JOIN users u ON t.assigned_to = u.id
-     LEFT JOIN contacts ct ON t.contact_id = ct.id
+     LEFT JOIN contacts ct ON t.contact_id = ct.id${SURVEY_JOIN}
      WHERE t.id = ?`
   ).get(id)
   if (r) r.central_controllers = getCentralControllers(r.company_id)
@@ -69,11 +80,11 @@ router.get('/', (req, res) => {
 
   const tickets = db.prepare(
     `SELECT t.*, c.name as company_name, u.name as assigned_name,
-      ct.first_name || ' ' || ct.last_name as contact_name
+      ct.first_name || ' ' || ct.last_name as contact_name${SURVEY_COLS}
      FROM tickets t
      LEFT JOIN companies c ON t.company_id = c.id
      LEFT JOIN users u ON t.assigned_to = u.id
-     LEFT JOIN contacts ct ON t.contact_id = ct.id
+     LEFT JOIN contacts ct ON t.contact_id = ct.id${SURVEY_JOIN}
      ${where}
      ORDER BY t.created_at DESC
      LIMIT ? OFFSET ?`
@@ -88,15 +99,49 @@ router.get('/ids', (req, res) => {
   res.json(rows.map(r => r.id))
 })
 
+// GET /api/tickets/:id/survey — état du sondage + éligibilité à l'envoi.
+// L'éligibilité vient du serveur (jamais recalculée côté front) pour que le
+// bouton désactivé et le refus d'envoi appliquent exactement la même règle.
+router.get('/:id/survey', (req, res) => {
+  const exists = db.prepare('SELECT id FROM tickets WHERE id = ?').get(req.params.id)
+  if (!exists) return res.status(404).json({ error: 'Ticket not found' })
+  const survey = getSurveyByTicket(req.params.id)
+  res.json({
+    eligibility: surveyEligibility(req.params.id),
+    survey: survey || null,
+    survey_url: survey ? surveyUrl(survey.token) : null,
+  })
+})
+
+// POST /api/tickets/:id/survey — envoie (ou renvoie) le sondage par SMS.
+// Envoi 100 % manuel, aucune restriction de statut : c'est l'humain qui juge.
+router.post('/:id/survey', async (req, res) => {
+  const exists = db.prepare('SELECT id FROM tickets WHERE id = ?').get(req.params.id)
+  if (!exists) return res.status(404).json({ error: 'Ticket not found' })
+
+  const result = await sendTicketSurvey(req.params.id, {
+    userId: req.user?.id || null,
+    phoneOverride: req.body?.phone || null,
+  })
+  if (!result.ok) return res.status(400).json({ error: result.error, survey: result.survey || null })
+
+  emitEntity('ticket', 'updated', req.params.id, buildTicketRow(req.params.id), req.user?.id)
+  res.json({
+    survey: result.survey,
+    survey_url: surveyUrl(result.survey.token),
+    simulated: !!result.simulated,
+  })
+})
+
 // GET /api/tickets/:id
 router.get('/:id', (req, res) => {
   const ticket = db.prepare(
     `SELECT t.*, c.name as company_name, u.name as assigned_name,
-      ct.first_name || ' ' || ct.last_name as contact_name
+      ct.first_name || ' ' || ct.last_name as contact_name${SURVEY_COLS}
      FROM tickets t
      LEFT JOIN companies c ON t.company_id = c.id
      LEFT JOIN users u ON t.assigned_to = u.id
-     LEFT JOIN contacts ct ON t.contact_id = ct.id
+     LEFT JOIN contacts ct ON t.contact_id = ct.id${SURVEY_JOIN}
      WHERE t.id = ?`
   ).get(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'Ticket not found' });

@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { Plus, AlertTriangle } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { Plus, AlertTriangle, Ban, RotateCcw, HelpCircle, ExternalLink } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { VendorTabs } from '../components/VendorTabs.jsx'
@@ -41,7 +42,175 @@ const RENDERS = {
   comments:       row => <span className="text-slate-500 text-sm">{row.comments || '—'}</span>,
 }
 
-const COLUMNS = TABLE_COLUMN_META.vendor_subscriptions.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
+// Bascule actif ↔ annulé, partagée par le tableau, la fiche et le bandeau des
+// charges non comptabilisées : mise à jour optimiste, rollback si le PATCH
+// échoue, toast d'annulation (pas de confirm bloquant — l'undo suffit).
+// Passe par une ref pour rester stable (colonnes du DataTable mémoïsées) tout
+// en pouvant se rappeler elle-même depuis l'undo.
+function useSubscriptionToggle({ onOptimistic, onSettled } = {}) {
+  const { addToast } = useToast()
+  const [busyId, setBusyId] = useState(null)
+  const ref = useRef(null)
+  const toggle = useCallback((sub, active) => ref.current(sub, active), [])
+  ref.current = async (sub, active) => {
+    setBusyId(sub.id)
+    onOptimistic?.({ ...sub, active })
+    try {
+      const updated = await api.vendorSubscriptions.update(sub.id, { active })
+      onSettled?.(updated)
+      addToast({
+        message: active
+          ? `« ${sub.vendor} » réactivé`
+          : `Désabonné de « ${sub.vendor} » — retiré des charges attendues`,
+        type: active ? 'success' : 'undo',
+        duration: 8000,
+        action: active ? undefined : { label: 'Annuler', onClick: () => toggle(updated, 1) },
+      })
+      return updated
+    } catch (e) {
+      onOptimistic?.(sub) // rollback
+      addToast({ message: `Échec : ${e.message}`, type: 'error' })
+      return null
+    } finally {
+      setBusyId(null)
+    }
+  }
+  // Désabonnement en deux temps : le clic ouvre la page de résiliation du
+  // fournisseur (nouvel onglet) et n'annule RIEN. La ligne ne quitte la liste
+  // qu'après confirmation explicite que l'annulation a été faite là-bas.
+  // La réactivation, elle, reste un simple clic.
+  const [pending, setPending] = useState(null)
+  const request = useCallback((sub, active) => {
+    if (active) return toggle(sub, 1)
+    // Ouverture SYNCHRONE dans le handler de clic : un window.open différé
+    // (useEffect, await, setTimeout) est bloqué comme popup par le navigateur.
+    // Un clic = la page du fournisseur s'ouvre, rien d'autre à faire.
+    const known = (sub.cancel_url || '').trim()
+    const target = known || searchUrlFor(sub.vendor)
+    window.open(target, '_blank', 'noopener')
+    setPending({ ...sub, openedUrl: target, openedKnown: !!known })
+    return null
+  }, [toggle])
+
+  const modal = pending ? (
+    <UnsubscribeFlowModal
+      sub={pending}
+      onClose={() => setPending(null)}
+      onConfirm={async () => {
+        const updated = await toggle(pending, 0)
+        setPending(null)
+        return updated
+      }}
+    />
+  ) : null
+
+  return { toggle: request, busyId, modal }
+}
+
+// Recherche web de la page d'annulation quand aucun lien n'est encore
+// enregistré : la plupart des pages de résiliation sont derrière un login et
+// n'ont pas d'URL devinable — mieux vaut une recherche honnête qu'un lien
+// inventé. Le lien réel se mémorise ensuite sur l'abonnement.
+function searchUrlFor(vendor) {
+  return `https://www.google.com/search?q=${encodeURIComponent(`${vendor} annuler abonnement compte facturation`)}`
+}
+
+function UnsubscribeFlowModal({ sub, onClose, onConfirm }) {
+  const [url, setUrl] = useState(sub.cancel_url || '')
+  const [saving, setSaving] = useState(false)
+  const { addToast } = useToast()
+
+  // Ré-ouverture / correction du lien. La page a déjà été ouverte au clic ;
+  // ce bouton ne sert qu'à retomber sur ses pieds si ce n'était pas la bonne.
+  const openVendorPage = useCallback(async () => {
+    const target = (url || '').trim()
+    if (target && !/^https?:\/\/\S+$/i.test(target)) {
+      addToast({ message: 'Lien invalide (doit commencer par http:// ou https://)', type: 'error' })
+      return
+    }
+    window.open(target || searchUrlFor(sub.vendor), '_blank', 'noopener')
+    // Mémorise le lien corrigé : le prochain désabonnement ira droit au but.
+    if (target && target !== (sub.cancel_url || '')) {
+      try { await api.vendorSubscriptions.update(sub.id, { cancel_url: target }) } catch { /* non bloquant */ }
+    }
+  }, [url, sub, addToast])
+
+  return (
+    <Modal isOpen onClose={onClose} title={`Se désabonner de « ${sub.vendor} »`} size="md">
+      <p className="flex items-start gap-2 text-sm text-slate-700">
+        <ExternalLink size={15} className="mt-0.5 shrink-0 text-brand-600" />
+        <span>
+          {sub.openedKnown
+            ? <>La page d&apos;abonnement de <strong>{sub.vendor}</strong> vient de s&apos;ouvrir dans un nouvel onglet. Annule l&apos;abonnement là-bas, puis reviens confirmer ici.</>
+            : <>Aucune page enregistrée pour <strong>{sub.vendor}</strong> : une recherche s&apos;est ouverte dans un nouvel onglet. Colle le bon lien ci-dessous — il sera mémorisé et ouvert directement la prochaine fois.</>}
+        </span>
+      </p>
+      <div className="flex gap-2 mt-3">
+        <input
+          className={inputCls}
+          value={url}
+          onChange={e => setUrl(e.target.value)}
+          placeholder="https://… page d'annulation du fournisseur"
+          data-testid="unsub-url"
+        />
+        <button
+          onClick={openVendorPage}
+          data-testid="unsub-open-page"
+          className="inline-flex shrink-0 items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-600 border border-slate-200 rounded-lg hover:bg-slate-50"
+        >
+          <ExternalLink size={14} /> Rouvrir
+        </button>
+      </div>
+      <p className="text-xs text-slate-500 mt-1.5">
+        L&apos;abonnement ne quitte la liste et les charges attendues qu&apos;après ta confirmation.
+      </p>
+      <div className="flex items-center justify-end gap-2 mt-5">
+        <button onClick={onClose} className="px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg">
+          Pas encore
+        </button>
+        {/* Action transactionnelle (annulable via le toast) : bouton explicite
+            requis, l'autosave ne s'applique pas ici. */}
+        <button
+          onClick={async () => { setSaving(true); await onConfirm(); setSaving(false) }}
+          disabled={saving}
+          data-testid="unsub-confirm"
+          className="px-3 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg disabled:opacity-50"
+        >
+          {saving ? 'Retrait…' : 'C\'est annulé — retirer de la liste'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// Bouton de désabonnement — discret (ghost, texte xs) mais toujours affiché,
+// pas seulement au survol. Un clic ouvre la page d'annulation du fournisseur ;
+// le retrait de la liste demande ensuite une confirmation. Réutilisé dans la
+// ligne du tableau, la fiche et le bandeau des charges non comptabilisées.
+function UnsubscribeButton({ sub, onToggle, busy, size = 'sm', idPrefix = '' }) {
+  const active = !!sub.active
+  const base = size === 'sm'
+    ? 'gap-1 px-1.5 py-1 text-xs'
+    : 'gap-1.5 px-2.5 py-1.5 text-sm'
+  return (
+    <button
+      onClick={() => onToggle(sub, active ? 0 : 1)}
+      disabled={busy}
+      data-testid={`${idPrefix}${active ? 'unsub' : 'resub'}-${sub.id}`}
+      title={active
+        ? `Se désabonner de « ${sub.vendor} » — ouvre la page d'annulation du fournisseur`
+        : `Réactiver l'abonnement « ${sub.vendor} »`}
+      className={`inline-flex items-center whitespace-nowrap rounded-md border font-medium transition-colors disabled:opacity-50 ${base} ${
+        active
+          ? 'border-slate-200 text-slate-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600'
+          : 'border-slate-200 text-slate-500 hover:border-emerald-200 hover:bg-emerald-50 hover:text-emerald-700'
+      }`}
+    >
+      {active ? <Ban size={size === 'sm' ? 12 : 14} /> : <RotateCcw size={size === 'sm' ? 12 : 14} />}
+      {active ? 'Se désabonner' : 'Réactiver'}
+    </button>
+  )
+}
 
 const CURRENCIES = ['CAD', 'USD', 'Euro']
 const TAXES = ['', 'TPS/TVQ', 'TPS', 'TVQ', 'Hors-champ']
@@ -53,11 +222,17 @@ const labelCls = 'block text-xs font-medium text-slate-500 mb-1'
 
 // Fiche d'un abonnement existant — autosave champ par champ (PATCH au blur /
 // au changement pour les selects), pas de bouton Enregistrer.
-function EditModal({ sub, onClose, onSaved, onDeleted }) {
+function EditModal({ sub, onClose, onSaved, onDeleted, onToggleActive }) {
   const [form, setForm] = useState(sub)
   const [saving, setSaving] = useState(false)
   const { addToast } = useToast()
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  // Le désabonnement passe par la modale de la page (ouverture de la page
+  // fournisseur + confirmation) : on resynchronise le statut quand il change.
+  useEffect(() => {
+    setForm(f => ({ ...f, active: sub.active, cancelled_at: sub.cancelled_at, cancel_url: sub.cancel_url }))
+  }, [sub.active, sub.cancelled_at, sub.cancel_url])
 
   const save = async (k, v) => {
     if ((sub[k] ?? '') === (v ?? '')) return
@@ -120,6 +295,9 @@ function EditModal({ sub, onClose, onSaved, onDeleted }) {
         {text('payment_method', 'Mode de paiement')}
         {select('active', 'Statut', [{ value: 1, label: 'Actif' }, { value: 0, label: 'Annulé' }], { asNumber: true })}
         <div className="col-span-2">
+          {text('cancel_url', "Page d'annulation chez le fournisseur (ouverte par « Se désabonner »)", { placeholder: 'https://…' })}
+        </div>
+        <div className="col-span-2">
           <label className={labelCls}>Commentaires</label>
           <textarea
             className={inputCls}
@@ -131,19 +309,29 @@ function EditModal({ sub, onClose, onSaved, onDeleted }) {
         </div>
       </div>
       <div className="flex items-center justify-between mt-4">
-        <button
-          onClick={async () => {
-            if (!confirm(`Supprimer l'abonnement « ${sub.vendor} » ?`)) return
-            try {
-              await api.vendorSubscriptions.delete(sub.id)
-              onDeleted(sub.id)
-              onClose()
-            } catch (e) { addToast({ message: e.message, type: 'error' }) }
-          }}
-          className="text-sm text-red-600 hover:underline"
-        >
-          Supprimer
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={async () => {
+              if (!confirm(`Supprimer l'abonnement « ${sub.vendor} » ?`)) return
+              try {
+                await api.vendorSubscriptions.delete(sub.id)
+                onDeleted(sub.id)
+                onClose()
+              } catch (e) { addToast({ message: e.message, type: 'error' }) }
+            }}
+            className="text-sm text-red-600 hover:underline"
+          >
+            Supprimer
+          </button>
+          <UnsubscribeButton
+            sub={form}
+            busy={saving}
+            onToggle={(_s, active) => onToggleActive({ ...sub, ...form }, active)}
+          />
+          {!form.active && form.cancelled_at && (
+            <span className="text-xs text-slate-400">Désabonné le {fmtDate(form.cancelled_at)}</span>
+          )}
+        </div>
         <span className="text-xs text-slate-400">{saving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
       </div>
     </Modal>
@@ -244,49 +432,219 @@ function CreateModal({ onClose, onCreated }) {
   )
 }
 
-export function MissingReceiptsSection() {
+// Explication en clair de la pièce trouvée par le rapprochement approfondi,
+// pour que la confirmation soit un jugement humain éclairé et non un acte de foi.
+// Une même charge attendue est identifiée par son abonnement + sa date prévue.
+const rowKey = m => `${m.subscription_id}-${m.expected_date}`
+
+function EvidenceLine({ evidence }) {
+  const e = evidence
+  const why = [
+    e.amount_match === 'exact' ? 'montant identique'
+      : e.amount_match === 'taxes' ? 'montant + taxes'
+        : e.amount_match === 'change' ? 'montant au change près'
+          : e.amount_match === 'change+taxes' ? 'montant au change et aux taxes près'
+            : null,
+    e.reason === 'off_window'
+      ? `${e.days_off} j après la date prévue`
+      : (e.days_off === 0 ? 'date exacte' : `à ${e.days_off} j de la date prévue`),
+  ].filter(Boolean).join(' · ')
+  return (
+    <span className="text-xs text-emerald-700">
+      {e.vendor} · {fmtDate(e.date)} · {fmtMoney(e.amount, e.currency) || '—'}
+      <span className="text-emerald-600/70"> ({why})</span>
+    </span>
+  )
+}
+
+// Charges d'abonnement sans dépense comptabilisée. Le croisement côté serveur
+// (services/vendorSubscriptions.js) regarde à la fois les reçus ingérés ET le
+// miroir QuickBooks des achats fournisseurs, en rapprochant les noms via les
+// profils fournisseurs. Quand rien ne sort du rapprochement strict, une seconde
+// passe plus fouillée cherche la même dépense sous un AUTRE nom QuickBooks
+// (jeton commun, orthographe voisine, montant aux taxes/au change près) ou juste
+// hors de la fenêtre attendue — d'où trois statuts distincts affichés ici.
+export function MissingReceiptsSection({ refreshKey = 0, onSubscriptionChanged }) {
+  const { addToast } = useToast()
   const [data, setData] = useState(null)
-  useEffect(() => {
+  const [linkingId, setLinkingId] = useState(null)
+  const [hidden, setHidden] = useState(() => new Set()) // désabonnés à l'instant
+
+  const load = useCallback(() => {
     api.vendorSubscriptions.missingReceipts().then(setData).catch(() => setData({ missing: [] }))
   }, [])
-  const missing = data?.missing || []
+  useEffect(() => { load() }, [load, refreshKey])
+
+  const { toggle, busyId, modal } = useSubscriptionToggle({
+    onOptimistic: sub => setHidden(h => {
+      const next = new Set(h)
+      if (sub.active) next.delete(sub.id); else next.add(sub.id)
+      return next
+    }),
+    onSettled: updated => { onSubscriptionChanged?.(updated); load() },
+  })
+
+  const seen = new Set()
+  const missing = (data?.missing || [])
+    .filter(m => !hidden.has(m.subscription_id))
+    .map(m => {
+      const first = !seen.has(m.subscription_id)
+      seen.add(m.subscription_id)
+      return { ...m, first_of_sub: first }
+    })
   if (!data || !missing.length) return null
+  const nToBook = missing.filter(m => m.status === 'to_book').length
+  const nLikely = missing.filter(m => m.status === 'likely_booked').length
+  const nMissing = missing.length - nToBook - nLikely
+
+  // Deux corrections possibles, selon la NATURE du constat — c'est ce qui
+  // manquait : poser un alias sur une charge « même fournisseur, autre date »
+  // ne changeait rien, et la ligne restait obstinément affichée.
+  //
+  // 1. Autre nom QuickBooks → on retient le nom comme alias du profil fournisseur.
+  const confirmSame = async m => {
+    setLinkingId(rowKey(m))
+    try {
+      await api.vendorSubscriptions.linkVendor(m.subscription_id, m.evidence.vendor)
+      addToast({ type: 'success', message: `« ${m.evidence.vendor} » retenu comme nom QuickBooks de ${m.vendor}` })
+      load()
+    } catch (e) {
+      addToast({ type: 'error', message: e.message || 'Échec de la liaison' })
+    } finally {
+      setLinkingId(null)
+    }
+  }
+
+  // 2. Même fournisseur, facturé à une autre date → on cale la cédule sur la
+  //    date réellement constatée (jour, et mois si l'abonnement est annuel).
+  const fixSchedule = async m => {
+    const [, month, day] = m.evidence.date.split('-')
+    setLinkingId(rowKey(m))
+    try {
+      const patch = { billing_day: Number(day) }
+      if (m.frequency === 'Annuel') patch.billing_month = Number(month)
+      const updated = await api.vendorSubscriptions.update(m.subscription_id, patch)
+      onSubscriptionChanged?.(updated)
+      addToast({ type: 'success', message: `Cédule de ${m.vendor} calée sur le ${fmtDate(m.evidence.date)}` })
+      load()
+    } catch (e) {
+      addToast({ type: 'error', message: e.message || 'Échec de la mise à jour' })
+    } finally {
+      setLinkingId(null)
+    }
+  }
+
   return (
     <div className="mb-5 rounded-lg border border-amber-200 bg-amber-50 p-4" data-testid="missing-receipts">
       <div className="flex items-center gap-2 mb-2">
         <AlertTriangle size={16} className="text-amber-600" />
         <h2 className="text-sm font-semibold text-amber-800">
-          {missing.length} charge(s) attendue(s) sans reçu ingéré
+          {missing.length} charge(s) d'abonnement sans dépense comptabilisée
+          {nToBook > 0 && ` — dont ${nToBook} avec une pièce déjà reçue`}
+          {nLikely > 0 && ` — dont ${nLikely} probablement comptabilisée(s) sous un autre nom`}
         </h2>
       </div>
       <p className="text-xs text-amber-700 mb-3">
-        Aucun reçu de ces fournisseurs n'a été reçu (factures@orisha.io ou upload) autour de la date de charge attendue.
-        Réclamer le reçu, puis le transférer à factures@orisha.io.
+        Croisement avec les reçus ingérés <em>et</em> les achats QuickBooks (Bills / Purchases) du même fournisseur.
+        {nMissing > 0 && ' Aucune trace : réclamer le reçu, puis le transférer à factures@orisha.io.'}
+        {' '}Un abonnement qui n'existe plus se règle avec « Se désabonner » — il sort aussitôt de cette liste.
       </p>
+      {nLikely > 0 && (
+        <p className="text-xs text-emerald-700 mb-3" data-testid="likely-booked-hint">
+          Le rapprochement approfondi a retrouvé {nLikely} dépense(s) déjà dans QuickBooks. Sous un
+          <em> autre nom</em> : « C'est le même fournisseur » retient ce nom sur le profil, et les prochaines
+          analyses le reconnaîtront d'elles-mêmes. À une <em>autre date</em> (même fournisseur) : c'est la
+          cédule qui est mal réglée — un clic la cale sur la date réellement facturée.
+        </p>
+      )}
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs text-amber-700/70">
               <th className="py-1 pr-4 font-medium">Fournisseur</th>
+              <th className="py-1 pr-4 font-medium">Constat</th>
               <th className="py-1 pr-4 font-medium">Charge attendue le</th>
               <th className="py-1 pr-4 font-medium text-right">Montant</th>
               <th className="py-1 pr-4 font-medium">Paiement</th>
-              <th className="py-1 pr-4 font-medium">Dernier reçu</th>
+              <th className="py-1 pr-4 font-medium">Dernière comptabilisée</th>
+              <th className="py-1 font-medium text-right">Toujours abonné ?</th>
             </tr>
           </thead>
           <tbody>
             {missing.map((m, i) => (
               <tr key={`${m.subscription_id}-${m.expected_date}-${i}`} className="border-t border-amber-100 text-amber-900">
-                <td className="py-1.5 pr-4 font-medium">{m.vendor}</td>
+                <td className="py-1.5 pr-4 font-medium">
+                  <span className="inline-flex items-center gap-1">
+                    {m.vendor}
+                    {m.profile_matched === false && (
+                      <HelpCircle
+                        size={12}
+                        className="text-amber-500"
+                        aria-label="Aucun profil fournisseur"
+                        title="Aucun profil fournisseur ne porte ce nom : le rapprochement ne repose que sur la ressemblance des noms. Ajouter un alias dans Fournisseurs → Profils fiabilise le croisement."
+                      />
+                    )}
+                  </span>
+                </td>
+                <td className="py-1.5 pr-4">
+                  {m.status === 'to_book' && (
+                    <Badge color="blue">{m.pending_kind === 'achat' ? 'Achat non publié' : 'Reçu non comptabilisé'}</Badge>
+                  )}
+                  {m.status === 'likely_booked' && (
+                    <div className="flex flex-col gap-0.5" data-testid="likely-booked-row">
+                      <Badge color="green">
+                        {m.evidence.reason === 'off_window'
+                          ? 'Comptabilisé à une autre date'
+                          : 'Comptabilisé sous un autre nom'}
+                      </Badge>
+                      <EvidenceLine evidence={m.evidence} />
+                      {/* Boutons requis : trancher l'identité d'un fournisseur ou
+                          la date réelle de facturation est un jugement humain. */}
+                      {m.evidence.reason === 'off_window' ? (
+                        <button
+                          onClick={() => fixSchedule(m)}
+                          disabled={linkingId === rowKey(m)}
+                          data-testid={`fix-schedule-${m.subscription_id}`}
+                          className="self-start text-xs font-medium text-emerald-700 hover:text-emerald-900 underline underline-offset-2 disabled:opacity-50"
+                        >
+                          {linkingId === rowKey(m) ? 'Mise à jour…' : `Caler la cédule sur le ${fmtDate(m.evidence.date)}`}
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => confirmSame(m)}
+                          disabled={linkingId === rowKey(m)}
+                          data-testid={`link-vendor-${m.subscription_id}`}
+                          className="self-start text-xs font-medium text-emerald-700 hover:text-emerald-900 underline underline-offset-2 disabled:opacity-50"
+                        >
+                          {linkingId === rowKey(m) ? 'Liaison…' : "C'est le même fournisseur"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {m.status === 'missing' && <Badge color="yellow">Aucune trace</Badge>}
+                </td>
                 <td className="py-1.5 pr-4">{fmtDate(m.expected_date)}</td>
                 <td className="py-1.5 pr-4 text-right tabular-nums">{m.amount_label || fmtMoney(m.amount, m.currency) || '—'}</td>
                 <td className="py-1.5 pr-4">{m.payment_method || '—'}</td>
-                <td className="py-1.5 pr-4">{m.last_receipt_date ? fmtDate(m.last_receipt_date) : 'jamais'}</td>
+                {/* Dernière dépense réellement dans QuickBooks (reçu poussé ou achat QB). */}
+                <td className="py-1.5 pr-4">{m.last_booked_date ? fmtDate(m.last_booked_date) : 'jamais'}</td>
+                <td className="py-1.5 text-right">
+                  {/* Un seul bouton par abonnement, même s'il compte plusieurs charges en retard. */}
+                  {m.first_of_sub && (
+                    <UnsubscribeButton
+                      sub={{ id: m.subscription_id, vendor: m.vendor, active: 1, cancel_url: m.cancel_url }}
+                      onToggle={toggle}
+                      busy={busyId === m.subscription_id}
+                      idPrefix="mr-"
+                    />
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {modal}
     </div>
   )
 }
@@ -296,8 +654,33 @@ export default function VendorSubscriptions() {
   const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(null)
   const [creating, setCreating] = useState(false)
+  // Rechargement du bandeau des charges non comptabilisées après un
+  // désabonnement fait depuis le tableau ou la fiche.
+  const [missingKey, setMissingKey] = useState(0)
   const mounted = useRef(true)
   useEffect(() => () => { mounted.current = false }, [])
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  const applyUpdate = useCallback(updated => {
+    setSubs(list => list.map(s => (s.id === updated.id ? { ...s, ...updated } : s)))
+    setEditing(e => (e && e.id === updated.id ? { ...e, ...updated } : e))
+  }, [])
+
+  const { toggle: toggleActive, busyId, modal } = useSubscriptionToggle({
+    onOptimistic: applyUpdate,
+    onSettled: updated => { applyUpdate(updated); setMissingKey(k => k + 1) },
+  })
+
+  const columns = useMemo(() => TABLE_COLUMN_META.vendor_subscriptions.map(meta => ({
+    ...meta,
+    render: meta.id === 'actions'
+      ? row => (
+        <div className="flex" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
+          <UnsubscribeButton sub={row} onToggle={toggleActive} busy={busyId === row.id} />
+        </div>
+      )
+      : RENDERS[meta.id],
+  })), [toggleActive, busyId])
 
   const load = useCallback(async () => {
     try {
@@ -309,6 +692,16 @@ export default function VendorSubscriptions() {
   }, [])
 
   useEffect(() => { load() }, [load])
+
+  // Ouverture directe d'une fiche depuis la recherche globale (?open=<id>) —
+  // consommé une fois puis retiré de l'URL pour ne pas rouvrir au retour arrière.
+  useEffect(() => {
+    const openId = searchParams.get('open')
+    if (!openId || !subs.length) return
+    const found = subs.find(s => s.id === openId)
+    if (found) setEditing(found)
+    setSearchParams(params => { params.delete('open'); return params }, { replace: true })
+  }, [searchParams, subs, setSearchParams])
 
   return (
     <Layout>
@@ -331,12 +724,12 @@ export default function VendorSubscriptions() {
           </div>
         </div>
 
-        <MissingReceiptsSection />
+        <MissingReceiptsSection refreshKey={missingKey} onSubscriptionChanged={applyUpdate} />
 
         <DataTable
           table="vendor_subscriptions"
           manageViews
-          columns={COLUMNS}
+          columns={columns}
           data={subs}
           loading={loading}
           searchFields={['vendor', 'plan', 'payment_method', 'comments']}
@@ -352,6 +745,7 @@ export default function VendorSubscriptions() {
               setEditing(e => (e && e.id === updated.id ? { ...e, ...updated } : e))
             }}
             onDeleted={id => setSubs(list => list.filter(s => s.id !== id))}
+            onToggleActive={toggleActive}
           />
         )}
         {creating && (
@@ -360,6 +754,8 @@ export default function VendorSubscriptions() {
             onCreated={created => setSubs(list => [created, ...list])}
           />
         )}
+        {/* En dernier : la modale de désabonnement se superpose à la fiche. */}
+        {modal}
       </div>
     </Layout>
   )

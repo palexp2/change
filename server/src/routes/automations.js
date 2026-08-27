@@ -157,10 +157,11 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   sys_paie_repartition: {
     actionKeys: new Set(['splits', 'source_acctnum', 'phone_acctnum', 'phone_amount',
       'meals_acctnum', 'reimb_acctnum', 'aga_splits', 'aga_source_acctnum',
+      'aga_vendor_name', 'aga_taxcode', 'aga_memo',
       'bank_acctnum', 'salary_vendor_name', 'salary_taxcode', 'phone_taxcode']),
     validateKey(key, v) {
       if (!v) return
-      if (key === 'salary_vendor_name' || key === 'salary_taxcode' || key === 'phone_taxcode') {
+      if (['salary_vendor_name', 'salary_taxcode', 'phone_taxcode', 'aga_vendor_name', 'aga_taxcode', 'aga_memo'].includes(key)) {
         if (v.length > 120) throw new Error(`${key} trop long (max 120 caractères)`)
         return
       }
@@ -177,17 +178,219 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       if (!ACCTNUM_RE.test(v)) throw new Error(`${key} : numéro de compte invalide`)
     },
   },
-  // Alerte trésorerie BNC : seuil, horizon et canal Slack.
-  sys_treasury_alert: {
-    actionKeys: new Set(['threshold', 'horizon_days', 'balance_stale_days', 'slack_webhook_env']),
+  // Alerte solde CARM : point de départ du compte, seuil, comptes d'imputation.
+  sys_carm_balance_alert: {
+    actionKeys: new Set(['opening_balance', 'opening_date', 'threshold', 'ap_acctnum', 'duty_acctnum',
+      'interest_acctnum', 'penalty_acctnum', 'card_acctnum', 'bank_acctnum', 'vendor_name',
+      'gst_tax_code_name', 'notax_tax_code_name', 'post_since', 'max_batch', 'delta_tolerance',
+      'broker_names', 'clearing_acctnum', 'slack_webhook_env']),
     validateKey(key, v) {
       if (!v) return
-      if ((key === 'threshold' || key === 'horizon_days' || key === 'balance_stale_days') && !/^\d{1,7}$/.test(v)) {
+      if ((key === 'opening_balance' || key === 'threshold') && !/^-?\d{1,9}([.,]\d{1,2})?$/.test(v)) {
+        throw new Error(`${key} doit être un montant`)
+      }
+      if ((key === 'opening_date' || key === 'post_since') && !/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        throw new Error(`${key} doit être une date AAAA-MM-JJ`)
+      }
+      if (key === 'max_batch' && !/^\d{1,3}$/.test(v)) throw new Error('max_batch doit être un entier (1-500)')
+      if (key === 'delta_tolerance' && !/^\d{1,3}([.,]\d{1,2})?$/.test(v)) {
+        throw new Error('delta_tolerance doit être un montant')
+      }
+      if ((key === 'vendor_name' || key === 'gst_tax_code_name' || key === 'notax_tax_code_name'
+        || key === 'broker_names') && v.length > 200) {
+        throw new Error(`${key} : 200 caractères maximum`)
+      }
+      if (key.endsWith('_acctnum') && !ACCTNUM_RE.test(v)) {
+        throw new Error(`${key} : numéro de compte invalide`)
+      }
+      if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
+        throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
+      }
+    },
+  },
+  // Onglet Pmt_Suivi (CTB - Suivi) : fichier, onglet, compte Google, plancher.
+  sys_pmt_suivi_sheet: {
+    actionKeys: new Set(['file_id', 'sheet_name', 'google_account_email', 'since_date']),
+    validateKey(key, v) {
+      if (!v) return // vide = retomber sur le défaut du service
+      if (key === 'file_id' && !/^[A-Za-z0-9_-]{20,80}$/.test(v)) {
+        throw new Error("file_id invalide — coller l'ID du fichier (entre /d/ et /edit dans l'URL)")
+      }
+      if (key === 'sheet_name' && v.length > 80) throw new Error('sheet_name trop long (max 80 caractères)')
+      if (key === 'google_account_email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
+        throw new Error('google_account_email doit être une adresse courriel')
+      }
+      if (key === 'since_date' && !/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        throw new Error('since_date doit être une date AAAA-MM-JJ')
+      }
+    },
+  },
+  // Alerte trésorerie BNC : seuil, horizons, bruit Slack et canal.
+  // Les clés absentes de actionKeys sont ignorées au PATCH — d'où la liste
+  // complète des champs affichés par la fiche automation (alert_horizon_days,
+  // slack_urgent_days et stale_reminder_slack y étaient éditables sans jamais
+  // être sauvegardés).
+  sys_treasury_alert: {
+    actionKeys: new Set(['threshold', 'horizon_days', 'balance_stale_days', 'alert_horizon_days',
+      'slack_negative_only', 'slack_negative_days', 'slack_urgent_days', 'stale_reminder_slack',
+      'variance_slack', 'slack_webhook_env']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'slack_webhook_env') {
+        if (!/^[A-Z0-9_]{1,64}$/.test(v)) {
+          throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
+        }
+        return
+      }
+      if (key === 'slack_negative_only' || key === 'stale_reminder_slack' || key === 'variance_slack') {
+        if (v !== '0' && v !== '1') throw new Error(`${key} doit valoir 0 ou 1`)
+        return
+      }
+      if (!/^\d{1,7}$/.test(v)) throw new Error(`${key} doit être un entier positif`)
+    },
+  },
+  // Comptabilisation QB des Stripe payouts : périmètre (date plancher), cap de
+  // sécurité par passage, filet « en souffrance » et canal Slack du résumé.
+  sys_stripe_weekly_payout_push: {
+    actionKeys: new Set(['push_since', 'max_batch', 'stale_alert_days', 'slack_on_success', 'slack_webhook_env']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'push_since' && !/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        throw new Error('push_since doit être une date AAAA-MM-JJ')
+      }
+      if (key === 'slack_on_success' && v !== '0' && v !== '1') {
+        throw new Error('slack_on_success doit valoir 0 ou 1')
+      }
+      if ((key === 'max_batch' || key === 'stale_alert_days') && !/^[1-9]\d{0,2}$/.test(v)) {
         throw new Error(`${key} doit être un entier positif`)
       }
       if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
         throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
       }
+    },
+  },
+  // Rappel mensuel de paiement des cartes : libellé, échéance, jours travaillés, canal.
+  sys_card_payment_reminder: {
+    actionKeys: new Set(['cards', 'due_day', 'work_days', 'slack_webhook_env']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'cards' && v.length > 120) throw new Error('cards trop long (max 120 caractères)')
+      if (key === 'due_day' && !/^(?:[1-9]|[12][0-9]|3[01])$/.test(v)) {
+        throw new Error('due_day doit être un jour du mois (1 à 31)')
+      }
+      if (key === 'work_days' && !/^[0-6](\s*,\s*[0-6])*$/.test(v)) {
+        throw new Error('work_days : liste de jours 0 (dimanche) à 6 (samedi), séparés par des virgules')
+      }
+      if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
+        throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
+      }
+    },
+  },
+  // Déboursés mensuels en pièces : compte de stock, dossier Drive, canal Slack.
+  sys_pieces_disbursements: {
+    actionKeys: new Set(['acctnum', 'drive_folder_id', 'google_account_email', 'slack_webhook_env', 'recipient']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'acctnum' && !/^\d{3,8}$/.test(v)) {
+        throw new Error('acctnum doit être un numéro de compte QuickBooks (chiffres)')
+      }
+      if (key === 'drive_folder_id' && !/^[A-Za-z0-9_-]{20,80}$/.test(v)) {
+        throw new Error("drive_folder_id invalide — coller l'ID du dossier (après /folders/ dans l'URL)")
+      }
+      if (key === 'google_account_email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
+        throw new Error('google_account_email doit être une adresse courriel')
+      }
+      if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
+        throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
+      }
+      if (key === 'recipient' && v.length > 60) throw new Error('recipient trop long (max 60 caractères)')
+    },
+  },
+  // Alerte Slack du sondage de satisfaction. `slack_channel` est la voie
+  // recommandée (bot token) ; les deux clés webhook restent le filet.
+  sys_ticket_survey_slack: {
+    actionKeys: new Set(['slack_channel', 'slack_webhook_url', 'slack_webhook_env', 'recipient', 'low_rating_max']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'slack_channel' && !/^(#?[a-z0-9._-]{1,80}|@[A-Za-z0-9._-]{1,80}|[^\s@]+@[^\s@]+\.[^\s@]+|[CGDU][A-Z0-9]{6,})$/.test(v)) {
+        throw new Error('slack_channel : « #canal », « @personne », un courriel ou un identifiant Slack')
+      }
+      if (key === 'slack_webhook_url' && !/^https:\/\/hooks\.slack\.com\//.test(v)) {
+        throw new Error('slack_webhook_url doit commencer par https://hooks.slack.com/')
+      }
+      if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
+        throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
+      }
+      if (key === 'recipient' && v.length > 60) throw new Error('recipient trop long (max 60 caractères)')
+      if (key === 'low_rating_max' && !/^[1-5]$/.test(v)) throw new Error('low_rating_max : 1 à 5')
+    },
+  },
+  // Prospects Instagram. Les trois automations sont `configurable: true` : sans
+  // ces entrées, leur fiche affiche des champs que le PATCH refuse en 400.
+  sys_instagram_prospect_intake: {
+    actionKeys: new Set(['keywords']),
+  },
+  sys_instagram_comment_scrape: {
+    actionKeys: new Set(['accounts', 'keywords', 'lookback_days', 'own_accounts', 'run_weekday', 'run_hour']),
+    validateKey(key, v) {
+      // `keywords` vide est légitime : cela capte tous les commentateurs.
+      if (!v) return
+      if ((key === 'accounts' || key === 'own_accounts') && !/^@?[A-Za-z0-9._]{1,30}(\s*,\s*@?[A-Za-z0-9._]{1,30})*$/.test(v)) {
+        throw new Error(`${key} : noms d'usager Instagram séparés par des virgules`)
+      }
+      if (key === 'lookback_days' && !/^([1-9]|[1-9]\d|[12]\d{2}|3[0-5]\d|36[0-5])$/.test(v)) {
+        throw new Error('lookback_days doit être un entier de 1 à 365 (jours)')
+      }
+      if (key === 'run_weekday' && !/^[1-7]$/.test(v)) throw new Error('run_weekday : 1 (lundi) à 7 (dimanche)')
+      if (key === 'run_hour' && !/^([0-9]|1\d|2[0-3])$/.test(v)) throw new Error('run_hour : 0 à 23')
+    },
+  },
+  sys_instagram_weekly_slack: {
+    actionKeys: new Set(['send_weekday', 'send_hour', 'slack_webhook_url', 'slack_webhook_env', 'recipient']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'send_weekday' && !/^[1-7]$/.test(v)) throw new Error('send_weekday : 1 (lundi) à 7 (dimanche)')
+      if (key === 'send_hour' && !/^([0-9]|1\d|2[0-3])$/.test(v)) throw new Error('send_hour : 0 à 23')
+      if (key === 'slack_webhook_url' && !/^https:\/\/hooks\.slack\.com\//.test(v)) {
+        throw new Error('slack_webhook_url doit commencer par https://hooks.slack.com/')
+      }
+      if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
+        throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
+      }
+      if (key === 'recipient' && v.length > 60) throw new Error('recipient trop long (max 60 caractères)')
+    },
+  },
+  // Budget marketing — détection : comptes QB suivis, date de départ, fenêtre de
+  // rebalayage. Sans cette entrée, la fiche affiche des champs que le PATCH
+  // refuse en 400 (« lecture seule ») : toute automation `configurable: true`
+  // DOIT avoir sa liste actionKeys ici.
+  sys_marketing_expense_sync: {
+    actionKeys: new Set(['accounts', 'start_date', 'lookback_days']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'accounts' && !/^\d{3,8}(\s*,\s*\d{3,8})*$/.test(v)) {
+        throw new Error('accounts : numéros de comptes QuickBooks séparés par des virgules (ex. 75910,75920)')
+      }
+      if (key === 'start_date' && !/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+        throw new Error('start_date doit être une date AAAA-MM-JJ')
+      }
+      if (key === 'lookback_days' && !/^[1-9]\d{0,2}$/.test(v)) {
+        throw new Error('lookback_days doit être un entier positif (jours)')
+      }
+    },
+  },
+  // Budget marketing — message hebdo : jour d'envoi, canal Slack, destinataire.
+  sys_marketing_weekly_slack: {
+    actionKeys: new Set(['send_weekday', 'slack_webhook_env', 'recipient']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'send_weekday' && !/^[1-7]$/.test(v)) {
+        throw new Error('send_weekday : jour ISO de 1 (lundi) à 7 (dimanche)')
+      }
+      if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
+        throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
+      }
+      if (key === 'recipient' && v.length > 60) throw new Error('recipient trop long (max 60 caractères)')
     },
   },
 }

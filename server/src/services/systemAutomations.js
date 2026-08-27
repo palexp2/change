@@ -35,8 +35,157 @@ export const MANUAL_RUNNERS = {
     if (dryRun) return await diagnoseTreasury()
     return await checkTreasuryAlert({ force: true, trigger: 'manuel' })
   },
+  // Sync du fichier « Maintien du solde disponible BNC » : dry-run = lecture du
+  // Sheet + différences détectées sans rien écrire ; run-now = sync réelle
+  // (le fichier fait foi, les ajustements sont appliqués).
+  sys_treasury_solde_sheet: async ({ dryRun }) => {
+    const { syncSoldeSheet } = await import('./treasurySoldeSheet.js')
+    return await syncSoldeSheet({ trigger: 'manuel', apply: !dryRun })
+  },
+  // Reprise de l'onglet Pmt_Suivi (fichier CTB - Suivi) : dry-run = lignes qui
+  // seraient ajoutées / mises à jour sans rien écrire ; run-now = import réel.
+  sys_pmt_suivi_sheet: async ({ dryRun }) => {
+    const { importPmtSuivi } = await import('./pmtSuiviImport.js')
+    return await importPmtSuivi({ trigger: 'manuel', apply: !dryRun })
+  },
+  // Détection du « passé à la banque » via le grand livre QuickBooks : dry-run =
+  // correspondances trouvées sans rien cocher ; run-now = cochage des
+  // appariements sûrs, le reste reste à confirmer sur la page.
+  sys_treasury_qb_clear: async ({ dryRun }) => {
+    const { syncQbClear } = await import('./treasuryQbClear.js')
+    return await syncQbClear({ trigger: 'manuel', apply: !dryRun })
+  },
+  // Sync du fichier TRX_Orisha (relevés des 11 comptes) : dry-run = lecture du
+  // fichier + transactions qui seraient importées + audit d'anomalies, sans
+  // écrire ; run-now = import réel + matching + liaison QB + alerte Slack.
+  sys_invoice_collection: async ({ dryRun }) => {
+    const { refreshInvoiceNeeds, dueNeedsForAccount } = await import('./scrapers/invoiceNeeds.js')
+    const { runAllScrapers } = await import('./scrapers/index.js')
+    const counts = refreshInvoiceNeeds()
+    if (dryRun) {
+      // Simulation : on montre la liste de travail sans ouvrir un seul portail.
+      const db = (await import('../db/database.js')).default
+      const accounts = db.prepare(
+        'SELECT id, label FROM scraper_accounts WHERE deleted_at IS NULL AND enabled=1'
+      ).all()
+      const perAccount = accounts.map(a => `${a.label} : ${dueNeedsForAccount(a.id).length} facture(s) à chercher`)
+      return {
+        result: [
+          `${counts.withCollector} transaction(s) avec collecteur, ${counts.without} sans`,
+          ...perAccount,
+        ].join(' · '),
+      }
+    }
+    const results = await runAllScrapers('manual')
+    return {
+      result: results.map(r => `${r.vendor}: ${r.status}${r.imported ? ` (${r.imported} importée(s))` : ''}`).join(' · ')
+        || 'aucun compte de collecte actif',
+    }
+  },
+
+  sys_bank_trx_sheet: async ({ dryRun }) => {
+    const { syncTrxSheet } = await import('./bankTrxSheet.js')
+    return await syncTrxSheet({ trigger: 'manuel', apply: !dryRun })
+  },
+  // Rappel cartes : dry-run = prochaine date de rappel + aperçu du message ;
+  // run-now = envoi immédiat du rappel Slack (ignore la date et l'idempotence).
+  // Anomalies fiscales du mentor : dry-run = lignes du Sheet + profils qui
+  // seraient mis à jour, sans écrire ; run-now = application aux profils.
+  sys_fiscal_anomalies_sheet: async ({ dryRun }) => {
+    const { syncFiscalAnomalies } = await import('./fiscalAnomaliesSheet.js')
+    return await syncFiscalAnomalies({ trigger: 'manuel', apply: !dryRun })
+  },
+  // Alerte solde CARM : dry-run = calcul du solde + message qui partirait ;
+  // run-now = vérification immédiate avec envoi (ignore l'anti-spam de 20 h).
+  sys_carm_balance_alert: async ({ dryRun }) => {
+    const { carmAccountState, carmAlertText, checkCarmBalanceAlert } = await import('./carmAccount.js')
+    if (dryRun) {
+      const state = carmAccountState()
+      return { state, would_alert: state.low, message: state.low ? carmAlertText(state) : null }
+    }
+    return await checkCarmBalanceAlert({ force: true, trigger: 'manuel' })
+  },
+  sys_card_payment_reminder: async ({ dryRun }) => {
+    const { diagnoseCardPaymentReminder, checkCardPaymentReminder } = await import('./cardPaymentReminder.js')
+    if (dryRun) return diagnoseCardPaymentReminder()
+    return await checkCardPaymentReminder({ force: true, trigger: 'manuel' })
+  },
+  // Déboursés de pièces : dry-run = les trois montants du mois écoulé, calculés
+  // depuis QuickBooks, sans fichier ni notification ; run-now = préparation
+  // complète (calcul + dépôt du Google Sheet + notification à valider).
+  // Aucun des deux n'envoie le message à Guillaume — cet envoi reste un bouton
+  // de la page « Écritures de fin de mois », après validation du montant.
+  sys_pieces_disbursements: async ({ dryRun }) => {
+    const { preparePiecesMonth } = await import('./piecesDisbursements.js')
+    return await preparePiecesMonth({ trigger: 'manuel', dryRun })
+  },
+  // Suggestions de travaux : dry-run = le contexte qui serait soumis au modèle
+  // (sans appel) ; run-now = passage complet, les nouvelles suggestions
+  // apparaissent dans /travaux.
+  sys_work_suggestions: async ({ dryRun }) => {
+    const { buildContextDigest, buildIntegrationDigest, runSuggestionEngines } = await import('./workSuggestions.js')
+    if (dryRun) {
+      const d = buildContextDigest()
+      const i = buildIntegrationDigest()
+      return {
+        travaux_recurrents: d.recurring.split('\n').filter(Boolean).length,
+        prompts_recents: d.recentPrompts.split('\n').filter(Boolean).length,
+        suggestions_connues: d.known.split('\n').filter(Boolean).length,
+        erreurs_sync: d.syncErrors ? d.syncErrors.split('\n').length : 0,
+        outils_deja_branches: i.oauth.split('\n').filter(Boolean).length + i.envTools.split('\n').filter(Boolean).length,
+        integrations_deja_proposees: i.known.split('\n').filter(Boolean).length,
+      }
+    }
+    return await runSuggestionEngines()
+  },
   // Répartition de la paie : diagnostic = aperçu de l'écriture de la dernière
   // paie, sans publication (la publication se fait depuis la page Paie).
+  // Fin de mois : le dry-run recalcule les provisions du mois écoulé sans
+  // importer les heures ni notifier.
+  sys_month_end_provisions: async ({ dryRun }) => {
+    const { prepareMonthEnd } = await import('./monthEndAutomation.js')
+    return await prepareMonthEnd({ dryRun: !!dryRun, trigger: 'manuel' })
+  },
+  // Budget marketing : dry-run = rien n'est écrit, on rapporte l'état de la
+  // file ; run-now = sync GL immédiate (les nouvelles dépenses arrivent « à
+  // valider » dans la page Budget marketing).
+  sys_marketing_expense_sync: async ({ dryRun }) => {
+    const { syncMarketingExpenses, pendingCount, getMarketingSyncConfig } = await import('./marketingBudget.js')
+    if (dryRun) {
+      const cfg = getMarketingSyncConfig()
+      return {
+        summary: `Comptes suivis : ${cfg.accounts} · depuis le ${cfg.start_date} · ${pendingCount()} dépense(s) en attente de validation`,
+      }
+    }
+    return await syncMarketingExpenses({ trigger: 'manuel', force: true })
+  },
+  // Message hebdo à Émilie : dry-run = aperçu du message sans envoi ;
+  // run-now = envoi immédiat (ignore le jour et l'idempotence hebdomadaire).
+  sys_marketing_weekly_slack: async ({ dryRun }) => {
+    const { previewWeeklyMarketingSlack, checkWeeklyMarketingSlack } = await import('./marketingBudget.js')
+    if (dryRun) return previewWeeklyMarketingSlack()
+    return await checkWeeklyMarketingSlack({ force: true, trigger: 'manuel' })
+  },
+  // Intake ManyChat : diagnostic seulement. Pas de run-now — on ne fabrique pas
+  // un faux prospect, et le déclencheur réel est un appel HTTP de ManyChat.
+  sys_instagram_prospect_intake: async () => {
+    const { previewIntake } = await import('./instagramProspects.js')
+    return previewIntake()
+  },
+  // Liste hebdo à Philippe : dry-run = aperçu du message sans envoi ni marquage ;
+  // run-now = envoi immédiat (ignore jour, heure et idempotence hebdomadaire).
+  // Lecture des commentaires Instagram : dry-run = état de la configuration
+  // (aucun appel à Instagram) ; run-now = tournée immédiate (ignore jour/heure).
+  sys_instagram_comment_scrape: async ({ dryRun }) => {
+    const { previewCommentScrape, runCommentScrape } = await import('./instagramCommentScrape.js')
+    if (dryRun) return previewCommentScrape()
+    return await runCommentScrape({ force: true, trigger: 'manuel' })
+  },
+  sys_instagram_weekly_slack: async ({ dryRun }) => {
+    const { previewWeeklyProspectDigest, runWeeklyProspectDigest } = await import('./instagramProspects.js')
+    if (dryRun) return previewWeeklyProspectDigest()
+    return await runWeeklyProspectDigest({ force: true, trigger: 'manuel' })
+  },
   sys_paie_repartition: async () => {
     const { computePaieRepartition } = await import('./paieRepartition.js')
     const last = db.prepare('SELECT id, number FROM paies ORDER BY period_end DESC LIMIT 1').get()
@@ -195,8 +344,7 @@ export const SYSTEM_AUTOMATIONS = [
       "les associe aux contacts/entreprises, crée des interactions + emails. " +
       "Ingère comme factures fournisseurs (sale_receipts + extraction IA) tout message portant le label ERP/Factures " +
       "OU adressé/livré à factures@orisha.io — aucun label requis ; dédup inter-boîtes par Message-ID RFC822. " +
-      "Resynchronise d'abord le répertoire fournisseurs (table vendor_directory) depuis le Google Doc " +
-      "« Fournisseurs_Particularités », injecté ensuite dans le prompt d'extraction. " +
+      "Le répertoire fournisseurs (profils /fournisseurs) est injecté dans le prompt d'extraction. " +
       "Exécute aussi rematchCalls() pour relier les appels orphelins à des contacts. " +
       "Démarre 30s après le boot puis s'exécute toutes les heures.",
     trigger_config: {
@@ -253,21 +401,33 @@ export const SYSTEM_AUTOMATIONS = [
   },
   {
     id: 'sys_stripe_weekly_payout_push',
-    name: 'Sync + push QB des Stripe payouts (lundi midi)',
+    name: 'Comptabilisation QB des Stripe payouts (quotidienne)',
     description:
-      "Chaque lundi à 12h00 (local) : pull incrémental des nouveaux Stripe payouts, sync des balance_transactions manquantes, " +
-      "puis push automatique de chaque dépôt QuickBooks pour les payouts réglés (status='paid') pas encore poussés. " +
+      "Deux passages par jour (8h et 18h, heure de Montréal) : pull incrémental des nouveaux Stripe payouts, sync des balance_transactions manquantes, " +
+      "puis push automatique du Deposit QuickBooks de chaque payout réglé (status='paid') pas encore poussé — " +
+      "CAD vers « Compte chèques Banque Nationale », USD vers « Venn USD ». " +
+      "PÉRIMÈTRE : seuls les payouts arrivés depuis push_since sont poussés — l'historique antérieur est déjà comptabilisé autrement et ne part jamais vers QB. " +
+      "Au plus max_batch payouts par passage (cap de sécurité — l'excédent est reporté au passage suivant et signalé). " +
       "GARDE ANTI-ERREUR : avant chaque push, le Deposit est construit en dry build et inspecté — tout payout générant un warning " +
-      "(client QB non résolu, taxe sur frais non imputée, TaxCode manquant…) est laissé en attente de revue manuelle, jamais poussé à l'aveugle. " +
+      "(client QB non résolu, taxe sur frais non imputée, TaxCode manquant…) est laissé en attente de revue manuelle, jamais poussé à l'aveugle, et retenté au passage suivant. " +
       "Idempotent : un payout déjà lié à un Deposit (qb_deposit_id) est ignoré. " +
-      "⚠️ Désactivé par défaut au premier déploiement — activer manuellement depuis cette page après vérification. " +
-      "Exécutable en dry-run (preview) ou run-now depuis cette page.",
+      "VISIBILITÉ : un résumé Slack part seulement quand quelque chose COINCE — payout bloqué par une garde, erreur, ou payout réglé depuis plus de stale_alert_days jours toujours sans Deposit (relancé quotidiennement). " +
+      "Un passage qui n'a fait que pousser des dépôts sans anicroche est silencieux pour ne pas encombrer le canal comptabilité (slack_on_success=1 pour recevoir le résumé de chaque passage). Jamais d'échec silencieux : tout reste dans le journal ci-dessous. " +
+      "Exécutable en dry-run (preview complète, aucun Deposit créé, aucun Slack) ou run-now depuis cette page.",
     trigger_config: {
       kind: 'schedule',
-      source: 'index.js:scheduleStripeWeeklyPayoutPush',
-      cron: '0 12 * * 1 (lundi 12h00 local)',
-      summary: 'Scheduler interne — tous les lundis à midi (local)',
+      source: 'index.js cron 0 12,22 * * * UTC → syncAndPushStripePayouts',
+      cron: '0 12,22 * * * UTC (8h et 18h à Montréal, tous les jours)',
+      summary: 'Scheduler interne — deux fois par jour (8h et 18h, Montréal)',
     },
+    action_config: {
+      push_since: '2026-04-21',
+      max_batch: '8',
+      stale_alert_days: '3',
+      slack_on_success: '0',
+      slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+    },
+    configurable: true,
     default_active: 0,
   },
   {
@@ -302,9 +462,13 @@ export const SYSTEM_AUTOMATIONS = [
     description:
       "Chaque matin (7h30) et à chaque saisie du solde disponible réel (page Trésorerie), projette le solde du compte BNC CAD sur l'horizon configuré : " +
       "solde saisi + payouts Stripe à venir − factures fournisseurs CAD programmées (jour de paiement hebdomadaire avant l'échéance) − sorties récurrentes (paie, loyer, dettes…). " +
-      "Si le point bas projeté passe sous le seuil, une alerte Slack est envoyée (webhook configuré via une variable d'environnement, DM Antoine Lambert) avec le virement suggéré " +
-      "selon la procédure : virer via le compte VENN CAD (convertir des USD au besoin en gardant un minimum de 15 000 USD), virement Interac de préférence. " +
-      "Anti-spam : au plus une alerte par 20 h. Envoie aussi un rappel Slack si le solde n'a pas été noté depuis plus de balance_stale_days jours (projection périmée). " +
+      "Si le point bas projeté passe sous le seuil, l'état est loggé et affiché sur la page Trésorerie. " +
+      "SLACK NE PARLE QUE POUR UN DÉCOUVERT IMMINENT : solde projeté NÉGATIF d'ici slack_negative_days jours (défaut 3). " +
+      "Un point bas simplement sous le seuil de confort, ou un découvert plus lointain, restent en « VEILLE » — visibles ici et sur la page Trésorerie, jamais dans le canal comptabilité (le canal doit rester quasi silencieux). " +
+      "Mettre slack_negative_only à 0 pour revenir au comportement historique (seuil franchi d'ici slack_urgent_days jours). " +
+      "L'alerte porte le virement suggéré selon la procédure : virer via le compte VENN CAD (convertir des USD au besoin en gardant un minimum de 15 000 USD), virement Interac de préférence. " +
+      "Anti-spam : au plus une alerte par 20 h. Sont loggés SANS Slack : le rappel « solde non noté depuis plus de balance_stale_days jours » (stale_reminder_slack à 1 pour le réactiver) " +
+      "et l'écart de réconciliation solde réel vs projeté au-delà de variance_tolerance (variance_slack à 1 pour le réactiver). " +
       "Le bouton « Simuler » affiche la projection sans rien envoyer.",
     trigger_config: {
       kind: 'schedule',
@@ -315,7 +479,300 @@ export const SYSTEM_AUTOMATIONS = [
       threshold: '5000',
       horizon_days: '42',
       balance_stale_days: '7',
+      slack_negative_only: '1',
+      slack_negative_days: '3',
+      slack_urgent_days: '2',
+      stale_reminder_slack: '0',
+      variance_slack: '0',
       slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_pmt_suivi_sheet',
+    name: 'Paiements émis : reprise de l\'onglet Pmt_Suivi (fichier CTB - Suivi)',
+    description:
+      "Toutes les 30 minutes (et sur demande via le bouton « Synchroniser la feuille » de la page Paiements émis), relit l'onglet « Pmt_Suivi » du Google Sheet « CTB - Suivi » — le suivi manuel des virements, chèques et paiements de carte — et reprend dans l'ERP les paiements ajoutés au fichier. " +
+      "La couleur VERTE de la colonne « Montant » vaut « passé à la banque » : une ligne qui passe au vert dans le fichier coche le paiement correspondant ici. " +
+      "IDEMPOTENT : chaque ligne a une clé naturelle (date + libellé + montant + référence + rang d'occurrence), donc relancer la sync met à jour au lieu de doubler ; les paiements SAISIS dans l'ERP (sans clé d'import) ne sont jamais touchés. " +
+      "Un paiement importé est relié à la facture fournisseur qu'il règle quand c'est sans ambiguïté (même fournisseur, montant exact) — sans ce lien, la facture resterait projetée à son échéance EN PLUS du paiement. " +
+      "Chaque passage enchaîne ensuite l'appariement au relevé bancaire importé (compte BNC CAD). " +
+      "since_date est le plancher d'import (l'historique antérieur est déjà en base) ; google_account_email vide = le compte Google connecté le plus récemment. " +
+      "Lecture par export Drive (xlsx, couleurs incluses) : le compte Google configuré doit avoir accès au fichier. " +
+      "Le bouton « Simuler » compte ce qui serait ajouté / mis à jour sans rien écrire ; « Exécuter » lance l'import immédiatement.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'setInterval 30 min (index.js) → services/pmtSuiviImport.js + POST /api/treasury/payments/import-sheet',
+      summary: 'Sync automatique toutes les 30 min + bouton « Synchroniser la feuille » de la page Paiements émis',
+    },
+    action_config: {
+      file_id: '13rd8x_xy5AQJemDwE6yWp8ffvkj3bEo7kq3cuogRGyQ',
+      sheet_name: 'Pmt_Suivi',
+      google_account_email: '',
+      since_date: '2026-01-01',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_treasury_qb_clear',
+    name: 'Paiements émis : détection du « passé à la banque » via QuickBooks',
+    description:
+      "Toutes les heures (et sur demande depuis le bouton « Synchroniser avec QuickBooks » de la page Paiements émis), lit le grand livre QuickBooks du compte bancaire projeté et coche « passé à la banque » les paiements émis dont l'argent est réellement sorti. " +
+      "SIGNAL : le rapport GeneralLedger expose par écriture un marqueur de compensation — « C » = appariée au flux bancaire (le mouvement EST au compte), « R » = en plus validée dans un rapprochement, VIDE = saisie dans QuickBooks mais jamais vue à la banque (chèque non encaissé, paiement post-daté). Seules les écritures « C » et « R » comptent : « l'écriture existe dans QuickBooks » ne prouve rien, elle existe dès la saisie. " +
+      "PRUDENCE : cocher à tort retire une sortie de la projection et masque un découvert. Un appariement n'est appliqué automatiquement que si le NOM du tiers chez QuickBooks concorde avec le fournisseur (ou le bénéficiaire) du paiement — le montant seul ne suffit pas, deux fournisseurs facturent le même 103,48 $ — ou, pour un virement interne (que QuickBooks ne nomme pas), si le montant concorde au cent près à moins de 2 jours d'écart. Tout le reste, ainsi que les factures fournisseurs encore « à payer » dans l'ERP alors que QuickBooks a une écriture compensée à ce fournisseur, est PROPOSÉ sur la page pour confirmation d'un clic — jamais appliqué tout seul. " +
+      "auto_apply=0 désactive le cochage automatique : tout passe alors par la confirmation manuelle. Le bouton « Simuler » liste les correspondances sans rien écrire.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'setInterval 60 min (index.js) → services/treasuryQbClear.js + POST /api/treasury/payments/qb-clear',
+      summary: 'Sync horaire + bouton « Synchroniser avec QuickBooks » de la page Paiements émis',
+    },
+    action_config: {
+      account_name: 'BNC CAD',
+      day_window: '6',
+      lookback_days: '75',
+      auto_apply: '1',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_treasury_solde_sheet',
+    name: 'Trésorerie BNC : sync du fichier « Maintien du solde disponible » (Google Sheet)',
+    description:
+      "Toutes les 60 minutes, à l'heure pile (et sur demande depuis la page Comptabilité), lit l'onglet « Compte chèque » du Google Sheet « Maintien du solde disponible BNC » — que l'utilisateur continue de tenir à la main — et le compare à la projection de trésorerie de l'ERP. LE FICHIER FAIT FOI : " +
+      "1) le solde disponible réel du fichier, s'il est plus récent ou différent de la dernière saisie ERP, devient une nouvelle saisie de solde (avec la même réconciliation prévu/réel et la même vérification d'alerte qu'une saisie manuelle) ; " +
+      "2) un paiement planifié du fichier que l'ERP ne projette pas déjà (ni facture fournisseur à son échéance, ni sortie récurrente, ni paiement émis) est ajouté comme paiement projeté — idempotent, une ligne retirée du fichier est retirée de la projection ; " +
+      "3) le bloc « Sorties récurrentes » ajuste les montants et jours des récurrentes mensuelles de l'ERP et crée celles qui manquent. " +
+      "Ce qui ne peut pas être ajusté sans risque de double compte (ligne déjà couverte, récurrente non mensuelle, montant « voir le relevé ») est rapporté dans le journal ci-dessous et sur la page Comptabilité — sans alerte Slack (slack_anomalies=0 ; mettre à 1 pour notifier les anomalies de lecture nouvelles). " +
+      "Le bouton « Simuler » liste les différences sans rien écrire ; « Exécuter » applique la sync immédiatement. " +
+      "Lecture par export Drive (xlsx) : le compte Google configuré doit avoir accès au fichier.",
+    trigger_config: {
+      kind: 'schedule',
+      source: "cron '0 * * * *' (index.js) → services/treasurySoldeSheet.js + POST /api/treasury/solde-sheet/sync",
+      summary: 'Sync toutes les 60 min (à l\'heure pile) + bouton « Synchroniser » de la page Comptabilité',
+    },
+    action_config: {
+      spreadsheet_id: '1ETlbHIcwClZTiskwQh8PWYuDxZGwqJBKU-0p2iWoxgo',
+      sheet_name: 'Compte chèque',
+      google_account_email: 'pap@orisha.io',
+      match_window_days: '10',
+      slack_anomalies: '0',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_carm_balance_alert',
+    name: 'Douanes ASFC : alerte de solde bas du compte CARM',
+    description:
+      "Chaque matin (8h) et après chaque import de relevé, calcule le solde du compte CARM de l'ASFC — solde d'ouverture saisi + paiements − évaluations, intérêts et pénalités du relevé importé — et alerte sur Slack quand il passe sous le seuil configuré. " +
+      "MODÈLE COMPTABLE : le compte ASFC est le solde du fournisseur ASFC dans les Comptes fournisseurs (ap_acctnum) — aucun compte de passage à créer. Notre versement est une dépense sur la carte (card_acctnum) imputée à ce compte fournisseur, sans taxe ; l'évaluation B3 devient une facture fournisseur ventilée en droits de douane (duty_acctnum) et en TPS à l'importation, 100 % récupérable en CTI ; les intérêts vont dans interest_acctnum et les pénalités dans penalty_acctnum, hors champ de taxe. Une ligne réglée par un courtier (broker_names : FedEx, UPS, Axxess paient l'ASFC puis nous refacturent) n'est JAMAIS comptabilisée ici — sa dépense et sa TPS arrivent par la facture du courtier — et le dépôt de garantie de 597 $ est ignoré, déjà dans les livres. " +
+      "opening_balance / opening_date fixent le point de départ : le relevé du portail ne contient que l'activité, sans lui le solde n'est qu'une variation. " +
+      "Anti-spam : au plus une alerte par 20 h. Le bouton « Simuler » calcule le solde et affiche le message sans rien envoyer.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 0 8 * * * (index.js) + POST /api/carm/import',
+      summary: 'Vérification quotidienne à 8h et à chaque import de relevé',
+    },
+    action_config: {
+      opening_balance: '0',
+      opening_date: '',
+      threshold: '50',
+      ap_acctnum: '21000',
+      duty_acctnum: '65000',
+      interest_acctnum: '79200',
+      penalty_acctnum: '70100',
+      card_acctnum: '22000',
+      bank_acctnum: '10000',
+      vendor_name: 'ASFC',
+      gst_tax_code_name: 'TPS',
+      notax_tax_code_name: 'Hors champ',
+      post_since: '',
+      max_batch: '50',
+      delta_tolerance: '0.02',
+      broker_names: 'Federal Express Canada, United Parcells, AXXESS INTERNAtional',
+      slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_fiscal_anomalies_sheet',
+    name: 'Statut fiscal : sync des anomalies TPS/TVQ du mentor vers les profils fournisseurs',
+    description:
+      "Deux fois par jour, lit l'onglet « Fournisseurs_TPS_TVQ_Anomalies » du Google Sheet « Sommaire_Statut fiscal des taxes » — le journal de corrections tenu par le mentor comptable (date, compte, fournisseur, montant, ce qui a été fait, ce qui aurait dû être fait, explication) — et applique chaque correction NOUVELLE au profil du fournisseur concerné : code de taxe QuickBooks par devise (Détaxé / Exonéré / Hors champ) et, quand l'explication le permet (« business to business », « transport de marchandises », « produit alimentaire »…), type de transaction. " +
+      "Les prochaines factures du même fournisseur partent donc du bon statut fiscal, sans report manuel. " +
+      "Prudence : une correction « Taxable » n'est jamais appliquée (le code dépend des taxes réellement facturées) ; deux lignes contradictoires pour le même fournisseur et la même devise (ex. Amazon : café détaxé vs remboursement taxable) bloquent la mise à jour et sont rapportées ; une ligne déjà traitée n'est jamais rejouée, donc une modification faite ensuite dans /fournisseurs ne peut pas être réécrasée. " +
+      "Le bouton « Simuler » liste ce qui serait changé sans rien écrire ; « Exécuter » applique immédiatement. Lecture par export Drive (xlsx) : le compte Google configuré doit avoir accès au fichier.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'setInterval 12 h (index.js) → services/fiscalAnomaliesSheet.js',
+      summary: 'Sync 2×/jour de l\'onglet des anomalies fiscales',
+    },
+    action_config: {
+      spreadsheet_id: '1ZJafa3fuuQwfuROyLfWlLPzg99k8jLqlv9jnNao8Ed0',
+      sheet_name: 'Fournisseurs_TPS_TVQ_Anomalies',
+      google_account_email: 'pap@orisha.io',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_invoice_collection',
+    name: 'Collecte des factures fournisseurs sur leurs portails',
+    description:
+      "Chaque nuit à 5 h (heure de Montréal), pour chaque compte de la page « Collecte de factures » : part des transactions bancaires NON COMPTABILISÉES (statut « à traiter » ou « facture reçue », sans document lié), reconnaît le fournisseur dans le libellé du relevé, se connecte à son portail et ne télécharge QUE les factures dont le montant correspond. " +
+      "La facture descend dans l'extracteur de données comme n'importe quel reçu, puis la transaction bancaire lui est liée automatiquement — elle passe alors à « facture reçue ». " +
+      "LA PUBLICATION QUICKBOOKS RESTE MANUELLE : rien n'entre dans les livres sans un clic depuis la fiche du reçu. " +
+      "La concordance est exacte au cent près ; un écart jusqu'à match_tolerance_pct est accepté seulement s'il n'y a qu'une seule facture dans cette marge (conversion de devise, frais bancaires). Deux candidates au même montant → rien n'est téléchargé, la transaction est marquée « ambiguë ». " +
+      "Le montant qui fait foi pour lier est celui EXTRAIT DU PDF, pas celui annoncé par le portail. " +
+      "Une facture introuvable est retentée à 1, 3 puis 7 jours (un fournisseur publie parfois plusieurs jours après avoir débité), puis abandonnée. " +
+      "needs_lookback_days est la profondeur d'historique balayée dans le relevé. " +
+      "Le bouton « Simuler » liste les besoins et les concordances sans se connecter à aucun portail ni rien télécharger.",
+    trigger_config: {
+      kind: 'schedule',
+      source: "cron '0 9 * * *' (index.js) → services/scrapers/index.js runAllScrapers()",
+      summary: 'Tournée quotidienne à 9 h UTC (5 h à Montréal) + bouton « Collecter » de la page Collecte de factures',
+    },
+    action_config: {
+      needs_lookback_days: '120',
+      match_tolerance_pct: '2',
+      retry_delays_days: '1,3,7',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_bank_trx_sheet',
+    name: 'Rapprochement bancaire : sync du fichier TRX_Orisha (Drive)',
+    description:
+      "Toutes les 20 minutes (et sur demande depuis la page Rapprochement bancaire), lit le fichier TRX_Orisha.xlsx du Drive — un onglet par compte bancaire, où l'utilisateur colle les relevés de ses 11 comptes — et importe les transactions nouvelles dans le rapprochement de l'ERP (mêmes lignes que l'import par collage). " +
+      "Chaque compte passe ensuite au matching automatique (achats, reçus, payouts Stripe) et à la liaison QuickBooks (grand livre, montant + date). " +
+      "Puis un AUDIT croise le relevé et le grand livre QB sur la fenêtre audit_window_days : transaction au relevé sans écriture QB, écriture QB jamais passée au relevé, ligne « à traiter » plus vieille que anomaly_age_days — chaque anomalie est accompagnée d'une explication probable " +
+      "(décalage de date, écart de montant ≈ frais bancaires ou conversion, doublon possible dans QB, facture manquante). " +
+      "AUCUNE ALERTE SLACK n'est envoyée (slack_anomalies=0, demande de l'utilisateur) : les anomalies vivent uniquement sur la page Rapprochement bancaire et dans le journal ci-dessous. Mettre slack_anomalies à 1 pour retrouver l'alerte des anomalies nouvelles dans le canal slack_webhook_env. " +
+      "La déduplication est tolérante (date + montant signé) : recoller un relevé dans le fichier ou relancer la sync ne double jamais une transaction, et une transaction supprimée à la main dans l'ERP ne ressuscite pas. " +
+      "since_date est le plancher d'import (l'historique antérieur est déjà en base) ; overlap_days est la fenêtre re-scannée avant la dernière transaction connue de chaque compte. " +
+      "Le bouton « Simuler » liste ce qui serait importé et les anomalies sans rien écrire ni alerter.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'setInterval 20 min (index.js) → services/bankTrxSheet.js + POST /api/bank/trx-sheet/sync',
+      summary: 'Sync aux 20 minutes + bouton « Synchroniser » de la page Rapprochement bancaire',
+    },
+    action_config: {
+      file_id: '1fRE0c1zv5zks70pwzgpojB7LZz-V5lHR',
+      google_account_email: 'michel@orisha.io',
+      since_date: '2026-07-01',
+      overlap_days: '7',
+      anomaly_age_days: '7',
+      audit_window_days: '45',
+      audit_grace_days: '4',
+      slack_anomalies: '0',
+      slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_card_payment_reminder',
+    name: 'Rappel mensuel : payer les cartes (Visa CAD / Visa USD)',
+    description:
+      "Rappelle chaque mois de payer les soldes des cartes de crédit avant la date cible (défaut : le 24 — l'échéance réelle des cartes est vers le 26-27, la cible garde une marge). " +
+      "Le rappel n'est pas envoyé « N jours avant » mais le DERNIER jour travaillé encore à temps — le dernier mardi ou samedi qui tombe le 24 ou avant " +
+      "(ex. le 24 est un lundi → rappel le samedi 22 ; le 24 est un samedi → rappel le jour même). " +
+      "Envoi en message privé Slack (DM Antoine Lambert) via le webhook SLACK_WEBHOOK_PERSO — canal distinct de l'alerte trésorerie. " +
+      "Si cette variable est absente de server/.env, le rappel part quand même sur SLACK_WEBHOOK_TREASURY et le journal le signale. Le scan tourne tous les matins (8 h, heure de Montréal) et ne logge que les jours où le rappel part — " +
+      "un seul envoi par mois, même si le serveur redémarre plusieurs fois. " +
+      "Configurable : libellé des cartes, jour d'échéance, jours travaillés (0 = dimanche … 6 = samedi) et webhook Slack. " +
+      "Le bouton « Simuler » affiche la prochaine date de rappel et l'aperçu du message sans rien envoyer ; « Exécuter » envoie le rappel immédiatement.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 0 12 * * * UTC (index.js) → services/cardPaymentReminder.js',
+      summary: 'Scan quotidien à 8 h (Montréal) ; envoi le dernier jour travaillé avant la date limite',
+    },
+    action_config: {
+      cards: 'Visa CAD, Visa USD',
+      due_day: '24',
+      work_days: '2,6',
+      slack_webhook_env: 'SLACK_WEBHOOK_PERSO',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_pieces_disbursements',
+    name: 'Déboursés mensuels en pièces : calcul, fichier Drive et message à Guillaume',
+    description:
+      "Le 7 de chaque mois (9 h, Montréal), exécute la procédure « Pièces_Déboursés » sur le mois qui vient de se terminer. " +
+      "1) CALCUL : le grand livre QuickBooks du compte acctnum (14000 Stock de Pièces) est lu sur le mois ; toutes les écritures de journal sont écartées — ne restent que les « Dépense » et les « Facture à payer », en dollars canadiens. " +
+      "Achats du mois = leur total. « À payer au début » = le « À payer à la fin » du mois précédent (les factures dues à la fin du mois passé sont déboursées ce mois-ci). " +
+      "« À payer à la fin » = les factures fournisseurs du mois encore impayées au dernier jour du mois, déterminé par les paiements liés dans QuickBooks — ce que le comptable allait vérifier fournisseur par fournisseur. " +
+      "Déboursés du mois = Achats + À payer au début − À payer à la fin. " +
+      "2) FICHIER : un Google Sheet « Pièces_Déboursés_<Mois><AA> » est déposé dans le dossier Drive configuré (Comptabilité/…/Stocks/Déboursés_Pièces), avec le tableau des opérations, le bloc sommaire en formules et la liste des factures encore dues. Régénérer un mois remplace le fichier existant, il n'y a jamais deux fichiers pour le même mois. " +
+      "3) VALIDATION : une notification prévient les admins que le montant est prêt. LE MESSAGE SLACK À GUILLAUME NE PART JAMAIS TOUT SEUL — l'utilisateur vérifie le montant sur la page « Écritures de fin de mois », corrige au besoin les deux montants « à payer », puis clique pour envoyer. " +
+      "Les corrections manuelles l'emportent sur le calcul et se reportent au mois suivant. " +
+      "Le bouton « Simuler » calcule et affiche les montants sans déposer de fichier ni notifier ; « Exécuter » relance la préparation complète du mois écoulé.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 0 13 7 * * UTC (index.js) → services/piecesDisbursements.js',
+      summary: 'Le 7 de chaque mois à 9 h (Montréal), sur le mois qui vient de se terminer',
+    },
+    action_config: {
+      acctnum: '14000',
+      drive_folder_id: '1q0e-rHE2xxeapcDt8yyHh2xwJt1mChJc',
+      google_account_email: 'michel@orisha.io',
+      slack_webhook_env: 'SLACK_WEBHOOK_GUILLAUME',
+      recipient: 'Guillaume',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_work_suggestions',
+    name: 'Travaux : suggestions de chantiers et d\'intégrations par l\'agent',
+    description:
+      "Chaque matin, l'agent propose jusqu'à 5 prochains chantiers dans l'onglet « Suggestions » de la page Travaux — liste distincte de la file de prompts de l'utilisateur : " +
+      "rien ne s'exécute avant d'avoir été promu à la main. " +
+      "Un second moteur propose jusqu'à 3 « intégrations » : des logiciels ou des API externes à brancher à l'ERP, avec ce que le branchement débloquerait. " +
+      "Son contexte à lui est l'inventaire de ce qui est DÉJÀ branché (connexions OAuth actives et clés d'API présentes — jamais leur valeur), le périmètre fonctionnel de l'app et les travaux encore manuels, " +
+      "pour qu'il ne repropose pas Stripe ou QuickBooks. Les deux natures se filtrent par le sélecteur « Chantiers / Intégrations » de l'onglet. " +
+      "Le signal principal est la liste des travaux encore faits À LA MAIN (onglet « Travaux récurrents ») : chaque ligne cochée semaine après semaine est un candidat à l'automatisation. " +
+      "S'y ajoutent les commits récents (chantiers ouverts à refermer), les prompts récents de l'utilisateur (sa direction actuelle) et les erreurs de synchronisation des 14 derniers jours. " +
+      "Le modèle n'explore pas le code : tout son contexte est assemblé par le serveur, donc le passage tourne sans risque en parallèle d'une exécution en cours. " +
+      "Les doublons sont écartés par empreinte de titre, y compris les suggestions déjà rejetées — une même idée n'est jamais reproposée. " +
+      "Le bouton « Simuler » montre le volume de contexte qui serait soumis, sans appeler le modèle ; « Exécuter » lance un passage immédiat.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 0 11 * * * UTC (index.js) → services/workSuggestions.js',
+      summary: 'Passage quotidien à 7 h (Montréal)',
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_month_end_provisions',
+    name: 'Écritures de fin de mois : préparation des provisions',
+    description:
+      "Le 1er de chaque mois, prépare la clôture du mois écoulé — les étapes mécaniques des procédures « Provision - Subv. salariales » et « Provision Crédits R&D ». " +
+      "1) Va chercher dans le Drive la feuille de temps du mois (feuille_de_temps_{mois}_{année}.xlsx), lit l'onglet de chaque personne et totalise les heures RS&DE " +
+      "(la somme des jours fait foi, pas la ligne « total » du fichier) ; les lignes corrigées à la main dans l'ERP sont conservées. " +
+      "2) Recalcule la provision de crédit d'impôt R&D (heures × taux horaire × majoration, moins le PARI du mois, × le taux de réclamation) et la provision de subvention salariale " +
+      "(salaire brut du mois × le taux de contribution, plafonnée à la contribution maximale et bornée à la fenêtre d'admissibilité). " +
+      "3) Notifie les admins dans l'ERP que les écritures sont prêtes. " +
+      "La comptabilisation dans QuickBooks n'est jamais automatique : elle se fait écriture par écriture depuis la page « Écritures de fin de mois », après approbation. " +
+      "Les paramètres de calcul (taux horaire, majoration, taux de réclamation, arrondi, plafond, fenêtre d'admissibilité, comptes QB) s'éditent sur cette même page. " +
+      "Le bouton « Simuler » recalcule et affiche les montants du mois écoulé sans rien importer ni notifier.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 0 13 1 * * UTC (index.js) → services/monthEndAutomation.js',
+      summary: 'Le 1er de chaque mois à 9 h (Montréal), sur le mois qui vient de se terminer',
+    },
+    action_config: {
+      google_account_email: 'michel@orisha.io',
+      contractors: 'Antoine Ratheau',
     },
     configurable: true,
     default_active: 1,
@@ -329,7 +786,10 @@ export const SYSTEM_AUTOMATIONS = [
       "La base est répartie selon les pourcentages configurés (défaut : Marketing 62100 33,6 %, Opérations 62200 5,1 %, Administration 62201 11,8 %, R&D 62300 49,5 % — fichier Prorata_Paie_2026-2027) ; " +
       "le compte source (62200, où la paie est comptabilisée initialement) est crédité. " +
       "Rien n'est publié automatiquement : la page Paies affiche l'aperçu et un bouton « Publier sur QB » (idempotent — une écriture par paie). " +
-      "Même mécanique pour l'assurance collective AGA (prorata en nb d'employés assurés par département), depuis le Dashboard comptabilité. " +
+      "Assurance collective AGA (carte du Dashboard comptabilité) : il n'y a pas de compte d'assurance — la prime est ventilée dans les mêmes comptes de salaires par département. " +
+      "Publiée comme les 12 comptabilisations historiques (Purchases QB 14791 → 17667) : dépense Cash sur le compte de banque 10000, fournisseur Groupe Financier AGA, code Exonéré par ligne, " +
+      "mémo « AGA ASS. COLL. (répartition au prorata entre les départements) » — pas une écriture de journal. Les poids par défaut sont les montants réels d'avril à juillet 2026 " +
+      "(890,86 / 311,78 / 260,11 / 1 275,20 sur 2 737,95 $ = 32,5375 / 11,3874 / 9,5002 / 46,575 %) et non le nb d'employés assurés arrondi, qui déviait de 1 à 14 $ par compte. " +
       "Le Dashboard comptabilité offre aussi la comptabilisation de la paie : dépense QB (Cash, compte 10000, fournisseur « Salaires », taxes incluses) ventilée par département au même prorata, " +
       "avec téléphone Martin (TPS/TVQ) et lignes « (rembourser à) » par employé — au modèle des transactions Salaires historiques, période de paie en mémo. " +
       "Le bouton « Simuler » montre l'écriture de la dernière paie sans rien publier.",
@@ -345,8 +805,173 @@ export const SYSTEM_AUTOMATIONS = [
       phone_amount: '25',
       meals_acctnum: '75930',
       reimb_acctnum: '',
-      aga_splits: '62100:2.6, 62200:0.9, 62201:0.8, 62300:3.7',
-      aga_source_acctnum: '',
+      aga_splits: '62100:890.86, 62200:311.78, 62201:260.11, 62300:1275.20',
+      aga_source_acctnum: '10000',
+      aga_vendor_name: 'Groupe Financier AGA',
+      aga_taxcode: 'Exonéré',
+      aga_memo: 'AGA ASS. COLL. (répartition au prorata entre les départements)',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_marketing_expense_sync',
+    name: 'Budget marketing : détection des dépenses (QuickBooks)',
+    description:
+      "Automatise la détection de la procédure « Suivi - Budget marketing (Émilie) » : plusieurs fois par jour (aux 3 heures, de 6h30 à 18h30 à Montréal), le rapport GeneralLedger de QuickBooks est interrogé sur les comptes de dépenses marketing " +
+      "(75910 Consultants, 75915 Partenaires, 75920 Publicité et promotion, 75925 Événements/Conférences, 75930 Repas aux fins de promotion — liste configurable ci-dessous). " +
+      "Toute nouvelle ligne devient une dépense « à valider » dans la page Budget marketing (Espace finance), où l'on tranche : pertinente pour le budget d'Émilie " +
+      "(activités visant de nouveaux clients au Canada anglais / USA) ou non. Un fournisseur récurrent jamais pertinent peut devenir une règle d'exclusion : " +
+      "ses dépenses futures sont écartées automatiquement à l'ingestion, sans re-validation. " +
+      "Dédup par clé naturelle (compte + transaction QB + date + montant + mémo) : re-balayer la même période n'insère rien — c'est ce qui permet de multiplier les passages sans créer de doublon. " +
+      "Le balayage repart lookback_days jours avant la dernière dépense connue pour attraper les saisies tardives dans QB. " +
+      "Le bouton « Simuler » rapporte l'état de la file sans rien écrire ; « Exécuter » lance une sync immédiate.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 30 10,13,16,19,22 * * * UTC (index.js) → services/marketingBudget.js',
+      cron: '30 10,13,16,19,22 * * * UTC (aux 3 h, 6h30 → 18h30 à Montréal, tous les jours)',
+      summary: 'Scan du grand livre QuickBooks 5 fois par jour, aux 3 heures (6h30 → 18h30, Montréal)',
+    },
+    action_config: {
+      accounts: '75910,75915,75920,75925,75930',
+      start_date: '2026-06-01',
+      lookback_days: '45',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_marketing_weekly_slack',
+    name: 'Budget marketing : message Slack hebdomadaire à Émilie',
+    description:
+      "Chaque mardi (jour configurable), envoie à Émilie un message Slack court et clair listant les dépenses marketing validées « pertinentes » depuis le dernier envoi " +
+      "(date, fournisseur, montant, catégorie, total) — ou « aucune nouvelle dépense pertinente » s'il n'y en a pas. " +
+      "Seules les dépenses DÉJÀ validées dans la page Budget marketing partent : une ligne encore en attente n'est jamais annoncée (elle partira un mardi suivant, une fois tranchée). " +
+      "Une sync QuickBooks est faite juste avant l'envoi pour que le message reflète le grand livre du jour. " +
+      "L'envoi a lieu en FIN D'APRÈS-MIDI (16h, Montréal) : le tri des dépenses se fait le mardi dans la journée, un envoi le matin partirait vide et les dépenses validées attendraient le mardi suivant. " +
+      "GARDE-FOU : si aucune dépense n'est validée mais que des lignes restent à valider, l'envoi est RETENU — annoncer « aucune dépense pertinente » alors que des dépenses attendent seulement un tri serait une fausse information. " +
+      "Le journal dit alors pourquoi, et les dépenses partent dès qu'elles sont tranchées (au prochain envoi hebdomadaire). Une semaine réellement vide (rien en attente, rien de pertinent) envoie bien « aucune dépense ». " +
+      "Un seul envoi planifié par semaine, même si le serveur redémarre. Le journal signale le nombre de dépenses encore en attente de validation. " +
+      "Le webhook Slack est lu depuis la variable SLACK_WEBHOOK_MARKETING de server/.env (configurée) — si elle disparaissait, l'envoi échouerait avec une erreur visible dans le journal ci-dessous. " +
+      "Le bouton « Simuler » montre le message qui partirait sans l'envoyer ; « Exécuter » envoie immédiatement (ignore le jour, l'idempotence et le garde-fou — c'est un choix explicite).",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 0 20 * * * UTC (index.js) → services/marketingBudget.js',
+      cron: '0 20 * * * UTC (16h à Montréal, tous les jours — envoi le mardi seulement)',
+      summary: 'Scan quotidien à 16h (Montréal) ; envoi le mardi, une fois par semaine',
+    },
+    action_config: {
+      send_weekday: '2',
+      slack_webhook_env: 'SLACK_WEBHOOK_MARKETING',
+      recipient: 'Émilie',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_instagram_prospect_intake',
+    name: 'Prospects Instagram : réception des commentaires (ManyChat)',
+    description:
+      "Reçoit les appels de ManyChat sur POST /api/instagram/manychat (action « External Request », réservée au forfait Pro de ManyChat) et tient la liste des prospects Instagram. " +
+      "Trois flux : « comment » (quelqu'un a commenté une de nos publications), « dm_sent » (ManyChat a envoyé le message privé) et « reply » (la personne a répondu). " +
+      "L'ERP est la SOURCE DE VÉRITÉ de la dédup : ManyChat ne déclenche qu'une fois par personne ET PAR PUBLICATION, il ne peut donc pas savoir qu'on a déjà écrit à quelqu'un qui commente une deuxième publication. " +
+      "La réponse HTTP porte « should_dm » — le flow ManyChat doit brancher dessus AVANT d'envoyer le DM. C'est ce qui garantit qu'une même personne n'est jamais recontactée. " +
+      "Dédup par IGSID (identifiant Instagram stable, résiste au changement de nom d'usager) avec repli sur le nom d'usager ; une fiche créée sans IGSID est promue dès qu'un appel l'apporte, et un doublon éventuel est fusionné sans perdre la mémoire du DM déjà envoyé. " +
+      "Chaque appel est journalisé (table instagram_prospect_events) et un rejeu de livraison ne regonfle pas les compteurs. Chaque fiche est poussée dans la table Airtable « Prospects Instagram ». " +
+      "PRÉREQUIS : le secret partagé (connector_config manychat/webhook_secret) doit être configuré, sinon le webhook répond 503 ; et la table Airtable doit être créée à la main puis configurée (Connecteurs → Airtable), le jeton n'ayant pas le droit de créer des tables. " +
+      "LIMITES DE PLATEFORME assumées : le DM n'est possible qu'en réponse privée à un commentaire (1 seul par commentaire, dans les 7 jours, aucun DM à froid) ; la liste des nouveaux abonnés est impossible à obtenir (Meta n'expose que le compteur) ; les commentaires d'une publication publiée par un partenaire ne sont pas accessibles. " +
+      "Le bouton « Simuler » rapporte l'état de la file et de la configuration. Pas d'« Exécuter » : le déclencheur est un appel de ManyChat, on ne fabrique pas de faux prospect.",
+    trigger_config: {
+      kind: 'webhook',
+      source: 'POST /api/instagram/manychat (routes/instagram.js) → services/instagramProspects.js',
+      summary: 'Appelé par ManyChat à chaque commentaire, DM envoyé ou réponse',
+    },
+    action_config: {
+      keywords: 'coach',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_instagram_comment_scrape',
+    name: 'Prospects Instagram : lecture des commentaires',
+    description:
+      "Chaque nuit de dimanche à lundi à minuit (heure de Montréal), relit les commentaires des publications récentes des comptes configurés et enregistre TOUS les commentateurs comme prospects — « keywords » (« coach » par défaut) ne filtre plus rien, il sert seulement à étiqueter/prioriser les fiches qui le contiennent, avec tolérance aux fautes de frappe courantes (ex. « couch »). " +
+      "Passe par la même porte d'ingestion que ManyChat : même dédup par IGSID, même fusion de fiches, même miroir Airtable, même liste hebdomadaire. Relire deux fois la même semaine ne crée aucun doublon (l'identifiant du commentaire porte l'idempotence) — la fenêtre est donc réglée sur 7 jours, exactement la semaine qui vient de se clore, ni plus ni moins. " +
+      "POURQUOI EN PLUS DE MANYCHAT : ManyChat ne voit que ce que son flow a capté pendant qu'il tournait — un flow arrêté, une panne ou un mot-clé ajouté après coup laissent des commentateurs derrière. Ici on relit, à volonté et rétroactivement. " +
+      "La tournée clôt la semaine ISO : à minuit dans la nuit de dimanche à lundi, tous les commentaires de la semaine écoulée sont déjà passés. " +
+      "PRÉREQUIS : un cookie de session Instagram (« sessionid ») collé dans Connecteurs → Instagram — DevTools → Application → Cookies → instagram.com. Il expire environ une fois par an ; Instagram répond alors 401 et une ERREUR explicite est journalisée ci-dessous, jamais un silence. " +
+      "PUBLICATIONS EN COLLAB : le champ « accounts » accepte plusieurs comptes séparés par des virgules (par défaut @orisha_auto et @growingformarketmagazine). Une publication en collaboration est un seul média avec un seul fil de commentaires, affiché sur les deux grilles — elle est donc dédoublonnée et lue une seule fois, peu importe lequel des deux comptes a publié. " +
+      "« Simuler » montre l'état de la configuration sans appeler Instagram ; « Exécuter » lance une tournée immédiate.",
+    trigger_config: {
+      kind: 'schedule',
+      source: "cron 0 4,5 * * 1 UTC (index.js) → services/instagramCommentScrape.js",
+      cron: "0 4,5 * * 1 UTC (minuit dans la nuit de dimanche à lundi à Montréal, en heure d'été comme en heure d'hiver)",
+      summary: 'Nuit de dimanche à lundi, minuit (Montréal)',
+    },
+    action_config: {
+      accounts: 'orisha_auto, growingformarketmagazine',
+      keywords: 'coach',
+      lookback_days: '7',
+      own_accounts: 'orisha_auto, growingformarketmagazine',
+      run_weekday: '1',
+      run_hour: '0',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_instagram_weekly_slack',
+    name: 'Prospects Instagram : liste hebdomadaire à Philippe (Slack)',
+    description:
+      "Chaque lundi à 7 h 30 (heure de Montréal), envoie à Philippe la liste des prospects Instagram captés depuis le dernier envoi : nom d'usager cliquable, mot-clé, date, DM envoyé ou non, réponse reçue ou non, et le lien vers la table Airtable où il édite le suivi. " +
+      "Le message est DÉLIBÉRÉMENT COURT : la semaine en clair (« du 17 au 23 août »), le nombre de prospects, combien avec le mot-clé, combien de DM envoyés, combien ont répondu — puis deux liens, vers la page ERP et vers Airtable. " +
+      "Le détail n'est pas recopié dans Slack : il vit là où Philippe travaille et coche « contacté », et un pavé serait périmé dès la première case cochée. Un message part même s'il n'y a aucun prospect — un silence serait indistinguable d'une panne. " +
+      "Le backlog part en entier : un prospect non annoncé (panne Slack, canal manquant) repart au passage suivant, jamais perdu. Un seul envoi planifié par semaine, même si le serveur redémarre. " +
+      "DESTINATAIRE : coller l'URL du webhook Slack de Philippe dans « slack_webhook_url » ci-dessous (aucune modification de server/.env nécessaire). À défaut, la variable d'environnement nommée dans « slack_webhook_env » est utilisée ; " +
+      "si aucun canal n'est joignable, le message part sur le canal de repli (trésorerie) avec un préfixe d'avertissement, et si même le repli manque, une ERREUR est journalisée ci-dessous — l'envoi n'échoue jamais en silence. " +
+      "Le bouton « Simuler » montre le message qui partirait sans l'envoyer ni marquer les fiches ; « Exécuter » envoie immédiatement (ignore le jour, l'heure et l'idempotence hebdomadaire).",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 30 11,12 * * 1 UTC (index.js) → services/instagramProspects.js',
+      cron: '30 11,12 * * 1 UTC (lundi 7 h 30 à Montréal, en heure d\'été comme en heure d\'hiver)',
+      summary: 'Lundi 7 h 30 (Montréal), une fois par semaine',
+    },
+    action_config: {
+      send_weekday: '1',
+      send_hour: '7',
+      slack_webhook_url: '',
+      slack_webhook_env: 'SLACK_WEBHOOK_PHILIPPE',
+      recipient: 'Philippe',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_ticket_survey_slack',
+    name: 'Sondage de satisfaction : alerte Slack à Philippe',
+    description:
+      "Quand un client répond au sondage de satisfaction envoyé par SMS depuis la fiche d'un billet, envoie une alerte Slack — mais SEULEMENT sur les cas actionnables. " +
+      "TROIS DÉCLENCHEURS : (1) note inférieure ou égale à « low_rating_max » (client mécontent, quelqu'un doit rappeler) ; " +
+      "(2) le client a répondu OUI à « accepteriez-vous d'être contacté par téléphone pour parler de votre expérience ? » (occasion de témoignage) ; " +
+      "(3) le client MODIFIE une réponse déjà donnée — le lien reste ouvert jusqu'à l'expiration, un changement d'avis est toujours signalé, même si la nouvelle note est bonne. " +
+      "Une note de 4 ou 5 sans demande de rappel ne produit AUCUN message : elle n'appelle aucune action et se consulte dans la fiche du billet et dans la colonne « Satisfaction » de la liste des billets. " +
+      "L'ENVOI DU SONDAGE LUI-MÊME EST 100 % MANUEL et n'est pas géré par cette automation : il part du bouton « Sondage de satisfaction » dans la fiche du billet, jamais automatiquement à la fermeture. " +
+      "DESTINATAIRE : le plus simple est d'écrire le canal dans « slack_channel » — « #support », « @philippe » ou son courriel — ce qui passe par le bot Slack de l'ERP (SLACK_BOT_TOKEN) et ne demande aucun webhook. " +
+      "Sinon, coller l'URL d'un webhook entrant dans « slack_webhook_url », ou nommer une variable d'environnement dans « slack_webhook_env » ; " +
+      "si aucun canal n'est joignable, le message part sur le canal de repli (trésorerie) avec un préfixe d'avertissement, et si même le repli manque, une ERREUR est journalisée ci-dessous — jamais un silence. " +
+      "Désactiver cette automation coupe les alertes, pas la collecte : les réponses continuent d'être enregistrées et restent visibles dans l'ERP.",
+    trigger_config: {
+      kind: 'app_event',
+      source: 'services/ticketSurveys.js:recordSurveyResponse → notifySurveyResponse',
+      summary: "Réponse d'un client au sondage de satisfaction",
+    },
+    action_config: {
+      slack_channel: '',
+      slack_webhook_url: '',
+      slack_webhook_env: 'SLACK_WEBHOOK_PHILIPPE',
+      recipient: 'Philippe',
+      low_rating_max: '2',
     },
     configurable: true,
     default_active: 1,
@@ -373,6 +998,13 @@ export const SYSTEM_AUTOMATIONS = [
 export const CONFIGURABLE_SYSTEM_AUTOMATIONS = new Set(
   SYSTEM_AUTOMATIONS.filter(sa => sa.configurable).map(sa => sa.id)
 )
+
+// Sous-ensemble des configurables dont la CONDITION de déclenchement (colonne/op/
+// valeur) est elle-même éditable par l'utilisateur : leur trigger_config en DB ne
+// doit jamais être écrasé au boot. Les autres configurables ont un déclencheur
+// défini par le code (cron, app_event) — purement descriptif, resynchronisé à
+// chaque boot pour que la fiche affiche toujours la réalité du code.
+const USER_EDITABLE_TRIGGER_AUTOMATIONS = new Set(['sys_revenue_recognition'])
 
 // Merge additif : ajoute dans le JSON stocké les clés par défaut absentes, sans
 // toucher aux valeurs existantes (les éditions utilisateur priment). Retourne la
@@ -432,7 +1064,12 @@ export function seedSystemAutomations() {
       // Migration douce : complète le row existant avec les clés éditables
       // introduites depuis (ex. column/op/value absents de l'ancien shape).
       const row = db.prepare('SELECT trigger_config, action_config FROM automations WHERE id = ?').get(sa.id)
-      const tc = mergeMissingKeys(row?.trigger_config, sa.trigger_config)
+      // Trigger défini par le code (cron, app_event — descriptif, non éditable) :
+      // resynchronisé intégralement. Trigger éditable par l'utilisateur : merge
+      // additif seulement, ses column/op/value priment.
+      const tc = USER_EDITABLE_TRIGGER_AUTOMATIONS.has(sa.id)
+        ? mergeMissingKeys(row?.trigger_config, sa.trigger_config)
+        : (row?.trigger_config !== JSON.stringify(sa.trigger_config) ? JSON.stringify(sa.trigger_config) : null)
       const ac = mergeMissingKeys(row?.action_config, sa.action_config)
       if (tc || ac) {
         db.prepare(`

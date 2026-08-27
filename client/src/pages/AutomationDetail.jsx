@@ -10,7 +10,7 @@ import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { WebhookEditor } from '../components/WebhookEditor.jsx'
 
 // Mirrors MANUAL_RUNNERS in server/src/services/systemAutomations.js. Keep in sync.
-const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup', 'sys_ctb_programmation_paiement', 'sys_treasury_alert', 'sys_paie_repartition'])
+const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup', 'sys_ctb_programmation_paiement', 'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder', 'sys_stripe_weekly_payout_push'])
 
 // Connexion Google Sheets « CTB - Suivi » — config d'action éditable, trigger
 // en lecture seule, bouton unique de diagnostic (aucune écriture).
@@ -28,19 +28,67 @@ const WEBHOOK_RETRY_AUTOMATION_ID = 'sys_airtable_webhook_router'
 // system automations whose action keys are user-editable.
 const CONFIGURABLE_SYSTEM_AUTOMATIONS = new Set([
   'sys_revenue_recognition', CTB_AUTOMATION_ID,
-  'sys_treasury_alert', 'sys_paie_repartition',
+  'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder',
+  'sys_stripe_weekly_payout_push', 'sys_ticket_survey_slack',
 ])
 
 // Champs de config des automations à éditeur générique clé-valeur.
 const GENERIC_CONFIG_FIELDS = {
+  sys_pmt_suivi_sheet: {
+    title: 'Reprise de l\'onglet Pmt_Suivi',
+    intro: 'Fichier lu toutes les 30 minutes pour rapatrier les paiements émis saisis à la main. Vider un champ revient au défaut.',
+    fields: [
+      { key: 'file_id', label: 'Fichier (ID du Google Sheets)', def: '13rd8x_xy5AQJemDwE6yWp8ffvkj3bEo7kq3cuogRGyQ', hint: 'Défaut : CTB - Suivi. L\'ID est la portion entre /d/ et /edit dans l\'URL.' },
+      { key: 'sheet_name', label: 'Onglet', def: 'Pmt_Suivi' },
+      { key: 'google_account_email', label: 'Compte Google qui lit le fichier', def: '(le plus récemment connecté)', hint: 'Doit avoir accès au fichier (page Connecteurs).' },
+      { key: 'since_date', label: 'Ne reprendre que les lignes à partir du (AAAA-MM-JJ)', def: '2026-01-01', hint: 'Plancher d\'import : l\'historique antérieur est déjà en base.' },
+    ],
+  },
   sys_treasury_alert: {
     title: 'Alerte trésorerie BNC',
-    intro: 'Seuil et horizon de la projection, et canal Slack de l\'alerte. Vider un champ revient au défaut.',
+    intro: 'Seuil et horizon de la projection, et canal Slack de l\'alerte. Slack ne reçoit qu\'un découvert imminent — tout le reste est loggé ici. Vider un champ revient au défaut.',
     fields: [
       { key: 'threshold', label: 'Seuil d\'alerte (CAD)', def: '5000' },
       { key: 'horizon_days', label: 'Horizon d\'affichage de la projection (jours)', def: '42' },
       { key: 'alert_horizon_days', label: 'Fenêtre d\'action (jours)', def: '14', hint: 'La trésorerie est gérée au fur et à mesure : l\'alerte et le virement suggéré ne regardent que cette fenêtre. Le point bas au-delà est affiché à titre indicatif.' },
+      { key: 'slack_negative_only', label: 'Slack seulement si découvert (0 / 1)', def: '1', hint: '1 = Slack ne parle QUE si le solde projeté devient négatif (un point bas simplement sous le seuil de confort reste en « veille », visible ici et sur la page Trésorerie). 0 = comportement historique : le franchissement du seuil notifie aussi.' },
+      { key: 'slack_negative_days', label: 'Fenêtre du découvert Slack (jours)', def: '3', hint: 'Un découvert projeté d\'ici ce nombre de jours envoie l\'alerte. Plus lointain : « veille », aucune notification.' },
+      { key: 'slack_urgent_days', label: 'Fenêtre d\'urgence Slack (jours) — mode historique', def: '2', hint: 'Utilisé seulement si « Slack seulement si découvert » est à 0 : Slack parle si le seuil est franchi d\'ici ce nombre de jours.' },
+      { key: 'stale_reminder_slack', label: 'Rappel Slack « solde non noté » (0 / 1)', def: '0', hint: '0 = rappel loggé seulement (tuile ambre sur la page Trésorerie). 1 = envoi Slack au plus une fois par 20 h.' },
+      { key: 'variance_slack', label: 'Slack sur écart de réconciliation (0 / 1)', def: '0', hint: '0 = l\'écart entre le solde réel saisi et le solde projeté est journalisé seulement (visible sur la page Trésorerie). 1 = envoi Slack quand l\'écart dépasse la tolérance.' },
       { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_TREASURY', hint: 'Créer un incoming webhook Slack vers le DM d\'Antoine Lambert et ajouter la variable dans server/.env.' },
+    ],
+  },
+  sys_card_payment_reminder: {
+    title: 'Rappel de paiement des cartes',
+    intro: 'Le rappel part le dernier jour travaillé qui tombe encore avant la date cible. Vider un champ revient au défaut.',
+    fields: [
+      { key: 'cards', label: 'Cartes à rappeler', def: 'Visa CAD, Visa USD', hint: 'Texte libre repris tel quel dans le message Slack.' },
+      { key: 'due_day', label: 'Date cible de paiement (jour du mois)', def: '24', hint: 'L\'échéance réelle des cartes est vers le 26-27 ; la cible du 24 garde une marge.' },
+      { key: 'work_days', label: 'Jours travaillés', def: '2,6', hint: '0 = dimanche, 1 = lundi … 6 = samedi. Défaut « 2,6 » = mardi et samedi.' },
+      { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_PERSO', hint: 'Message privé Slack (DM Antoine Lambert), distinct du canal de l\'alerte trésorerie. Si la variable est absente de server/.env, repli sur SLACK_WEBHOOK_TREASURY (signalé dans le journal).' },
+    ],
+  },
+  sys_stripe_weekly_payout_push: {
+    title: 'Comptabilisation QB des Stripe payouts',
+    intro: 'Les payouts CAD sont déposés dans « Compte chèques Banque Nationale », les USD dans « Venn USD ». Vider un champ revient au défaut.',
+    fields: [
+      { key: 'push_since', label: 'Ne pousser que les payouts arrivés depuis (AAAA-MM-JJ)', def: '2026-04-21', hint: 'Borne de périmètre : tout payout antérieur est de l\'historique déjà comptabilisé autrement — il ne sera jamais poussé vers QuickBooks. Ne reculer cette date que si on sait exactement ce qu\'on fait.' },
+      { key: 'max_batch', label: 'Payouts maximum par passage', def: '8', hint: 'Cap de sécurité : une semaine normale compte 2 payouts (1 CAD + 1 USD). L\'excédent est reporté au passage suivant et signalé sur Slack.' },
+      { key: 'stale_alert_days', label: 'Alerte « en souffrance » après (jours)', def: '3', hint: 'Un payout réglé depuis plus de N jours toujours sans Deposit QB (bloqué par la garde, transactions non synchronisées…) est relancé sur Slack à chaque passage jusqu\'à résolution.' },
+      { key: 'slack_on_success', label: 'Résumé Slack des passages réussis (0 / 1)', def: '0', hint: '0 = Slack ne parle que quand quelque chose coince (bloqué, erreur, payout en souffrance) ; un passage qui n\'a fait que pousser des dépôts reste dans le journal. 1 = résumé de chaque passage.' },
+      { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_TREASURY', hint: 'Canal du résumé (payouts bloqués, en erreur, en souffrance). Même canal que l\'alerte trésorerie par défaut.' },
+    ],
+  },
+  sys_ticket_survey_slack: {
+    title: 'Alerte Slack du sondage de satisfaction',
+    intro: 'Destinataire de l\'alerte et seuil de note basse. Le plus simple : écrire le canal ou la personne dans le premier champ — le bot Slack de l\'ERP s\'occupe du reste, aucun webhook à créer. Vider un champ revient au défaut.',
+    fields: [
+      { key: 'slack_channel', label: 'Canal ou personne Slack', def: '(aucun — repli sur le webhook)', hint: 'Exemples : « #support », « @philippe », ou son courriel pour un message privé. Passe par le bot Slack (SLACK_BOT_TOKEN) et prime sur les deux champs webhook ci-dessous. Pour un canal privé, inviter le bot dans le canal.' },
+      { key: 'slack_webhook_url', label: 'Webhook Slack — URL collée directement', def: '(aucune)', hint: 'Voie de secours si le bot n\'est pas utilisé : URL d\'un incoming webhook, figée sur un seul canal.' },
+      { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_PHILIPPE', hint: 'Dernier recours. Si la variable est absente de server/.env, le message part sur SLACK_WEBHOOK_TREASURY avec un préfixe d\'avertissement.' },
+      { key: 'recipient', label: 'Nom du destinataire (affichage)', def: 'Philippe', hint: 'Sert uniquement au libellé du message de repli.' },
+      { key: 'low_rating_max', label: 'Note maximale considérée « insatisfait »', def: '2', hint: 'Une note inférieure ou égale déclenche l\'alerte. Les notes supérieures n\'alertent que si le client accepte un appel ou modifie sa réponse.' },
     ],
   },
   sys_paie_repartition: {
@@ -53,8 +101,11 @@ const GENERIC_CONFIG_FIELDS = {
       { key: 'phone_amount', label: 'Montant téléphone par paie ($, taxes incluses)', def: '25' },
       { key: 'meals_acctnum', label: 'Compte allocation repas', def: '75930' },
       { key: 'reimb_acctnum', label: 'Compte remb. dépenses (23XXX)', def: '', hint: 'Vide = les remboursements restent dans le compte source (avertissement dans l\'aperçu).' },
-      { key: 'aga_splits', label: 'Prorata AGA (nb d\'employés assurés par compte)', def: '62100:2.6, 62200:0.9, 62201:0.8, 62300:3.7' },
-      { key: 'aga_source_acctnum', label: 'Compte source AGA (crédité)', def: '', hint: 'Compte où le paiement AGA est comptabilisé — requis pour publier la répartition AGA.' },
+      { key: 'aga_splits', label: 'Prorata AGA (poids par compte)', def: '62100:890.86, 62200:311.78, 62201:260.11, 62300:1275.20', hint: 'Pas de compte d\'assurance : la prime est ventilée dans les comptes de salaires. Poids = montants réels des dépenses QB d\'avril à juillet 2026 (32,5375 / 11,3874 / 9,5002 / 46,575 %).' },
+      { key: 'aga_source_acctnum', label: 'Compte bancaire AGA (débité)', def: '10000', hint: 'Compte d\'où sort le prélèvement — porté sur la dépense elle-même (10000 · BNC).' },
+      { key: 'aga_vendor_name', label: 'Fournisseur QB de l\'AGA', def: 'Groupe Financier AGA' },
+      { key: 'aga_taxcode', label: 'Code de taxe AGA', def: 'Exonéré', hint: 'Doit être un code à 0 % — la prime d\'assurance est exonérée. Un code taxable est refusé à la publication.' },
+      { key: 'aga_memo', label: 'Mémo de la dépense AGA', def: 'AGA ASS. COLL. (répartition au prorata entre les départements)' },
     ],
   },
 }
@@ -441,7 +492,10 @@ export default function AutomationDetail() {
   }
 
   async function handleManualRun(dryRun) {
-    if (!dryRun && !(await confirm({ title: 'Lancer en mode live', message: 'Lancer maintenant ? Cela peut envoyer de vrais emails aux clients ciblés.', confirmLabel: 'Lancer', danger: true }))) return
+    const liveMessage = id === 'sys_stripe_weekly_payout_push'
+      ? 'Lancer maintenant ? Les payouts Stripe en attente seront comptabilisés pour vrai dans QuickBooks (création de Deposits).'
+      : 'Lancer maintenant ? Cela peut envoyer de vrais emails aux clients ciblés.'
+    if (!dryRun && !(await confirm({ title: 'Lancer en mode live', message: liveMessage, confirmLabel: 'Lancer', danger: true }))) return
     setManualRunning(dryRun ? 'dryRun' : 'live')
     setManualResult(null)
     try {
@@ -739,6 +793,9 @@ export default function AutomationDetail() {
                 <p className="text-xs text-gray-500 mt-0.5">
                   {id === CTB_AUTOMATION_ID
                     ? <>Vérifie l'accès au fichier Google Sheets et localise l'onglet et les sections utilisés. <strong>Aucune écriture</strong> n'est faite dans le fichier.</>
+                    : id === 'sys_stripe_weekly_payout_push'
+                    ? <>Le <strong>dry-run</strong> synchronise les payouts puis montre ce qui serait poussé, bloqué par la garde ou en souffrance — <strong>aucun Deposit créé</strong>, aucun Slack.
+                      Le <strong>lancement</strong> comptabilise pour vrai dans QuickBooks.</>
                     : <>Le <strong>dry-run</strong> liste les clients qui seraient ciblés sans rien envoyer ni persister.
                       Le <strong>lancement</strong> déclenche immédiatement l'automation (envois, flags, logs inclus).</>}
                 </p>
@@ -751,7 +808,7 @@ export default function AutomationDetail() {
                     ? <><div className="w-3 h-3 border-2 border-brand-700 border-t-transparent rounded-full animate-spin" /> {id === CTB_AUTOMATION_ID ? 'Test...' : 'Simulation...'}</>
                     : <><FlaskConical size={14} /> {id === CTB_AUTOMATION_ID ? 'Tester la connexion' : 'Simuler (dry-run)'}</>}
                 </button>
-                {!id === CTB_AUTOMATION_ID && (
+                {id !== CTB_AUTOMATION_ID && (
                 <button onClick={() => handleManualRun(false)} disabled={manualRunning !== null || !active}
                   title={!active ? 'Activez l\'automation avant de pouvoir la lancer manuellement' : ''}
                   className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5">

@@ -15,6 +15,7 @@
 
 import db from '../db/database.js'
 import { evaluateFieldRulesForRecord } from './fieldRuleEngine.js'
+import { createChangeLogWatcher } from './changeLogWatcher.js'
 
 // Must stay in sync with WRITABLE_TABLES in scriptSandbox.js.
 export const WATCHED_TABLES = [
@@ -24,16 +25,10 @@ export const WATCHED_TABLES = [
 const POLL_MS = 5000
 const BATCH = 500
 
-let lastSeenId = 0
-let timer = null
-let running = false
-
-function maxChangeLogId() {
-  return db.prepare('SELECT MAX(id) AS m FROM change_log').get()?.m || 0
-}
-
 // Subset of WATCHED_TABLES that currently has at least one active rule. Lets the
-// watcher skip records for tables nobody is watching.
+// watcher skip records for tables nobody is watching. Returns null (falsy) when
+// empty so the factory fast-forwards the cursor — enabling a rule later doesn't
+// replay the whole 48h backlog.
 function tablesWithActiveRules() {
   const rows = db.prepare(`
     SELECT trigger_config FROM automations
@@ -46,30 +41,18 @@ function tablesWithActiveRules() {
       if (WATCHED_TABLES.includes(tc.erp_table)) set.add(tc.erp_table)
     } catch { /* malformed config surfaced elsewhere */ }
   }
-  return set
+  return set.size ? set : null
 }
 
-// One poll cycle. Exported for tests (deterministic, no timer).
-export async function pollOnce() {
-  if (running) return
-  running = true
-  try {
-    const active = tablesWithActiveRules()
-    if (active.size === 0) {
-      // No rules — fast-forward the cursor so enabling a rule later doesn't
-      // replay the whole 48h backlog.
-      lastSeenId = Math.max(lastSeenId, maxChangeLogId())
-      return
-    }
-    const placeholders = WATCHED_TABLES.map(() => '?').join(',')
-    const rows = db.prepare(`
-      SELECT id, table_name, record_id FROM change_log
-      WHERE id > ? AND change_type='upsert' AND table_name IN (${placeholders})
-      ORDER BY id ASC LIMIT ?
-    `).all(lastSeenId, ...WATCHED_TABLES, BATCH)
-
+const watcher = createChangeLogWatcher({
+  name: 'fieldRuleWatcher',
+  intervalMs: POLL_MS,
+  tables: WATCHED_TABLES,
+  batchSize: BATCH,
+  isEnabled: tablesWithActiveRules,
+  onRows: async (rows, { advance, enabledState: active }) => {
     for (const row of rows) {
-      lastSeenId = row.id
+      advance(row.id)
       if (!active.has(row.table_name)) continue
       await evaluateFieldRulesForRecord({
         erpTable: row.table_name,
@@ -77,26 +60,16 @@ export async function pollOnce() {
         changedColumns: null, // change_log doesn't store which columns changed
       })
     }
-  } catch (e) {
-    console.error('[fieldRuleWatcher] poll error:', e.message)
-  } finally {
-    running = false
-  }
-}
+  },
+  startLog: `started (poll ${POLL_MS}ms, tables: ${WATCHED_TABLES.join(', ')})`,
+})
 
-export function startFieldRuleWatcher() {
-  if (timer) return
-  // Start at the current tip: only react to changes that happen after boot.
-  lastSeenId = maxChangeLogId()
-  timer = setInterval(() => { pollOnce() }, POLL_MS)
-  if (timer.unref) timer.unref()
-  console.log(`[fieldRuleWatcher] started (poll ${POLL_MS}ms, tables: ${WATCHED_TABLES.join(', ')})`)
-}
+// One poll cycle. Exported for tests (deterministic, no timer).
+export const pollOnce = watcher.pollOnce
 
-export function stopFieldRuleWatcher() {
-  if (timer) { clearInterval(timer); timer = null }
-}
+export function startFieldRuleWatcher() { watcher.start() }
+export function stopFieldRuleWatcher() { watcher.stop() }
 
 // Test seam — set the cursor explicitly.
-export function _setLastSeenId(n) { lastSeenId = n }
-export function _getLastSeenId() { return lastSeenId }
+export function _setLastSeenId(n) { watcher.setLastSeenId(n) }
+export function _getLastSeenId() { return watcher.getLastSeenId() }

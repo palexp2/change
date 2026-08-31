@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, ExternalLink, Sparkles, PanelRight, Truck } from 'lucide-react'
 import api from '../lib/api.js'
@@ -11,6 +11,7 @@ import UpsReturnLabelModal from '../components/UpsReturnLabelModal.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 
 
 
@@ -141,21 +142,10 @@ export default function RetourDetail({ recordId, embedded = false }) {
   // shell() : évite de dupliquer <Layout> pour les retours (loading/error/main)
   // quand la fiche est rendue à l'intérieur d'un RecordPeekDrawer (embedded).
   const shell = (content) => (embedded ? content : <Layout>{content}</Layout>)
-  const [retour, setRetour] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
   const [selectedItem, setSelectedItem] = useState(null)
 
-  const load = useCallback(() => {
-    setLoading(true)
-    setLoadError(null)
-    api.retours.get(id)
-      .then(data => setRetour(data))
-      .catch((e) => { setRetour(null); setLoadError(e?.message || 'Erreur de chargement') })
-      .finally(() => setLoading(false))
-  }, [id])
-
-  useEffect(() => { load() }, [load])
+  const { record: retour, loading, loadError, reload: load } =
+    useDetailRecord(() => api.retours.get(id), [id], { clearOnError: true })
 
   if (loading) return shell(<Spinner center />)
   if (loadError && !retour) return shell(<DetailLoadError message={loadError} onRetry={load} />)

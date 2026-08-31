@@ -9,7 +9,7 @@
 // `return_items.received_at IS NULL` (l'item n'a pas encore été reçu par
 // Orisha), le proxy le plus proche disponible.
 
-import * as postmark from 'postmark'
+import { getPostmarkClient } from './postmarkConfig.js'
 
 export const IMMEDIATE_REASON = 'Retour de garantie avec échange immédiat'
 const MIN_RETURN_DATE = '2025-06-04'
@@ -130,7 +130,7 @@ export async function sendReturnExchangeReminders(db, { fromAddress = process.en
   const results = { total: eligible.length, sent: 0, errors: 0, skipped: 0, details: [] }
   if (!eligible.length) return results
 
-  const send = sendFn || (async (emailData) => new postmark.ServerClient(postmarkToken).sendEmail(emailData))
+  const send = sendFn || (async (emailData) => getPostmarkClient(postmarkToken).sendEmail(emailData))
 
   for (const row of eligible) {
     try {

@@ -896,9 +896,8 @@ export function AgentContent() {
   useEffect(() => {
     async function fetchStatus() {
       try {
-        const token = localStorage.getItem('erp_token')
-        const res = await fetch('/erp/api/agent/runner/status', { headers: { Authorization: `Bearer ${token}` } })
-        if (res.ok) { const d = await res.json(); setActivity(d.busy ? d.activity : null) }
+        const d = await api.agent.runnerStatus()
+        setActivity(d.busy ? d.activity : null)
       } catch {}
     }
     fetchStatus()
@@ -943,9 +942,7 @@ export function AgentContent() {
     for (const task of relevant) {
       if (fetchedStreamRef.current.has(task.id)) continue
       fetchedStreamRef.current.add(task.id)
-      const token = localStorage.getItem('erp_token')
-      fetch(`/erp/api/agent/tasks/${task.id}/stream-log`, { headers: { Authorization: `Bearer ${token}` } })
-        .then(r => r.json())
+      api.agent.streamLog(task.id)
         .then(data => { if (data.chunks?.length) setStreamData(prev => ({ ...prev, [task.id]: data.chunks })) })
         .catch(() => {})
     }

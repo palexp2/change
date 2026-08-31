@@ -7,6 +7,7 @@ import { Modal } from '../components/Modal.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { fmtMoney, formatRelativeTime, parseAmountInput } from '../utils/formatters.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useAutosave } from '../lib/useAutosave.js'
 import { MissingReceiptsSection } from './VendorSubscriptions.jsx'
 
 const fmtCad = (n, digits = 0) => fmtMoney(n, 'CAD', { maximumFractionDigits: digits, minimumFractionDigits: digits })
@@ -43,18 +44,13 @@ function RecurringModal({ item, onClose, onChanged }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
   // Édition d'une récurrente existante : autosave au blur / changement.
-  const save = async (k, v) => {
-    if (isNew) return
-    setSaving(true)
-    try {
-      await api.treasury.recurring.update(item.id, { [k]: v === '' ? null : v })
-      onChanged()
-    } catch (e) {
-      addToast({ message: `Sauvegarde échouée : ${e.message}`, type: 'error' })
-    } finally {
-      setSaving(false)
-    }
-  }
+  // compare () => false : le save part même si la valeur semble inchangée
+  // (comportement historique de cette modale — pas de skip).
+  const { save, saving: autosaving } = useAutosave(item, patch => api.treasury.recurring.update(item.id, patch), {
+    enabled: !isNew,
+    compare: () => false,
+    onSaved: () => onChanged(),
+  })
 
   async function create() {
     if (!form.label?.trim()) { addToast({ message: 'Libellé requis', type: 'error' }); return }
@@ -184,7 +180,7 @@ function RecurringModal({ item, onClose, onChanged }) {
             >
               Supprimer
             </button>
-            <span className="text-xs text-slate-400">{saving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
+            <span className="text-xs text-slate-400">{autosaving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
           </>
         )}
       </div>
@@ -1633,25 +1629,16 @@ function AnomaliesCard() {
 function CardCeilingRow({ card, onChanged }) {
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState(card)
-  const [saving, setSaving] = useState(false)
-  const { addToast } = useToast()
-
   useEffect(() => { setForm(card) }, [card])
 
   // Autosave au blur : pas de bouton « Enregistrer » (règle de design).
-  const save = async (k, v) => {
-    if (String(card[k] ?? '') === String(v ?? '')) return
-    setSaving(true)
-    try {
-      await api.treasury.cardCeilings.update(card.id, { [k]: v === '' ? null : v })
-      onChanged()
-    } catch (e) {
-      setForm(card)
-      addToast({ message: `Sauvegarde échouée : ${e.message}`, type: 'error' })
-    } finally {
-      setSaving(false)
-    }
-  }
+  // Comparaison String() : les valeurs viennent d'inputs (chaînes) alors que
+  // la fiche stocke des nombres.
+  const { save, saving } = useAutosave(card, patch => api.treasury.cardCeilings.update(card.id, patch), {
+    compare: (a, b) => String(a ?? '') === String(b ?? ''),
+    onSaved: () => onChanged(),
+    onError: () => setForm(card),
+  })
 
   const tone = card.over_limit ? 'rose' : card.over_ceiling ? 'amber' : 'emerald'
   const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30'

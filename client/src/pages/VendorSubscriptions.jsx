@@ -10,6 +10,7 @@ import { Modal } from '../components/Modal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useAutosave } from '../lib/useAutosave.js'
 
 import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
 
@@ -220,7 +221,6 @@ const labelCls = 'block text-xs font-medium text-slate-500 mb-1'
 // au changement pour les selects), pas de bouton Enregistrer.
 function EditModal({ sub, onClose, onSaved, onDeleted, onToggleActive }) {
   const [form, setForm] = useState(sub)
-  const [saving, setSaving] = useState(false)
   const { addToast } = useToast()
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
@@ -230,19 +230,10 @@ function EditModal({ sub, onClose, onSaved, onDeleted, onToggleActive }) {
     setForm(f => ({ ...f, active: sub.active, cancelled_at: sub.cancelled_at, cancel_url: sub.cancel_url }))
   }, [sub.active, sub.cancelled_at, sub.cancel_url])
 
-  const save = async (k, v) => {
-    if ((sub[k] ?? '') === (v ?? '')) return
-    setSaving(true)
-    try {
-      const updated = await api.vendorSubscriptions.update(sub.id, { [k]: v === '' ? null : v })
-      onSaved(updated)
-    } catch (e) {
-      addToast({ message: `Sauvegarde échouée : ${e.message}`, type: 'error' })
-      setForm(f => ({ ...f, [k]: sub[k] }))
-    } finally {
-      setSaving(false)
-    }
-  }
+  const { save, saving } = useAutosave(sub, patch => api.vendorSubscriptions.update(sub.id, patch), {
+    onSaved,
+    onError: (k, prev) => setForm(f => ({ ...f, [k]: prev })),
+  })
 
   const text = (k, label, props = {}) => (
     <div>

@@ -1,5 +1,4 @@
-import db from '../db/database.js'
-import { encryptCredentials, decryptCredentials } from '../utils/encryption.js'
+import { makeConfigStore } from './configStore.js'
 
 // ── Connecteur DigiKey ────────────────────────────────────────────────────────
 // OAuth2 **client credentials** (plan développeur DigiKey : une application
@@ -36,57 +35,18 @@ export const DEFAULTS = {
 // métier, éditables dans l'automation système `sys_digikey_orders`. Le
 // connecteur ne porte que ce qui touche à l'accès à l'API.
 
-const SECRET_KEYS = new Set(['client_secret'])
+const store = makeConfigStore({
+  connector: CONNECTOR,
+  defaults: DEFAULTS,
+  credentialKeys: ['client_id', 'client_secret'],
+  secretKeys: ['client_secret'],
+  envFallbacks: { client_id: 'DIGIKEY_CLIENT_ID', client_secret: 'DIGIKEY_CLIENT_SECRET' },
+  // Historique : DigiKey a déjà porté des clés de chemins d'API aujourd'hui
+  // retirées des DEFAULTS — on continue de les exposer telles quelles.
+  includeUnknownKeys: true,
+})
 
-let tokenCache = null // { token, expiresAt }
-let tokenLock = null
-
-export function getConfig() {
-  const rows = db.prepare('SELECT key, value FROM connector_config WHERE connector = ?').all(CONNECTOR)
-  const cfg = { ...DEFAULTS, client_id: '', client_secret: '' }
-  for (const r of rows) {
-    cfg[r.key] = SECRET_KEYS.has(r.key) ? decryptCredentials(r.value) : r.value
-  }
-  // Repli sur l'environnement si les clés n'ont jamais été saisies dans l'UI.
-  if (!cfg.client_id && process.env.DIGIKEY_CLIENT_ID) cfg.client_id = process.env.DIGIKEY_CLIENT_ID
-  if (!cfg.client_secret && process.env.DIGIKEY_CLIENT_SECRET) cfg.client_secret = process.env.DIGIKEY_CLIENT_SECRET
-  return cfg
-}
-
-export function saveConfig(patch) {
-  const upsert = db.prepare(`
-    INSERT INTO connector_config (connector, key, value)
-    VALUES (?, ?, ?)
-    ON CONFLICT (connector, key) DO UPDATE SET value = excluded.value
-  `)
-  const allowed = new Set([...Object.keys(DEFAULTS), 'client_id', 'client_secret'])
-  const tx = db.transaction(() => {
-    for (const [key, raw] of Object.entries(patch || {})) {
-      if (!allowed.has(key)) continue
-      if (raw === undefined || raw === null) continue
-      const value = String(raw)
-      // Un secret vide veut dire « ne change pas » (le champ UI est toujours vide
-      // à l'affichage) ; pour effacer, DELETE /config.
-      if (SECRET_KEYS.has(key)) {
-        if (!value) continue
-        upsert.run(CONNECTOR, key, encryptCredentials(value))
-      } else {
-        upsert.run(CONNECTOR, key, value)
-      }
-    }
-  })
-  tx()
-  clearTokenCache()
-}
-
-export function deleteConfig() {
-  db.prepare('DELETE FROM connector_config WHERE connector = ?').run(CONNECTOR)
-  clearTokenCache()
-}
-
-export function clearTokenCache() {
-  tokenCache = null
-}
+export const { getConfig, saveConfig, deleteConfig, publicConfig, clearTokenCache } = store
 
 export function isDigikeyConfigured() {
   const cfg = getConfig()
@@ -99,40 +59,30 @@ export function apiBase(cfg = getConfig()) {
 
 // ── Token client_credentials ────────────────────────────────────────────────
 export async function getAccessToken() {
-  if (tokenCache && Date.now() < tokenCache.expiresAt - 60_000) return tokenCache.token
-  if (tokenLock) return tokenLock
-
-  tokenLock = (async () => {
-    try {
-      const cfg = getConfig()
-      if (!cfg.client_id || !cfg.client_secret) {
-        throw new Error('DigiKey non configuré (client_id / client_secret manquants)')
-      }
-      const resp = await fetch(`${apiBase(cfg)}/v1/oauth2/token`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          grant_type: 'client_credentials',
-          client_id: cfg.client_id,
-          client_secret: cfg.client_secret,
-        }),
-      })
-      if (!resp.ok) {
-        throw new Error(`DigiKey OAuth ${resp.status}: ${(await resp.text()).slice(0, 300)}`)
-      }
-      const t = await resp.json()
-      if (!t.access_token) throw new Error('DigiKey OAuth : pas d\'access_token dans la réponse')
-      tokenCache = {
-        token: t.access_token,
-        expiresAt: Date.now() + (Number(t.expires_in) || 600) * 1000,
-      }
-      return tokenCache.token
-    } finally {
-      tokenLock = null
+  return store.getCachedToken(async () => {
+    const cfg = getConfig()
+    if (!cfg.client_id || !cfg.client_secret) {
+      throw new Error('DigiKey non configuré (client_id / client_secret manquants)')
     }
-  })()
-
-  return tokenLock
+    const resp = await fetch(`${apiBase(cfg)}/v1/oauth2/token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: cfg.client_id,
+        client_secret: cfg.client_secret,
+      }),
+    })
+    if (!resp.ok) {
+      throw new Error(`DigiKey OAuth ${resp.status}: ${(await resp.text()).slice(0, 300)}`)
+    }
+    const t = await resp.json()
+    if (!t.access_token) throw new Error('DigiKey OAuth : pas d\'access_token dans la réponse')
+    return {
+      token: t.access_token,
+      expiresAt: Date.now() + (Number(t.expires_in) || 600) * 1000,
+    }
+  })
 }
 
 // Requête générique : Bearer + en-têtes DigiKey obligatoires, retry sur 429,

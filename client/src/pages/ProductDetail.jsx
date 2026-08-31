@@ -13,6 +13,7 @@ import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { formatBytes } from '../utils/formatters.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
@@ -201,9 +202,6 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
   const id = recordId ?? paramId
   const navigate = useNavigate()
   const { user: _user } = useAuth()
-  const [product, setProduct] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
   const [tab, setTab] = useState('info')
   const [form, setForm] = useState({})
   const [bom, setBom] = useState([])
@@ -216,12 +214,9 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
   const visibleFields = PRODUCT_FIELDS.filter(f => f.defaultVisible !== false)
   const bomSummary = useMemo(() => computeBuildable(bom), [bom])
 
-  async function load() {
-    setLoading(true)
-    setLoadError(null)
-    try {
+  const { record: product, setRecord: setProduct, loading, loadError, reload: load } =
+    useDetailRecord(async () => {
       const data = await api.products.get(id)
-      setProduct(data)
       setForm({
         sku: data.sku || '',
         name_fr: data.name_fr || '',
@@ -247,15 +242,8 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
         notes: data.notes || '',
         active: data.active === 1,
       })
-    } catch (e) {
-      setLoadError(e?.message || 'Erreur de chargement')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load() }, [id])
+      return data
+    }, [id])
 
   useRealtimeChannel(id ? `product:${id}` : null, (msg) => {
     if (msg.type === 'product:updated') setProduct(p => p ? { ...p, ...msg.payload } : p)

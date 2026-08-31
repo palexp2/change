@@ -17,6 +17,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
@@ -379,11 +380,8 @@ export default function ContactDetail({ recordId, embedded = false }) {
   const navigate = useNavigate()
   const { user: _user } = useAuth()
   const { status: saveState, save } = useSaveStatus()
-  const [contact, setContact] = useState(null)
   const [interactions, setInteractions] = useState([])
   const [companies, setCompanies] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
   const [loadingMore, setLoadingMore] = useState(false)
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
@@ -396,26 +394,21 @@ export default function ContactDetail({ recordId, embedded = false }) {
   const [savingTask, setSavingTask] = useState(false)
   const LIMIT = 30
 
-  async function load() {
-    setLoading(true)
-    setLoadError(null)
-    try {
+  // Le record principal (contact) passe par le hook ; interactions et lookup
+  // entreprises arrivent du même Promise.all et sont posés au passage.
+  const { record: contact, setRecord: setContact, loading, loadError, reload: load } =
+    useDetailRecord(async () => {
       const [c, inter, comps] = await Promise.all([
         api.contacts.get(id),
         api.interactions.list({ contact_id: id, limit: LIMIT, offset: 0, include: 'heavy' }),
         api.companies.lookup(),
       ])
-      setContact(c)
       setInteractions(inter.interactions || [])
       setTotal(inter.total || 0)
       setOffset(LIMIT)
       setCompanies(comps)
-    } catch (e) {
-      setLoadError(e?.message || 'Erreur de chargement')
-    } finally {
-      setLoading(false)
-    }
-  }
+      return c
+    }, [id])
 
   // Les libellés, les masquages et les champs perso viennent du registre commun
   // (custom_fields) : renommer ou supprimer un champ depuis un tableau se voit
@@ -452,10 +445,8 @@ export default function ContactDetail({ recordId, embedded = false }) {
   }
 
   useEffect(() => {
-    load()
     api.tasks.list({ contact_id: id, limit: 'all' }).then(r => setTasks(r.data || [])).catch(() => {})
     api.auth.users().then(setUsers).catch(() => {})
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
   useRealtimeChannel(id ? `contact:${id}` : null, (msg) => {

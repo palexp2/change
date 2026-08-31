@@ -24,6 +24,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
@@ -815,13 +816,10 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
   const { user: _user } = useAuth()
   const confirm = useConfirm()
   const { addToast } = useToast()
-  const [company, setCompany] = useState(null)
   // Bulk « Retourner tous les numéros de série » (import automatisation Airtable #3)
   const [bulkReturnSerialIds, setBulkReturnSerialIds] = useState(null)
   const [bulkReturnReason, setBulkReturnReason] = useState('')
   const [bulkReturnSubmitting, setBulkReturnSubmitting] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
   // Toutes les sections sont affichées d'un coup (empilées) : `activeSection`
   // sert uniquement à surligner l'entrée du sélecteur latéral en fonction de la
   // position de défilement (scroll-spy), cf. useEffect plus bas.
@@ -866,21 +864,8 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
   const [adresseForm, setAdresseForm] = useState({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' })
   const [onboardingResponses, setOnboardingResponses] = useState([])
   const [qualificationCalls, setQualificationCalls] = useState([])
-  async function load() {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const data = await api.companies.get(id)
-      setCompany(data)
-    } catch (e) {
-      setLoadError(e?.message || 'Erreur de chargement')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load() }, [id])
+  const { record: company, setRecord: setCompany, loading, loadError, reload: load } =
+    useDetailRecord(() => api.companies.get(id), [id])
 
   useRealtimeChannel(id ? `company:${id}` : null, (msg) => {
     if (msg.type === 'company:updated') {

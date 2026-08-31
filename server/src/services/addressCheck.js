@@ -17,6 +17,7 @@
 import db from '../db/database.js'
 import { createNotification } from './notifications.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
+import { createChangeLogWatcher } from './changeLogWatcher.js'
 
 export const ADDRESS_CHECK_AUTOMATION_ID = 'sys_address_check'
 
@@ -409,67 +410,47 @@ export function getAddressCheckSummary() {
 //
 // Anti-boucle : persistVerdict n'écrit que si le verdict change, donc notre
 // propre écriture ne peut produire qu'une seule passe supplémentaire à vide.
+//
+// Squelette (curseur, garde, fast-forward quand désactivé, minuterie) :
+// fabrique changeLogWatcher. Particularité conservée : le MAX(id) du curseur
+// est borné à la table `adresses` (maxIdTables).
 
 const POLL_MS = 5000
 const BATCH = 500
 
-let lastSeenId = 0
-let timer = null
-let polling = false
-
-function maxChangeLogId() {
-  return db.prepare("SELECT MAX(id) AS m FROM change_log WHERE table_name = 'adresses'").get()?.m || 0
-}
-
-/** Une passe. Exportée pour les tests (déterministe, sans minuterie). */
-export function pollAddressChangesOnce() {
-  if (polling) return 0
-  polling = true
-  try {
-    if (!isSystemAutomationActive(ADDRESS_CHECK_AUTOMATION_ID)) {
-      // Automation désactivée : on avance le curseur pour ne pas rejouer tout
-      // le backlog à la réactivation.
-      lastSeenId = Math.max(lastSeenId, maxChangeLogId())
-      return 0
-    }
-    const rows = db.prepare(`
-      SELECT id, record_id FROM change_log
-      WHERE id > ? AND change_type = 'upsert' AND table_name = 'adresses'
-      ORDER BY id ASC LIMIT ?
-    `).all(lastSeenId, BATCH)
-
+const watcher = createChangeLogWatcher({
+  name: 'addressCheck',
+  intervalMs: POLL_MS,
+  tables: 'adresses',
+  maxIdTables: 'adresses',
+  batchSize: BATCH,
+  isEnabled: () => isSystemAutomationActive(ADDRESS_CHECK_AUTOMATION_ID),
+  onRows: (rows, { advance }) => {
     const seen = new Set()
     for (const row of rows) {
-      lastSeenId = row.id
+      advance(row.id)
       if (seen.has(row.record_id)) continue
       seen.add(row.record_id)
       checkAddress(row.record_id)
     }
     return seen.size
-  } catch (e) {
-    console.error('[addressCheck] poll error:', e.message)
-    return 0
-  } finally {
-    polling = false
-  }
-}
+  },
+  startLog: `watcher démarré (poll ${POLL_MS}ms sur change_log(adresses))`,
+})
+
+/** Une passe. Exportée pour les tests (déterministe, sans minuterie). */
+export const pollAddressChangesOnce = watcher.pollOnce
 
 export function startAddressCheckWatcher() {
-  if (timer) return
   // Démarre à la pointe : on ne rejoue pas l'historique au boot (la passe
   // complète est disponible à la demande depuis Paramètres → Adresses).
-  lastSeenId = maxChangeLogId()
-  timer = setInterval(() => { pollAddressChangesOnce() }, POLL_MS)
-  if (timer.unref) timer.unref()
-  console.log(`[addressCheck] watcher démarré (poll ${POLL_MS}ms sur change_log(adresses))`)
+  watcher.start()
 }
 
-export function stopAddressCheckWatcher() {
-  if (timer) { clearInterval(timer); timer = null }
-}
+export function stopAddressCheckWatcher() { watcher.stop() }
 
 // Test seams — curseur explicite.
-export function _setLastSeenId(n) { lastSeenId = n }
-export function _getLastSeenId() { return lastSeenId }
+export function _setLastSeenId(n) { watcher.setLastSeenId(n) }
+export function _getLastSeenId() { return watcher.getLastSeenId() }
 
 export default { validateAddress, checkAddress, runAddressCheck, getAddressCheckSummary }

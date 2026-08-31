@@ -20,19 +20,12 @@ import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
 import { sendSlack } from './slack.js'
 import { logSystemRun, isSystemAutomationActive } from './systemAutomations.js'
+import { createChangeLogWatcher } from './changeLogWatcher.js'
 
 const POLL_MS = 5000
 const BATCH = 200
 const IMMEDIATE_REASON = 'Retour de garantie avec échange immédiat'
 const SLACK_ENV = 'SLACK_WEBHOOK_RETOURS'
-
-let lastSeenId = 0
-let timer = null
-let running = false
-
-function maxChangeLogId() {
-  return db.prepare('SELECT MAX(id) AS m FROM change_log').get()?.m || 0
-}
 
 function createReplacementOrder(item) {
   const companyId = item.company_id || db.prepare('SELECT company_id FROM returns WHERE id = ?').get(item.return_id)?.company_id
@@ -103,39 +96,21 @@ async function processReturnItem(id) {
   }
 }
 
-export async function pollOnce() {
-  if (running) return
-  running = true
-  try {
-    if (!isSystemAutomationActive('sys_return_item_created')) {
-      lastSeenId = Math.max(lastSeenId, maxChangeLogId())
-      return
-    }
-    const rows = db.prepare(`
-      SELECT id, record_id FROM change_log
-      WHERE id > ? AND change_type = 'upsert' AND table_name = 'return_items'
-      ORDER BY id ASC LIMIT ?
-    `).all(lastSeenId, BATCH)
-
+const watcher = createChangeLogWatcher({
+  name: 'returnItemCreatedWatcher',
+  intervalMs: POLL_MS,
+  tables: 'return_items',
+  batchSize: BATCH,
+  isEnabled: () => isSystemAutomationActive('sys_return_item_created'),
+  onRows: async (rows, { advance }) => {
     for (const row of rows) {
-      lastSeenId = row.id
+      advance(row.id)
       await processReturnItem(row.record_id)
     }
-  } catch (e) {
-    console.error('[returnItemCreatedWatcher] poll error:', e.message)
-  } finally {
-    running = false
-  }
-}
+  },
+})
 
-export function startReturnItemCreatedWatcher() {
-  if (timer) return
-  lastSeenId = maxChangeLogId()
-  timer = setInterval(() => { pollOnce() }, POLL_MS)
-  if (timer.unref) timer.unref()
-  console.log(`[returnItemCreatedWatcher] started (poll ${POLL_MS}ms)`)
-}
+export const pollOnce = watcher.pollOnce
 
-export function stopReturnItemCreatedWatcher() {
-  if (timer) { clearInterval(timer); timer = null }
-}
+export function startReturnItemCreatedWatcher() { watcher.start() }
+export function stopReturnItemCreatedWatcher() { watcher.stop() }

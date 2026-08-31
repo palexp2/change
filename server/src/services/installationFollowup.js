@@ -11,10 +11,10 @@
 // When the feature is first activated this prevents a retroactive blast to
 // customers whose first shipment happened months or years ago.
 
-import * as postmark from 'postmark'
 import { v4 as uuidv4 } from 'uuid'
 import { emitCompany } from './realtimeEmitters.js'
 import { APP_URL } from '../config/appUrl.js'
+import { getPostmarkClient } from './postmarkConfig.js'
 
 // Only shipments on or after this date are eligible. Bump this if you need to
 // include older customers; the flag + lifecycle_phase + order-count filters are
@@ -218,7 +218,7 @@ export async function sendInstallationTestEmail(db, {
     : '[TEST] How did the installation go?'
 
   const send = sendFn || (async (emailData) => {
-    const client = new postmark.ServerClient(postmarkToken)
+    const client = getPostmarkClient(postmarkToken)
     return client.sendEmail(emailData)
   })
   await send({ From: fromAddress, To: to, Subject: subject, HtmlBody: html })
@@ -247,7 +247,7 @@ export async function sendInstallationFollowups(db, {
   if (eligible.length === 0) return results
 
   const send = sendFn || (async (emailData) => {
-    const client = new postmark.ServerClient(postmarkToken)
+    const client = getPostmarkClient(postmarkToken)
     return client.sendEmail(emailData)
   })
 

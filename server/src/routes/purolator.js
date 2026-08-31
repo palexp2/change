@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { getConfig, saveConfig, deleteConfig, isPurolatorConfigured, DEFAULTS } from '../connectors/purolator.js'
+import { saveConfig, deleteConfig, publicConfig, isPurolatorConfigured, DEFAULTS } from '../connectors/purolator.js'
 import { getShipmentRates, createLabel, trackNumber, refreshPurolatorTracking } from '../services/purolator.js'
 
 // Intégration Purolator — connecteur (Basic Auth key/password + compte),
@@ -16,19 +16,6 @@ import { getShipmentRates, createLabel, trackNumber, refreshPurolatorTracking } 
 
 const router = Router()
 router.use(requireAuth)
-
-// Le secret ne ressort jamais : l'UI n'affiche que « configuré / pas configuré ».
-function publicConfig() {
-  const cfg = getConfig()
-  const { key, password, account_number, ...rest } = cfg
-  return {
-    ...rest,
-    key_set: !!key,
-    password_set: !!password,
-    account_number_set: !!account_number,
-    account_number_hint: account_number ? `••••${String(account_number).slice(-4)}` : null,
-  }
-}
 
 function purolatorFailure(res, e, fallbackStatus = 502) {
   const isLocalValidation = !e.status && !e.responseBody

@@ -26,20 +26,13 @@ import {
 } from './quickbooks.js'
 import { logSystemRun, isSystemAutomationActive } from './systemAutomations.js'
 import { buildTriggerPredicate, triggerColumns } from './fieldRuleEngine.js'
+import { createChangeLogWatcher } from './changeLogWatcher.js'
 
 const POLL_MS = 10000
 const BATCH = 500
 // Plafond du backoff : 6 h. Une facture en échec permanent (QB jamais reconnecté)
 // est retentée au pire toutes les 6 h — jamais abandonnée, jamais en boucle serrée.
 const MAX_BACKOFF_MIN = 360
-
-let lastSeenId = 0
-let timer = null
-let running = false
-
-function maxChangeLogId() {
-  return db.prepare('SELECT MAX(id) AS m FROM change_log').get()?.m || 0
-}
 
 // Backoff exponentiel borné, en millisecondes, à partir du nombre de tentatives.
 function backoffMs(attempts) {
@@ -263,13 +256,13 @@ export async function tailShipmentsOnce() {
     SELECT id, table_name, record_id FROM change_log
     WHERE id > ? AND change_type = 'upsert' AND table_name IN (${tablesIn})
     ORDER BY id ASC LIMIT ?
-  `).all(lastSeenId, ...matcher.watchedTables, BATCH)
+  `).all(watcher.getLastSeenId(), ...matcher.watchedTables, BATCH)
   if (!rows.length) return 0
 
   if (matcher.mode === 'factures') {
     const facturesSeen = new Set()
     for (const row of rows) {
-      lastSeenId = row.id
+      watcher.setLastSeenId(row.id)
       for (const factureId of candidateFacturesForChange(row.table_name, row.record_id)) {
         if (facturesSeen.has(factureId)) continue
         facturesSeen.add(factureId)
@@ -282,7 +275,7 @@ export async function tailShipmentsOnce() {
 
   const ordersSeen = new Set()
   for (const row of rows) {
-    lastSeenId = row.id
+    watcher.setLastSeenId(row.id)
     const ship = matcher.match(row.record_id)
     if (!ship || !ship.order_id) continue
     if (ordersSeen.has(ship.order_id)) continue
@@ -340,45 +333,41 @@ export async function retryQueueOnce() {
   return { recovered, stillFailing: stillFailing.length }
 }
 
-async function tick() {
-  if (running) return
-  running = true
-  try {
-    // Toggle utilisateur (page Automations) : désactivé = aucun constat, ni tail
-    // ni retry. Le curseur avance quand même — les envois écrits pendant la pause
-    // ne sont PAS rejoués à la réactivation (comportement documenté dans la
-    // description de l'automation).
-    if (!isSystemAutomationActive('sys_revenue_recognition')) {
-      lastSeenId = maxChangeLogId()
-      return
-    }
+// Squelette (timer, garde anti-réentrance, curseur, fast-forward quand
+// désactivé) : fabrique changeLogWatcher. Le tail lui-même reste ici (onPoll)
+// parce que ses tables surveillées sont dynamiques (config utilisateur, relue
+// à chaque passe) et qu'il enchaîne la file de retry.
+//
+// Toggle utilisateur (page Automations) : désactivé = aucun constat, ni tail
+// ni retry. Le curseur avance quand même — les envois écrits pendant la pause
+// ne sont PAS rejoués à la réactivation (comportement documenté dans la
+// description de l'automation).
+const watcher = createChangeLogWatcher({
+  name: 'revRecWatcher',
+  intervalMs: POLL_MS,
+  isEnabled: () => isSystemAutomationActive('sys_revenue_recognition'),
+  onPoll: async () => {
     await tailShipmentsOnce()
     await retryQueueOnce()
-  } catch (e) {
-    console.error('[revRecWatcher] tick error:', e.message)
-  } finally {
-    running = false
-  }
-}
+  },
+  errorLabel: 'tick',
+  startLog: () => {
+    const pending = db.prepare('SELECT COUNT(*) AS n FROM revenue_recognition_queue').get()?.n || 0
+    return `started (poll ${POLL_MS}ms, tail shipments→Envoyé · ${pending} facture(s) en file de retry)`
+  },
+})
 
 export function startRevenueRecognitionWatcher() {
-  if (timer) return
   // Démarre au point courant : on ne réagit qu'aux changements postérieurs au boot.
   // La file (persistée en DB) couvre les échecs antérieurs au redémarrage.
-  lastSeenId = maxChangeLogId()
-  timer = setInterval(() => { tick() }, POLL_MS)
-  if (timer.unref) timer.unref()
-  const pending = db.prepare('SELECT COUNT(*) AS n FROM revenue_recognition_queue').get()?.n || 0
-  console.log(`[revRecWatcher] started (poll ${POLL_MS}ms, tail shipments→Envoyé · ${pending} facture(s) en file de retry)`)
+  watcher.start()
 }
 
-export function stopRevenueRecognitionWatcher() {
-  if (timer) { clearInterval(timer); timer = null }
-}
+export function stopRevenueRecognitionWatcher() { watcher.stop() }
 
 // ── Test seams ──────────────────────────────────────────────────────────────
-export function _setLastSeenId(n) { lastSeenId = n }
-export function _getLastSeenId() { return lastSeenId }
+export function _setLastSeenId(n) { watcher.setLastSeenId(n) }
+export function _getLastSeenId() { return watcher.getLastSeenId() }
 export function _enqueueFailure(factureId, orderId, errorMsg) { return enqueueFailure(factureId, orderId, errorMsg) }
 export function _dequeue(factureId) { return dequeue(factureId) }
 export function _backoffMs(attempts) { return backoffMs(attempts) }

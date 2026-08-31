@@ -10,6 +10,7 @@ import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useAutosave } from '../lib/useAutosave.js'
 
 // Fiche fournisseur — source de vérité unique de l'ERP (le Google Doc
 // « Fournisseurs_Particularités » n'est plus synchronisé, tout s'édite ici) :
@@ -29,23 +30,13 @@ const labelCls = 'block text-xs font-medium text-slate-500 mb-1'
 // pas de bouton Enregistrer.
 function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
   const [form, setForm] = useState(profile)
-  const [saving, setSaving] = useState(false)
   const { addToast } = useToast()
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
-  const save = async (k, v) => {
-    if ((profile[k] ?? '') === (v ?? '')) return
-    setSaving(true)
-    try {
-      const updated = await api.vendorProfiles.update(profile.id, { [k]: v })
-      onSaved(updated)
-    } catch (e) {
-      addToast({ message: `Sauvegarde échouée : ${e.message}`, type: 'error' })
-      setForm(f => ({ ...f, [k]: profile[k] }))
-    } finally {
-      setSaving(false)
-    }
-  }
+  const { save, saving } = useAutosave(profile, patch => api.vendorProfiles.update(profile.id, patch), {
+    onSaved,
+    onError: (k, prev) => setForm(f => ({ ...f, [k]: prev })),
+  })
 
   const pick = (k, label, options, { hint } = {}) => (
     <div>

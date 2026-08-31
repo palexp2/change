@@ -10,6 +10,7 @@ import { useQbAccounts } from '../lib/qbAccounts.js'
 import DouanesCarmPanel from './DouanesCarm.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useAutosave } from '../lib/useAutosave.js'
 
 const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
 const labelCls = 'block text-xs font-medium text-slate-500 mb-1'
@@ -41,19 +42,11 @@ function AccountModal({ account, onClose, onSaved, onDeleted }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
   // Fiche existante → autosave au blur ; création → bouton (pas encore d'id).
-  const save = async (k, v) => {
-    if (isNew) return
-    if ((account[k] ?? '') === (v ?? '')) return
-    setSaving(true)
-    try {
-      onSaved(await api.prepaid.accounts.update(account.id, { [k]: v === '' ? null : v }))
-    } catch (e) {
-      addToast({ message: `Sauvegarde échouée : ${e.message}`, type: 'error' })
-      set(k, account[k])
-    } finally {
-      setSaving(false)
-    }
-  }
+  const { save, saving: autosaving } = useAutosave(account, patch => api.prepaid.accounts.update(account.id, patch), {
+    enabled: !isNew,
+    onSaved,
+    onError: (k, prev) => set(k, prev),
+  })
 
   async function create() {
     if (!form.vendor?.trim()) { addToast({ message: 'Nom du fournisseur requis', type: 'error' }); return }
@@ -137,7 +130,7 @@ function AccountModal({ account, onClose, onSaved, onDeleted }) {
             >
               Supprimer
             </button>
-            <span className="text-xs text-slate-400">{saving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
+            <span className="text-xs text-slate-400">{autosaving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
           </>
         )}
       </div>
@@ -562,20 +555,11 @@ function ExpenseModal({ expense, onClose, onChanged }) {
   const { options: acctOptions, accountName } = useQbAccounts()
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
-  const save = async (k, v) => {
-    if (isNew) return
-    if ((expense[k] ?? '') === (v ?? '')) return
-    setSaving(true)
-    try {
-      await api.prepaid.expenses.update(expense.id, { [k]: v === '' ? null : v })
-      onChanged()
-    } catch (e) {
-      addToast({ message: `Sauvegarde échouée : ${e.message}`, type: 'error' })
-      set(k, expense[k])
-    } finally {
-      setSaving(false)
-    }
-  }
+  const { save, saving: autosaving } = useAutosave(expense, patch => api.prepaid.expenses.update(expense.id, patch), {
+    enabled: !isNew,
+    onSaved: () => onChanged(),
+    onError: (k, prev) => set(k, prev),
+  })
 
   async function create() {
     if (!form.label?.trim()) { addToast({ message: 'Libellé requis', type: 'error' }); return }
@@ -691,7 +675,7 @@ function ExpenseModal({ expense, onClose, onChanged }) {
             >
               Supprimer
             </button>
-            <span className="text-xs text-slate-400">{saving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
+            <span className="text-xs text-slate-400">{autosaving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
           </>
         )}
       </div>

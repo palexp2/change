@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, ShoppingBag, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
@@ -9,6 +9,7 @@ import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtCad } from '../utils/formatters.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
@@ -133,25 +134,13 @@ function EditableTextarea({ value, saving, onCommit }) {
 export default function PurchaseDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [purchase, setPurchase] = useState(null)
+  const { record: purchase, setRecord: setPurchase, loading, loadError, reload: load } =
+    useDetailRecord(() => api.purchases.get(id), [id], { clearOnError: true })
   const [companies, setCompanies] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
   const [fieldSaving, setFieldSaving] = useState({})
   const [deleting, setDeleting] = useState(false)
   const confirm = useConfirm()
   const { addToast } = useToast()
-
-  const load = useCallback(() => {
-    setLoading(true)
-    setLoadError(null)
-    api.purchases.get(id)
-      .then(setPurchase)
-      .catch((e) => { setPurchase(null); setLoadError(e?.message || 'Erreur de chargement') })
-      .finally(() => setLoading(false))
-  }, [id])
-
-  useEffect(() => { load() }, [load])
 
   // Liste minimale (id + name) des entreprises pour le picker Fournisseur.
   useEffect(() => {

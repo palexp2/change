@@ -9,6 +9,7 @@ import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
@@ -21,12 +22,7 @@ const fmtPrice = (n, currency = 'CAD') => fmtMoney(n, currency, { locale: curren
 const STATUSES = ['Brouillon', 'Envoyée', 'Acceptée', 'Refusée', 'Expirée']
 
 async function downloadPdf(id, title) {
-  const token = localStorage.getItem('erp_token')
-  const res = await fetch(`/erp/api/documents/soumissions/${id}/pdf`, {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  })
-  if (!res.ok) throw new Error('Erreur téléchargement PDF')
-  const blob = await res.blob()
+  const blob = await api.documents.soumissions.pdfBlob(id)
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -42,10 +38,7 @@ function blankItem() {
 export default function SoumissionDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [soumission, setSoumission] = useState(null)
   const [catalog, setCatalog] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
   const [editing, setEditing] = useState(false)
   const [form, setForm] = useState({})
   const [items, setItems] = useState([])
@@ -59,13 +52,12 @@ export default function SoumissionDetail() {
   const confirm = useConfirm()
   const { addToast } = useToast()
 
-  const load = async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
+  // Le record principal passe par le hook ; le formulaire d'édition et les
+  // items sont dérivés de la même réponse, posés au passage.
+  const { record: soumission, setRecord: setSoumission, loading, loadError, reload: load } =
+    useDetailRecord(async () => {
       const data = await api.documents.soumissions.get(id)
       skipSaveRef.current = true
-      setSoumission(data)
       setForm({
         language: data.language || 'French',
         currency: data.currency || 'CAD',
@@ -76,16 +68,9 @@ export default function SoumissionDetail() {
         discount_valid_until: data.discount_valid_until || '',
       })
       setItems((data.items || []).map(it => ({ ...it })))
-    } catch (e) {
-      setSoumission(null)
-      setLoadError(e?.message || 'Erreur de chargement')
-    } finally {
-      setLoading(false)
-    }
-  }
+      return data
+    }, [id], { clearOnError: true })
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load() }, [id])
   useEffect(() => { if (editing) api.catalog.list().then(setCatalog).catch(console.error) }, [editing])
 
   useRealtimeChannel(id ? `soumission:${id}` : null, (msg) => {

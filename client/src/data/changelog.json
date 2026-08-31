@@ -3,6 +3,17 @@
   "entries": [
     {
       "date": "2026-08-31",
+      "title": "Fondations : chargement et sauvegarde unifi\u00e9s",
+      "category": "G\u00e9n\u00e9ral",
+      "changes": [
+        { "type": "improved", "text": "Les fiches d\u00e9tail (commandes, entreprises, contacts, produits, envois, retours, achats, soumissions, projets, re\u00e7us\u2026) partagent maintenant le m\u00eame m\u00e9canisme de chargement : comportement identique partout en cas d'erreur r\u00e9seau, avec bouton r\u00e9essayer, et plus de r\u00e9sultat p\u00e9rim\u00e9 affich\u00e9 si on navigue vite entre deux fiches." },
+        { "type": "improved", "text": "L'enregistrement automatique des champs (comptes pr\u00e9pay\u00e9s, dettes LT, profils fournisseurs, abonnements fournisseurs, paiements \u00e9mis\u2026) passe par un m\u00e9canisme commun : m\u00eame d\u00e9tection de changement, m\u00eame message d'erreur, m\u00eame retour arri\u00e8re en cas d'\u00e9chec." },
+        { "type": "improved", "text": "Les t\u00e9l\u00e9chargements de PDF (soumissions, factures, re\u00e7us) et la page Agent passent d\u00e9sormais par la couche API centrale : une session expir\u00e9e est d\u00e9tect\u00e9e et g\u00e9r\u00e9e proprement au lieu d'\u00e9chouer en silence." },
+        { "type": "improved", "text": "C\u00f4t\u00e9 serveur : les surveillances de changements (r\u00e8gles de champs, constatation de revenus, retours, adresses) partagent un m\u00eame moteur, l'envoi de courriels Postmark passe par un client partag\u00e9, et les connecteurs DigiKey/UPS/Purolator utilisent une gestion de configuration commune." }
+      ]
+    },
+    {
+      "date": "2026-08-31",
       "title": "Grand nettoyage : dates fiables le soir, affichages uniformis\u00e9s",
       "category": "G\u00e9n\u00e9ral",
       "changes": [

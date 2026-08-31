@@ -2,14 +2,14 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-08-31T03:07:26.275Z",
+  "generatedAt": "2026-08-31T03:29:45.691Z",
   "stats": {
     "routes": 95,
     "pages": 87,
     "groups": 6,
     "api": 97,
     "tables": 158,
-    "connectors": 8
+    "connectors": 9
   },
   "groups": [
     {
@@ -1011,6 +1011,7 @@ export const architectureManifest = {
   "connectors": [
     "airtable",
     "amazon",
+    "configStore",
     "digikey",
     "google",
     "hubspot",

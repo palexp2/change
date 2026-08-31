@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, Barcode, History } from 'lucide-react'
 import api from '../lib/api.js'
@@ -9,6 +9,7 @@ import { CentralControllerPermissions } from '../components/CentralControllerPer
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtCad } from '../utils/formatters.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 import WeatherPanel from '../components/WeatherPanel.jsx'
 
 function Field({ label, children }) {
@@ -23,24 +24,15 @@ function Field({ label, children }) {
 export default function SerialDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [serial, setSerial] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
   const [history, setHistory] = useState([])
 
-  const load = useCallback(() => {
-    setLoading(true)
-    setLoadError(null)
-    api.serials.get(id)
-      .then(setSerial)
-      .catch((e) => { setSerial(null); setLoadError(e?.message || 'Erreur de chargement') })
-      .finally(() => setLoading(false))
+  const { record: serial, loading, loadError, reload: load } = useDetailRecord(() => {
+    // L'historique part en parallèle du record principal (échec silencieux).
     api.serials.history(id)
       .then(r => setHistory(r.data || []))
       .catch(() => setHistory([]))
-  }, [id])
-
-  useEffect(() => { load() }, [load])
+    return api.serials.get(id)
+  }, [id], { clearOnError: true })
 
   if (loading) {
     return <Layout><Spinner center /></Layout>

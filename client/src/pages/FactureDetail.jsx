@@ -197,10 +197,7 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
         // Affichage débloqué ici — le reste se charge en arrière-plan.
         setLoading(false)
         if (data.airtable_pdf_path) {
-          const token = localStorage.getItem('erp_token')
-          fetch(`/erp/api/projets/factures/${id}/pdf`, {
-            headers: { Authorization: `Bearer ${token}` }
-          }).then(r => r.ok ? r.blob() : null)
+          api.factures.pdfBlob(id)
             .then(blob => blob && setPdfBlobUrl(URL.createObjectURL(blob)))
             .catch(() => {})
         }

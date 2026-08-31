@@ -3,11 +3,10 @@ import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import { v4 as uuidv4 } from 'uuid'
-import * as postmark from 'postmark'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { logSystemRun } from '../services/systemAutomations.js'
-import { getAutomationFrom } from '../services/postmarkConfig.js'
+import { getAutomationFrom, getPostmarkClient } from '../services/postmarkConfig.js'
 import { buildReturnPartyContext } from '../services/returnContext.js'
 import { selectReturnRate } from '../services/returnCarrier.js'
 import { buildReturnMemoPdf } from '../services/returnMemoPdf.js'
@@ -326,7 +325,7 @@ router.post('/:id/send-instructions', async (req, res) => {
 
     const fromAddress = getAutomationFrom('sys_return_instructions_email')
     if (!fromAddress) throw new Error('Adresse expéditeur Postmark non configurée')
-    const client = new postmark.ServerClient(process.env.POSTMARK_API_KEY)
+    const client = getPostmarkClient()
     await client.sendEmail({
       From: fromAddress,
       To: to,

@@ -17,17 +17,7 @@
  * HTML is NOT re-escaped here — the renderer rejects `<script` and the caller is
  * expected to write static HTML around whitelisted {{columns}}.
  */
-import * as postmark from 'postmark'
-import { resolveFromAddress } from '../postmarkConfig.js'
-
-let cachedClient = null
-function getClient() {
-  if (cachedClient) return cachedClient
-  const token = process.env.POSTMARK_API_KEY
-  if (!token) throw new Error('POSTMARK_API_KEY manquant')
-  cachedClient = new postmark.ServerClient(token)
-  return cachedClient
-}
+import { resolveFromAddress, getPostmarkClient } from '../postmarkConfig.js'
 
 function resolveRecipients(ac) {
   if (ac.toEnv) {
@@ -90,5 +80,5 @@ export async function sendEmail({ rule, rendered }) {
   if (textBody) payload.TextBody = textBody
   if (stream) payload.MessageStream = stream
 
-  await getClient().sendEmail(payload)
+  await getPostmarkClient().sendEmail(payload)
 }

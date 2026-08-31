@@ -15,6 +15,7 @@ import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
 import Attachments from '../components/Attachments.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -916,9 +917,8 @@ export default function OrderDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const [order, setOrder] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
+  const { record: order, setRecord: setOrder, loading, loadError, reload: load } =
+    useDetailRecord(() => api.orders.get(id), [id])
   // `?mode=expedition` (ex. depuis Priorité d'assemblage → Commande à envoyer)
   // ouvre directement la fiche en mode expédition.
   const [expeditionMode, setExpeditionMode] = useState(() => searchParams.get('mode') === 'expedition')
@@ -935,20 +935,6 @@ export default function OrderDetail() {
   // Rentabilité — brouillon du champ override (revenu manuel)
   const [overrideDraft, setOverrideDraft] = useState('')
   const [savingOverride, setSavingOverride] = useState(false)
-
-  async function load() {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const data = await api.orders.get(id)
-      setOrder(data)
-    } catch (e) {
-      setLoadError(e?.message || 'Erreur de chargement')
-    } finally { setLoading(false) }
-  }
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load() }, [id])
 
   // Synchronise le brouillon override avec la commande chargée.
   useEffect(() => {

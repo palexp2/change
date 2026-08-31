@@ -36,6 +36,7 @@ import { Layout } from '../components/Layout.jsx'
 import PaymentSchedule from '../components/PaymentSchedule.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useAutosave } from '../lib/useAutosave.js'
 import { formatRelativeTime } from '../utils/formatters.js'
 
 const fmtCad = (n, currency = 'CAD') =>
@@ -191,13 +192,15 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
   const sp = spec(p.method)
-  const save = async (field, value) => {
-    if (String(p[field] ?? '') === String(value ?? '')) return
-    setBusy(true)
-    try { await api.treasury.payments.update(p.id, { [field]: value }); onChanged() }
-    catch (e) { addToast({ message: e.message, type: 'error' }); onChanged() }
-    finally { setBusy(false) }
-  }
+  // Comparaison String() (valeurs d'inputs vs nombres en fiche), pas de
+  // conversion '' → null, et re-fetch même en échec pour resynchroniser la ligne.
+  const { save, saving } = useAutosave(p, patch => api.treasury.payments.update(p.id, patch), {
+    compare: (a, b) => String(a ?? '') === String(b ?? ''),
+    emptyToNull: false,
+    errorMessage: e => e.message,
+    onSaved: () => onChanged(),
+    onError: () => onChanged(),
+  })
   const toggleCleared = async () => {
     setBusy(true)
     try { await api.treasury.payments.setCleared(p.id, !p.cleared_at); onChanged() }
@@ -219,7 +222,7 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
   // dès qu'il est renseigné, pour ne jamais cacher une donnée existante.
   const showCounterparty = sp.transfer || !!p.counterparty_account
   return (
-    <div className={`group border-t border-slate-100 ${busy ? 'opacity-60' : ''} ${cleared ? 'bg-emerald-50/30' : ''}`}
+    <div className={`group border-t border-slate-100 ${busy || saving ? 'opacity-60' : ''} ${cleared ? 'bg-emerald-50/30' : ''}`}
       data-testid={`payment-row-${p.id}`}>
       <div className="flex items-center gap-1.5 px-3 py-1">
         {/* Le bouton porte tout le sens de la page : coché = l'argent est sorti

@@ -6,9 +6,8 @@ import PDFDocument from 'pdfkit'
 import sharp from 'sharp'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import * as postmark from 'postmark'
 import { logSystemRun } from '../services/systemAutomations.js'
-import { getAutomationFrom } from '../services/postmarkConfig.js'
+import { getAutomationFrom, getPostmarkClient } from '../services/postmarkConfig.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { writeBackRecord, createInAirtable } from '../services/airtableWriteback.js'
 import { logSync } from '../services/syncLog.js'
@@ -380,7 +379,7 @@ router.post('/:id/send-tracking', async (req, res) => {
   try {
     const fromAddress = getAutomationFrom('sys_shipment_tracking_email')
     if (!fromAddress) throw new Error('Adresse expéditeur Postmark non configurée')
-    const client = new postmark.ServerClient(process.env.POSTMARK_API_KEY)
+    const client = getPostmarkClient()
     await client.sendEmail({
       From: fromAddress,
       To: to,

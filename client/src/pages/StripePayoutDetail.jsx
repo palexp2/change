@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, ExternalLink, CheckCircle2, AlertCircle, Info, Eye, Send, X } from 'lucide-react'
 import api from '../lib/api.js'
@@ -9,6 +9,7 @@ import { ConfirmModal } from '../components/Modal.jsx'
 import { FactureQuickViewModal } from '../components/FactureQuickViewModal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 
 import { fmtMoney } from '../utils/formatters.js'
 
@@ -50,10 +51,7 @@ function InfoField({ label, value }) {
 export default function StripePayoutDetail() {
   const { stripeId } = useParams()
   const navigate = useNavigate()
-  const [payout, setPayout] = useState(null)
   const [transactions, setTransactions] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
 
   const [syncing, setSyncing] = useState(false)
   const [preview, setPreview] = useState(null)
@@ -74,21 +72,13 @@ export default function StripePayoutDetail() {
     })
   })
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
+  // Le payout passe par le hook ; les transactions arrivent de la même réponse.
+  const { record: payout, loading, loadError: error, reload: load } =
+    useDetailRecord(async () => {
       const data = await api.stripePayouts.get(stripeId)
-      setPayout(data.payout)
       setTransactions(data.transactions || [])
-    } catch (e) {
-      setError(e.message || 'Erreur de chargement')
-    } finally {
-      setLoading(false)
-    }
-  }, [stripeId])
-
-  useEffect(() => { load() }, [load])
+      return data.payout
+    }, [stripeId])
 
   async function handleSyncTx() {
     setActionError(null)

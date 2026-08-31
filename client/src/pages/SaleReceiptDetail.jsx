@@ -16,6 +16,7 @@ import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { findBestVendorMatch } from '../lib/vendorMatch.js'
 
 import { fmtCad } from '../utils/formatters.js'
@@ -2404,10 +2405,9 @@ export default function SaleReceiptDetail() {
   const navigate = useNavigate()
   const { addToast } = useToast()
   const confirm = useConfirm()
-  const [receipt, setReceipt] = useState(null)
+  const { record: receipt, setRecord: setReceipt, loading, loadError, reload: load } =
+    useDetailRecord(() => api.saleReceipts.get(id), [id], { clearOnError: true })
   const [conversionOpen, setConversionOpen] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
   const [fileUrl, setFileUrl] = useState(null)
   const [allIds, setAllIds] = useState([])
   const [acting, setActing] = useState(false)
@@ -2509,17 +2509,6 @@ export default function SaleReceiptDetail() {
     }
   }
 
-  const load = useCallback(() => {
-    setLoading(true)
-    setLoadError(null)
-    api.saleReceipts.get(id)
-      .then(setReceipt)
-      .catch((e) => { setReceipt(null); setLoadError(e?.message || 'Erreur de chargement') })
-      .finally(() => setLoading(false))
-  }, [id])
-
-  useEffect(() => { load() }, [load])
-
   // Ouvrir un reçu le marque lu (comme un courriel Gmail) — couvre aussi
   // l'arrivée directe par URL et la navigation prev/next.
   useEffect(() => {
@@ -2585,11 +2574,7 @@ export default function SaleReceiptDetail() {
     setFileUrl(null)
     if (!receipt?.id) return
     let url = null
-    const token = localStorage.getItem('erp_token')
-    fetch(`/erp/api/sale-receipts/${receipt.id}/file`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {},
-    })
-      .then(r => r.ok ? r.blob() : Promise.reject())
+    api.saleReceipts.fileBlob(receipt.id)
       .then(blob => { url = URL.createObjectURL(blob); setFileUrl(url) })
       .catch(() => setFileUrl(null))
     return () => { if (url) URL.revokeObjectURL(url) }

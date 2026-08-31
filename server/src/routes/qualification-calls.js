@@ -1,10 +1,10 @@
 import { Router } from 'express'
 import { randomUUID } from 'crypto'
-import * as postmark from 'postmark'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { getStripeClient, ensureStripeCustomer, getOrCreateTaxRate } from '../services/stripeInvoices.js'
 import { computeCanadaTaxes } from '../services/taxes.js'
+import { getPostmarkClient } from '../services/postmarkConfig.js'
 // escapeHtml canonique : échappe aussi " et ' dans le texte (durcissement
 // volontaire par rapport à l'ancien escapeHtmlText local).
 import { escapeHtml as escapeHtmlText, escapeAttr as escapeHtmlAttr } from '../utils/sanitizeHtml.js'
@@ -613,7 +613,7 @@ router.post('/:id/send-system-builder-email', async (req, res) => {
   const token = process.env.POSTMARK_API_KEY
   if (!token) return res.status(500).json({ error: 'POSTMARK_API_KEY manquant' })
   try {
-    const client = new postmark.ServerClient(token)
+    const client = getPostmarkClient(token)
     await client.sendEmail({
       From: 'info@orisha.io',
       To: to,

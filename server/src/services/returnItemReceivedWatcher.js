@@ -22,6 +22,7 @@
 import db from '../db/database.js'
 import { sendSlack } from './slack.js'
 import { logSystemRun, isSystemAutomationActive } from './systemAutomations.js'
+import { createChangeLogWatcher } from './changeLogWatcher.js'
 
 const POLL_MS = 5000
 const BATCH = 200
@@ -33,14 +34,6 @@ const CHANGED_MIND = "Le client à changé d'idée"
 const SUB_END = "Fin d'abonnement"
 const ORDER_ERROR = 'Erreur de commande'
 const COURTESY = "Retour d'équipement de courtoisie"
-
-let lastSeenId = 0
-let timer = null
-let running = false
-
-function maxChangeLogId() {
-  return db.prepare('SELECT MAX(id) AS m FROM change_log').get()?.m || 0
-}
 
 function instructionsFor(reason, receivedBy) {
   const who = receivedBy || ''
@@ -99,39 +92,21 @@ async function processReturnItem(id) {
   })
 }
 
-export async function pollOnce() {
-  if (running) return
-  running = true
-  try {
-    if (!isSystemAutomationActive('sys_return_item_received')) {
-      lastSeenId = Math.max(lastSeenId, maxChangeLogId())
-      return
-    }
-    const rows = db.prepare(`
-      SELECT id, record_id FROM change_log
-      WHERE id > ? AND change_type = 'upsert' AND table_name = 'return_items'
-      ORDER BY id ASC LIMIT ?
-    `).all(lastSeenId, BATCH)
-
+const watcher = createChangeLogWatcher({
+  name: 'returnItemReceivedWatcher',
+  intervalMs: POLL_MS,
+  tables: 'return_items',
+  batchSize: BATCH,
+  isEnabled: () => isSystemAutomationActive('sys_return_item_received'),
+  onRows: async (rows, { advance }) => {
     for (const row of rows) {
-      lastSeenId = row.id
+      advance(row.id)
       await processReturnItem(row.record_id)
     }
-  } catch (e) {
-    console.error('[returnItemReceivedWatcher] poll error:', e.message)
-  } finally {
-    running = false
-  }
-}
+  },
+})
 
-export function startReturnItemReceivedWatcher() {
-  if (timer) return
-  lastSeenId = maxChangeLogId()
-  timer = setInterval(() => { pollOnce() }, POLL_MS)
-  if (timer.unref) timer.unref()
-  console.log(`[returnItemReceivedWatcher] started (poll ${POLL_MS}ms)`)
-}
+export const pollOnce = watcher.pollOnce
 
-export function stopReturnItemReceivedWatcher() {
-  if (timer) { clearInterval(timer); timer = null }
-}
+export function startReturnItemReceivedWatcher() { watcher.start() }
+export function stopReturnItemReceivedWatcher() { watcher.stop() }

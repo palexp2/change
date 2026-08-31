@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
 import { ArrowLeft, ExternalLink, Plus, FileDown, Trash2, ChevronUp, ChevronDown, X, FileText } from 'lucide-react'
 import { api } from '../lib/api.js'
@@ -22,6 +22,7 @@ import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useDisabledColumns } from '../lib/useDisabledColumns.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
@@ -290,9 +291,6 @@ export default function ProjectDetail() {
   const navigate = useNavigate()
   const location = useLocation()
   const { addToast } = useToast()
-  const [project, setProject] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
   const [tab, setTab] = useState(location.state?.tab || 'info')
   const [soumissions, setSoumissions] = useState([])
   const [factures, setFactures] = useState([])
@@ -304,16 +302,8 @@ export default function ProjectDetail() {
   const [savingCompany, setSavingCompany] = useState(false)
   const disabledCols = useDisabledColumns('projects')
 
-  const load = useCallback(() => {
-    setLoading(true)
-    setLoadError(null)
-    api.projects.get(id)
-      .then(data => setProject(data))
-      .catch((e) => { setProject(null); setLoadError(e?.message || 'Erreur de chargement') })
-      .finally(() => setLoading(false))
-  }, [id])
-
-  useEffect(() => { load() }, [load])
+  const { record: project, setRecord: setProject, loading, loadError, reload: load } =
+    useDetailRecord(() => api.projects.get(id), [id], { clearOnError: true })
 
   useRealtimeChannel(id ? `project:${id}` : null, (msg) => {
     if (msg.type === 'project:updated') setProject(p => p ? { ...p, ...msg.payload } : p)

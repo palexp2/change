@@ -10,6 +10,7 @@ import { Badge } from '../components/Badge.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useRealtimeChannel, useEntityListRealtime } from '../lib/useRealtimeChannel.js'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
@@ -86,30 +87,17 @@ export default function EmployeeDetail() {
   const navigate = useNavigate()
   const confirm = useConfirm()
   const { addToast } = useToast()
-  const [employee, setEmployee] = useState(null)
   const [form, setForm] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
   const [saving, setSaving] = useState(false)
   const saveTimer = useRef(null)
   const pendingRef = useRef({})
 
-  async function load() {
-    setLoading(true)
-    setLoadError(null)
-    try {
+  const { record: employee, setRecord: setEmployee, loading, loadError, reload: load } =
+    useDetailRecord(async () => {
       const data = await api.employees.get(id)
-      setEmployee(data)
       setForm(normalize(data))
-    } catch (err) {
-      setLoadError(err?.message || 'Erreur de chargement')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load() }, [id])
+      return data
+    }, [id])
   useEffect(() => () => clearTimeout(saveTimer.current), [])
 
   useRealtimeChannel(id ? `employee:${id}` : null, (msg) => {

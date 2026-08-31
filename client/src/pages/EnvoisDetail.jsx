@@ -13,6 +13,7 @@ import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
 import NovoxpressPickupModal from '../components/NovoxpressPickupModal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { fmtAddress as fmtAdresse } from '../utils/formatters.js'
 
@@ -210,10 +211,9 @@ function EditEnvoiModal({ envoi, adresses, onSave, onDelete, onClose }) {
 export default function EnvoisDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [envoi, setEnvoi] = useState(null)
+  const { record: envoi, setRecord: setEnvoi, loading, loadError, reload: load } =
+    useDetailRecord(() => api.shipments.get(id), [id], { clearOnError: true })
   const [adresses, setAdresses] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState(null)
   const [showEdit, setShowEdit] = useState(false)
   const [showLabel, setShowLabel] = useState(false)
   const [showPickup, setShowPickup] = useState(false)
@@ -233,18 +233,6 @@ export default function EnvoisDetail() {
     api.novoxpress.status().then(r => setNovoxConfigured(!!r.configured)).catch(() => {})
     api.purolator.status().then(r => setPurolatorConfigured(!!r.configured)).catch(() => {})
   }, [])
-
-  function load() {
-    setLoading(true)
-    setLoadError(null)
-    api.shipments.get(id)
-      .then(data => setEnvoi(data))
-      .catch((e) => { setEnvoi(null); setLoadError(e?.message || 'Erreur de chargement') })
-      .finally(() => setLoading(false))
-  }
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { load() }, [id])
 
   useRealtimeChannel(id ? `shipment:${id}` : null, (msg) => {
     if (msg.type === 'shipment:updated') setEnvoi(e => e ? { ...e, ...msg.payload } : e)

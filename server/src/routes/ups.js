@@ -2,14 +2,13 @@ import { Router } from 'express'
 import path from 'path'
 import fs from 'fs'
 import { v4 as uuidv4 } from 'uuid'
-import * as postmark from 'postmark'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { getConfig, saveConfig, deleteConfig, isUpsConfigured, DEFAULTS } from '../connectors/ups.js'
+import { saveConfig, deleteConfig, publicConfig, isUpsConfigured, DEFAULTS } from '../connectors/ups.js'
 import { createReturnLabel, getShipmentRates, trackNumber, testConnection } from '../services/ups.js'
 import { buildReturnPartyContext } from '../services/returnContext.js'
 import { logSystemRun } from '../services/systemAutomations.js'
-import { getAutomationFrom } from '../services/postmarkConfig.js'
+import { getAutomationFrom, getPostmarkClient } from '../services/postmarkConfig.js'
 
 // Intégration UPS — connecteur (OAuth client_credentials), étiquettes de retour
 // (Shipping API, ReturnService 9), tarifs (Rating API /Shop) et suivi
@@ -20,21 +19,6 @@ const router = Router()
 router.use(requireAuth)
 
 const LABELS_DIR = path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')
-
-// Le secret ne ressort jamais : l'UI n'affiche que « configuré / pas configuré ».
-function publicConfig() {
-  const cfg = getConfig()
-  const { client_secret, client_id, account_number, ...rest } = cfg
-  return {
-    ...rest,
-    client_id_set: !!client_id,
-    client_secret_set: !!client_secret,
-    account_number_set: !!account_number,
-    // 4 derniers chiffres seulement — assez pour vérifier le bon compte sans
-    // exposer l'identifiant de facturation en clair dans le navigateur.
-    account_number_hint: account_number ? `••••${String(account_number).slice(-4)}` : null,
-  }
-}
 
 // Réponse d'erreur uniforme : message brut UPS + payload envoyé pour debug.
 function upsFailure(res, e, fallbackStatus = 502) {
@@ -230,7 +214,7 @@ router.post('/returns/:id/return-label/send', async (req, res) => {
   try {
     const fromAddress = getAutomationFrom('sys_ups_return_label_email')
     if (!fromAddress) throw new Error('Adresse expéditeur Postmark non configurée')
-    const client = new postmark.ServerClient(process.env.POSTMARK_API_KEY)
+    const client = getPostmarkClient()
     await client.sendEmail({
       From: fromAddress,
       To: to,

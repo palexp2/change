@@ -156,6 +156,24 @@ const put = (path, body) => request('PUT', path, body)
 const patch = (path, body) => request('PATCH', path, body)
 const del = (path) => request('DELETE', path)
 
+// Téléchargement binaire (PDF, images…) avec le token porté en header —
+// à utiliser au lieu d'un fetch brut + localStorage.getItem('erp_token').
+// (Pour un <iframe src> ou window.open, le header est impossible : ces
+// cas-là passent par `?token=` en query param, accepté par le middleware.)
+export async function apiBlob(path) {
+  const token = getToken()
+  const res = await fetch(`${BASE}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    const err = new Error(data.error || `HTTP ${res.status}`)
+    err.status = res.status
+    throw err
+  }
+  return res.blob()
+}
+
 export const api = {
   // Auth
   auth: {
@@ -649,6 +667,7 @@ export const api = {
     discounts: (id) => get(`/projets/factures/${id}/discounts`),
     neighbors: (id) => get(`/projets/factures/${id}/neighbors`),
     retryPdf: (id) => post(`/projets/factures/${id}/retry-pdf`, {}),
+    pdfBlob: (id) => apiBlob(`/projets/factures/${id}/pdf`),
   },
 
   // Paiements / remboursements (Stripe et hors-Stripe) attachés aux factures
@@ -1328,11 +1347,17 @@ export const api = {
       duplicate: (id) => post(`/documents/soumissions/${id}/duplicate`),
       convertToOrder: (id) => post(`/documents/soumissions/${id}/convert-to-order`, {}),
       pdfUrl: (id) => `${BASE}/documents/soumissions/${id}/pdf`,
+      pdfBlob: (id) => apiBlob(`/documents/soumissions/${id}/pdf`),
     },
   },
 
   agent: {
     listTasks:    ()         => get('/agent/tasks'),
+    // Statut du runner : pollé toutes les 5 s — getFresh, le cache prefetch
+    // (TTL 30 s) rendrait le poll aveugle aux transitions.
+    runnerStatus: ()         => getFresh('/agent/runner/status'),
+    // Journal d'exécution d'une tâche en cours : lu à la demande, jamais caché.
+    streamLog:    (id)       => getFresh(`/agent/tasks/${id}/stream-log`),
     getUsage:     ()         => get('/agent/usage'),
     createTask:   (data)     => post('/agent/tasks', data),
     updateTask:   (id, data) => patch(`/agent/tasks/${id}`, data),
@@ -1422,6 +1447,7 @@ export const api = {
     list: (params = {}) => get('/sale-receipts?' + new URLSearchParams(params)),
     transactionTypes: () => get('/sale-receipts/transaction-types'),
     get: (id) => get(`/sale-receipts/${id}`),
+    fileBlob: (id) => apiBlob(`/sale-receipts/${id}/file`),
     update: (id, body) => patch(`/sale-receipts/${id}`, body),
     delete: (id) => del(`/sale-receipts/${id}`),
     archive: (id) => post(`/sale-receipts/${id}/archive`),

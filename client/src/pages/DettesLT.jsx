@@ -8,6 +8,7 @@ import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useAutosave } from '../lib/useAutosave.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 
 const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
@@ -25,19 +26,11 @@ function DebtModal({ debt, onClose, onSaved, onDeleted }) {
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
   // Fiche existante → autosave au blur ; création → bouton (pas encore d'id).
-  const save = async (k, v) => {
-    if (isNew) return
-    if ((debt[k] ?? '') === (v ?? '')) return
-    setSaving(true)
-    try {
-      onSaved(await api.ltDebts.update(debt.id, { [k]: v === '' ? null : v }))
-    } catch (e) {
-      addToast({ message: `Sauvegarde échouée : ${e.message}`, type: 'error' })
-      set(k, debt[k])
-    } finally {
-      setSaving(false)
-    }
-  }
+  const { save, saving: autosaving } = useAutosave(debt, patch => api.ltDebts.update(debt.id, patch), {
+    enabled: !isNew,
+    onSaved,
+    onError: (k, prev) => set(k, prev),
+  })
 
   async function create() {
     if (!form.label?.trim()) { addToast({ message: 'Nom de la dette requis', type: 'error' }); return }
@@ -111,7 +104,7 @@ function DebtModal({ debt, onClose, onSaved, onDeleted }) {
             >
               Supprimer
             </button>
-            <span className="text-xs text-slate-400">{saving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
+            <span className="text-xs text-slate-400">{autosaving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
           </>
         )}
       </div>

@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { getConfig, saveConfig, deleteConfig, isDigikeyConfigured, DEFAULTS } from '../connectors/digikey.js'
+import { saveConfig, deleteConfig, publicConfig, isDigikeyConfigured, DEFAULTS } from '../connectors/digikey.js'
 import { parseLimit } from '../utils/pagination.js'
 
 // Intégration DigiKey — configuration, état et consultation des commandes
@@ -10,13 +10,6 @@ import { parseLimit } from '../utils/pagination.js'
 
 const router = Router()
 router.use(requireAuth)
-
-// Le secret ne ressort jamais : l'UI n'affiche que « configuré / pas configuré ».
-function publicConfig() {
-  const cfg = getConfig()
-  const { client_secret, ...rest } = cfg
-  return { ...rest, client_secret_set: !!client_secret }
-}
 
 router.get('/status', (req, res) => {
   const last = db.prepare(`

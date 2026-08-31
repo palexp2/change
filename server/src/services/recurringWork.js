@@ -8,8 +8,8 @@
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { broadcastAll } from './realtime.js'
-
-const TZ = 'America/Toronto'
+import { localDay, dayDiff as daysBetween } from '../utils/datetime.js'
+export { localDay, daysBetween }
 
 export const CADENCES = ['bihebdo', 'hebdo', 'mensuel', 'trimestriel', 'annuel', 'adhoc']
 // Propriétaires possibles d'un travail = les deux sections de la page (AL, ML).
@@ -53,11 +53,6 @@ function slotForDay(dayIso) {
 export function slotFromKey(periodKey) {
   const m = /^(\d{4}-W\d{2})-([12])$/.exec(String(periodKey || ''))
   return m ? { week_key: m[1], ...BIWEEKLY_SLOTS[Number(m[2]) - 1] } : null
-}
-
-/** Date civile (fuseau Montréal) en `YYYY-MM-DD`. */
-export function localDay(date = new Date()) {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
 }
 
 /** Semaine ISO d'une date civile → { year, week }. Lundi = premier jour. */
@@ -267,10 +262,6 @@ export function periodDueDate(cadence, periodKey, dueDay) {
 }
 
 /** Écart en jours civils entre deux dates `YYYY-MM-DD` (b - a). */
-export function daysBetween(a, b) {
-  return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400_000)
-}
-
 /**
  * État d'échéance affiché sur la ligne : `overdue` (dépassée), `due_soon`
  * (aujourd'hui ou dans les 5 jours), `upcoming`, ou `null` (déjà cochée, ou

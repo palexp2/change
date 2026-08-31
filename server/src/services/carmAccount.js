@@ -25,6 +25,8 @@
 // Le solde disponible = solde d'ouverture − somme des montants.
 import db from '../db/database.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
+import { sendSlackWebhook } from './slack.js'
+import { round2Safe as round2 } from '../utils/money.js'
 
 export const CARM_AUTOMATION_ID = 'sys_carm_balance_alert'
 
@@ -126,7 +128,6 @@ export function backfillCarmCategories() {
 
 // ── Solde et état du compte ──────────────────────────────────────────────────
 
-const round2 = n => Math.round((Number(n) || 0) * 100) / 100
 
 // État complet du compte : solde disponible, consommation récente, autonomie
 // estimée, TPS à l'importation récupérable, lignes à ventiler.
@@ -218,16 +219,6 @@ export function carmAccountState() {
 }
 
 // ── Alerte de solde bas ──────────────────────────────────────────────────────
-
-async function sendSlackWebhook(envName, text) {
-  const url = process.env[envName]
-  if (!url) throw new Error(`Variable d'environnement manquante : ${envName}`)
-  const resp = await fetch(url, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
-  if (!resp.ok) throw new Error(`Slack HTTP ${resp.status}`)
-}
 
 const fmtCad = n => new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(Number(n) || 0)
 

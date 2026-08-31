@@ -31,7 +31,6 @@ function toNum(v) {
   const n = Number(v)
   return Number.isFinite(n) ? n : null
 }
-function toStr(v) { return v == null ? null : String(v) }
 function toDate(v) {
   if (v == null || v === '') return null
   const d = v instanceof Date ? v : new Date(v)
@@ -151,7 +150,7 @@ const F = [
   { name: 'T', category: 'Texte', sig: 'T(valeur)', hint: 'Texte si texte, sinon vide',
     impl: (v) => typeof v === 'string' ? v : '' },
   { name: 'VALUE', category: 'Texte', sig: 'VALUE(texte)', hint: 'Extrait un nombre',
-    impl: (s) => { if (s == null) return null; const m = String(s).replace(/[^0-9.\-]/g, ''); const n = parseFloat(m); return Number.isFinite(n) ? n : null } },
+    impl: (s) => { if (s == null) return null; const m = String(s).replace(/[^0-9.-]/g, ''); const n = parseFloat(m); return Number.isFinite(n) ? n : null } },
 
   // — Nombres —
   { name: 'ABS', category: 'Nombre', sig: 'ABS(n)', hint: 'Valeur absolue', sqlite: false,

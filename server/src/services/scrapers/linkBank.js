@@ -1,13 +1,13 @@
 import db from '../../db/database.js'
 import { refreshStatuses } from '../bankReconciliation.js'
 import { amountMatches } from './invoiceNeeds.js'
+import { nowIso } from '../../utils/datetime.js'
 
 // Boucler la boucle : une fois la facture ingérée et extraite, l'attacher à la
 // transaction bancaire qui l'attendait. C'est ce qui fait passer la ligne de
 // « à traiter » à « facture reçue » — deriveStatus() s'en charge dès que
 // matched_id est posé, il n'y a pas de statut à écrire à la main.
 
-const nowIso = () => new Date().toISOString()
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 // L'extraction tourne en tâche de fond (~4,5 s en moyenne, jusqu'à ~18 s sur une

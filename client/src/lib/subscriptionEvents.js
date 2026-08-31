@@ -22,7 +22,6 @@ export const CATEGORY_COLORS = {
 
 // Statuts de rachat (post-churn) — utilisés sur la page Mouvements et le panel
 // Dashboard. NULL = non vérifié (pas de badge rendu).
-export const RACHAT_STATUSES = ['probable', 'confirmed', 'merged', 'none']
 
 export const RACHAT_LABELS = {
   probable:  'Rachat probable',

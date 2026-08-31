@@ -14,6 +14,7 @@ import NovoxpressPickupModal from '../components/NovoxpressPickupModal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { fmtAddress as fmtAdresse } from '../utils/formatters.js'
 
 
 function fmtCurrency(v) {
@@ -105,10 +106,6 @@ function SendTrackingModal({ envoi, onClose, onSent }) {
   )
 }
 
-function fmtAdresse(addr) {
-  return [addr.line1, addr.city, addr.province, addr.postal_code, addr.country]
-    .filter(Boolean).join(', ')
-}
 
 function EditEnvoiModal({ envoi, adresses, onSave, onDelete, onClose }) {
   const [form, setForm] = useState({

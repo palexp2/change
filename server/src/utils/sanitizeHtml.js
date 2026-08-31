@@ -12,6 +12,18 @@ export function sanitizeHtml(html) {
   })
 }
 
+// Échappement pour interpoler du texte non fiable dans du HTML généré
+// (emails, guides d'appel…). Échappe & < > " ' — couvre aussi bien le contenu
+// texte que les valeurs d'attribut. null/undefined → chaîne vide.
+export function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ))
+}
+
+// Alias sémantique pour les valeurs d'attribut (même échappement).
+export const escapeAttr = escapeHtml
+
 export function htmlToPlainText(html) {
   if (!html) return ''
   return html

@@ -93,35 +93,9 @@ export function applyDelta(tableName, delta) {
   if (mutated) notify(tableName)
 }
 
-// Upsert/delete d'un seul record — utilisé par le handler WS.
-export function upsertRecord(tableName, record) {
-  if (!record || !record.id) return
-  const s = ensureStore(tableName)
-  s.data.set(record.id, { ...(s.data.get(record.id) || {}), ...record })
-  notify(tableName)
-}
-
-export function deleteRecord(tableName, id) {
-  if (!id) return
-  const s = ensureStore(tableName)
-  if (s.data.delete(id)) notify(tableName)
-}
-
-// Accès direct (impératif, hors React) — utile pour les composants qui ne sont
-// pas dans le render path.
-export function getTable(tableName) {
-  const s = ensureStore(tableName)
-  if (!s.snapshot) s.snapshot = Array.from(s.data.values())
-  return s.snapshot
-}
-
 export function getRecord(tableName, id) {
   if (!id) return null
   return ensureStore(tableName).data.get(id) || null
-}
-
-export function getTableSize(tableName) {
-  return ensureStore(tableName).data.size
 }
 
 // Méta-état pour la synchro.
@@ -142,18 +116,6 @@ export function useTable(tableName) {
       return s.snapshot
     },
     () => [], // SSR snapshot (pas utilisé ici)
-  )
-}
-
-export function useRecord(tableName, id) {
-  return useSyncExternalStore(
-    (cb) => {
-      const s = ensureStore(tableName)
-      s.listeners.add(cb)
-      return () => s.listeners.delete(cb)
-    },
-    () => ensureStore(tableName).data.get(id) || null,
-    () => null,
   )
 }
 

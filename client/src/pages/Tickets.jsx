@@ -17,11 +17,7 @@ import { fmtDate } from '../lib/formatDate.js'
 import { contactsForCompany } from '../lib/contactCompanies'
 import TicketDetail from './TicketDetail.jsx'
 
-function fmtDuration(mins) {
-  if (!mins) return '—'
-  const h = Math.floor(mins / 60), m = mins % 60
-  return h === 0 ? `${m}m` : `${h}h${m > 0 ? m + 'm' : ''}`
-}
+import { fmtDurationMinutes as fmtDuration } from '../lib/duration.js'
 
 const RENDERS = {
   title: row => <div className="font-medium text-slate-900">{row.title}</div>,

@@ -355,7 +355,7 @@ for (const it of unlinked) {
 // --------- Pour chaque cible "new", vérifier si un produit existe déjà par nom ---------
 const toCreate = [] // [{fr, en, items}]
 const toLinkExisting = [] // [{product, items}]
-for (const [key, t] of targets.entries()) {
+for (const t of targets.values()) {
   if (t.type === 'existing') {
     toLinkExisting.push({ product: t.product, items: t.items })
     continue

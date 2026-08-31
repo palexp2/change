@@ -8,10 +8,7 @@ import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { Modal } from './Modal.jsx'
 import { useAuth } from '../lib/auth.jsx'
 
-function fmtMoney(n, currency = 'CAD') {
-  if (n == null) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(n)
-}
+import { fmtMoney } from '../utils/formatters.js'
 
 // Doit refléter QB_FACTURE_DATE_CUTOFF côté serveur (server/src/services/quickbooks.js).
 // Toute écriture QB pour une facture dont document_date est antérieur est bloquée,

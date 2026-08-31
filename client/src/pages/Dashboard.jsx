@@ -12,6 +12,7 @@ import { AbonnementEventsTable } from '../components/AbonnementEventsTable.jsx'
 import { ResizeHandle } from '../components/ResizeHandle.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { DashboardOverview } from '../components/DashboardOverview.jsx'
+import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
 
 // Onglet « Vue globale » — la planche dense façon Power BI. Ce n'est pas une
 // section du dashboard (pas dans WIDGET_DEFS) : c'est une seconde lecture des
@@ -1920,10 +1921,7 @@ function InventoryValuationCard({ valuation }) {
   )
 }
 
-function fmtCad(n) {
-  if (!n) return '$0'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
-}
+const fmtCad = (n) => fmtMoneyBase(n, 'CAD', { fallback: '$0', zeroIsEmpty: true, maximumFractionDigits: 0 })
 
 // Panel "Mouvements d'abonnements" — un seul DataTable des events des 12
 // derniers mois, avec groupage imbriqué mois → catégorie. Les sommes par
@@ -1963,10 +1961,7 @@ function SubscriptionEventsPanel({ data }) {
 
 function fmtCadCompact(n) {
   if (n == null) return '—'
-  if (Math.abs(n) >= 1000) {
-    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
-  }
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
+  return fmtMoneyBase(n, 'CAD', Math.abs(n) >= 1000 ? { maximumFractionDigits: 0 } : {})
 }
 
 function fmtNumber(n) {
@@ -2027,14 +2022,7 @@ const PRESETS = [
   { id: 'all',  label: 'Tout',   days: null },
 ]
 
-function fmtMoney(n, currency) {
-  if (n === null || n === undefined || Number.isNaN(n)) return ''
-  try {
-    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: currency || 'CAD', minimumFractionDigits: 2 }).format(n)
-  } catch {
-    return `${Number(n).toFixed(2)} ${currency || ''}`.trim()
-  }
-}
+const fmtMoney = (n, currency) => fmtMoneyBase(n, currency, { fallback: '' })
 
 export function BankAccountsPanel() {
   const [data, setData] = useState(null)

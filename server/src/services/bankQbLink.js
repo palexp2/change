@@ -9,6 +9,7 @@
 // virgule) et on apparie par montant exact + date la plus proche (±4 jours).
 import db from '../db/database.js'
 import { qbGet, qbEntityUrl } from '../connectors/quickbooks.js'
+import { shiftDate, daysBetween as dayDiff } from '../utils/datetime.js'
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
 
@@ -195,16 +196,6 @@ export async function fetchQbLedgerCleared(qbAccountIds, startDate, endDate) {
     }
   }
   return [...kept.values()].flat()
-}
-
-function shiftDate(iso, days) {
-  const d = new Date(`${iso}T12:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
-
-function dayDiff(a, b) {
-  return Math.abs((new Date(`${a}T12:00:00Z`) - new Date(`${b}T12:00:00Z`)) / 86400000)
 }
 
 const MAX_DAY_GAP = 4

@@ -24,8 +24,8 @@ import {
   PAIE_REPARTITION_AUTOMATION_ID, getPaieRepartitionConfig, parseSplits, allocateByWeights,
 } from './paieRepartition.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
+import { round2 } from '../utils/money.js'
 
-const round2 = n => Math.round(n * 100) / 100
 
 // Remboursements de dépenses de la paie, par employé (source : paie_items).
 export function paieReimbursements(paieId) {

@@ -77,17 +77,10 @@ function tokensOf(name) {
   return String(name)
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
     .toLowerCase()
-    .replace(/[.,'"&()/\\\-]/g, ' ')
+    .replace(/[.,'"&()/\\-]/g, ' ')
     .split(/\s+/)
     .map(t => t.replace(/s$/, ''))           // pluriel naïf
     .filter(t => t && !STOPWORDS.has(t) && t.length > 1)
-}
-
-function normalizeName(name) {
-  return tokensOf(name).join(' ')
-}
-function tokenKey(name) {
-  return [...tokensOf(name)].sort().join(' ')   // insensible à l'ordre
 }
 
 // Index des companies, avec tie-break par "poids" (nb de liens entrants).
@@ -241,7 +234,6 @@ const stats = {
 }
 const unmatchedSamples = []
 const matchedSamples = []
-const ambiguousSamples = []
 
 const existing = new Map()
 for (const r of db.prepare('SELECT id, airtable_record_id FROM qualification_calls').all()) {

@@ -19,8 +19,8 @@ import {
 } from './taskRunner.js'
 import { heuristicTitle, refineTitle, refineProjectTitle } from './promptTitle.js'
 import { classifyPreset, provisionalPreset, PRESET_KEYS } from './promptPreset.js'
+import { APP_URL } from '../config/appUrl.js'
 
-const APP_URL = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
 
 // Items dont l'exécution avec --resume a échoué et qui ont déjà été relancés à
 // contexte neuf : évite une boucle si la reprise de session échoue en boucle.

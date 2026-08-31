@@ -13,7 +13,7 @@ function pdfUrl(id, download = false) {
 }
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { Badge } from '../components/Badge.jsx'
+import { Badge, SOUMISSION_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -24,30 +24,11 @@ import { useDisabledColumns } from '../lib/useDisabledColumns.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
-function fmtCad(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
-}
+import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
 
-function fmtCurrency(n, currency = 'CAD') {
-  if (!n && n !== 0) return '—'
-  try {
-    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency, maximumFractionDigits: 0 }).format(n)
-  } catch {
-    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
-  }
-}
-
-
-function fmtMoney(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
-
-const STATUS_COLORS = {
-  'Brouillon': 'gray', 'Envoyée': 'blue', 'Acceptée': 'green', 'Refusée': 'red', 'Expirée': 'orange',
-  'legacy': 'purple',
-}
+const fmtCad = (n) => fmtMoneyBase(n, 'CAD', { maximumFractionDigits: 0 })
+const fmtCurrency = (n, currency = 'CAD') => fmtMoneyBase(n, currency, { maximumFractionDigits: 0 })
+const fmtMoney = (n) => fmtMoneyBase(n)
 const STATUS_LABELS = { 'legacy': 'Archivé' }
 
 // ── Create soumission modal ───────────────────────────────────────────────────
@@ -111,7 +92,7 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
   const discAmt = parseFloat(form.discount_amount) || 0
   const totalDiscount = Math.min(subtotal, subtotal * discPct / 100 + discAmt)
   const netTotal = Math.max(0, subtotal - totalDiscount)
-  const fmtP = (n) => new Intl.NumberFormat(form.currency === 'USD' ? 'en-US' : 'fr-CA', { style: 'currency', currency: form.currency }).format(n || 0)
+  const fmtP = (n) => fmtMoneyBase(n || 0, form.currency, { locale: form.currency === 'USD' ? 'en-US' : 'fr-CA' })
 
   const inp = 'border border-slate-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-brand-400'
 

@@ -11,12 +11,13 @@ import {
 import { sendEmail } from '../services/gmail.js'
 import { checkForeignKeys } from '../utils/fkExists.js'
 import { logSync } from '../services/syncLog.js'
+import { APP_URL } from '../config/appUrl.js'
 
 const router = Router()
 router.use(requireAuth)
 
 function appBaseUrl() {
-  return (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  return APP_URL
 }
 
 function fmtMoney(n, currency = 'CAD') {

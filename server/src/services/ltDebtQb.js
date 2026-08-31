@@ -6,8 +6,8 @@ import db from '../db/database.js'
 import { resolveAccountByAcctNum, findOrCreateVendor } from './quickbooks.js'
 import { qbPost, qbGet, qbUploadAttachment } from '../connectors/quickbooks.js'
 import { buildDebtSchedulePdf } from './ltDebtSchedulePdf.js'
+import { round2 } from '../utils/money.js'
 
-const round2 = n => Math.round(n * 100) / 100
 
 // Certains prêteurs (ex. Ville de Québec) portent déjà un nom pris par un Client
 // dans QuickBooks (les noms sont uniques entre Clients/Fournisseurs/Employés).

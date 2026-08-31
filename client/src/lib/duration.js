@@ -86,13 +86,20 @@ export function formatDurationSeconds(totalSeconds, format = 'h:mm') {
   return `${h}:${String(m).padStart(2, '0')}`
 }
 
-// Cumulate entries to compute an "end time" from 00:00. Returns H:MM strings.
-export function cumulativeEndTimes(entries) {
-  let acc = 0
-  return entries.map(e => {
-    acc += Number(e.duration_minutes) || 0
-    return formatMinutes(acc)
-  })
+// Durée courte en SECONDES pour l'affichage : « 3m 20s » / « 45s ».
+// Retourne null pour 0/absent (l'appelant décide du fallback).
+export function fmtDurationSeconds(s) {
+  if (!s) return null
+  const m = Math.floor(s / 60), sec = s % 60
+  return m > 0 ? `${m}m ${sec}s` : `${sec}s`
+}
+
+// Durée courte en MINUTES pour l'affichage : « 2h30m » / « 45m ».
+// Retourne '—' pour 0/absent. Ne pas confondre avec fmtDurationSeconds.
+export function fmtDurationMinutes(mins) {
+  if (!mins) return '—'
+  const h = Math.floor(mins / 60), m = mins % 60
+  return h === 0 ? `${m}m` : `${h}h${m > 0 ? m + 'm' : ''}`
 }
 
 // ISO Monday-start week number (YYYY-Www) for grouping.

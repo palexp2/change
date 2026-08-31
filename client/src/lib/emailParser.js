@@ -42,16 +42,6 @@ export function stripEmailText(text) {
   return { text: afterSig, hasQuoted, hasSignature, hasHidden: hasQuoted || hasSignature }
 }
 
-// Back-compat wrappers in case anything else imports the old names.
-export function stripQuotedHtml(html) {
-  const { html: stripped, hasQuoted } = stripEmailHtml(html)
-  return { html: stripped, hasQuoted }
-}
-export function stripQuotedText(text) {
-  const { text: stripped, hasQuoted } = stripEmailText(text)
-  return { text: stripped, hasQuoted }
-}
-
 // ─── HTML helpers ────────────────────────────────────────────────────────────
 
 function removeQuotedHtml(doc) {

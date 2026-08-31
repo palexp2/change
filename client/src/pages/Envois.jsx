@@ -28,9 +28,7 @@ const RENDERS = {
 
 const COLUMNS = TABLE_COLUMN_META.shipments.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
-function fmtAdresse(a) {
-  return [a.line1, a.city, a.province, a.postal_code, a.country].filter(Boolean).join(', ')
-}
+import { fmtAddress as fmtAdresse } from '../utils/formatters.js'
 
 function NewEnvoiModal({ orders, adresses, onSave, onClose }) {
   const [form, setForm] = useState({ order_id: '', tracking_number: '', carrier: '', pays: '', notes: '', address_id: '' })

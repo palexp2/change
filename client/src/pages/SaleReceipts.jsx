@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Upload, RefreshCw, AlertCircle, CheckCircle, Clock, Camera, BookOpen, Trash2, Archive, ArchiveRestore, Receipt, Mail, MailOpen, FileX } from 'lucide-react'
+import { Upload, RefreshCw, AlertCircle, CheckCircle, Camera, BookOpen, Trash2, Archive, ArchiveRestore, Receipt, Mail, MailOpen, FileX } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
@@ -22,12 +22,7 @@ const TABS = [
   ['collecte', 'Collecte de factures'],
 ]
 
-function StatusBadge({ status }) {
-  if (status === 'done')       return <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full"><CheckCircle size={10} /> Complété</span>
-  if (status === 'processing') return <span className="inline-flex items-center gap-1 text-xs text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full"><RefreshCw size={10} className="animate-spin" /> En cours</span>
-  if (status === 'error')      return <span className="inline-flex items-center gap-1 text-xs text-red-700 bg-red-100 px-2 py-0.5 rounded-full"><AlertCircle size={10} /> Erreur</span>
-  return <span className="inline-flex items-center gap-1 text-xs text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full"><Clock size={10} /> En attente</span>
-}
+import { ReceiptStatusBadge as StatusBadge } from '../components/Badge.jsx'
 
 const UPLOAD_MIMES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf']
 const UPLOAD_EXTS  = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf']

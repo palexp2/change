@@ -56,16 +56,10 @@ const CA_PROVINCES = [
   ['SK', 'Saskatchewan'], ['YT', 'Yukon'],
 ].map(([value, name]) => ({ value, label: `${value} — ${name}` }))
 
-function fmtCad(n) {
-  if (!n) return '$0'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
-}
+import { fmtMoney } from '../utils/formatters.js'
+import { fmtPhone, fmtAddress as fmtAddressBase } from '../utils/formatters.js'
 
-function fmtMoney(n, currency) {
-  if (n == null) return '—'
-  const cur = (currency || 'CAD').toUpperCase()
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: cur, maximumFractionDigits: 2 }).format(n)
-}
+const fmtCad = (n) => fmtMoney(n, 'CAD', { fallback: '$0', zeroIsEmpty: true, maximumFractionDigits: 0 })
 
 function fieldTypeInput(type) {
   if (type === 'number') return 'number'
@@ -75,13 +69,6 @@ function fieldTypeInput(type) {
   return 'text'
 }
 
-function fmtPhone(val) {
-  if (!val) return ''
-  const digits = String(val).replace(/\D/g, '')
-  const d = digits.length === 11 && digits[0] === '1' ? digits.slice(1) : digits
-  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`
-  return val
-}
 
 const SERIAL_RENDERS = {
   serial: row => <span className="font-mono font-medium text-slate-900">{row.serial}</span>,
@@ -505,11 +492,7 @@ function CompanyTaskModal({ companyId, company, users, editingTask, taskForm, se
   )
 }
 
-function fmtAddress(a) {
-  if (!a) return '—'
-  const parts = [a.line1, a.city, a.province, a.postal_code, a.country].filter(Boolean)
-  return parts.join(', ') || '—'
-}
+const fmtAddress = (a) => fmtAddressBase(a) || '—'
 
 function OnboardingResponsesPanel({ responses }) {
   const [expanded, setExpanded] = useState(() => responses.length === 1 ? new Set([responses[0].id]) : new Set())

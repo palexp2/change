@@ -78,12 +78,6 @@ function normalizeItemName(raw) {
 //   stripe_price_id > stripe_product_id > nom normalisé
 // Le nom normalisé est crucial pour les snapshots reconstruits depuis les
 // factures legacy (où price_id/product_id sont NULL en DB).
-function itemMatchKey(it) {
-  if (it?.stripe_price_id) return `price:${it.stripe_price_id}`
-  if (it?.stripe_product_id) return `prod:${it.stripe_product_id}`
-  return `name:${normalizeItemName(it?.name)}`
-}
-
 function lineAmount(it) {
   return (Number(it?.unit_amount) || 0) * (Number(it?.quantity) || 1)
 }

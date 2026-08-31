@@ -8,6 +8,7 @@ import { Router } from 'express'
 import { requireAuth } from '../middleware/auth.js'
 import { buildPreviewReport, createProspects } from '../services/mapaqImport.js'
 import { logSync } from '../services/syncLog.js'
+import { parseLimit } from '../utils/pagination.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -33,7 +34,7 @@ router.post('/preview', async (req, res) => {
       csv: csv || null,
       region: region ? region.trim() : null,
       dataset: dataset ? dataset.trim() : null,
-      limit: limit ? Math.min(5000, Math.max(1, Number(limit) || 0)) || null : null,
+      limit: limit ? parseLimit(limit, { def: 0, max: 5000 }) : null,
     })
     logSync('mapaq', 'manual', {
       status: report.source.available ? 'success' : 'error',

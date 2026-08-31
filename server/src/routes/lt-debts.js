@@ -10,12 +10,12 @@ import { resolveAccountByAcctNum } from '../services/quickbooks.js'
 import { publishDebtPaymentExpense } from '../services/ltDebtQb.js'
 import { generateSchedule } from '../services/ltDebtSchedule.js'
 import { logSync } from '../services/syncLog.js'
+import { round2 } from '../utils/money.js'
 
 const router = Router()
 router.use(requireAuth)
 
 const isDate = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''))
-const round2 = n => Math.round(n * 100) / 100
 
 const DEBT_FIELDS = ['label', 'lender', 'loan_number', 'currency', 'principal',
   'qb_debt_acctnum', 'qb_interest_acctnum', 'qb_bank_acctnum', 'active', 'notes',

@@ -4,6 +4,7 @@ import { requireAuth, requireAdmin } from '../middleware/auth.js';
 import { getUsdCadRate } from '../services/fx.js';
 import { diffSnapshots, enrichItemsWithErpProductId } from '../services/subscriptionItemsSnapshot.js';
 import { qbGet, onQbMutation } from '../connectors/quickbooks.js';
+import { round2 } from '../utils/money.js'
 
 const router = Router();
 router.use(requireAuth);
@@ -1216,7 +1217,6 @@ router.get('/aging-receivables', async (req, res) => {
     });
   }
 
-  const round2 = (n) => Math.round(n * 100) / 100;
   const companies = [...companiesMap.values()].map(co => ({
     ...co,
     b0_30: round2(co.b0_30),

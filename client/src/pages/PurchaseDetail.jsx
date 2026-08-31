@@ -4,7 +4,7 @@ import { ArrowLeft, ShoppingBag, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { Badge } from '../components/Badge.jsx'
+import { Badge, PURCHASE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -13,7 +13,6 @@ import { fmtDate } from '../lib/formatDate.js'
 import { fmtCad } from '../utils/formatters.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
-const STATUS_COLORS = { 'Commandé': 'blue', 'Reçu partiellement': 'yellow', 'Reçu': 'green', 'Annulé': 'red' }
 const STATUS_OPTIONS = ['Commandé', 'Reçu partiellement', 'Reçu', 'Annulé']
 
 

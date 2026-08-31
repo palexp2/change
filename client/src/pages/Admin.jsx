@@ -16,12 +16,7 @@ import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
-function fmt(bytes) {
-  if (bytes == null) return '—'
-  if (bytes >= 1e9) return (bytes / 1e9).toFixed(1) + ' GB'
-  if (bytes >= 1e6) return (bytes / 1e6).toFixed(1) + ' MB'
-  return (bytes / 1e3).toFixed(0) + ' KB'
-}
+import { formatBytes as fmt } from '../utils/formatters.js'
 
 function fmtUptime(seconds) {
   const d = Math.floor(seconds / 86400)

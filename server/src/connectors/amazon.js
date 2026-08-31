@@ -1,4 +1,5 @@
 import db from '../db/database.js'
+import { APP_URL } from '../config/appUrl.js'
 
 // ── Connecteur Amazon Business ────────────────────────────────────────────────
 // OAuth « Login With Amazon » (LWA) + accès à l'API Amazon Business pour récupérer
@@ -17,7 +18,6 @@ import db from '../db/database.js'
 //   - AMAZON_APPLICATION_ID : l'applicationId de l'app cliente (≠ client_id LWA).
 //   - Le scope/marketplace exact (Canada .ca) à passer le cas échéant.
 
-const APP_URL = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
 const CALLBACK_URL = `${APP_URL}/erp/api/connectors/amazon/callback`
 
 // Endpoints LWA (stables, communs à toutes les apps Amazon Business)

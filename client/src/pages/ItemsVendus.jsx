@@ -10,17 +10,10 @@ import { fmtDate } from '../lib/formatDate.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 
+import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
+
 // Stripe stocke les montants en cents — on convertit en dollars pour l'affichage.
-function fmtMoney(cents, currency) {
-  if (cents == null) return '—'
-  const value = cents / 100
-  const curr = (currency || 'CAD').toUpperCase()
-  try {
-    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: curr }).format(value)
-  } catch {
-    return `${value.toFixed(2)} ${curr}`
-  }
-}
+const fmtMoney = (cents, currency) => fmtMoneyBase(cents == null ? null : cents / 100, currency)
 
 export default function ItemsVendus() {
   const { addToast } = useToast()

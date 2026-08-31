@@ -9,20 +9,13 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 
-const ROOT_FOLDER = ''
 const ROOT_LABEL = '— Racine —'
 
 function publicUrl(token) {
   return `${window.location.origin}/erp/p/${token}`
 }
 
-function humanSize(bytes) {
-  if (bytes == null) return '—'
-  if (bytes < 1024) return `${bytes} o`
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} Mo`
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} Go`
-}
+import { formatBytes as humanSize } from '../utils/formatters.js'
 
 function FileTypeIcon({ mime, size = 16 }) {
   if (!mime) return <File size={size} className="text-slate-400" />

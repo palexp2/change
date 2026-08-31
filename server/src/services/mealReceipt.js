@@ -1,3 +1,4 @@
+import { round2Safe as round2 } from '../utils/money.js'
 // Reçus de repas / représentation (restaurant, traiteur, livraison de repas).
 //
 // Deux particularités comptables, systématiquement les mêmes :
@@ -13,7 +14,6 @@
 // pas sur l'addition : l'addition s'arrête au total taxes incluses. Le montant réellement
 // débité est donc addition + pourboire — c'est lui qu'on comptabilise.
 
-const round2 = n => Math.round((Number(n) || 0) * 100) / 100
 
 export const MEAL_TAX_CODE_NAME = 'TPS/TVQ repas'
 export const TIP_TAX_CODE_NAME = 'Hors champ'

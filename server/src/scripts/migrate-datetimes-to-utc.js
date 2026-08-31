@@ -52,7 +52,7 @@ function discoverDatetimeColumns() {
   return targets
 }
 
-function migrateColumn({ table, field, quoted }) {
+function migrateColumn({ table, quoted }) {
   const rows = db.prepare(
     `SELECT rowid AS _rid, ${quoted} AS v FROM ${table}
      WHERE ${quoted} IS NOT NULL AND ${quoted} != ''

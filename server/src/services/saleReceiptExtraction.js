@@ -10,6 +10,7 @@ import { resolveServicePeriod, annotateItemsWithPeriod, annotateDescriptionWithP
 import { autoLinkReceiptItems } from './purchaseLiaMatch.js'
 import { applyAwsInvoice } from './awsInvoice.js'
 import { applyMealTaxCodeNames, reconcileMealAmounts, isTipLine } from './mealReceipt.js'
+import { round2Safe as round2 } from '../utils/money.js'
 
 // Ré-exportés ici pour compatibilité : ces filets vivent désormais dans servicePeriod.js
 // (le moteur de période complet), qui est aussi utilisé au moment de la publication QB.
@@ -17,7 +18,6 @@ export { annotateItemsWithPeriod, annotateDescriptionWithPeriod }
 
 const IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
 
-const round2 = n => Math.round((Number(n) || 0) * 100) / 100
 
 // Référentiel des types de transaction fiscaux (fiscalStatus.js) injecté dans le
 // prompt : l'IA classe le document d'après son CONTENU (nature de l'achat, pays de

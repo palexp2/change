@@ -8,6 +8,7 @@ import { api } from '../lib/api.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { WebhookEditor } from '../components/WebhookEditor.jsx'
+import { AUTOMATION_ACTION_LABELS as ACTION_TYPE_LABELS } from '../components/Badge.jsx'
 
 // Mirrors MANUAL_RUNNERS in server/src/services/systemAutomations.js. Keep in sync.
 const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup', 'sys_ctb_programmation_paiement', 'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder', 'sys_card_ceiling_alert', 'sys_stripe_weekly_payout_push'])
@@ -156,7 +157,6 @@ const FILTER_OP_LABELS = Object.fromEntries(
 // Operators that compare numerically — the value input becomes a number field.
 const NUMERIC_OPS = new Set(['gt', 'gte', 'lt', 'lte'])
 
-const ACTION_TYPE_LABELS = { slack: 'Slack', email: 'Email', task: 'Tâche', script: 'Script' }
 
 const DEFAULT_ACTION_CONFIG = {
   slack: { webhookEnv: '', text: '' },

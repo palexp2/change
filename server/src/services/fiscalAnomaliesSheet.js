@@ -27,6 +27,7 @@ import { fetchPmtSuiviGrid } from './pmtSuiviImport.js'
 import { findVendorProfile, normalizeVendorKey } from './vendorProfiles.js'
 import { getTransactionType, FISCAL_STATUS } from './fiscalStatus.js'
 import { resolveTaxCodeIdsByName } from './quickbooks.js'
+import { nowIso } from '../utils/datetime.js'
 
 export const FISCAL_ANOMALIES_AUTOMATION_ID = 'sys_fiscal_anomalies_sheet'
 
@@ -196,7 +197,6 @@ export function resolveProfileForSheetName(name, profiles) {
 
 // ── Sync ─────────────────────────────────────────────────────────────────────
 
-const nowIso = () => new Date().toISOString()
 
 function loadKnownRows() {
   const rows = db.prepare('SELECT * FROM fiscal_anomalies WHERE deleted_at IS NULL').all()

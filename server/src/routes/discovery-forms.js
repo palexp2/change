@@ -17,12 +17,14 @@ import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { generateShortToken } from '../utils/shortToken.js'
+import { APP_URL } from '../config/appUrl.js'
+import { parseLimit } from '../utils/pagination.js'
 
 const router = Router()
 router.use(requireAuth)
 
 function publicUrlForToken(token) {
-  const baseUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  const baseUrl = APP_URL
   return `${baseUrl}/erp/d/${token}`
 }
 
@@ -142,7 +144,7 @@ router.get('/', (req, res) => {
 
   let limitSql = ''
   if (limit !== 'all') {
-    const n = Math.min(500, Math.max(1, parseInt(limit) || 200))
+    const n = parseLimit(limit, { def: 200, max: 500 })
     limitSql = `LIMIT ${n}`
   }
   const sql = `

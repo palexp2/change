@@ -1,3 +1,5 @@
+import { AlertCircle, CheckCircle, Clock, RefreshCw } from 'lucide-react'
+
 export function Badge({ children, color = 'gray', size = 'sm', className = '' }) {
   const colors = {
     gray: 'bg-slate-100 text-slate-700',
@@ -63,6 +65,59 @@ export function ticketStatusColor(status) {
     'Closed': 'green',
   }
   return map[status] || 'gray'
+}
+
+// ── Maps de statut partagées liste ↔ fiche détail ───────────────────────────
+// Chaque map est utilisée à la fois par la page liste et la page détail du
+// domaine : une seule source de vérité pour les couleurs de badge.
+
+export const FACTURE_STATUS_COLORS = {
+  'Payé': 'green',
+  'Payée': 'green',
+  'À payer': 'yellow',
+  'Partielle': 'yellow',
+  'En retard': 'red',
+  'Envoyée': 'blue',
+  'Draft': 'gray',
+  'Brouillon': 'gray',
+  'Annulée': 'red',
+  'Void': 'gray',
+  'Supprimé': 'gray',
+  'Note de crédit': 'purple',
+  'Remboursement': 'purple',
+  'Uncollectible': 'red',
+}
+
+// Union des maps soumission (SoumissionDetail) et projet (ProjectDetail) :
+// 'legacy' n'existe que sur les soumissions importées d'Airtable.
+export const SOUMISSION_STATUS_COLORS = {
+  'Brouillon': 'gray', 'Envoyée': 'blue', 'Acceptée': 'green', 'Refusée': 'red', 'Expirée': 'orange',
+  'legacy': 'purple',
+}
+
+export const PURCHASE_STATUS_COLORS = { 'Commandé': 'blue', 'Reçu partiellement': 'yellow', 'Reçu': 'green', 'Annulé': 'red' }
+
+export const RETOUR_STATUS_COLORS = {
+  'Reçu': 'green',
+  'En attente': 'yellow',
+  'En traitement': 'blue',
+  'Refusé': 'red',
+}
+
+export const STRIPE_PAYOUT_STATUS_COLORS = {
+  paid: 'green', pending: 'yellow', in_transit: 'blue', canceled: 'gray', failed: 'red',
+}
+
+export const INTERACTION_TYPE_LABELS = { call: 'Appel', email: 'Courriel', sms: 'SMS', meeting: 'Réunion', note: 'Note' }
+
+export const AUTOMATION_ACTION_LABELS = { slack: 'Slack', email: 'Email', task: 'Tâche', script: 'Script' }
+
+// Badge de statut de traitement d'un reçu de vente (liste + fiche détail).
+export function ReceiptStatusBadge({ status }) {
+  if (status === 'done')       return <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full"><CheckCircle size={10} /> Complété</span>
+  if (status === 'processing') return <span className="inline-flex items-center gap-1 text-xs text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full"><RefreshCw size={10} className="animate-spin" /> En cours</span>
+  if (status === 'error')      return <span className="inline-flex items-center gap-1 text-xs text-red-700 bg-red-100 px-2 py-0.5 rounded-full"><AlertCircle size={10} /> Erreur</span>
+  return <span className="inline-flex items-center gap-1 text-xs text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full"><Clock size={10} /> En attente</span>
 }
 
 export function stockStatusColor(product) {

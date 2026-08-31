@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import db from '../db/database.js'
 import { normalizeVendorKey } from './vendorProfiles.js'
 import { logSync } from './syncLog.js'
+import { round2Safe as round2 } from '../utils/money.js'
 
 // Détection d'anomalies sur les transactions fournisseurs (sale_receipts).
 //
@@ -63,7 +64,6 @@ const OUTLIER_MAX_DISPERSION = 0.35
 const CURRENCY_MIN_SAMPLES = 4
 const RECURRING_MIN_OTHERS = 2 // occurrences historiques du même montant pour parler de récurrence
 
-function round2(n) { return Math.round((Number(n) || 0) * 100) / 100 }
 
 // Numéro de facture normalisé : minuscules, sans espaces ni ponctuation.
 function normalizeInvoiceNumber(n) {

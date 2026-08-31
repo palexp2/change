@@ -1,6 +1,6 @@
 import db from '../db/database.js'
+import { APP_URL } from '../config/appUrl.js'
 
-const APP_URL = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
 const CALLBACK_URL = `${APP_URL}/erp/api/connectors/airtable/callback`
 
 // Mutex : évite les refreshs concurrents qui invalident le refresh token (rotation Airtable)

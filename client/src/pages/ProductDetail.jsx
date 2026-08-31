@@ -14,6 +14,7 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDateTime } from '../lib/formatDate.js'
+import { formatBytes } from '../utils/formatters.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
@@ -626,7 +627,7 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
                     return (
                       <div key={i} className={r.status === 'error' ? 'text-red-600' : r.status === 'downloaded' ? 'text-emerald-700' : 'text-slate-500'}>
                         <strong>{r.field}{indexSuffix}</strong>: {r.status}
-                        {r.bytes ? ` (${(r.bytes / 1024).toFixed(1)} KB)` : ''}
+                        {r.bytes ? ` (${formatBytes(r.bytes)})` : ''}
                         {r.error ? ` — ${r.error}` : ''}
                       </div>
                     )

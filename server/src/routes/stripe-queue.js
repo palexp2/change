@@ -1,11 +1,13 @@
 import { Router } from 'express'
 import { randomUUID } from 'crypto'
 import Stripe from 'stripe'
+import { getStripeKey } from '../services/stripe.js'
 import db from '../db/database.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
 import { upsertFromInvoiceLines } from '../services/stripeInvoiceItems.js'
+import { APP_URL } from '../config/appUrl.js'
 import {
   STRIPE_FACTURE_FIELDS, STRIPE_FACTURE_FIXED, getCustomFieldSpecs,
   getFactureFieldMap, saveFactureFieldMap, resolveStripeInvoiceFields,
@@ -15,13 +17,6 @@ import {
   STRIPE_SUBSCRIPTION_FIELDS, STRIPE_SUBSCRIPTION_FIXED,
   getSubscriptionFieldMap, saveSubscriptionFieldMap,
 } from '../services/stripeSubscriptionFieldMap.js'
-
-function getStripeKey() {
-  const row = db.prepare(
-    "SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'"
-  ).get()
-  return row?.value || null
-}
 
 function findCompanyByStripeCustomerId(stripeCustomerId) {
   if (!stripeCustomerId) return null
@@ -282,7 +277,7 @@ router.post('/batch-enrich', async (req, res) => {
     }
 
     console.log(`✅ Batch Stripe terminé: ${batchProgress.updated} MAJ, ${batchProgress.created} créées, ${batchProgress.errors.length} erreurs`)
-    const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+    const appUrl = APP_URL
     const resultLines = [
       `${batchProgress.total} factures Stripe traitées`,
       `Mises à jour : ${batchProgress.updated}`,

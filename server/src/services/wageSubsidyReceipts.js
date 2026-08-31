@@ -33,8 +33,8 @@ import { qbPost } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum } from './quickbooks.js'
 import { logSync } from './syncLog.js'
 import { getProvision, listProvisions, lastDayOfMonth } from './monthEnd.js'
+import { round2Safe as round2 } from '../utils/money.js'
 
-const round2 = n => Math.round((Number(n) || 0) * 100) / 100
 const isDate = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''))
 const today = () => new Date().toISOString().slice(0, 10)
 

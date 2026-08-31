@@ -17,7 +17,6 @@ import {
 import { persistSnapshot, loadSnapshot, clearSnapshot } from './dataStorePersist.js'
 
 const POLL_INTERVAL_MS = 10_000
-const RETENTION_HOURS = 48
 const BASE = '/erp/api'
 
 let pollTimer = null

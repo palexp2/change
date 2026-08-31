@@ -4,7 +4,7 @@ import { X, FileText, SlidersHorizontal, RefreshCw } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
-import { Badge } from '../components/Badge.jsx'
+import { Badge, FACTURE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { CustomFieldModal } from '../components/CustomFieldModal.jsx'
 import { StripeFieldMapModal } from '../components/StripeFieldMapModal.jsx'
@@ -23,22 +23,6 @@ import FactureDetail from './FactureDetail.jsx'
 import CompanyDetail from './CompanyDetail.jsx'
 
 
-const STATUS_COLORS = {
-  'Payé': 'green',
-  'Payée': 'green',
-  'À payer': 'yellow',
-  'Partielle': 'yellow',
-  'En retard': 'red',
-  'Envoyée': 'blue',
-  'Draft': 'gray',
-  'Brouillon': 'gray',
-  'Annulée': 'red',
-  'Void': 'gray',
-  'Supprimé': 'gray',
-  'Note de crédit': 'purple',
-  'Remboursement': 'purple',
-  'Uncollectible': 'red',
-}
 
 const RENDERS = {
   document_number: row => <span className="font-mono font-medium text-slate-900">{row.document_number || '—'}</span>,

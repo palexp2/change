@@ -11384,18 +11384,21 @@
     "author": "File de travaux",
     "model": "opus",
     "effort": "high",
-    "status": "in_progress",
+    "status": "done",
     "priority": 0,
     "messages": [],
     "user_comment": null,
-    "agent_result": null,
-    "user_summary": null,
+    "agent_result": "I'll start by exploring the tickets feature and the keywords field.Now let me look at SearchableSelect for the dropdown pattern to reuse.Now the reusable multi-select component:Now add the shared parser helper in `customFieldDisplay.jsx`:Now the changelog entry and the E2E test.Now the E2E test:## Rapport\n\n### Ce qui a changé\n\n**Backend** — `server/src/routes/tickets.js`\n- Nouvelle route `GET /api/tickets/keywords` : renvoie les mots-clés distincts réellement utilisés sur les billets, triés par fréquence décroissante (49 valeurs aujourd'hui, « contrôleur » en tête). Le champ vient d'Airtable et sa liste de choix n'est pas répliquée côté ERP (`options.choices` vide), d'où les options dérivées de l'usage. Tolère les deux formes historiques (tableau JSON, texte à virgules). Placée avant les routes `/:id`.\n- `pm2 restart erp-server` fait, endpoint vérifié en direct.\n\n**Frontend**\n- `client/src/components/MultiSelectField.jsx` (nouveau) — champ de sélection multiple façon Airtable : pastilles `Badge` retirables + bouton « + » ouvrant un menu **recherchable** (règle CLAUDE.md >10 options) rendu en **portail** (le champ vit dans le side-peek à `overflow-auto`, un menu absolu y serait rogné), navigation clavier ↑/↓/Entrée/Échap, et création d'une valeur absente de la liste (« Créer « … » »). Autosave à chaque ajout/retrait, aucun bouton « Enregistrer ».\n- `client/src/lib/customFieldDisplay.jsx` — helper exporté `parseMultiSelectItems()` (tableau / chaîne JSON / texte à virgules).\n- `client/src/pages/TicketDetail.jsx` — le champ « Mots-clés » n'est plus un `InlineText` mais un `MultiSelectField`. Format de stockage **inchangé** (tableau JSON, identique au sync Airtable et à la colonne du tableau) : aucune migration, la colonne « Mots clés » de `/tickets` continue d'afficher ses pastilles. S'applique automatiquement au side-peek (même composant embarqué).\n- `client/src/lib/api.js` — `api.tickets.keywords()`.\n- `client/src/data/changelog.json` — entrée du 2026-08-31 « Mots-clés des billets en sélection multiple ».\n\n### Build & tests\n- `npm run build` client : ✅ (relancé après l'entrée de changelog).\n- Lint : ✅ (2 warnings préexistants et sans rapport : `fmtDate` inutilisé, dépendance `contactId`).\n- **E2E `e2e/tests/ticket-keywords-multiselect.test.js` (nouveau) : ✅ vert** — 2 cas contre `http://localhost:3004/erp` : (1) sélection d'un mot-clé existant via la recherche, création d'un mot-clé libre, retrait d'une pastille, persistance en tableau JSON vérifiée par API + après rechargement ; (2) dans le side-peek, le menu s'ouvre entièrement dans la fenêtre et liste les options. Billet de test créé puis supprimé en `after()` ; le second cas est 100 % lecture seule sur les billets réels (aucune coche).\n- **E2E `ticket-detail-extra-fields.test.js` : adapté et ✅ vert** — le cas « Mots-clés » (qui remplissait un input texte) en a été retiré, couverture reprise par le nouveau test.\n- Nettoyage vérifié : aucun billet « E2E » restant (un billet orphelin d'un run interrompu a été supprimé via l'API).\n\n### À signaler (préexistant, sans rapport)\n`e2e/tests/tickets-record-peek-drawer.test.js` est rouge : sa vue par défaut « 2 jours » ne contient aucune ligne (le billet le plus récent date du 2026-08-27), donc `[data-row-id]` n'apparaît jamais. Échec lié aux données, pas au changement — je ne l'ai pas modifié car hors périmètre.\n\nNote : pendant la tâche, un autre processus a créé le commit snapshot `361cf6e`, qui a emporté mes fichiers ; rien n'a été poussé.",
+    "user_summary": "Sur une fiche de billet, les mots-clés ne sont plus une case de texte affichant du code : ils apparaissent en pastilles et se choisissent dans un menu à sélection multiple avec recherche, alimenté par les mots-clés déjà utilisés (les plus fréquents en tête). On peut créer un mot-clé absent de la liste et retirer une pastille d'un clic — tout s'enregistre automatiquement.",
     "work_prompt_id": "dd6b0f3e-e7aa-4f2a-9977-154dd3cf83c1",
     "resume_session_id": null,
     "created_at": "2026-08-31T02:08:29.874Z",
-    "updated_at": "2026-08-31T02:08:30.181Z",
+    "updated_at": "2026-08-31T02:30:55.906Z",
     "started_at": "2026-08-31T02:08:30.154Z",
-    "completed_at": null,
-    "run_model": "opus"
+    "completed_at": "2026-08-31T02:30:55.877Z",
+    "run_model": "opus",
+    "pending_question": null,
+    "missed_user_message": null,
+    "session_id": "64467b77-5ba5-437b-ad5a-804ca1248ac7"
   }
 ]

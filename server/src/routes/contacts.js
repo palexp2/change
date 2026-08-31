@@ -11,15 +11,6 @@ import { findContactDuplicates } from '../utils/duplicateMatch.js';
 const router = Router();
 router.use(requireAuth);
 
-function buildContactRow(id) {
-  return db.prepare(
-    `SELECT ct.*, c.name as company_name
-     FROM contacts ct
-     LEFT JOIN companies c ON ct.company_id = c.id
-     WHERE ct.id = ?`
-  ).get(id)
-}
-
 // GET /api/contacts/lookup — minimal list for dropdowns
 //
 // `company_ids` liste TOUTES les entreprises du contact (liens

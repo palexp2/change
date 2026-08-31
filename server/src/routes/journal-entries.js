@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { requireAuth } from '../middleware/auth.js'
 import { qbGet, qbPost, getAccessToken } from '../connectors/quickbooks.js'
 import db from '../db/database.js'
+import { parseLimit } from '../utils/pagination.js'
 
 const router = Router()
 
@@ -415,7 +416,7 @@ router.get('/pending-operations', requireAuth, (req, res) => {
 router.get('/', requireAuth, async (req, res) => {
   try {
     const { realmId } = await getAccessToken()
-    const limit = Math.min(parseInt(req.query.limit) || 200, 1000)
+    const limit = parseLimit(req.query.limit, { def: 200, max: 1000 })
     const q = new URLSearchParams({
       query: `SELECT * FROM JournalEntry ORDERBY TxnDate DESC MAXRESULTS ${limit}`,
     })

@@ -9,14 +9,7 @@ import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 
-function fmtCad(n, currency = 'CAD') {
-  if (n == null) return '—'
-  try {
-    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: currency || 'CAD' }).format(n)
-  } catch {
-    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-  }
-}
+import { fmtMoney as fmtCad } from '../utils/formatters.js'
 
 function todayISO() {
   return localISODate()

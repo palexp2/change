@@ -4,7 +4,7 @@ import { ArrowLeft, X, Download, ExternalLink, Send, Hourglass, ChevronLeft, Che
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { Badge } from '../components/Badge.jsx'
+import { Badge, FACTURE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import { SendPaymentLinkModal } from '../components/SendPaymentLinkModal.jsx'
@@ -49,10 +49,7 @@ const FACTURE_RULE_FIELDS = [
 ]
 
 
-function fmtMoney(n, currency = 'CAD') {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(n)
-}
+import { fmtMoney } from '../utils/formatters.js'
 
 
 function formatTechValue(v) {
@@ -73,22 +70,6 @@ function buildStripeUrl(facture) {
   return null
 }
 
-const STATUS_COLORS = {
-  'Payé': 'green',
-  'Payée': 'green',
-  'À payer': 'yellow',
-  'Partielle': 'yellow',
-  'En retard': 'red',
-  'Envoyée': 'blue',
-  'Draft': 'gray',
-  'Brouillon': 'gray',
-  'Annulée': 'red',
-  'Void': 'gray',
-  'Supprimé': 'gray',
-  'Note de crédit': 'purple',
-  'Remboursement': 'purple',
-  'Uncollectible': 'red',
-}
 
 function FactureNotesField({ value, onSave }) {
   const [local, setLocal] = useState(value || '')

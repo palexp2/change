@@ -34,6 +34,7 @@ import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { paymentEvents, achatIdsWithPayment, coveredBillIds, recurringCoverage, autoClearFromBank } from './treasuryPayments.js'
 import { learnedRecurringMap, bankConfirmedOutflows } from './treasuryLearning.js'
+import { sendSlackWebhook } from './slack.js'
 
 export const TREASURY_AUTOMATION_ID = 'sys_treasury_alert'
 
@@ -1223,17 +1224,6 @@ export function reconcileBalanceEntry(entryId) {
 }
 
 // ── Alerte ───────────────────────────────────────────────────────────────────
-
-async function sendSlackWebhook(envName, text) {
-  const url = process.env[envName]
-  if (!url) throw new Error(`Variable d'environnement manquante : ${envName}`)
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
-  if (!resp.ok) throw new Error(`Slack HTTP ${resp.status}`)
-}
 
 function fmtCad(n) {
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)

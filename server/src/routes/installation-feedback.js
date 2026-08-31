@@ -7,6 +7,7 @@ import { Router } from 'express'
 import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
 import { logSystemRun } from '../services/systemAutomations.js'
+import { APP_URL } from '../config/appUrl.js'
 
 const router = Router()
 
@@ -84,7 +85,7 @@ router.get('/', (req, res) => {
     }
   }
 
-  const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  const appUrl = APP_URL
   logSystemRun('sys_installation_followup', {
     status: 'success',
     result: [

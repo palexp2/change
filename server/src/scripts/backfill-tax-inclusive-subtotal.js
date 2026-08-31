@@ -14,15 +14,11 @@ import 'dotenv/config'
 import db from '../db/database.js'
 import Stripe from 'stripe'
 import { upsertFromInvoiceLines } from '../services/stripeInvoiceItems.js'
+import { getStripeKey } from '../services/stripe.js'
 
 const APPLY = process.argv.includes('--apply')
 const limitIdx = process.argv.indexOf('--limit')
 const LIMIT = limitIdx >= 0 ? parseInt(process.argv[limitIdx + 1]) : null
-
-function getStripeKey() {
-  const row = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'").get()
-  return row?.value || null
-}
 
 const stripeKey = getStripeKey()
 if (!stripeKey) {

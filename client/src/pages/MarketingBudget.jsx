@@ -13,11 +13,7 @@ import { Modal } from '../components/Modal.jsx'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 
-function fmtMoney(n, currency = 'CAD') {
-  if (n == null) return '—'
-  try { return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(n) }
-  catch { return `${Number(n).toFixed(2)} ${currency}` }
-}
+import { fmtMoney } from '../utils/formatters.js'
 
 const STATUS_META = {
   pending: { label: 'À valider', color: 'amber' },

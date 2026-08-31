@@ -1,8 +1,8 @@
 import db from '../db/database.js'
 import { logSync } from '../services/syncLog.js'
 import { getCurrentUser } from '../utils/requestContext.js'
+import { APP_URL } from '../config/appUrl.js'
 
-const APP_URL = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
 const CALLBACK_URL = `${APP_URL}/erp/api/connectors/quickbooks/callback`
 const QB_AUTH_URL = 'https://appcenter.intuit.com/connect/oauth2'
 const QB_TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer'

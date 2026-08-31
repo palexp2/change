@@ -43,7 +43,7 @@ test('retour avec item immédiat non reçu, non facturé → éligible', () => {
   const db = makeDb()
   seedReturn(db, { id: 'r1' })
   db.prepare('INSERT INTO return_items (id, return_id, return_reason, received_at) VALUES (?, ?, ?, ?)').run('ri1', 'r1', IMMEDIATE_REASON, null)
-  const rows = selectEligibleReturns(db, { nowIso: '2026-08-25T00:00:00.000Z' })
+  const rows = selectEligibleReturns(db)
   assert.equal(rows.length, 1)
   assert.equal(rows[0].return_id, 'r1')
 })
@@ -52,7 +52,7 @@ test('retour déjà facturé → exclu', () => {
   const db = makeDb()
   seedReturn(db, { id: 'r1', billedAt: '2026-08-10T00:00:00.000Z' })
   db.prepare('INSERT INTO return_items (id, return_id, return_reason, received_at) VALUES (?, ?, ?, ?)').run('ri1', 'r1', IMMEDIATE_REASON, null)
-  const rows = selectEligibleReturns(db, { nowIso: '2026-08-25T00:00:00.000Z' })
+  const rows = selectEligibleReturns(db)
   assert.equal(rows.length, 0)
 })
 
@@ -60,7 +60,7 @@ test('item déjà reçu → exclu (plus rien à rappeler)', () => {
   const db = makeDb()
   seedReturn(db, { id: 'r1' })
   db.prepare('INSERT INTO return_items (id, return_id, return_reason, received_at) VALUES (?, ?, ?, ?)').run('ri1', 'r1', IMMEDIATE_REASON, '2026-08-20T00:00:00.000Z')
-  const rows = selectEligibleReturns(db, { nowIso: '2026-08-25T00:00:00.000Z' })
+  const rows = selectEligibleReturns(db)
   assert.equal(rows.length, 0)
 })
 
@@ -68,7 +68,7 @@ test('raison différente d\'échange immédiat → exclu', () => {
   const db = makeDb()
   seedReturn(db, { id: 'r1' })
   db.prepare('INSERT INTO return_items (id, return_id, return_reason, received_at) VALUES (?, ?, ?, ?)').run('ri1', 'r1', 'Erreur de commande', null)
-  const rows = selectEligibleReturns(db, { nowIso: '2026-08-25T00:00:00.000Z' })
+  const rows = selectEligibleReturns(db)
   assert.equal(rows.length, 0)
 })
 
@@ -76,7 +76,7 @@ test('avant la date plancher (2025-06-04) → exclu', () => {
   const db = makeDb()
   seedReturn(db, { id: 'r1', createdAt: '2025-01-01T00:00:00.000Z' })
   db.prepare('INSERT INTO return_items (id, return_id, return_reason, received_at) VALUES (?, ?, ?, ?)').run('ri1', 'r1', IMMEDIATE_REASON, null)
-  const rows = selectEligibleReturns(db, { nowIso: '2026-08-25T00:00:00.000Z' })
+  const rows = selectEligibleReturns(db)
   assert.equal(rows.length, 0)
 })
 
@@ -84,6 +84,6 @@ test('sans courriel de contact → exclu', () => {
   const db = makeDb()
   seedReturn(db, { id: 'r1', email: null })
   db.prepare('INSERT INTO return_items (id, return_id, return_reason, received_at) VALUES (?, ?, ?, ?)').run('ri1', 'r1', IMMEDIATE_REASON, null)
-  const rows = selectEligibleReturns(db, { nowIso: '2026-08-25T00:00:00.000Z' })
+  const rows = selectEligibleReturns(db)
   assert.equal(rows.length, 0)
 })

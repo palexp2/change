@@ -6,20 +6,16 @@ import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
-import { fmtDate } from '../lib/formatDate.js'
+import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 
 const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
 const labelCls = 'block text-xs font-medium text-slate-500 mb-1'
 
-function fmtMoney(n, currency = 'CAD') {
-  if (n == null) return '—'
-  try { return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(n) }
-  catch { return `${Number(n).toFixed(2)} ${currency}` }
-}
+import { fmtMoney } from '../utils/formatters.js'
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => localISODate()
 
 function DebtModal({ debt, onClose, onSaved, onDeleted }) {
   const isNew = !debt?.id

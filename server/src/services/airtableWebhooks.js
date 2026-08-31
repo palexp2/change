@@ -11,8 +11,8 @@ import {
   syncAssemblages, syncStockMovements, syncInstagramProspects,
 } from './airtable.js'
 import { syncFactureLinksFromWebhook } from './factureLinks.js'
+import { APP_URL } from '../config/appUrl.js'
 
-const APP_URL = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
 const NOTIFICATION_URL = `${APP_URL}/erp/api/connectors/airtable/webhook-ping`
 
 const SYNC_FNS = {

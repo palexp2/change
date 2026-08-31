@@ -10,7 +10,7 @@ import {
 import { computeMonthlyNet } from './subscriptionMonthly.js'
 import { resolveStripeSubscriptionFields } from './stripeSubscriptionFieldMap.js'
 
-function getStripeKey() {
+export function getStripeKey() {
   const row = db.prepare(
     "SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'"
   ).get()

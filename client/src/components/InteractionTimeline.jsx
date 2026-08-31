@@ -5,15 +5,11 @@ import { fmtDateTime } from '../lib/formatDate.js'
 import { stripEmailHtml, stripEmailText } from '../lib/emailParser.js'
 import { Modal } from './Modal.jsx'
 
-const TYPE_LABELS = { call: 'Appel', email: 'Courriel', sms: 'SMS', meeting: 'Réunion', note: 'Note' }
+import { INTERACTION_TYPE_LABELS as TYPE_LABELS } from './Badge.jsx'
 const TYPE_ICONS = { call: Phone, email: Mail, sms: MessageSquare, meeting: Building2, note: Edit2 }
 const TRANSCRIPT_PREVIEW_LEN = 1000
 
-function fmtDuration(s) {
-  if (!s) return null
-  const m = Math.floor(s / 60), sec = s % 60
-  return m > 0 ? `${m}m ${sec}s` : `${sec}s`
-}
+import { fmtDurationSeconds as fmtDuration } from '../lib/duration.js'
 
 function DateSeparator({ date }) {
   const label = new Date(date).toLocaleDateString('fr-CA', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })

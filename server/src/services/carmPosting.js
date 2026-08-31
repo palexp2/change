@@ -17,8 +17,9 @@ import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { classifyCarmLine, postingSkipReason } from './carmRules.js'
 import { getCarmConfig } from './carmAccount.js'
+import { daysBetween } from '../utils/datetime.js'
+import { round2Safe as round2 } from '../utils/money.js'
 
-const round2 = n => Math.round((Number(n) || 0) * 100) / 100
 const dateOf = r => r.due_date || r.transaction_date
 const brokerList = cfg => String(cfg?.broker_names || '').split(',').map(s => s.trim()).filter(Boolean)
 
@@ -75,11 +76,6 @@ export function pairBrokerLines(lines) {
     }
   }
   return pairs
-}
-
-function daysBetween(a, b) {
-  const d = (new Date(`${a}T00:00:00Z`) - new Date(`${b}T00:00:00Z`)) / 86400000
-  return Math.abs(Math.round(d))
 }
 
 // ── 2. Lettrage FIFO de NOS versements ───────────────────────────────────────

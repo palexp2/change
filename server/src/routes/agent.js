@@ -135,7 +135,7 @@ router.post('/backlog', (req, res) => {
     preset: 'deep',
     mode: req.body.mode === 'question' ? 'question' : 'implement',
   })
-  const { item: updatedItem, task } = approveBacklogItem(item.id) || {}
+  const { item: updatedItem } = approveBacklogItem(item.id) || {}
   res.status(201).json(updatedItem || item)
 })
 // Relancer une proposition instantanée en échec.

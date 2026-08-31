@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react'
-import { Layout } from '../components/Layout.jsx'
 import { Trash2, RotateCcw, ChevronDown, ChevronRight } from 'lucide-react'
 import { useToast } from '../components/ui/ToastProvider.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -127,6 +126,3 @@ export function CorbeilleContent() {
   )
 }
 
-export default function Corbeille() {
-  return <Layout><div className="p-6 max-w-4xl mx-auto"><CorbeilleContent /></div></Layout>
-}

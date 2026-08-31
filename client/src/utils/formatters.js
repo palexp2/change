@@ -45,6 +45,33 @@ export function parseAmountInput(value) {
   return Number.isFinite(n) ? n : null
 }
 
+// Taille de fichier lisible, base 1024, unités françaises (o, Ko, Mo, Go).
+export function formatBytes(bytes) {
+  if (bytes == null) return '—'
+  if (bytes < 1024) return `${bytes} o`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} Ko`
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} Mo`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} Go`
+}
+
+// Numéro de téléphone nord-américain : « (418) 555-1234 ». Retourne '' pour
+// une valeur vide, et la valeur telle quelle si elle n'a pas 10 chiffres
+// (après retrait d'un éventuel préfixe 1).
+export function fmtPhone(val) {
+  if (!val) return ''
+  const digits = String(val).replace(/\D/g, '')
+  const d = digits.length === 11 && digits[0] === '1' ? digits.slice(1) : digits
+  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`
+  return val
+}
+
+// Adresse postale sur une ligne : « 123 rue X, Québec, QC, G1S 2P1, Canada ».
+// Retourne '' si l'objet est absent ou n'a aucune composante.
+export function fmtAddress(a) {
+  if (!a) return ''
+  return [a.line1, a.city, a.province, a.postal_code, a.country].filter(Boolean).join(', ')
+}
+
 export function formatRelativeTime(dateStr) {
   if (!dateStr) return '—'
   const diff = Date.now() - new Date(dateStr).getTime()

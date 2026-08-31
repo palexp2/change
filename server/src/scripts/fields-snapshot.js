@@ -147,7 +147,7 @@ function resolve(table, cols, overrides, customs) {
       .forEach((k, rang) => { k.c._rang = rang })
     orderable.sort((a, b) => a._rang - b._rang)
   }
-  return [...orderable, ...pinned].map(({ alwaysVisible, _rang, ...rest }) => rest)
+  return [...orderable, ...pinned].map(({ alwaysVisible: _av, _rang, ...rest }) => rest)
 }
 
 const overrides = loadOverrides()

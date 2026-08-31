@@ -27,6 +27,7 @@
 // items_after_json sont NULL. --force réécrit tous les events.
 
 import Stripe from 'stripe'
+import { getStripeKey } from '../services/stripe.js'
 import db from '../db/database.js'
 import {
   extractItemsFromStripeSub,
@@ -38,13 +39,6 @@ const args = process.argv.slice(2)
 const APPLY = args.includes('--apply')
 const FORCE = args.includes('--force')
 const ONE = args.find(a => a.startsWith('--event='))?.slice('--event='.length) || null
-
-function getStripeKey() {
-  const row = db.prepare(
-    "SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'"
-  ).get()
-  return row?.value || null
-}
 
 const stripeKey = getStripeKey()
 const stripe = stripeKey ? new Stripe(stripeKey) : null

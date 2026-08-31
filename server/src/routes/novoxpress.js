@@ -133,7 +133,7 @@ router.post('/label/:shipmentId', async (req, res) => {
   const shipment = getShipmentWithAddress(req.params.shipmentId)
   if (!shipment) return res.status(404).json({ error: 'Envoi introuvable' })
 
-  const { request_id, service_id, carrier_name, service_name, packaging_type, packages, declared_value } = req.body
+  const { request_id, service_id, carrier_name, packaging_type, packages, declared_value } = req.body
   if (!service_id) return res.status(400).json({ error: 'service_id requis' })
   if (!packages?.length) return res.status(400).json({ error: 'packages requis' })
 

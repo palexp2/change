@@ -21,14 +21,7 @@ import { fmtDateTime } from '../lib/formatDate.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
-
-
-function _fmtDuration(s) {
-  if (!s) return null
-  const m = Math.floor(s / 60), sec = s % 60
-  return m > 0 ? `${m}m ${sec}s` : `${sec}s`
-}
-
+import { fmtPhone } from '../utils/formatters.js'
 
 function fieldTypeInput(type) {
   if (type === 'number') return 'number'
@@ -36,14 +29,6 @@ function fieldTypeInput(type) {
   if (type === 'url') return 'url'
   if (type === 'email') return 'email'
   return 'text'
-}
-
-function fmtPhone(val) {
-  if (!val) return ''
-  const digits = String(val).replace(/\D/g, '')
-  const d = digits.length === 11 && digits[0] === '1' ? digits.slice(1) : digits
-  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`
-  return val
 }
 
 const CONTACT_FIELDS = [
@@ -61,11 +46,12 @@ function CompanyLinks({ contactId, companies, allCompanies, onChange }) {
   const confirm = useConfirm()
   const [saving, setSaving] = useState(false)
   const linked = companies || []
+  const linkedKey = linked.map(l => l.company_id).join(',')
   const linkedIds = new Set(linked.map(l => l.company_id))
   const available = useMemo(
     () => allCompanies.filter(c => !linkedIds.has(c.id)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [allCompanies, linked.map(l => l.company_id).join(',')]
+    [allCompanies, linkedKey]
   )
 
   async function setPrimary(linkId) {

@@ -26,6 +26,11 @@
 import db from '../db/database.js'
 import { qbGet, qbEntityUrl } from '../connectors/quickbooks.js'
 import { TXN_TYPE_ENTITY } from './bankQbLink.js'
+import { shiftDate, daysBetween } from '../utils/datetime.js'
+import { round2 } from '../utils/money.js'
+// Réexport de compatibilité : l'ancien export local `dayDiff` (valeur absolue)
+// correspond au `daysBetween` canonique.
+export { shiftDate, daysBetween as dayDiff }
 
 export const MATCH_LABELS = {
   exact: 'montant et date exacts',
@@ -47,17 +52,6 @@ const FX_MIN = 1.15
 const FX_MAX = 1.65
 const CONVERSION_RE = /conversion|exchange|change de devise|currency|fx/i
 
-const round2 = (n) => Math.round(n * 100) / 100
-
-export function shiftDate(iso, days) {
-  const d = new Date(`${iso}T12:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
-
-export function dayDiff(a, b) {
-  return Math.abs((new Date(`${a}T12:00:00Z`) - new Date(`${b}T12:00:00Z`)) / 86400000)
-}
 
 // ── Concordance de libellé ───────────────────────────────────────────────────
 //
@@ -205,7 +199,7 @@ export function fxRate(bankAmount, entryAmount) {
 // Coût d'un appariement candidat, ou null s'il est irrecevable.
 function pairCost(txn, entry, sign, { sameAccount }) {
   const target = round2(sign * Number(txn.amount))
-  const gap = dayDiff(txn.txn_date, entry.date)
+  const gap = daysBetween(txn.txn_date, entry.date)
   if (gap > (sameAccount ? MAX_DAY_GAP : MAX_DAY_GAP_OTHER)) return null
 
   let method = null
@@ -284,7 +278,7 @@ function assignConversions(bankTxns, entries, sign, results, usedEntries) {
     const declared = CONVERSION_RE.test(`${t.description || ''} ${t.details || ''}`)
     for (const e of entries) {
       if (usedEntries.has(e)) continue
-      const gap = dayDiff(t.txn_date, e.date)
+      const gap = daysBetween(t.txn_date, e.date)
       if (gap > 3) continue
       if (!declared && !/virement|transfer/i.test(e.type || '')) continue
       const rate = fxRate(round2(sign * Number(t.amount)), e.amount)
@@ -311,12 +305,12 @@ function assignAggregates(bankTxns, entries, sign, results, usedEntries) {
     if (results.has(t.id)) continue
     const target = round2(sign * Number(t.amount))
     const pool = entries
-      .filter((e) => !usedEntries.has(e) && dayDiff(t.txn_date, e.date) <= 5 && Math.sign(e.amount) === Math.sign(target))
+      .filter((e) => !usedEntries.has(e) && daysBetween(t.txn_date, e.date) <= 5 && Math.sign(e.amount) === Math.sign(target))
       .slice(0, 14)
     const found = subsetSum(pool, target, 4)
     if (!found) continue
     found.forEach((e) => usedEntries.add(e))
-    results.set(t.id, { entries: found, method: 'agregat', delta: 0, gap: Math.max(...found.map((e) => dayDiff(t.txn_date, e.date))), cost: 4 })
+    results.set(t.id, { entries: found, method: 'agregat', delta: 0, gap: Math.max(...found.map((e) => daysBetween(t.txn_date, e.date))), cost: 4 })
   }
 }
 
@@ -343,14 +337,14 @@ function assignReverseAggregates(bankTxns, entries, sign, results, usedEntries) 
   const left = bankTxns.filter((t) => !results.has(t.id))
   for (const e of entries) {
     if (usedEntries.has(e)) continue
-    const pool = left.filter((t) => !results.has(t.id) && dayDiff(t.txn_date, e.date) <= 5
+    const pool = left.filter((t) => !results.has(t.id) && daysBetween(t.txn_date, e.date) <= 5
       && Math.sign(sign * t.amount) === Math.sign(e.amount))
     if (pool.length < 2) continue
     const found = subsetSum(pool.map((t) => ({ ...t, amount: round2(sign * Number(t.amount)), txn: t })), e.amount, 4)
     if (!found) continue
     usedEntries.add(e)
     for (const f of found) {
-      results.set(f.txn.id, { entries: [e], method: 'agregat_inverse', delta: 0, gap: dayDiff(f.txn.txn_date, e.date), cost: 4, shared: true })
+      results.set(f.txn.id, { entries: [e], method: 'agregat_inverse', delta: 0, gap: daysBetween(f.txn.txn_date, e.date), cost: 4, shared: true })
     }
   }
 }

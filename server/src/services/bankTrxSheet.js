@@ -22,6 +22,8 @@ import { logSync } from './syncLog.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { importTransactions, autoMatchAccount, refreshStatuses, parseAmount } from './bankReconciliation.js'
 import { buildLedgerIndex, searchAccount, persistMatches, verifyConversions, MATCH_LABELS } from './bankQbSearch.js'
+import { sendSlackWebhook } from './slack.js'
+import { shiftDate, daysBetween as dayDiff } from '../utils/datetime.js'
 
 export const TRX_SHEET_AUTOMATION_ID = 'sys_bank_trx_sheet'
 
@@ -84,7 +86,6 @@ const strip = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').to
 export function specForTab(tabName) {
   return TAB_SPECS[strip(tabName)] || null
 }
-
 
 // ── Couleurs du fichier = statut déclaré à la main ───────────────────────────
 //
@@ -197,12 +198,6 @@ export function parseTrxDate(raw, { todayIso, monthFirst = false } = {}) {
   return inferYear(month, day, todayIso || new Date().toISOString().slice(0, 10))
 }
 
-function shiftDate(iso, days) {
-  const d = new Date(`${iso}T12:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
-
 // Détection de la ligne d'entêtes : une cellule « date » + une cellule de
 // montant. On garde la DERNIÈRE candidate du haut de l'onglet — plusieurs
 // onglets traînent une ancienne ligne d'entêtes au-dessus de la vraie.
@@ -266,7 +261,6 @@ function rowAmount(row, cols, spec) {
   return Math.round(amount * 100) / 100
 }
 
-
 // Couleur d'une ligne : celle de la cellule du MONTANT (c'est elle que Michel
 // colorie), à défaut celle d'une autre colonne de données. On ne regarde que
 // les colonnes cartographiées — la légende et les blocs de notes vivent dans
@@ -283,7 +277,6 @@ function rowColor(colorAt, rowIdx, cols) {
   }
   return null
 }
-
 
 // Ancrage de l'année sur la ligne PRÉCÉDENTE.
 //
@@ -518,10 +511,6 @@ async function fetchWorkbook(cfg) {
 
 const fmt = (n) => `${Number(n).toFixed(2)} $`
 
-function dayDiff(a, b) {
-  return Math.abs((new Date(`${a}T12:00:00Z`) - new Date(`${b}T12:00:00Z`)) / 86400000)
-}
-
 // Explication d'une ligne de relevé introuvable : on cherche ce qui S'EN
 // APPROCHE dans le grand livre pour donner une piste plutôt qu'un constat.
 function explainMissingBank(txn, unmatchedQb) {
@@ -549,7 +538,6 @@ function explainMissingQb(entry, unmatchedBank) {
   }
   return 'QuickBooks la dit passée à la banque (compensée) mais elle n\'apparaît pas au relevé — mauvais compte, ou compensée à tort dans QuickBooks'
 }
-
 
 function clearStaleLinks(unmatchedBank) {
   const stale = unmatchedBank.filter((t) => !t.virtual && t.qb_txn_id)
@@ -712,17 +700,6 @@ export async function auditAccountVsQb(account, cfg, { index, extraTxns = [], ap
 }
 
 // ── Slack ────────────────────────────────────────────────────────────────────
-
-async function sendSlackWebhook(envName, text) {
-  const url = process.env[envName]
-  if (!url) throw new Error(`Variable ${envName} absente de l'environnement`)
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
-  if (!res.ok) throw new Error(`Slack webhook: HTTP ${res.status}`)
-}
 
 const KIND_LABEL = {
   doublon_releve: 'probablement saisie deux fois au relevé',

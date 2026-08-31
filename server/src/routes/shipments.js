@@ -13,6 +13,7 @@ import { emitEntity } from '../services/realtimeEmitters.js'
 import { writeBackRecord, createInAirtable } from '../services/airtableWriteback.js'
 import { logSync } from '../services/syncLog.js'
 import { buildExternalLinks } from '../services/externalLinks.js'
+import { APP_URL } from '../config/appUrl.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -411,7 +412,7 @@ router.post('/:id/send-tracking', async (req, res) => {
       `).run(interactionId, row.address_contact_id || null, req.params.id)
     })()
 
-    const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+    const appUrl = APP_URL
     const nowIso = new Date().toISOString()
     logSystemRun('sys_shipment_tracking_email', {
       status: 'success',

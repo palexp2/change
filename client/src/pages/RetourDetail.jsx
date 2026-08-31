@@ -4,7 +4,7 @@ import { ArrowLeft, ExternalLink, Sparkles, PanelRight, Truck } from 'lucide-rea
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { Badge } from '../components/Badge.jsx'
+import { Badge, RETOUR_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import RetourActionsDrawer from '../components/RetourActionsDrawer.jsx'
 import UpsReturnLabelModal from '../components/UpsReturnLabelModal.jsx'
@@ -13,12 +13,6 @@ import { fmtDate } from '../lib/formatDate.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 
-const STATUS_COLORS = {
-  'Reçu': 'green',
-  'En attente': 'yellow',
-  'En traitement': 'blue',
-  'Refusé': 'red',
-}
 
 function Field({ label, children, mono = false, full = false }) {
   return (

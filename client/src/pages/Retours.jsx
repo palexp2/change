@@ -3,19 +3,13 @@ import { Undo2 } from 'lucide-react'
 import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
-import { Badge } from '../components/Badge.jsx'
+import { Badge, RETOUR_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import RetourDetail from './RetourDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 
-const STATUS_COLORS = {
-  'Reçu': 'green',
-  'En attente': 'yellow',
-  'En traitement': 'blue',
-  'Refusé': 'red',
-}
 
 const RENDERS = {
   return_number:     row => <span className="font-mono font-medium text-slate-900">{row.return_number || '—'}</span>,

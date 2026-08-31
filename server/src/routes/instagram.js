@@ -15,6 +15,7 @@ import {
   getScrapeConfig,
 } from '../services/instagramCommentScrape.js'
 import { isSystemAutomationActive, logSystemRun } from '../services/systemAutomations.js'
+import { parseLimit } from '../utils/pagination.js'
 
 /**
  * Prospects Instagram.
@@ -150,7 +151,7 @@ router.get('/prospects', requireAuth, (req, res) => {
   if (req.query.keyword_only === '1') where.push('has_keyword = 1')
   if (req.query.since) { where.push('first_comment_at >= ?'); args.push(String(req.query.since)) }
 
-  const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100))
+  const limit = parseLimit(req.query.limit, { def: 100, max: 500 })
   const rows = db.prepare(`
     SELECT * FROM instagram_prospects
     WHERE ${where.join(' AND ')}

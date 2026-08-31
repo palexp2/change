@@ -11,6 +11,8 @@ import { getAutomationFrom, listFromAddresses } from '../services/postmarkConfig
 import { processRetryQueue } from '../services/airtableWebhooks.js'
 import { generateShortToken } from '../utils/shortToken.js'
 import { runWebhook } from '../services/webhookEngine.js'
+import { APP_URL } from '../config/appUrl.js'
+import { parseLimit } from '../utils/pagination.js'
 
 const IDENT_RE = /^[a-z_][a-z0-9_]*$/i
 const VALID_ACTION_TYPES = new Set(['slack', 'email', 'task', 'script'])
@@ -1105,7 +1107,7 @@ router.get('/:id/fires', (req, res) => {
     'SELECT id, kind FROM automations WHERE id = ? AND deleted_at IS NULL'
   ).get(req.params.id)
   if (!automation) return res.status(404).json({ error: 'Introuvable' })
-  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500)
+  const limit = parseLimit(req.query.limit, { def: 100, max: 500 })
   const fires = db.prepare(`
     SELECT automation_id, record_table, record_id, fired_at
     FROM automation_rule_fires
@@ -1306,7 +1308,7 @@ router.get('/:id/email-preview', (req, res) => {
   if (!automation) return res.status(404).json({ error: 'Introuvable' })
 
   const language = req.query.language === 'English' ? 'English' : 'French'
-  const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  const appUrl = APP_URL
 
   // System email automations — render template with a real candidate record
   // when one exists, otherwise fall back to hardcoded sample data.

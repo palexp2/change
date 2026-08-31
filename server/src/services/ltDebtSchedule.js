@@ -1,3 +1,4 @@
+import { round2 } from '../utils/money.js'
 // Génération d'une cédule d'amortissement pour une dette à long terme.
 //
 // Modèle : intérêt simple périodique (taux annuel / nombre de périodes), le même
@@ -20,7 +21,6 @@ export const FREQUENCIES = {
 
 const MAX_PAYMENTS = 600
 
-const round2 = n => Math.round(n * 100) / 100
 const isDate = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''))
 const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 

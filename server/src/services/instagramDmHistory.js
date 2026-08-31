@@ -51,7 +51,7 @@ function microsToIso(v) {
  * renvoyé dans `{ error }`, jamais lancé — cet appel est un à-côté de la
  * tournée de commentaires, il ne doit jamais la faire échouer.
  */
-export async function syncDmInbox({ full = false, account = 'orisha_auto', session = null } = {}) {
+export async function syncDmInbox({ full = false, session = null } = {}) {
   const creds = session || getSessionCookie()
   if (!creds.sessionid) return { error: 'Aucun cookie de session Instagram configuré' }
 

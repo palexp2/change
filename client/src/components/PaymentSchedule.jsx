@@ -40,9 +40,10 @@ import { payDateForDue } from '../lib/bankDays.js'
 // confirmation Interac, code de paiement…).
 import { spec } from '../lib/paymentMethods.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { fmtMoney } from '../utils/formatters.js'
 
-const fmtCad = (n, currency = 'CAD') =>
-  new Intl.NumberFormat('fr-CA', { style: 'currency', currency: currency || 'CAD' }).format(Number(n) || 0)
+// Pas de garde null historique : un montant absent s'affiche « 0,00 $ ».
+const fmtCad = (n, currency = 'CAD') => fmtMoney(Number(n) || 0, currency)
 const fmtDay = d => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' }) : '—')
 // « mardi 18 août » — le jour de la semaine porte la règle de la cédule, il doit
 // être écrit en toutes lettres.

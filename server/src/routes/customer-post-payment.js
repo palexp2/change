@@ -4,6 +4,7 @@ import db from '../db/database.js'
 import { getStripeClient, ensureStripeCustomer } from '../services/stripeInvoices.js'
 import { normalizeShortToken } from '../utils/shortToken.js'
 import { logSync } from '../services/syncLog.js'
+import { APP_URL } from '../config/appUrl.js'
 
 // Crée/synchronise le customer Stripe sans bloquer la réponse, mais trace tout
 // échec dans sync_log au lieu de l'avaler silencieusement : si le customer
@@ -216,7 +217,7 @@ router.get('/:sessionId', async (req, res) => {
 // POST /api/customer/post-payment/:sessionId/save — autosave partial state
 router.post('/:sessionId/save', async (req, res) => {
   try {
-    const { session, invoice } = await validateSession(req.params.sessionId)
+    const { invoice } = await validateSession(req.params.sessionId)
     const row = loadOrInitResponse(req.params.sessionId, invoice)
     if (row.status === 'submitted') return res.status(400).json({ error: 'Déjà soumis' })
 
@@ -357,7 +358,7 @@ router.post('/:sessionId/extras', async (req, res) => {
     // Create the Checkout Session immediately so we can redirect right away
     const stripe = getStripeClient()
     const { createOrRefreshCheckoutSession } = await import('../services/stripeInvoices.js')
-    const baseUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+    const baseUrl = APP_URL
     const pending = db.prepare('SELECT * FROM pending_invoices WHERE id=?').get(id)
     const { url } = await createOrRefreshCheckoutSession({ stripe, pending, baseAppUrl: baseUrl })
     // Make sure the customer has a Stripe customer id
@@ -567,7 +568,7 @@ router.post('/by-token/:token/valve-blocks-checkout', async (req, res) => {
 
     const stripe = getStripeClient()
     const { createOrRefreshCheckoutSession } = await import('../services/stripeInvoices.js')
-    const baseUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+    const baseUrl = APP_URL
     const pending = db.prepare('SELECT * FROM pending_invoices WHERE id=?').get(pendingId)
     const { url } = await createOrRefreshCheckoutSession({
       stripe,

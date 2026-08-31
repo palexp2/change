@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { createPayment, getPayment } from './treasuryPayments.js'
+import { nowIso } from '../utils/datetime.js'
 
 // Paiement mensuel des cartes Visa (CAD et USD).
 //
@@ -27,7 +28,6 @@ export const CARDS = [
 export const DUE_DAY = 25
 export const LEAD_DAYS = 7
 
-const nowIso = () => new Date().toISOString()
 const dayOnly = (v) => (v ? String(v).slice(0, 10) : null)
 const r2 = (n) => Math.round(Number(n) * 100) / 100
 // Midi UTC : décaler une date civile sans se faire piéger par un changement

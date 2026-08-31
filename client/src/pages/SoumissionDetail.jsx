@@ -4,7 +4,7 @@ import { ArrowLeft, FileDown, Copy, Trash2, Pencil, Check, Plus, ChevronUp, Chev
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { Badge } from '../components/Badge.jsx'
+import { Badge, SOUMISSION_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -12,15 +12,13 @@ import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
-function fmtPrice(n, currency = 'CAD') {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat(currency === 'USD' ? 'en-US' : 'fr-CA', { style: 'currency', currency }).format(n)
-}
+import { fmtMoney } from '../utils/formatters.js'
 
-const STATUS_COLORS = {
-  'Brouillon': 'gray', 'Envoyée': 'blue', 'Acceptée': 'green', 'Refusée': 'red', 'Expirée': 'orange',
-}
-const STATUSES = Object.keys(STATUS_COLORS)
+const fmtPrice = (n, currency = 'CAD') => fmtMoney(n, currency, { locale: currency === 'USD' ? 'en-US' : 'fr-CA' })
+
+// Statuts sélectionnables : explicites, car la map partagée contient aussi
+// 'legacy' (soumissions importées d'Airtable) qui ne doit pas être proposé.
+const STATUSES = ['Brouillon', 'Envoyée', 'Acceptée', 'Refusée', 'Expirée']
 
 async function downloadPdf(id, title) {
   const token = localStorage.getItem('erp_token')

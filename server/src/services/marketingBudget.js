@@ -21,11 +21,13 @@
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
+import { sendSlackWebhook } from './slack.js'
+import { shiftDate, localDay } from '../utils/datetime.js'
+export { localDay }
 
 export const MARKETING_SYNC_AUTOMATION_ID = 'sys_marketing_expense_sync'
 export const MARKETING_SLACK_AUTOMATION_ID = 'sys_marketing_weekly_slack'
 
-const TZ = 'America/Toronto'
 const r2 = n => Math.round(Number(n) * 100) / 100
 
 // Comptes QB de la procédure. Le libellé sert de catégorie au Budget vs Réel.
@@ -189,16 +191,6 @@ export function applyRuleToPending(rule) {
 }
 
 // ── Sync GL → marketing_expenses ─────────────────────────────────────────────
-
-function shiftDate(iso, days) {
-  const d = new Date(`${iso}T12:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
-
-export function localDay(date = new Date(), timeZone = TZ) {
-  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
-}
 
 /**
  * Interroge le GL QB compte par compte depuis max(dernière dépense − lookback,
@@ -400,17 +392,6 @@ export function shouldSendWeekly({ relevantCount, pendingCount: pending }) {
     }
   }
   return { send: true }
-}
-
-async function sendSlackWebhook(envName, text) {
-  const url = process.env[envName]
-  if (!url) throw new Error(`Variable d'environnement manquante : ${envName} (webhook Slack d'Émilie à configurer dans server/.env)`)
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
-  if (!resp.ok) throw new Error(`Slack HTTP ${resp.status}`)
 }
 
 /**

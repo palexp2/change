@@ -331,7 +331,6 @@ export const api = {
     linkFactureRevenueRecognition: (id, je_id) => post(`/admin/factures/${id}/link-revenue-recognition`, { je_id }),
     linkFactureDeferredRevenue: (id, qb_ref) => post(`/admin/factures/${id}/link-deferred-revenue`, { qb_ref }),
     clearFacturePaidStatus: (id) => post(`/admin/factures/${id}/clear-paid-status`, {}),
-    factureRawSchema: (id) => get(`/admin/factures/${id}/raw-schema`),
     factureRawUpdate: (id, data) => patch(`/admin/factures/${id}/raw`, data),
     paymentRawSchema: (id) => get(`/admin/payments/${id}/raw-schema`),
     paymentRawUpdate: (id, data) => patch(`/admin/payments/${id}/raw`, data),
@@ -1262,7 +1261,6 @@ export const api = {
   records: {
     update: (table, id, data) => patch(`/records/${table}/${id}`, data),
     delete: (table, id) => del(`/records/${table}/${id}`),
-    history: (table, id) => get(`/records/${table}/${id}/history`),
   },
 
 
@@ -1519,10 +1517,6 @@ export const api = {
     update: (id, data) => patch(`/stripe-invoice-items/${id}`, data),
   },
 
-}
-
-export function uploadRecording(formData) {
-  return uploadRequest('/calls/upload', formData)
 }
 
 export default api

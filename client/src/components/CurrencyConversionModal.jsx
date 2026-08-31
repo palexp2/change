@@ -18,6 +18,7 @@ import { ArrowRight, Check, Copy } from 'lucide-react'
 import { Modal } from './Modal'
 import { api } from '../lib/api'
 import { computeConversion, conversionSpreadPct, parseAmount, round2 } from '../lib/currencyConversion'
+import { localISODate } from '../lib/formatDate.js'
 
 const LINES = [
   { key: 'subtotal', label: 'Facture (excluant taxes)' },
@@ -102,7 +103,7 @@ export function CurrencyConversionModal({ isOpen, onClose, receipt = null, onApp
     if (!pairOk) return
     let cancelled = false
     setLoadingRate(true)
-    api.fx.rate(receiptDate || new Date().toISOString().slice(0, 10))
+    api.fx.rate(receiptDate || localISODate())
       .then(r => {
         if (cancelled) return
         // r.rate = USD→CAD ; inversé pour CAD→USD.

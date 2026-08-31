@@ -13,6 +13,7 @@
 // Module volontairement PUR (aucun accès DB) : testable sans base, et réutilisé
 // à l'import comme au backfill. Les enveloppes DB vivent dans carmPosting.js.
 import { carmCategory } from './carmAccount.js'
+import { round2Safe as round2 } from '../utils/money.js'
 
 export const norm = s => String(s ?? '')
   .normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim()
@@ -64,7 +65,6 @@ export const CARM_RULES = [
   { id: 'paiement', when: /^paiement$|payment|versement|remboursement|refund/, kind: 'paiement' },
 ]
 
-const round2 = n => Math.round((Number(n) || 0) * 100) / 100
 
 // Nom canonique du courtier, ou null. `extra` = noms supplémentaires configurés
 // (chaîne « a, b, c » ou tableau) — comparés en sous-chaîne normalisée.

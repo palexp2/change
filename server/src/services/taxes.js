@@ -1,9 +1,9 @@
+import { round2 } from '../utils/money.js'
 // Taxes canadiennes pour Orisha — inscrit aux taxes au Canada uniquement,
 // pas en Saskatchewan ni Colombie-Britannique (donc TPS 5% seulement dans ces deux provinces).
 
 const HST_PROVINCES = { ON: 13, NB: 15, NL: 15, NS: 15, PE: 15 }
 
-function round2(n) { return Math.round(n * 100) / 100 }
 
 function normalizeProvince(province) {
   if (!province) return null

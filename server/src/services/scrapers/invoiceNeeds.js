@@ -1,6 +1,7 @@
 import { v4 as uuid } from 'uuid'
 import db from '../../db/database.js'
 import { resolveVendorFromBankLabel } from './vendorFromBankLabel.js'
+import { nowIso } from '../../utils/datetime.js'
 
 // « Quelles transactions bancaires attendent leur facture ? »
 //
@@ -24,7 +25,6 @@ export const DAYS_AFTER = 3
 // en espaçant, puis on abandonne pour ne pas repartir en boucle chaque nuit.
 export const RETRY_DELAYS_DAYS = [1, 3, 7]
 
-const nowIso = () => new Date().toISOString()
 const dayDiff = (a, b) => Math.round((new Date(`${a}T12:00:00Z`) - new Date(`${b}T12:00:00Z`)) / 86400000)
 
 /**

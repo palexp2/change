@@ -20,6 +20,8 @@ import WeatherPanel from '../components/WeatherPanel.jsx'
 import { useRecordKeyNav } from '../lib/useRecordKeyNav.js'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { contactsForCompany } from '../lib/contactCompanies'
+import { fmtPhone as fmtPhoneBase } from '../utils/formatters.js'
+import { fmtDurationMinutes as fmtDuration } from '../lib/duration.js'
 
 
 // requestIdleCallback avec fallback setTimeout pour browsers qui ne le supportent pas.
@@ -30,11 +32,6 @@ const cancelIdle = (h) => (typeof cancelIdleCallback === 'function'
   ? cancelIdleCallback(h)
   : clearTimeout(h))
 
-function fmtDuration(mins) {
-  if (!mins) return '—'
-  const h = Math.floor(mins / 60), m = mins % 60
-  return h === 0 ? `${m}m` : `${h}h${m > 0 ? m + 'm' : ''}`
-}
 
 // `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
 // (RecordPeekDrawer) sans le chrome de page (Layout, bouton retour, nav
@@ -556,12 +553,8 @@ export default function TicketDetail({ recordId, embedded = false, onClose }) {
 // Sondage de satisfaction par SMS
 // ---------------------------------------------------------------------------
 
-function fmtPhone(e164) {
-  const d = String(e164 || '').replace(/\D/g, '')
-  const local = d.length === 11 && d.startsWith('1') ? d.slice(1) : d
-  if (local.length !== 10) return e164 || '—'
-  return `(${local.slice(0, 3)}) ${local.slice(3, 6)}-${local.slice(6)}`
-}
+// Fallback '—' propre à cette page (le canonique renvoie '' pour une valeur vide).
+const fmtPhone = (e164) => fmtPhoneBase(e164) || '—'
 
 function Stars({ n, size = 15 }) {
   return (

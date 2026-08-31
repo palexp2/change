@@ -13,6 +13,7 @@ import wix from './wix.js'
 import bell from './bell.js'
 import digikey from './digikey.js'
 import simplex from './simplex.js'
+import { nowIso } from '../../utils/datetime.js'
 
 // ── Collecteurs de portails fournisseurs ──────────────────────────────────────
 // Un collecteur = un module qui sait, pour UN fournisseur, se connecter à son
@@ -38,7 +39,6 @@ const OTP_TIMEOUT_MS = Number(process.env.SCRAPER_OTP_TIMEOUT_MS || 10 * 60 * 10
 // session et se battraient sur la dédup.
 const inFlight = new Map()
 
-const nowIso = () => new Date().toISOString()
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 function updateRun(runId, fields) {

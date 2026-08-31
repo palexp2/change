@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+import { parseLimit } from '../utils/pagination.js'
 
 const router = Router()
 
@@ -11,7 +12,7 @@ router.use(requireAuth)
 // Renvoie aussi `unread_count` pour alimenter le badge en une seule requête.
 router.get('/', (req, res) => {
   const { unread, limit = 30 } = req.query
-  const limitVal = Math.min(parseInt(limit) || 30, 100)
+  const limitVal = parseLimit(limit, { def: 30, max: 100 })
   const onlyUnread = unread === '1' || unread === 'true'
 
   const rows = db.prepare(`

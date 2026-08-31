@@ -26,16 +26,4 @@ export function Logo({ size = 24, className = '', title = 'Boréal', ...rest }) 
   )
 }
 
-/**
- * Marque + mot, l'un contre l'autre. `word` porte l'interlettrage serré du
- * lockup de la planche ; la pile système suffit — pas de webfont chargée pour
- * un seul mot.
- */
-export function LogoLockup({ size = 26, className = '', markClassName = 'text-brand-600', wordClassName = '' }) {
-  return (
-    <span className={`inline-flex items-center gap-2 min-w-0 ${className}`}>
-      <Logo size={size} className={`flex-shrink-0 ${markClassName}`} />
-      <span className={`font-semibold tracking-tight ${wordClassName}`}>Boréal</span>
-    </span>
-  )
-}
+

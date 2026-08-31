@@ -9,10 +9,10 @@ import { computeCanadaTaxes } from '../lib/taxes.js'
 
 const inputCls = 'border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500'
 
-function fmtMoney(n, currency = 'CAD') {
-  try { return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(n) }
-  catch { return `${Number(n).toFixed(2)} $` }
-}
+import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
+
+// Pas de garde null historique : un montant absent s'affichait « 0,00 $ ».
+const fmtMoney = (n, currency = 'CAD') => fmtMoneyBase(Number(n) || 0, currency)
 
 export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onClose, onCreated }) {
   const { addToast } = useToast()

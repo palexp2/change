@@ -3,6 +3,18 @@
   "entries": [
     {
       "date": "2026-08-31",
+      "title": "Grand nettoyage : dates fiables le soir, affichages uniformis\u00e9s",
+      "category": "G\u00e9n\u00e9ral",
+      "changes": [
+        { "type": "fixed", "text": "Apr\u00e8s 20 h (heure de Montr\u00e9al), les dates propos\u00e9es par d\u00e9faut dans plusieurs formulaires (\u00e9critures de comptes pr\u00e9pay\u00e9s, dettes long terme, transactions du tableau de bord comptable, taux de conversion de devise) partaient au lendemain \u2014 elles refl\u00e8tent maintenant la vraie date locale." },
+        { "type": "improved", "text": "Les montants, tailles de fichiers (Ko/Mo/Go partout), num\u00e9ros de t\u00e9l\u00e9phone, adresses, dur\u00e9es et temps relatifs (\u00ab il y a 3h \u00bb) sont maintenant format\u00e9s de fa\u00e7on identique dans toute l'application \u2014 fini les \u00ab MB \u00bb sur une page et \u00ab Mo \u00bb sur l'autre." },
+        { "type": "improved", "text": "Les couleurs de statut (factures, soumissions, achats, retours, virements Stripe, re\u00e7us) sont d\u00e9sormais les m\u00eames entre les pages liste et les fiches d\u00e9tail ; une soumission au statut \u00ab legacy \u00bb affiche son propre badge." },
+        { "type": "improved", "text": "Les listes accessibles par l'API refusent maintenant les tailles de page invalides ou n\u00e9gatives, et les caract\u00e8res sp\u00e9ciaux sont mieux \u00e9chapp\u00e9s dans les courriels g\u00e9n\u00e9r\u00e9s (guide d'appel, relances)." },
+        { "type": "fixed", "text": "Grand m\u00e9nage interne : suppression d'environ 1\u2009700 lignes de code mort et consolidation des fonctions dupliqu\u00e9es \u2014 aucune fonctionnalit\u00e9 retir\u00e9e, mais l'application est plus rapide \u00e0 faire \u00e9voluer et le test de s\u00e9curit\u00e9 qui v\u00e9rifie la protection de chaque route passe de nouveau." }
+      ]
+    },
+    {
+      "date": "2026-08-31",
       "title": "Mots-cl\u00e9s des billets en s\u00e9lection multiple",
       "category": "Support",
       "changes": [

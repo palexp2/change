@@ -17,6 +17,8 @@ import { SCRAPERS, VENDOR_LABELS, VENDOR_DOMAINS, runScraper, runAllScrapers, is
 import { parseSessionPayload, sessionCoversDomain } from '../services/scrapers/session.js'
 import { chromiumAvailable } from '../services/scrapers/browser.js'
 import { refreshInvoiceNeeds } from '../services/scrapers/invoiceNeeds.js'
+import { nowIso } from '../utils/datetime.js'
+import { parseLimit } from '../utils/pagination.js'
 
 // Au démarrage : refermer les tournées qu'un redémarrage a laissées « en cours ».
 reapOrphanRuns()
@@ -24,7 +26,6 @@ reapOrphanRuns()
 const router = Router()
 router.use(requireAuth)
 
-const nowIso = () => new Date().toISOString()
 const artifactsRoot = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'scrapers')
 
 // Les identifiants ne ressortent JAMAIS de l'API : le front affiche seulement
@@ -75,9 +76,9 @@ router.get('/runs', (req, res) => {
   const { account_id, limit } = req.query
   const rows = account_id
     ? db.prepare('SELECT * FROM scraper_runs WHERE account_id=? ORDER BY started_at DESC LIMIT ?')
-      .all(account_id, Math.min(Number(limit) || 30, 200))
+      .all(account_id, parseLimit(limit, { def: 30, max: 200 }))
     : db.prepare('SELECT * FROM scraper_runs ORDER BY started_at DESC LIMIT ?')
-      .all(Math.min(Number(limit) || 30, 200))
+      .all(parseLimit(limit, { def: 30, max: 200 }))
   res.json(rows.map(r => ({
     ...r,
     log: JSON.parse(r.log || '[]'),

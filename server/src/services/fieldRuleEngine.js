@@ -5,6 +5,7 @@ import { sendEmail } from './ruleActions/email.js'
 import { createTask } from './ruleActions/task.js'
 import { runScriptAction } from './ruleActions/script.js'
 import { makeRateGuard } from './ruleActions/rateGuard.js'
+import { APP_URL } from '../config/appUrl.js'
 
 // Registry of channel adapters. Each adapter is async ({ rule, row, rendered }) => void
 // and throws on failure. New channels are added here.
@@ -323,7 +324,7 @@ async function dispatchCandidates(rule, erpTable, candidates, started) {
   // script) or when the rule opts out — those dispatch unthrottled as before.
   const guard = makeRateGuard(rule)
 
-  const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  const appUrl = APP_URL
   for (const row of batch) {
     row.app_url = appUrl
     try {
@@ -633,7 +634,7 @@ export function dryRunFieldRule(rule, { previewLimit = 10 } = {}) {
       .all(rule.id)
       .map(r => r.record_id)
   )
-  const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  const appUrl = APP_URL
 
   const previews = []
   for (const row of candidates.slice(0, previewLimit)) {
@@ -691,7 +692,7 @@ export function previewRuleForRecord(rule, recordId) {
     : `SELECT t.* FROM ${erpTable} t`
   const row = db.prepare(`${selectFrom} WHERE t.id = ?`).get(recordId)
   if (!row) return null
-  row.app_url = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  row.app_url = APP_URL
 
   // Does this record match the trigger predicate? (informational only)
   let matchesTrigger = false
@@ -825,7 +826,7 @@ export async function runRuleActionForRecord(automationId, erpTable, recordId) {
     : `SELECT t.* FROM ${erpTable} t`
   const row = db.prepare(`${selectFrom} WHERE t.id = ?`).get(recordId)
   if (!row) throw new Error(`Enregistrement introuvable: ${recordId}`)
-  row.app_url = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  row.app_url = APP_URL
 
   const label = row.title || row.name || row.company_name || row.id
   try {

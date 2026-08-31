@@ -10,6 +10,7 @@ import { emitCompany, emitEntity } from './realtimeEmitters.js'
 import { logSync } from './syncLog.js'
 import { validateTaxCodeAgainstType, getTransactionType } from './fiscalStatus.js'
 import { completeLiaDescription } from './purchaseLiaMatch.js'
+import { round2, round2Safe } from '../utils/money.js'
 
 const SALE_RECEIPT_MIME = {
   '.jpg':  'image/jpeg',
@@ -194,7 +195,6 @@ export async function pushAchatToQB(achatId) {
   if (!row) throw new Error('Achat introuvable')
   if (row.quickbooks_id) throw new Error(`Déjà publié sur QuickBooks (ID: ${row.quickbooks_id})`)
 
-  const round2 = n => Math.round((Number(n) || 0) * 100) / 100
   const cfg = getQBConfig()
 
   // Comptes : modèle mémorisé sur l'achat (dernier choix pour ce fournisseur)
@@ -208,11 +208,11 @@ export async function pushAchatToQB(achatId) {
   // (amount_cad) sinon QB rajoute la taxe par-dessus → double comptage. Sans code de
   // taxe, comportement historique conservé : la ligne porte total_cad, aucune taxe QB.
   const applyTax = !!(row.tax_code_id && row.tax_cad > 0)
-  const lineBase = applyTax ? round2(row.amount_cad) : row.total_cad
+  const lineBase = applyTax ? round2Safe(row.amount_cad) : row.total_cad
   let taxDetail = {}
   if (applyTax) {
     taxDetail = {
-      TxnTaxDetail: { TxnTaxCodeRef: { value: row.tax_code_id }, TotalTax: round2(row.tax_cad) },
+      TxnTaxDetail: { TxnTaxCodeRef: { value: row.tax_code_id }, TotalTax: round2Safe(row.tax_cad) },
       GlobalTaxCalculation: 'TaxExcluded',
     }
   }
@@ -710,7 +710,6 @@ export function scheduleBillAutoPaymentCheck(receiptId, billId, delayMs = 45000)
 }
 
 export function computeReceiptHtBase({ subtotal = 0, totalTax = 0, total = 0 }) {
-  const round2 = x => Math.round(x * 100) / 100
   const subtotalReconciles = Math.abs((subtotal + totalTax) - total) <= 0.02
   if (total > 0 && totalTax > 0 && !subtotalReconciles) return round2(total - totalTax)
   return subtotal > 0 ? subtotal : total
@@ -755,7 +754,6 @@ export function computeConversionFee(bankChargedTotal, invoiceTotal) {
   if (bankChargedTotal === undefined || bankChargedTotal === null || bankChargedTotal === '') {
     return { fee: 0, error: null }
   }
-  const round2 = x => Math.round(x * 100) / 100
   const bank = Number(bankChargedTotal)
   if (!Number.isFinite(bank) || bank <= 0) {
     return { fee: 0, error: 'Montant passé à la banque invalide.' }
@@ -808,7 +806,6 @@ export const NO_TAX_CODE = '__none__'
 // générique). Sans montant d'article exploitable : une ligne unique au HT, description
 // = descriptions jointes ou libellé de repli.
 export function buildReceiptLines(items, targetHt, { lineDetail, fallbackDescription } = {}) {
-  const round2 = x => Math.round(x * 100) / 100
   // lineDetail = détail de base (AccountRef + éventuel TaxCodeRef global). Selon le
   // tax_code_id de l'article, sa ligne reçoit (comme dans QuickBooks) :
   //  - un Id de code QB → ce TaxCodeRef précis ;
@@ -1003,7 +1000,6 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
   }
 
   const items = JSON.parse(rec.items || '[]')
-  const round2 = n => Math.round(n * 100) / 100
   const txnDate = rec.receipt_date || new Date().toISOString().slice(0, 10)
   let totalAmt = rec.total || 0
   let subtotalAmt = rec.subtotal || 0
@@ -1588,7 +1584,6 @@ export const PARTIAL_RECOVERY_TAX_CODE_NAMES = ['TPS/TVQ repas']
 // en testant les quelques centièmes autour de gross / (1 + Σtaux) et en gardant celle
 // qui reproduit le brut. `percents` = taux d'achat du code (RateValue QB).
 export function solvePartialRecoveryBase(gross, percents) {
-  const round2 = n => Math.round(n * 100) / 100
   const rates = (Array.isArray(percents) ? percents : []).map(p => Number(p) || 0).filter(p => p > 0)
   const rateSum = rates.reduce((s, p) => s + p, 0)
   if (!(gross > 0) || rateSum <= 0) return round2(gross)
@@ -1607,7 +1602,6 @@ export function solvePartialRecoveryBase(gross, percents) {
 // Met des montants de ligne à l'échelle pour que leur somme égale EXACTEMENT `targetSum`
 // (écart d'arrondi reporté sur la dernière ligne, comme buildReceiptLines).
 export function rescaleAmountsToSum(amounts, targetSum) {
-  const round2 = n => Math.round(n * 100) / 100
   const list = (Array.isArray(amounts) ? amounts : []).map(a => Number(a) || 0)
   const sum = list.reduce((s, a) => s + a, 0)
   if (!(sum > 0) || !(targetSum > 0)) return list.map(round2)
@@ -1626,7 +1620,6 @@ export function rescaleAmountsToSum(amounts, targetSum) {
 // ratesByCode : Map(taxCodeId -> [{id, percent}]). Un code sans taux (Hors champ,
 // Détaxé, Exonéré) ne génère aucune taxe — sa ligne reste comptabilisée à 0 $ de taxe.
 export function aggregateLineTaxLines(lines, ratesByCode) {
-  const round2 = n => Math.round(n * 100) / 100
   const byRate = new Map() // rateId -> { percent, net, tax }
   for (const ln of (Array.isArray(lines) ? lines : [])) {
     const amount = Number(ln?.amount) || 0
@@ -1672,7 +1665,6 @@ export function aggregateLineTaxLines(lines, ratesByCode) {
 // TaxLine explicite mêlé à des codes 0 % déclenche l'erreur 6000).
 // Best-effort : ne throw jamais, la transaction créée reste valide telle quelle.
 export async function reconcilePerLineTaxWithExtraction(entityName, created, { tpsAmt = 0, tvqAmt = 0, expectedTotal = 0 }) {
-  const round2 = n => Math.round(n * 100) / 100
   const MAX_DELTA = 0.05
   try {
     const taxLines = created?.TxnTaxDetail?.TaxLine
@@ -1732,7 +1724,6 @@ export async function reconcilePerLineTaxWithExtraction(entityName, created, { t
 // forcer les montants pleins de la facture fausserait le CTI/RTI réclamé. Mieux vaut
 // laisser QB calculer que publier un override incohérent (ou partiel → 6000).
 export function buildTaxLinesFromRates(rates, { tpsAmt = 0, tvqAmt = 0, otherAmt = 0, subtotalAmt = 0 }) {
-  const round2 = n => Math.round(n * 100) / 100
   const net = round2(subtotalAmt)
   const mkLine = (r, amt) => ({
     Amount: round2(amt),
@@ -1854,55 +1845,6 @@ async function resolveQbCustomerForFacture(factureId, currency = 'CAD') {
   return { id: qbCustomerId, name: row.name, currency: isUsd ? 'USD' : 'CAD' }
 }
 
-// Cache des TaxRate QB par % pour mapper les tax_rates Stripe → TaxRate QB IDs.
-// Construit le TxnTaxDetail.TaxLine[] que QB Canada attend pour les JournalEntry
-// (auto-génération via TxnTaxCodeRef seul ne fonctionne PAS sur les JE).
-let _taxRatesCache = null
-
-async function loadTaxRatesCache() {
-  if (_taxRatesCache) return _taxRatesCache
-  const all = []
-  let startPos = 1
-  while (true) {
-    const data = await qbGet(`/query?query=${encodeURIComponent(`SELECT Id, Name, RateValue FROM TaxRate MAXRESULTS 1000 STARTPOSITION ${startPos}`)}`)
-    const rows = data.QueryResponse?.TaxRate || []
-    all.push(...rows)
-    if (rows.length < 1000) break
-    startPos += 1000
-  }
-  // On cache uniquement les TaxRate "ventes" (pas RTI/CTI/kilom/repas/Purchases) par juridiction.
-  // Mapping confirmé avec la compta (taux en vigueur 2025-2026) :
-  //   TPS 5%        → toutes les provinces (id 8)
-  //   TVQ 9.975%    → Québec (id 23)
-  //   TVH ON 13%    → Ontario (id 39)
-  //   TVH N.-B. 15% → Nouveau-Brunswick (id 32, "TVH N.-B. 2016")
-  //   TVH N.S. 14%  → Nouvelle-Écosse (id 50, taux abaissé en 2025)
-  //   TVH PE 15%    → Île-du-Prince-Édouard (id 49, "TVH Î.-P.-É. 2016")
-  //   TVH NL 15%    → Terre-Neuve-et-Labrador (id 55, "TVH T.-N.-L. 2016")
-  const salesOnly = all.filter(r => !/RTI|CTI|kilom|repas|\(Purchases\)|sur les achats/i.test(r.Name || ''))
-  const find = (re, pct) => salesOnly.find(r => Number(r.RateValue) === pct && re.test(r.Name))
-  const findApprox = (re, pct) => salesOnly.find(r => Math.abs(Number(r.RateValue) - pct) < 0.01 && re.test(r.Name))
-
-  const tpsRate = find(/^TPS$/i, 5) || find(/TPS|GST/i, 5)
-  const tvqRate = findApprox(/TVQ|QST/i, 9.975)
-  const hstOn = find(/^TVH ON$/i, 13)
-  const hstNb = find(/^TVH N\.-B\. 2016$/i, 15) || find(/TVH N\.-B/i, 15)
-  const hstNs = find(/N\.S\..*Sales|TVH N\.S\./i, 14)
-  const hstPe = find(/^TVH Î\.-P\.-É\. 2016$/i, 15) || find(/Î\.-P\.-É/i, 15)
-  const hstNl = find(/^TVH T\.-N\.-L\. 2016$/i, 15) || find(/T\.-N\.-L/i, 15)
-
-  _taxRatesCache = {
-    tps:    tpsRate ? { id: tpsRate.Id, percent: 5 } : null,
-    tvq:    tvqRate ? { id: tvqRate.Id, percent: 9.975 } : null,
-    hst_on: hstOn   ? { id: hstOn.Id,   percent: 13 } : null,
-    hst_nb: hstNb   ? { id: hstNb.Id,   percent: 15 } : null,
-    hst_ns: hstNs   ? { id: hstNs.Id,   percent: 14 } : null,
-    hst_pe: hstPe   ? { id: hstPe.Id,   percent: 15 } : null,
-    hst_nl: hstNl   ? { id: hstNl.Id,   percent: 15 } : null,
-  }
-  return _taxRatesCache
-}
-
 // Cache process-local des tax_rate Stripe → { country, state, percentage }.
 // Permet de mapper un tax_rate id (txr_xxx) à sa juridiction sans appel répété.
 const _stripeTaxRateCache = new Map()
@@ -1924,22 +1866,6 @@ async function getStripeTaxRateInfo(taxRateId) {
     _stripeTaxRateCache.set(taxRateId, null)
     return null
   }
-}
-
-// Mappe une juridiction (state Canadian abbrev: 'ON', 'NB', 'NS', 'PE', 'NL', 'QC')
-// + un pourcentage à un TaxRate QB du cache. Retourne null si non mappé.
-function pickQbRateForJurisdiction(rates, state, percentage) {
-  const pct = Number(percentage)
-  if (Math.abs(pct - 5) < 0.5) return rates.tps
-  if (Math.abs(pct - 9.975) < 0.5) return rates.tvq
-  if (Math.abs(pct - 13) < 0.5) return rates.hst_on
-  if (Math.abs(pct - 14) < 0.5 && state === 'NS') return rates.hst_ns
-  if (Math.abs(pct - 15) < 0.5) {
-    if (state === 'NB') return rates.hst_nb
-    if (state === 'PE') return rates.hst_pe
-    if (state === 'NL') return rates.hst_nl
-  }
-  return null
 }
 
 // Calcule le HT post-remise d'une invoice Stripe en cents :
@@ -1991,46 +1917,6 @@ function extractStripeTaxes(invoice) {
     }
   }
   return out
-}
-
-// Construit la structure TxnTaxDetail à attacher à une JournalEntry pour ventiler
-// TPS/TVQ depuis les taxes Stripe. Retourne null si pas de taxe (export US, Détaxé)
-// — la JE sera postée sans TxnTaxDetail.
-async function buildTxnTaxDetail(invoice, txnTaxCodeId) {
-  const taxes = extractStripeTaxes(invoice)
-  const totalTax = taxes.reduce((s, t) => s + t.amount, 0)
-  if (totalTax === 0) return null
-
-  const rates = await loadTaxRatesCache()
-
-  const taxLines = []
-  for (const t of taxes) {
-    // Lookup juridiction Stripe pour distinguer NB/NS/PE/NL (15% ambigu sinon).
-    const stripeInfo = await getStripeTaxRateInfo(t.tax_rate_id)
-    const state = stripeInfo?.state || null
-    const qbRate = t.percentage != null ? pickQbRateForJurisdiction(rates, state, t.percentage) : null
-    if (!qbRate) continue  // taxe non mappée — TaxLine omise (à étendre si besoin)
-
-    taxLines.push({
-      Amount: Math.round(t.amount) / 100,
-      DetailType: 'TaxLineDetail',
-      TaxLineDetail: {
-        TaxRateRef: { value: String(qbRate.id) },
-        PercentBased: true,
-        TaxPercent: qbRate.percent,
-        NetAmountTaxable: Math.round(t.taxable_amount) / 100,
-      },
-    })
-  }
-
-  if (!taxLines.length) return null
-
-  const detail = {
-    TotalTax: Math.round(totalTax) / 100,
-    TaxLine: taxLines,
-  }
-  if (txnTaxCodeId) detail.TxnTaxCodeRef = { value: txnTaxCodeId }
-  return detail
 }
 
 // Résout le QB TaxCode à utiliser pour une invoice Stripe selon les taxes appliquées.

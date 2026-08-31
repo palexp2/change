@@ -19,8 +19,7 @@ import { useQbAccounts } from '../lib/qbAccounts.js'
 const MONTH_LABELS = { '01': 'Janvier', '02': 'Février', '03': 'Mars', '04': 'Avril', '05': 'Mai', '06': 'Juin', '07': 'Juillet', '08': 'Août', '09': 'Septembre', 10: 'Octobre', 11: 'Novembre', 12: 'Décembre' }
 const monthLabel = m => `${MONTH_LABELS[m.slice(5, 7)]} ${m.slice(0, 4)}`
 
-const fmtMoney = n => n == null ? '—'
-  : new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
+import { fmtMoney } from '../utils/formatters.js'
 const fmtHours = n => `${new Intl.NumberFormat('fr-CA', { maximumFractionDigits: 2 }).format(n || 0)} h`
 
 const inputCls = 'px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'

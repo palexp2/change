@@ -45,7 +45,7 @@ async function cloudflareBlocked(page) {
 
 const MONEY = /(?:\$\s*([\d.,\s]+))|(?:([\d.,\s]+)\s*\$)/
 const ISO_DATE = /\b(\d{4})-(\d{2})-(\d{2})\b/
-const NUM_DATE = /\b(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})\b/
+const NUM_DATE = /\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b/
 
 export function parseDigikeyDate(text) {
   const iso = String(text || '').match(ISO_DATE)

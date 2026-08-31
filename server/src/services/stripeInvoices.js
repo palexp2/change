@@ -1,11 +1,9 @@
 import db from '../db/database.js'
 import Stripe from 'stripe'
 import { emitCompany } from './realtimeEmitters.js'
-
-function getStripeKey() {
-  const row = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'").get()
-  return row?.value || null
-}
+import { getStripeKey } from './stripe.js'
+import { APP_URL } from '../config/appUrl.js'
+import { escapeHtml, escapeAttr } from '../utils/sanitizeHtml.js'
 
 export function getStripeClient() {
   const sk = getStripeKey()
@@ -220,11 +218,6 @@ ${trackingPixelUrl ? `<img src="${escapeAttr(trackingPixelUrl)}" width="1" heigh
 </body></html>`
 }
 
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
-}
-function escapeAttr(s) { return escapeHtml(s) }
-
 function formatMoney(n, currency = 'CAD') {
   try {
     return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: String(currency || 'CAD').toUpperCase() }).format(n)
@@ -277,7 +270,7 @@ export async function finalizeAndSendInvoice({ stripe, stripeInvoiceId, companyI
   const totalLabel = formatMoney(total, invoice.currency)
   const dueDateLabel = invoice.due_date ? new Date(invoice.due_date * 1000).toLocaleDateString('fr-CA') : null
   const subject = `Facture ${invoice.number || ''} — ${totalLabel}`
-  const baseUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  const baseUrl = APP_URL
   const trackingPixelUrl = `${baseUrl}/erp/api/email-tracking/${emailRowId}.gif`
   const userRow = db.prepare('SELECT name FROM users WHERE id=?').get(userId)
   const html = buildInvoiceEmailHtml({

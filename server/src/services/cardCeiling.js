@@ -31,12 +31,11 @@ import { payDateForDue } from '../utils/bankDays.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { logSync } from './syncLog.js'
 import { sendSlack } from './slack.js'
+import { APP_URL } from '../config/appUrl.js'
+import { nowIso, localDay } from '../utils/datetime.js'
+export { localDay }
 
 export const CARD_CEILING_AUTOMATION_ID = 'sys_card_ceiling_alert'
-
-// Fuseau de référence : le jour civil est celui de l'utilisateur, pas celui du
-// serveur (qui tourne en UTC) — sinon l'alerte de 20 h partirait « demain ».
-const TZ = 'America/Toronto'
 
 export const CARD_CEILING_DEFAULT_CONFIG = {
   // Comptes QB (numéros) suivis. Une carte de la table qui n'est pas listée ici
@@ -62,13 +61,7 @@ export const CARD_CEILING_DEFAULT_CONFIG = {
 }
 
 const r2 = n => Math.round(Number(n || 0) * 100) / 100
-const nowIso = () => new Date().toISOString()
 const dayOnly = v => String(v || '').slice(0, 10)
-
-/** Jour civil (fuseau utilisateur) d'un instant, en `YYYY-MM-DD`. */
-export function localDay(date = new Date(), timeZone = TZ) {
-  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
-}
 
 // Midi UTC : additionner des jours sans se faire piéger par l'heure avancée.
 const dayToDate = iso => {
@@ -465,7 +458,7 @@ export function recordCardAlert(cardId, period, kind, outlook) {
 }
 
 export function buildCeilingMessage(o, kind) {
-  const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  const appUrl = APP_URL
   // L'en-tête décrit l'ÉTAT, pas seulement le type d'alerte : un envoi forcé
   // hors fenêtre et sous le plafond ne doit pas crier « plafond franchi ».
   const head = kind === 'lead'

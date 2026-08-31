@@ -31,6 +31,8 @@ import { getDriveClient } from '../connectors/google.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { createNotification } from './notifications.js'
 import { completeLiaDescription } from './purchaseLiaMatch.js'
+import { APP_URL } from '../config/appUrl.js'
+import { round2Safe as round2 } from '../utils/money.js'
 
 export const PIECES_AUTOMATION_ID = 'sys_pieces_disbursements'
 
@@ -60,7 +62,6 @@ export function previousMonth(month) {
   return d.toISOString().slice(0, 7)
 }
 
-const round2 = n => Math.round((Number(n) || 0) * 100) / 100
 
 // ── Config de l'automation (page Automations) ───────────────────────────────
 
@@ -421,7 +422,7 @@ export async function generatePiecesSheet(month) {
 // vers le fichier Drive — l'interface y est plus lisible pour Guillaume.
 export function piecesSlackText(state) {
   const mois = MONTH_LABELS[Number(state.month.slice(5, 7)) - 1].toLowerCase()
-  const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  const appUrl = APP_URL
   const parts = [
     'Mon général :saluting_face:',
     '',

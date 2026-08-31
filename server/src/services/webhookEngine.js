@@ -5,6 +5,7 @@ import { runScriptSandboxed } from './scriptSandbox.js'
 import { writeBackRecord, createInAirtable, TABLE_TO_WRITEBACK_MODULE } from './airtableWriteback.js'
 import { sendEmail as sendRuleEmail } from './ruleActions/email.js'
 import { emitEntity } from './realtimeEmitters.js'
+import { escapeHtml } from '../utils/sanitizeHtml.js'
 
 /**
  * Moteur d'exécution des webhooks (automations kind='webhook').
@@ -279,12 +280,6 @@ async function maybeSendFailureEmail(automation, config, ctx, errorMsg, actions)
     // Un échec d'envoi du courriel d'échec ne doit pas masquer l'erreur d'origine.
     console.error(`❌ Courriel d'échec webhook ${automation.id}:`, e.message)
   }
-}
-
-function escapeHtml(s) {
-  return String(s ?? '').replace(/[&<>"']/g, c => (
-    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
-  ))
 }
 
 /**

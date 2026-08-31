@@ -2,11 +2,11 @@ import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { splitQcTax, TPS_RATE, TVQ_RATE } from '../services/taxes.js'
+import { round2Safe as round2 } from '../utils/money.js'
 
 const router = Router()
 router.use(requireAuth)
 
-function round2(n) { return Math.round((Number(n) || 0) * 100) / 100 }
 
 // Devises traitées comme canadiennes (taxes récupérables / collectées au pays).
 function isCad(currency) {

@@ -5,14 +5,11 @@ import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
-import { parseAmountInput } from '../utils/formatters.js'
+import { fmtMoney, formatRelativeTime, parseAmountInput } from '../utils/formatters.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { MissingReceiptsSection } from './VendorSubscriptions.jsx'
 
-function fmtCad(n, digits = 0) {
-  if (n == null) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: digits, minimumFractionDigits: digits }).format(n)
-}
+const fmtCad = (n, digits = 0) => fmtMoney(n, 'CAD', { maximumFractionDigits: digits, minimumFractionDigits: digits })
 
 function Card({ title, description, icon: Icon, iconClass = 'bg-slate-100 text-slate-500', actions, children, testId, className = '' }) {
   return (
@@ -330,16 +327,6 @@ function BillPeekModal({ peek, onClose }) {
 // Rien d'autre à l'écran : pas de description, pas de légende, pas de bandeau
 // permanent. Le serveur, lui, garde tous ses garde-fous.
 
-// Écart en minutes → « il y a 12 min » / « il y a 3 h » / « le 2026-08-16 ».
-function fmtAgo(iso) {
-  if (!iso) return null
-  const min = (Date.now() - new Date(iso).getTime()) / 60000
-  if (!Number.isFinite(min)) return null
-  if (min < 2) return "à l'instant"
-  if (min < 90) return `il y a ${Math.round(min)} min`
-  if (min < 36 * 60) return `il y a ${Math.round(min / 60)} h`
-  return `le ${fmtDate(iso)}`
-}
 
 // Un des trois chiffres du haut. Pas d'icône, pas de bordure : la grille et la
 // taille du chiffre suffisent à la hiérarchie.
@@ -878,7 +865,7 @@ export function TreasuryProjectionSection() {
                 label="Solde BNC noté"
                 value={entry ? fmtCad(entry.balance, 0) : '—'}
                 sub={entry
-                  ? [fmtAgo(entry.noted_at), sheet?.last_run && !sheet.last_run.error ? `fichier lu ${fmtAgo(sheet.last_run.executed_at)}` : null]
+                  ? [formatRelativeTime(entry.noted_at), sheet?.last_run && !sheet.last_run.error ? `fichier lu ${formatRelativeTime(sheet.last_run.executed_at)}` : null]
                     .filter(Boolean).join(' · ')
                   : 'aucune saisie'}
                 tone={entry && !proj.balance_stale ? 'slate' : 'amber'}
@@ -1052,7 +1039,7 @@ export function TreasuryProjectionSection() {
 // Paies à comptabiliser : période terminée (le débit bancaire suit la fin de
 // période) et pas encore de dépense QB associée.
 function todoPaies(paies) {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localISODate()
   return paies.filter(p => p.period_end && p.period_end <= today && !p.salary_purchase_id)
 }
 
@@ -1072,7 +1059,7 @@ function PaieComptabilisationCard() {
   // pré-remplissage, demande utilisateur — le total Airtable/l'estimation ne
   // servent que de repère). Seule la date est pré-remplie (« Débité » Airtable).
   const [bankAmount, setBankAmount] = useState('')
-  const [txnDate, setTxnDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [txnDate, setTxnDate] = useState(() => localISODate())
   // Téléphone Martin : détecté dans les items de la paie (remboursement de
   // dépense de 25 $ de Martin, une fois par mois) — jamais saisi ici, jamais
   // compté en double avec les remboursements.
@@ -1121,7 +1108,7 @@ function PaieComptabilisationCard() {
     setPreview(null)
     setError(null)
     // Date : « Débité » des items Airtable (jour du débit BNC), sinon aujourd'hui.
-    const date = p.debited_date || new Date().toISOString().slice(0, 10)
+    const date = p.debited_date || localISODate()
     setTxnDate(date)
     // Paie déjà comptabilisée : on remet le montant débité enregistré pour
     // revoir la ventilation telle qu'elle est dans QuickBooks. Sinon vide — le

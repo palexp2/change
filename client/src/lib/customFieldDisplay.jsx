@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { ExternalLink, Check, Zap, Phone, ImageOff } from 'lucide-react'
-import { fmtDate, fmtDateWithFormat, normalizeDateFormat } from './formatDate.js'
+import { fmtDateWithFormat, normalizeDateFormat } from './formatDate.js'
 import { formatDurationSeconds, normalizeDurationFormat } from './duration.js'
 import { Badge } from '../components/Badge.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -55,10 +55,6 @@ export function normalizeUrl(str) {
   } catch {
     return null
   }
-}
-
-export function isValidUrl(str) {
-  return normalizeUrl(str) != null
 }
 
 // Vrai si l'URL pointe (vraisemblablement) vers une image : soit son chemin se

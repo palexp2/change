@@ -18,10 +18,9 @@ import { summarizeDependents } from '../lib/customFieldDeps.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 
-function fmtCad(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
-}
+import { fmtMoney } from '../utils/formatters.js'
+
+const fmtCad = (n) => fmtMoney(n, 'CAD', { maximumFractionDigits: 0 })
 
 const PROJECT_TYPES = ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange']
 

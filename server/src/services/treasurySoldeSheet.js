@@ -32,6 +32,7 @@ import { logSync } from './syncLog.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { fetchPmtSuiviGrid } from './pmtSuiviImport.js'
 import { createPayment, findAchatForPayment, setCleared } from './treasuryPayments.js'
+import { daysBetween as dayDiff } from '../utils/datetime.js'
 
 export const SOLDE_SHEET_AUTOMATION_ID = 'sys_treasury_solde_sheet'
 
@@ -450,8 +451,6 @@ const labelsMatch = (a, b) => {
   return !!ka && !!kb && (ka.includes(kb) || kb.includes(ka))
 }
 const amountsClose = (a, b, pct = 0.01) => Math.abs(a - b) <= Math.max(1, Math.abs(b) * pct)
-const dayDiff = (a, b) => Math.abs(Math.round((new Date(`${a}T12:00:00Z`) - new Date(`${b}T12:00:00Z`)) / 86400000))
-
 const importKey = (vendor, amount, rank) => `soldesheet:${vendorKey(vendor)}|${r2(amount).toFixed(2)}|${rank}`
 
 // Jour local (fuseau du serveur) d'un timestamp ISO — même convention que la

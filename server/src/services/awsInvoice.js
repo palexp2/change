@@ -1,4 +1,5 @@
 import { formatPeriodRange } from './servicePeriod.js'
+import { round2Safe as round2 } from '../utils/money.js'
 
 // Factures Amazon Web Services Canada — normalisation déterministe.
 //
@@ -35,7 +36,6 @@ import { formatPeriodRange } from './servicePeriod.js'
 //         Total GST Amount at 5% / Montant total de la TPS (5 %)             USD  3.14   CAD   4.47
 //         Total QST Amount at 9.975% / Montant total de la TVQ (9.975 %)     USD  6.25   CAD   8.91
 
-const round2 = n => Math.round((Number(n) || 0) * 100) / 100
 
 // Signature du document : émetteur AWS Canada + un numéro de facture AWS. Le
 // « Billing Statement Available » (courriel de notification, pas une facture) ne

@@ -4,7 +4,7 @@ import { Phone, Mail, MessageSquare, Users, FileText, Trash2 } from 'lucide-reac
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
-import { Badge } from '../components/Badge.jsx'
+import { Badge, INTERACTION_TYPE_LABELS as TYPE_LABELS } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
@@ -16,7 +16,6 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 
 const TYPE_ICONS = { call: Phone, email: Mail, sms: MessageSquare, meeting: Users, note: FileText }
-const TYPE_LABELS = { call: 'Appel', email: 'Courriel', sms: 'SMS', meeting: 'Réunion', note: 'Note' }
 const TYPE_COLORS = {
   call:    'bg-blue-100 text-blue-700',
   email:   'bg-purple-100 text-purple-700',
@@ -27,11 +26,7 @@ const TYPE_COLORS = {
 const DIRECTION_COLORS = { in: 'green', out: 'blue' }
 
 
-function fmtDuration(s) {
-  if (!s) return null
-  const m = Math.floor(s / 60), sec = s % 60
-  return m > 0 ? `${m}m ${sec}s` : `${sec}s`
-}
+import { fmtDurationSeconds as fmtDuration } from '../lib/duration.js'
 
 // ─── Panneau de détail ────────────────────────────────────────────────────────
 
@@ -40,15 +35,12 @@ function InteractionDetail({ item: stub, onNavigate, onPeekContact, onDelete }) 
   // meeting_notes). Fetch the full record when the panel opens so the detail
   // view has everything it needs.
   const [item, setItem] = useState(stub)
-  const [loading, setLoading] = useState(true)
   useEffect(() => {
     let cancelled = false
     setItem(stub)
-    setLoading(true)
     api.interactions.get(stub.id)
       .then(full => { if (!cancelled) setItem(full) })
       .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [stub.id])
 

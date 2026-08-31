@@ -4,20 +4,14 @@ import { ArrowLeft, RefreshCw, ExternalLink, CheckCircle2, AlertCircle, Info, Ey
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { Badge } from '../components/Badge.jsx'
+import { Badge, STRIPE_PAYOUT_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { ConfirmModal } from '../components/Modal.jsx'
 import { FactureQuickViewModal } from '../components/FactureQuickViewModal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
-function fmtMoney(n, currency = 'CAD') {
-  if (n == null) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: (currency || 'CAD').toUpperCase() }).format(n)
-}
+import { fmtMoney } from '../utils/formatters.js'
 
-const STATUS_COLORS = {
-  paid: 'green', pending: 'yellow', in_transit: 'blue', canceled: 'gray', failed: 'red',
-}
 
 // Render a compact TPS/TVQ breakdown used in the transactions table.
 function TaxSplit({ gst, qst, currency }) {

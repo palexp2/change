@@ -19,6 +19,7 @@ import db from '../db/database.js'
 import { recordEvent, classifyChange } from '../services/subscriptionEvents.js'
 import { computeMonthlyNet } from '../services/subscriptionMonthly.js'
 import { v4 as uuid } from 'uuid'
+import { getStripeKey } from '../services/stripe.js'
 
 const APPLY = process.argv.includes('--apply')
 const sinceArg = process.argv.find(a => a.startsWith('--since='))
@@ -29,11 +30,6 @@ const SUB_EVENT_TYPES = [
   'customer.subscription.updated',
   'customer.subscription.deleted',
 ]
-
-function getStripeKey() {
-  const row = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'").get()
-  return row?.value || null
-}
 
 function mapSubStatus(s) {
   const m = {

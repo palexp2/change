@@ -26,8 +26,8 @@ import { resolveAccountByAcctNum, resolveTaxCodeIdsByName, findOrCreateVendor } 
 import { getCarmConfig } from './carmAccount.js'
 import { KIND_LABELS } from './carmRules.js'
 import { logSync } from './syncLog.js'
+import { round2Safe as round2 } from '../utils/money.js'
 
-const round2 = n => Math.round((Number(n) || 0) * 100) / 100
 const GST_RATE = 0.05
 
 // Natures dont la ventilation droits / TPS est connue : les seules qui peuvent

@@ -10,8 +10,9 @@
 import db from '../db/database.js'
 import { qbGet, qbEntityUrl } from '../connectors/quickbooks.js'
 import { fetchQbLedger, fetchQbLedgerRaw } from './bankQbLink.js'
+import { shiftDate, daysBetween as dayDiff } from '../utils/datetime.js'
+import { round2 } from '../utils/money.js'
 
-const round2 = (n) => Math.round(n * 100) / 100
 
 // Fenêtre d'anomalies remontées, en jours avant la date du relevé.
 const ANOMALY_WINDOW_DAYS = 120
@@ -196,14 +197,6 @@ export function summarizeAccount(accountId) {
 
 // ── Comparaison avec QuickBooks ──────────────────────────────────────────────
 
-function shiftDate(iso, days) {
-  const d = new Date(`${iso}T12:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
-}
-function dayDiff(a, b) {
-  return Math.abs((new Date(`${a}T12:00:00Z`) - new Date(`${b}T12:00:00Z`)) / 86400000)
-}
 
 const MAX_DAY_GAP = 4
 

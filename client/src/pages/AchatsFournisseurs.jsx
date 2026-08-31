@@ -16,7 +16,7 @@ import { LineItemsTable } from '../components/LineItemsTable.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
-import { fmtCad } from '../utils/formatters.js'
+import { fmtCad, formatBytes } from '../utils/formatters.js'
 
 const NO_TAX = '__none__'
 
@@ -504,13 +504,6 @@ function QBAttachmentsSection({ achatId }) {
     } catch (e) { setMsg(e.message) }
   }
 
-  function fmtSize(n) {
-    if (!n) return '—'
-    if (n < 1024) return `${n} B`
-    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
-    return `${(n / 1024 / 1024).toFixed(1)} MB`
-  }
-
   return (
     <div className="border rounded-lg p-3 bg-slate-50">
       <div className="flex items-center justify-between mb-2">
@@ -542,7 +535,7 @@ function QBAttachmentsSection({ achatId }) {
                 )}
                 {it.note && <p className="text-xs text-slate-500 truncate">{it.note}</p>}
               </div>
-              <span className="text-xs text-slate-400 tabular-nums whitespace-nowrap">{fmtSize(it.file_size)}</span>
+              <span className="text-xs text-slate-400 tabular-nums whitespace-nowrap">{it.file_size ? formatBytes(it.file_size) : '—'}</span>
               <button type="button" onClick={() => handleDelete(it.id)} className="text-xs text-red-600 hover:underline">
                 Suppr.
               </button>

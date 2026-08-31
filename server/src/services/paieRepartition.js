@@ -19,6 +19,7 @@
 import db from '../db/database.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
+import { round2 } from '../utils/money.js'
 
 export const PAIE_REPARTITION_AUTOMATION_ID = 'sys_paie_repartition'
 
@@ -98,7 +99,6 @@ export function parseSplits(text) {
   return out
 }
 
-const round2 = n => Math.round(n * 100) / 100
 
 // Montant saisi côté client (« 2 737,95 », « 2737.95 $ ») → nombre. La virgule
 // décimale du clavier fr-CA doit être acceptée par le serveur aussi : le front

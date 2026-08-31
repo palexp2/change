@@ -8,6 +8,7 @@ import {
   saveUserDraft, getDraft, markDraftSent,
 } from '../services/relanceEmail.js'
 import { sendEmail } from '../services/gmail.js'
+import { escapeHtml } from '../utils/sanitizeHtml.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -83,14 +84,6 @@ router.put('/draft/:qcId', (req, res) => {
 //   - linkifie URLs http(s):// et emails (sur les segments hors markdown)
 //   - aplatit les liens markdown [label](url) en <a href="url">label</a>
 //   - préserve les sauts de ligne via <br>
-function escapeHtml(s) {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
 function bodyToHtml(text) {
   const mdLinkRe = /\[([^\]\n]+)\]\(((?:https?:\/\/|mailto:)[^)\s]+)\)/g
   const urlRe = /\bhttps?:\/\/[^\s<>()]+[^\s<>().,;:!?]/g

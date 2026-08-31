@@ -31,11 +31,12 @@ import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { localDay, isoWeekKey, isoWeekday } from './marketingBudget.js'
 import { sendSlack, resolveSlackTarget } from './slack.js'
 import { writeBackRecord, createInAirtable } from './airtableWriteback.js'
+import { APP_URL } from '../config/appUrl.js'
+import { TZ } from '../utils/datetime.js'
 
 export const INSTAGRAM_INTAKE_AUTOMATION_ID = 'sys_instagram_prospect_intake'
 export const INSTAGRAM_SLACK_AUTOMATION_ID = 'sys_instagram_weekly_slack'
 
-const TZ = 'America/Toronto'
 const MAX_TEXT = 4000
 
 export const INSTAGRAM_INTAKE_DEFAULT_CONFIG = {
@@ -461,18 +462,13 @@ const WEEKDAY_LABELS = {
 }
 
 function erpProspectsUrl() {
-  const base = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  const base = APP_URL
   return `${base}/erp/prospects-instagram`
 }
 
 function airtableUrl() {
   const cfg = db.prepare("SELECT base_id, table_id FROM airtable_module_config WHERE module='instagram'").get()
   return cfg?.base_id && cfg?.table_id ? `https://airtable.com/${cfg.base_id}/${cfg.table_id}` : null
-}
-
-const fmtDateFr = iso => {
-  if (!iso) return ''
-  return new Intl.DateTimeFormat('fr-CA', { timeZone: TZ, day: 'numeric', month: 'long' }).format(new Date(iso))
 }
 
 /**

@@ -2,6 +2,7 @@ import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { getConfig, saveConfig, deleteConfig, isDigikeyConfigured, DEFAULTS } from '../connectors/digikey.js'
+import { parseLimit } from '../utils/pagination.js'
 
 // Intégration DigiKey — configuration, état et consultation des commandes
 // rapatriées. La sync elle-même est déclenchée par POST /api/connectors/sync/digikey
@@ -69,7 +70,7 @@ router.delete('/config', (req, res) => {
 
 // Commandes rapatriées, avec l'achat fournisseur créé pour chacune.
 router.get('/orders', (req, res) => {
-  const limit = Math.min(parseInt(req.query.limit) || 50, 200)
+  const limit = parseLimit(req.query.limit, { def: 50, max: 200 })
   const rows = db.prepare(`
     SELECT d.id, d.track_key, d.sales_order_id, d.invoice_id, d.achat_id, d.pdf_path,
            d.order_date, d.total, d.currency, d.synced_at,

@@ -16,12 +16,12 @@
 // autres jours — ni envoi ni log, pour ne pas noyer le journal de l'automation.
 import db from '../db/database.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
+import { sendSlackWebhook } from './slack.js'
+import { APP_URL } from '../config/appUrl.js'
+import { localDay } from '../utils/datetime.js'
+export { localDay }
 
 export const CARD_REMINDER_AUTOMATION_ID = 'sys_card_payment_reminder'
-
-// Fuseau de référence : les jours travaillés sont ceux de l'utilisateur, pas
-// ceux du serveur (qui tourne en UTC).
-const TZ = 'America/Toronto'
 
 export const CARD_REMINDER_DEFAULT_CONFIG = {
   cards: 'Visa CAD, Visa USD',   // libellés listés dans le rappel
@@ -50,11 +50,6 @@ export function getCardReminderConfig() {
 }
 
 // ── Calendrier ───────────────────────────────────────────────────────────────
-
-/** Date civile (fuseau TZ) d'un instant, en `YYYY-MM-DD`. */
-export function localDay(date = new Date(), timeZone = TZ) {
-  return new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)
-}
 
 // Un jour civil est manipulé comme un Date à midi UTC : pas de dérive de fuseau
 // sur les additions de jours, et getUTCDay() donne le bon jour de semaine.
@@ -131,22 +126,11 @@ function fmtDateFr(dayIso) {
 
 // ── Envoi ────────────────────────────────────────────────────────────────────
 
-async function sendSlackWebhook(envName, text) {
-  const url = process.env[envName]
-  if (!url) throw new Error(`Variable d'environnement manquante : ${envName}`)
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
-  if (!resp.ok) throw new Error(`Slack HTTP ${resp.status}`)
-}
-
 export function buildReminderMessage({ dayIso, cards, dueDay, workDays }) {
   const due = dueDateOf(dayIso, dueDay)
   const delta = daysBetween(dayIso, due)
   const next = nextWorkDay(dayIso, workDays)
-  const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  const appUrl = APP_URL
   // « à payer d'ici » et non « échéance » : due_day est une date CIBLE que se
   // fixe l'utilisateur (le 24), volontairement en avance sur l'échéance réelle
   // des cartes (26-27) pour garder une marge.

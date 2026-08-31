@@ -1,3 +1,4 @@
+import { round2Safe as round2 } from '../utils/money.js'
 // Factures de transport MULTI-EXPÉDITIONS (NovoXpress / Groupe Alliances et Privilèges,
 // ou toute messagerie qui facture plusieurs envois avec des taxes PAR expédition).
 //
@@ -29,7 +30,6 @@
 // (erreur 6000 « Tous les articles ont besoin d'un taux de taxe ») — les montants qu'on
 // ne réclame pas reçoivent donc « Hors champ » (0 %, hors des cases du rapport de taxes).
 
-const round2 = n => Math.round((Number(n) || 0) * 100) / 100
 
 function norm(s) {
   return (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()

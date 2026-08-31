@@ -6,10 +6,7 @@ import { fmtDate } from '../lib/formatDate.js'
 import { Badge } from './Badge.jsx'
 import { METHOD_LABELS } from './FacturePaymentsSection.jsx'
 
-function fmtMoney(n, currency = 'CAD') {
-  if (n == null) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: (currency || 'CAD').toUpperCase() }).format(n)
-}
+import { fmtMoney } from '../utils/formatters.js'
 
 // Sous-section « Dépôts directs » de la page Stripe Payouts : encaissements
 // reçus directement en banque (virement, chèque, Interac…) donc jamais inclus

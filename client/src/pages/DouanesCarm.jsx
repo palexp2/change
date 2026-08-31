@@ -21,11 +21,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 
 const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
 
-function fmtMoney(n, currency = 'CAD') {
-  if (n == null) return '—'
-  try { return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(n) }
-  catch { return `${Number(n).toFixed(2)} ${currency}` }
-}
+import { fmtMoney } from '../utils/formatters.js'
 
 const COLUMN_LABELS = {
   date: 'Date', due_date: 'Échéance', type: 'Type', number: 'Numéro',

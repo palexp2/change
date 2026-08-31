@@ -179,7 +179,7 @@ function RuleEditor({ rule, onChange, onCreate, onDelete, fieldsForPicker, recor
   let evalResult = null
   try {
     evalResult = evaluateConditions(rule.conditions, record)
-  } catch (e) {
+  } catch {
     evalResult = null
   }
   const isNew = !rule.id

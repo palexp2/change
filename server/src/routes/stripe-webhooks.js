@@ -16,15 +16,10 @@ import { recomputeFactureBalance } from '../services/factureBalance.js'
 import { resolveStripeInvoiceFields, applyStripeCustomFieldColumns } from '../services/stripeFactureFieldMap.js'
 import { resolveStripeSubscriptionFields } from '../services/stripeSubscriptionFieldMap.js'
 import { logSync } from '../services/syncLog.js'
+import { getStripeKey } from '../services/stripe.js'
+import { APP_URL } from '../config/appUrl.js'
 
 const router = Router()
-
-function getStripeKey() {
-  const row = db.prepare(
-    "SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'"
-  ).get()
-  return row?.value || null
-}
 
 function getWebhookSecret() {
   const row = db.prepare(
@@ -466,7 +461,7 @@ async function handleChargeRefunded({ req: _req, res, event, secretKey: _secretK
       results.push({ refund_id: refund.id, payment_id: paymentId, status: 'tracked' })
     }
 
-    const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+    const appUrl = APP_URL
     const lines = [
       `Charge ${charge.id} — ${refunds.length} refund(s) reçu(s).`,
       `Client : ${customerName || customerEmail || stripeCustomerId || 'N/A'}`,
@@ -740,7 +735,7 @@ async function handleWebhook(req, res) {
     // via pushDepositFromPayout. Le constat de vente final pour les commandes
     // se fait à l'expédition via recognizeRevenueForOrder (hook shipments.status='Envoyé').
     console.log(`✅ Stripe ${event.type} ${invoice.id} → facture ${factureInfo?.action || 'no-op'}`)
-    const appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+    const appUrl = APP_URL
     const resultLines = [
       `${event.type} — facture Stripe ${invoice.number || invoice.id}`,
       `Client : ${customerName || customerEmail || 'N/A'}`,

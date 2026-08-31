@@ -5,6 +5,9 @@ import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { getStripeClient, ensureStripeCustomer, getOrCreateTaxRate } from '../services/stripeInvoices.js'
 import { computeCanadaTaxes } from '../services/taxes.js'
+// escapeHtml canonique : échappe aussi " et ' dans le texte (durcissement
+// volontaire par rapport à l'ancien escapeHtmlText local).
+import { escapeHtml as escapeHtmlText, escapeAttr as escapeHtmlAttr } from '../utils/sanitizeHtml.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -551,13 +554,6 @@ router.post('/:id/subscribe-card', async (req, res) => {
 // expéditeur info@orisha.io) contenant le lien System Builder pré-rempli généré
 // dans l'onglet System builder du guide d'appel. Side effect : l'UI affiche une
 // confirmation listant le destinataire avant d'appeler cette route.
-function escapeHtmlText(s) {
-  return String(s == null ? '' : s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
-function escapeHtmlAttr(s) {
-  return escapeHtmlText(s).replace(/"/g, '&quot;')
-}
 function buildSystemBuilderEmailHtml({ firstName, url }) {
   const greeting = firstName ? `Hey ${escapeHtmlText(firstName)},` : 'Hey there,'
   const href = escapeHtmlAttr(url)

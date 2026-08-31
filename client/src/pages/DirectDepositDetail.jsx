@@ -9,10 +9,7 @@ import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { METHOD_LABELS, MANUAL_METHODS, PaymentConfirmModal } from '../components/FacturePaymentsSection.jsx'
 
-function fmtMoney(n, currency = 'CAD') {
-  if (n == null) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: (currency || 'CAD').toUpperCase() }).format(n)
-}
+import { fmtMoney } from '../utils/formatters.js'
 
 function InfoField({ label, value }) {
   return (

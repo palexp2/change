@@ -22,10 +22,7 @@ const SERVICES = [
 
 const ATELIER = "Automatisation Orisha Inc. — 220-1535 ch. Ste-Foy, Québec, QC G1S 2P1"
 
-function fmtMoney(value, currency) {
-  if (value == null) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: currency || 'CAD' }).format(value)
-}
+import { fmtMoney } from '../utils/formatters.js'
 
 export default function UpsReturnLabelModal({ retour, onClose, onDone }) {
   const { addToast } = useToast()

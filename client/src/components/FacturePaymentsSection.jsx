@@ -6,10 +6,7 @@ import { useAuth } from '../lib/auth.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { Modal } from './Modal.jsx'
 
-function fmtMoney(n, currency = 'CAD') {
-  if (n == null) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(n)
-}
+import { fmtMoney } from '../utils/formatters.js'
 
 export const METHOD_LABELS = {
   stripe: 'Stripe',
@@ -494,10 +491,7 @@ const QB_LINK_TYPES = [
   { value: 'qb_journal_entry_id', label: 'Journal Entry', prefix: 'JE' },
   { value: 'qb_payment_id', label: 'Sales Receipt', prefix: 'SR' },
 ]
-function fmtMoneyShort(n, currency = 'CAD') {
-  if (n == null || !Number.isFinite(Number(n))) return ''
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency, maximumFractionDigits: 0 }).format(n)
-}
+const fmtMoneyShort = (n, currency = 'CAD') => fmtMoney(n, currency, { fallback: '', maximumFractionDigits: 0 })
 function QbSkippedCell({ payment, isAdmin, onChanged }) {
   const [editing, setEditing] = useState(false)
   const [col, setCol] = useState('qb_deposit_id')

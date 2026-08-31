@@ -20,7 +20,7 @@ const TRIGGER_LABELS = {
 }
 
 const OP_SYMBOLS = { eq: '=', ne: '≠', gt: '>', gte: '≥', lt: '<', lte: '≤', in: '∈', not_null: 'renseigné' }
-const ACTION_LABELS = { slack: 'Slack', email: 'Email', task: 'Tâche', script: 'Script' }
+import { AUTOMATION_ACTION_LABELS as ACTION_LABELS } from '../components/Badge.jsx'
 
 // Human-readable "condition → action" summary, so every trigger is consultable
 // at a glance from the list (e.g. orders.nombre_d_items > 1 → Script).

@@ -47,12 +47,7 @@ function withRecomputedTotal(receipt, patch) {
   return { ...patch, total: computedTotal({ ...receipt, ...patch }) }
 }
 
-function StatusBadge({ status }) {
-  if (status === 'done')       return <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full"><CheckCircle size={10} /> Complété</span>
-  if (status === 'processing') return <span className="inline-flex items-center gap-1 text-xs text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full"><RefreshCw size={10} className="animate-spin" /> En cours</span>
-  if (status === 'error')      return <span className="inline-flex items-center gap-1 text-xs text-red-700 bg-red-100 px-2 py-0.5 rounded-full"><AlertCircle size={10} /> Erreur</span>
-  return <span className="inline-flex items-center gap-1 text-xs text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full"><Clock size={10} /> En attente</span>
-}
+import { ReceiptStatusBadge as StatusBadge } from '../components/Badge.jsx'
 
 // Code de taxe QB déduit par défaut selon les montants TPS/TVQ extraits — sert de
 // présélection. Doit rester aligné avec la déduction serveur (pushSaleReceiptToQB).
@@ -1313,17 +1308,6 @@ function EditableMemoField({ receipt, onUpdate }) {
         />
       </div>
 
-    </div>
-  )
-}
-
-function TotalRow({ label, value, bold }) {
-  return (
-    <div className="flex justify-between items-center">
-      <span className={`text-sm ${bold ? 'font-semibold text-slate-800' : 'text-slate-600'}`}>{label}</span>
-      <span className={`tabular-nums text-sm ${bold ? 'font-bold text-slate-900 text-base' : 'text-slate-700'}`}>
-        {value != null ? fmtCad(value) : '—'}
-      </span>
     </div>
   )
 }
@@ -2641,7 +2625,6 @@ export default function SaleReceiptDetail() {
   }
 
   const isPdf = receipt.file_type === '.pdf'
-  const items = receipt.items || []
 
   return (
     <Layout>

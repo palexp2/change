@@ -11,15 +11,11 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 
-function fmtMoney(n, currency = 'CAD') {
-  if (n == null) return null
-  const cur = currency === 'Euro' ? 'EUR' : (currency || 'CAD')
-  try {
-    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: cur }).format(n)
-  } catch {
-    return `${Number(n).toFixed(2)} ${currency}`
-  }
-}
+import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
+
+// Particularités du site : montant absent → null (pas '—'), et la devise
+// Airtable « Euro » doit être mappée sur le code ISO 'EUR'.
+const fmtMoney = (n, currency = 'CAD') => fmtMoneyBase(n, currency === 'Euro' ? 'EUR' : currency, { fallback: null })
 
 function amountDisplay(row) {
   return row.amount_label || fmtMoney(row.amount, row.currency) || '—'

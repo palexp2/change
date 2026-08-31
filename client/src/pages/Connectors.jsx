@@ -7,6 +7,7 @@ import AirtableConfig from './AirtableConfig.jsx'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
+import { formatRelativeTime } from '../utils/formatters.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { TaxMappingModal } from '../components/TaxMappingModal.jsx'
@@ -2019,14 +2020,7 @@ function SyncLogPanel() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { const id = setInterval(load, 15000); return () => clearInterval(id) }, [open])
 
-  const fmtTime = (iso) => {
-    if (!iso) return '—'
-    const d = new Date(iso)
-    const diff = Date.now() - d
-    if (diff < 60000) return 'à l\'instant'
-    if (diff < 3600000) return `il y a ${Math.floor(diff / 60000)}min`
-    return fmtDateTime(iso)
-  }
+  const fmtTime = formatRelativeTime
 
   // Stats summary
   const last24h = logs.filter(l => new Date(l.created_at) > new Date(Date.now() - 86400000))

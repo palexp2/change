@@ -4,24 +4,14 @@ import { RefreshCw, ExternalLink, CheckCircle2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
-import { Badge } from '../components/Badge.jsx'
+import { Badge, STRIPE_PAYOUT_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import DirectDepositsSection from '../components/DirectDepositsSection.jsx'
 
-function fmtMoney(n, currency = 'CAD') {
-  if (n == null) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: (currency || 'CAD').toUpperCase() }).format(n)
-}
+import { fmtMoney } from '../utils/formatters.js'
 
-const STATUS_COLORS = {
-  paid:       'green',
-  pending:    'yellow',
-  in_transit: 'blue',
-  canceled:   'gray',
-  failed:     'red',
-}
 
 const RENDERS = {
   arrival_date: row => <span className="text-slate-500">{fmtDate(row.arrival_date)}</span>,

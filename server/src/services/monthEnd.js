@@ -26,9 +26,9 @@ import db from '../db/database.js'
 import { qbGet, qbPost, qbEntityUrl } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum } from './quickbooks.js'
 import { logSync } from './syncLog.js'
+import { round2Safe as round2 } from '../utils/money.js'
 
 const daysInMonth = (y, m1) => new Date(Date.UTC(y, m1, 0)).getUTCDate()
-const round2 = n => Math.round((Number(n) || 0) * 100) / 100
 const isMonth = v => /^\d{4}-\d{2}$/.test(String(v || ''))
 
 export function lastDayOfMonth(month) {

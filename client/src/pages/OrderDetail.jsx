@@ -985,7 +985,6 @@ export default function OrderDetail() {
       // Airtable d'IDs `recXXX`) qui écraserait le vrai tableau d'items
       // chargé par GET /:id — d'où des crashes `items.map is not a function`
       // au prochain rendu. On strip cette colonne du merge.
-      // eslint-disable-next-line no-unused-vars
       const { items: _legacyItems, ...rest } = msg.payload || {}
       setOrder(o => o ? { ...o, ...rest } : o)
     } else if (msg.type === 'order:deleted') {

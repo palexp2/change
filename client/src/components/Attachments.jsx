@@ -4,12 +4,7 @@ import { api } from '../lib/api'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
 
-function formatBytes(n) {
-  if (!n && n !== 0) return ''
-  if (n < 1024) return `${n} o`
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} Ko`
-  return `${(n / (1024 * 1024)).toFixed(1)} Mo`
-}
+import { formatBytes } from '../utils/formatters.js'
 
 function isImage(ct, name) {
   if (ct && ct.startsWith('image/')) return true

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { BarChart3, Table2, ArrowUpRight, ArrowDownRight, AlertTriangle, RefreshCw } from 'lucide-react'
 import api from '../lib/api.js'
+import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
 
 /* ── Vue globale du tableau de bord ────────────────────────────────────────
    Le pendant « Power BI » des sections du dashboard : une planche dense où
@@ -20,10 +21,7 @@ import api from '../lib/api.js'
 
 /* ── Formats ─────────────────────────────────────────────────────────── */
 
-function fmtMoney(n) {
-  if (n == null || Number.isNaN(n)) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(n)
-}
+const fmtMoney = (n) => fmtMoneyBase(n, 'CAD', { maximumFractionDigits: 0 })
 
 function fmtMoneyCompact(n) {
   if (n == null || Number.isNaN(n)) return '—'

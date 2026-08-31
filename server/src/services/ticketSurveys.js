@@ -26,6 +26,7 @@ import { generateBase62Token } from '../utils/shortToken.js'
 import { sendSms, toE164 } from './sms.js'
 import { sendSlack } from './slack.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
+import { APP_URL } from '../config/appUrl.js'
 
 export const SURVEY_SLACK_AUTOMATION_ID = 'sys_ticket_survey_slack'
 export const SURVEY_EXPIRY_DAYS = 30
@@ -58,7 +59,7 @@ export function getSurveySlackConfig() {
 }
 
 function appUrl() {
-  return (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  return APP_URL
 }
 
 export function surveyUrl(token) {

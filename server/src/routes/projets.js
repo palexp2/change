@@ -16,6 +16,8 @@ import { emitEntity } from '../services/realtimeEmitters.js'
 import { getCurrentItemsSnapshot, enrichItemsWithErpProductId } from '../services/subscriptionItemsSnapshot.js'
 import { buildExternalLinks } from '../services/externalLinks.js'
 import { checkAddress, runAddressCheck, getAddressCheckSummary } from '../services/addressCheck.js'
+import { getStripeKey } from '../services/stripe.js'
+import { APP_URL } from '../config/appUrl.js'
 
 // Calcule les taxes d'une facture (tableau {name, percentage, amount}).
 // Stratégie :
@@ -85,11 +87,6 @@ function buildQbRefUrl(ref) {
   const id = ref.slice(idx + 1)
   if (!entity || !id) return null
   return qbEntityUrl(entity, id)
-}
-
-function getStripeKey() {
-  const row = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'").get()
-  return row?.value || null
 }
 
 const router = Router()
@@ -668,7 +665,7 @@ router.get('/factures/:id', async (req, res) => {
   if (!pending) return res.status(404).json({ error: 'Not found' })
   const items = JSON.parse(pending.items_json || '[]')
   const subtotal = items.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0)
-  const baseUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  const baseUrl = APP_URL
   res.json({
     id: pending.id,
     source: 'pending',

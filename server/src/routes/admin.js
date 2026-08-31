@@ -10,6 +10,8 @@ import Stripe from 'stripe';
 import { postPaymentDeposit, stripeInvoiceNetHtCents } from '../services/quickbooks.js';
 import { qbGet } from '../connectors/quickbooks.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
+import { getStripeKey } from '../services/stripe.js'
+import { parseLimit } from '../utils/pagination.js'
 
 const router = Router();
 router.use(requireAdmin);
@@ -21,7 +23,7 @@ router.use(requireAdmin);
 router.post('/factures/backfill-paid-at', async (req, res) => {
   const stripeKey = getStripeKey()
   if (!stripeKey) return res.status(400).json({ error: 'Stripe non configuré' })
-  const limit = Math.max(1, Math.min(parseInt(req.body?.limit) || 100, 500))
+  const limit = parseLimit(req.body?.limit, { def: 100, max: 500 })
   const stripe = new Stripe(stripeKey)
 
   const candidates = db.prepare(`
@@ -682,11 +684,6 @@ router.delete('/trash', (req, res) => {
 //
 // GET preview, POST process. Idempotent — skip les factures avec déjà une ligne
 // payments direction='in' method='stripe'.
-function getStripeKey() {
-  const row = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'").get()
-  return row?.value || null
-}
-
 function listBackfillCandidates(cutoffDate) {
   return db.prepare(`
     SELECT f.id, f.invoice_id, f.document_number, f.document_date, f.kind,

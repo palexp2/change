@@ -3,9 +3,9 @@ import {
   TrendingUp, ShoppingCart, Package, LifeBuoy,
   ShoppingBag, Truck, RotateCcw, FileText, RefreshCw, Wrench,
   Barcode, MessageSquare, CheckSquare,
-  Receipt, ReceiptText, Landmark, Users, Banknote, Contact, BookOpen,
+  ReceiptText, Landmark, Users, Banknote, Contact, BookOpen,
   ArrowLeftRight, Clock, Tag, Wallet, Mail, PhoneCall,
-  FolderOpen, Building2, ListChecks, Bot, Activity, Zap, Plug, Instagram
+  FolderOpen, Building2, ListChecks, Bot, Zap, Plug, Instagram
 } from 'lucide-react'
 import { FINANCE_GROUPS, FINANCE_SECTIONS } from './financeSections.js'
 

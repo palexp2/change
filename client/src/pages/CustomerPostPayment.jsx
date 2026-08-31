@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useSearchParams, useParams } from 'react-router-dom'
 import Spinner from '../components/Spinner.jsx'
 import SearchableSelect from '../components/SearchableSelect.jsx'
+import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
 
 // Public page (no auth). Deux entrées :
 //   - /customer/post-payment?session_id=cs_xxx  → flow Stripe Checkout (legacy)
@@ -94,7 +95,7 @@ export default function CustomerPostPayment() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(patch),
         })
-      } catch (e) { /* silent — they can retry */ }
+      } catch { /* silent — they can retry */ }
     }, 600)
   }, [baseUrl])
 
@@ -175,11 +176,8 @@ function Header({ data, isDiscoveryMode }) {
   )
 }
 
-function fmtMoney(amount, currency) {
-  if (amount == null) return ''
-  try { return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: String(currency || 'CAD').toUpperCase() }).format(amount / 100) }
-  catch { return `${(amount / 100).toFixed(2)} $` }
-}
+// Stripe stocke les montants en cents — on convertit en dollars pour l'affichage.
+const fmtMoney = (cents, currency) => fmtMoneyBase(cents == null ? null : cents / 100, currency, { fallback: '' })
 
 // ─── Wizard ───────────────────────────────────────────────────────────────
 

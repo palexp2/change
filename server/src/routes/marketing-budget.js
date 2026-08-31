@@ -5,6 +5,7 @@ import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
+import { parseLimit } from '../utils/pagination.js'
 import {
   syncMarketingExpenses, listRules, createRule, applyRuleToPending,
   previewWeeklyMarketingSlack, checkWeeklyMarketingSlack,
@@ -34,7 +35,7 @@ router.get('/expenses', (req, res) => {
     LEFT JOIN marketing_expense_rules r ON r.id = e.rule_id
     WHERE ${where.join(' AND ')}
     ORDER BY e.txn_date DESC, e.created_at DESC LIMIT ?
-  `).all(...args, Math.min(2000, Math.max(1, Number(limit) || 500)))
+  `).all(...args, parseLimit(limit, { def: 500, max: 2000 }))
   res.json({ expenses: rows.map(withQbUrl), pending: pendingCount(), last_sync: lastSyncInfo() })
 })
 

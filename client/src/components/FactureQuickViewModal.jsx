@@ -23,10 +23,7 @@ const STATUS_COLORS = {
   'Uncollectible': 'red',
 }
 
-function fmtMoney(n, currency = 'CAD') {
-  if (n == null || n === '') return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: (currency || 'CAD').toUpperCase() }).format(Number(n))
-}
+import { fmtMoney } from '../utils/formatters.js'
 
 function buildStripeUrl(facture) {
   if (facture.lien_stripe) return facture.lien_stripe

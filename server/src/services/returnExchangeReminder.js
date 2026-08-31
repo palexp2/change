@@ -10,14 +10,13 @@
 // Orisha), le proxy le plus proche disponible.
 
 import * as postmark from 'postmark'
-import { v4 as uuidv4 } from 'uuid'
 
 export const IMMEDIATE_REASON = 'Retour de garantie avec échange immédiat'
 const MIN_RETURN_DATE = '2025-06-04'
 const RETURN_WINDOW_DAYS = 21
 
 // Pure DB query — retourne les dossiers de retour à relancer aujourd'hui.
-export function selectEligibleReturns(db, { nowIso = new Date().toISOString() } = {}) {
+export function selectEligibleReturns(db) {
   return db.prepare(`
     SELECT r.id AS return_id, r.created_at, r.company_id,
            ct.id AS contact_id, ct.email AS contact_email, ct.first_name AS contact_first_name,
@@ -127,7 +126,7 @@ ${overdueHtml}
 
 export async function sendReturnExchangeReminders(db, { fromAddress = process.env.POSTMARK_FROM, postmarkToken = process.env.POSTMARK_API_KEY, dryRun = false, sendFn = null, nowIso } = {}) {
   const now = nowIso || new Date().toISOString()
-  const eligible = selectEligibleReturns(db, { nowIso: now })
+  const eligible = selectEligibleReturns(db)
   const results = { total: eligible.length, sent: 0, errors: 0, skipped: 0, details: [] }
   if (!eligible.length) return results
 

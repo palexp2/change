@@ -11,6 +11,7 @@ import db from '../db/database.js'
 import { autoClearFromBank } from './treasuryPayments.js'
 import { detectBankReceipts } from './wageSubsidyReceipts.js'
 import { detectTwilioBankRecharges } from './prepaid.js'
+import { shiftDate, daysBetween } from '../utils/datetime.js'
 
 // ── Seed des comptes (onglets du xlsx TRX_Orisha) ────────────────────────────
 
@@ -266,10 +267,6 @@ export function labelMatchesVendor(bankLabel, vendorName, aliases = []) {
   return false
 }
 
-function daysBetween(a, b) {
-  return Math.abs((new Date(`${a}T12:00:00Z`) - new Date(`${b}T12:00:00Z`)) / 86400000)
-}
-
 let vendorProfilesCache = null
 function vendorProfiles() {
   if (!vendorProfilesCache) {
@@ -368,12 +365,6 @@ function profileAliasHit(bankLabel, vendorName) {
   const profile = vendorProfiles().find((p) => normalizeLabel(p.name) === key)
   if (!profile) return false
   return labelMatchesVendor(bankLabel, profile.name, profile.aliases)
-}
-
-function shiftDate(iso, days) {
-  const d = new Date(`${iso}T12:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + days)
-  return d.toISOString().slice(0, 10)
 }
 
 // ── Statuts ──────────────────────────────────────────────────────────────────

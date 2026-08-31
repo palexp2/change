@@ -3,13 +3,12 @@ import { ShoppingCart } from 'lucide-react'
 import { useNavigate, Link } from 'react-router-dom'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
-import { Badge } from '../components/Badge.jsx'
+import { Badge, PURCHASE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import TableThumb from '../components/TableThumb.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 
-const STATUS_COLORS = { 'Commandé': 'blue', 'Reçu partiellement': 'yellow', 'Reçu': 'green', 'Annulé': 'red' }
 import { fmtCad } from '../utils/formatters.js'
 
 

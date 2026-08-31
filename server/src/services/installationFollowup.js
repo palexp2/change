@@ -14,6 +14,7 @@
 import * as postmark from 'postmark'
 import { v4 as uuidv4 } from 'uuid'
 import { emitCompany } from './realtimeEmitters.js'
+import { APP_URL } from '../config/appUrl.js'
 
 // Only shipments on or after this date are eligible. Bump this if you need to
 // include older customers; the flag + lifecycle_phase + order-count filters are
@@ -191,7 +192,7 @@ function recordSend(db, { row, subject, html, emailId, to, fromAddress }) {
 export async function sendInstallationTestEmail(db, {
   to,
   language = 'French',
-  appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, ''),
+  appUrl = APP_URL,
   fromAddress = process.env.POSTMARK_FROM,
   postmarkToken = process.env.POSTMARK_API_KEY,
   sendFn = null,
@@ -227,7 +228,7 @@ export async function sendInstallationTestEmail(db, {
 // Run one pass: select eligible companies, send each email, record results.
 // `sendFn` is the Postmark sender, injected so tests can stub it.
 export async function sendInstallationFollowups(db, {
-  appUrl = (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, ''),
+  appUrl = APP_URL,
   fromAddress = process.env.POSTMARK_FROM,
   postmarkToken = process.env.POSTMARK_API_KEY,
   dryRun = false,

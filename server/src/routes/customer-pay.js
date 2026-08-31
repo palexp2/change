@@ -1,11 +1,12 @@
 import { Router } from 'express'
 import db from '../db/database.js'
 import { getStripeClient, createOrRefreshCheckoutSession } from '../services/stripeInvoices.js'
+import { APP_URL } from '../config/appUrl.js'
 
 const router = Router()
 
 function appBaseUrl() {
-  return (process.env.APP_URL || 'https://customer.orisha.io').replace(/\/$/, '')
+  return APP_URL
 }
 
 function htmlPage(title, bodyHtml, statusCode = 200) {

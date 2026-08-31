@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none">
+  <!-- Marque Boréal — l'aiguille. Vert de marque en dur : un favicon ne peut pas
+       hériter d'une couleur. Le vert tient sur fond clair comme sur fond sombre
+       d'onglet, donc pas de variante prefers-color-scheme à maintenir. -->
+  <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="#21B14B"/>
+  <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="#21B14B" stroke-width="3.4" stroke-linejoin="round"/>
+</svg>

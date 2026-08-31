@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Upload, RefreshCw, AlertCircle, CheckCircle, Clock, Camera, BookOpen, Trash2, Archive, ArchiveRestore, Receipt, Mail, MailOpen, FileX } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
@@ -11,6 +11,16 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtCad } from '../utils/formatters.js'
+import { InvoiceCollectionPanel } from './InvoiceCollection.jsx'
+
+// Deux onglets : « Reçus » (l'extraction elle-même) et « Collecte de factures »
+// (les portails fournisseurs qui l'alimentent automatiquement). La collecte n'a
+// pas d'entrée de menu propre : elle vit dans le sous-menu de cette page (voir
+// navSubsections.js).
+const TABS = [
+  ['recus', 'Reçus'],
+  ['collecte', 'Collecte de factures'],
+]
 
 function StatusBadge({ status }) {
   if (status === 'done')       return <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full"><CheckCircle size={10} /> Complété</span>
@@ -276,6 +286,10 @@ const COLUMNS = TABLE_COLUMN_META.sale_receipts.map(meta => ({ ...meta, render: 
 export default function SaleReceipts() {
   const navigate = useNavigate()
   const { addToast } = useToast()
+  const [params, setParams] = useSearchParams()
+  const askedTab = params.get('onglet')
+  const tab = TABS.some(([k]) => k === askedTab) ? askedTab : 'recus'
+  const setTab = (v) => setParams(v === 'recus' ? {} : { onglet: v }, { replace: true })
   const [receipts, setReceipts]       = useState([])
   const [loading, setLoading]         = useState(true)
   const [uploading, setUploading]     = useState(false)
@@ -465,8 +479,18 @@ export default function SaleReceipts() {
             <h1 className="text-2xl font-bold text-slate-900">Extraction de données</h1>
             <p className="text-xs text-slate-400 mt-0.5">Extraction automatique par IA</p>
           </div>
+          <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
+            {TABS.map(([k, label]) => (
+              <button key={k} onClick={() => setTab(k)} data-testid={`tab-${k}`}
+                className={`px-3 py-1.5 text-sm rounded-md ${tab === k ? 'bg-white shadow-sm font-medium text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
+        {tab === 'collecte' ? <InvoiceCollectionPanel /> : (
+        <>
         <div className="flex items-stretch gap-3 mb-4">
           <div className="flex-1">
             <UploadZone onUpload={handleUploadFiles} uploading={uploading} progress={uploadProgress} compact />
@@ -511,9 +535,11 @@ export default function SaleReceipts() {
           }}
           emptyState={{ icon: Receipt, title: 'Aucun reçu de vente', description: "Aucun reçu n'a encore été importé. Téléverse un ou plusieurs fichiers ci-dessus ou prends une photo d'un reçu.", cta: { label: 'Prendre en photo', icon: Camera, onClick: () => setWebcamOpen(true) } }}
         />
+        </>
+        )}
       </div>
 
-      {webcamOpen && (
+      {tab === 'recus' && webcamOpen && (
         <WebcamCaptureModal
           onClose={() => setWebcamOpen(false)}
           onCapture={handleUpload}

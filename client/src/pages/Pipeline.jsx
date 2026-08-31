@@ -1,10 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Plus, X, Database, Pencil } from 'lucide-react'
+import { Plus, X, Database, Pencil, Landmark } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
-import { Badge, projectStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
@@ -49,7 +48,7 @@ function ProjectForm({ initial = {}, companies = [], onSave, onClose }) {
   const { addToast } = useToast()
   const [form, setForm] = useState({
     name: '', company_id: '', contact_id: '',
-    type: '', status: 'Ouvert', probability: 50, value_cad: '',
+    type: '', probability: 50, value_cad: '',
     monthly_cad: '', nb_greenhouses: 0, close_date: '', notes: '',
     refusal_reason: '', ...initial
   })
@@ -60,6 +59,15 @@ function ProjectForm({ initial = {}, companies = [], onSave, onClose }) {
   // File d'attente de patch fusionnés + timer de debounce pour l'autosave.
   const persistTimer = useRef(null)
   const persistQueue = useRef({})
+
+  // `/companies/lookup` exclut les entreprises archivées et arrive après le
+  // premier rendu : on injecte l'entreprise déjà liée pour que le picker
+  // l'affiche au lieu d'un champ vide (le projet EST lié).
+  const companyOptions = useMemo(() => {
+    if (!form.company_id) return companies
+    if (companies.some(c => String(c.id) === String(form.company_id))) return companies
+    return [{ id: form.company_id, name: initial?.company_name || 'Entreprise liée' }, ...companies]
+  }, [companies, form.company_id, initial?.company_name])
 
   const doPersist = useCallback(async () => {
     const patch = persistQueue.current
@@ -124,8 +132,9 @@ function ProjectForm({ initial = {}, companies = [], onSave, onClose }) {
           <LinkedRecordField
             name="pipeline_company_id"
             value={form.company_id}
-            options={companies}
+            options={companyOptions}
             labelFn={c => c.name}
+            getHref={c => `/companies/${c.id}`}
             placeholder="Entreprise"
             onChange={v => setField({ company_id: v })}
           />
@@ -135,14 +144,6 @@ function ProjectForm({ initial = {}, companies = [], onSave, onClose }) {
           <select value={form.type} onChange={e => setField({ type: e.target.value })} className="select">
             <option value="">—</option>
             {PROJECT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="label">Statut</label>
-          <select value={form.status} onChange={e => setField({ status: e.target.value })} className="select">
-            <option value="Ouvert">Ouvert</option>
-            <option value="Gagné">Gagné</option>
-            <option value="Perdu">Perdu</option>
           </select>
         </div>
         <div>
@@ -157,12 +158,13 @@ function ProjectForm({ initial = {}, companies = [], onSave, onClose }) {
           <label className="label">Date de clôture prévue</label>
           <input type="date" value={form.close_date} onChange={e => setField({ close_date: e.target.value })} className="input" />
         </div>
-        {form.status === 'Perdu' && (
-          <div className="col-span-2">
-            <label className="label">Raison du refus</label>
-            <input value={form.refusal_reason} onChange={e => setField({ refusal_reason: e.target.value })} className="input" />
-          </div>
-        )}
+        {/* La raison du refus n'était affichée que pour un statut « Perdu ».
+            Le champ Statut ayant été retiré de la table, elle reste offerte en
+            permanence plutôt que de disparaître avec lui. */}
+        <div className="col-span-2">
+          <label className="label">Raison du refus</label>
+          <input value={form.refusal_reason} onChange={e => setField({ refusal_reason: e.target.value })} className="input" />
+        </div>
         <div className="col-span-2">
           <label className="label">Notes</label>
           <textarea value={form.notes} onChange={e => setField({ notes: e.target.value })} className="input" rows={3} />
@@ -189,7 +191,7 @@ function ProjectForm({ initial = {}, companies = [], onSave, onClose }) {
 export default function Pipeline() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
-  const monthFilter = searchParams.get('month') // e.g. "2026-03" — filters by close_date/updated_at
+  const monthFilter = searchParams.get('month') // e.g. "2026-03" — filters by close_date/creation
   const createdMonthFilter = searchParams.get('createdMonth') // e.g. "2026-03" — filters by created_at
   const [projects, setProjects] = useState([])
   const [companies, setCompanies] = useState([])
@@ -268,7 +270,10 @@ export default function Pipeline() {
     }
     if (!monthFilter) return projects
     return projects.filter(p => {
-      const d = p.close_date || p.updated_at || ''
+      // Même bucketing que le graphique « Taux de closing » du dashboard :
+      // close_date si renseignée, sinon `creation` (jamais `updated_at`, qui
+      // reflète la dernière synchro et non la vie du projet).
+      const d = p.close_date || p.creation || ''
       return d.startsWith(monthFilter)
     })
   }, [projects, monthFilter, createdMonthFilter])
@@ -278,14 +283,16 @@ export default function Pipeline() {
     render:
       meta.id === 'name' ? row => (
         <div className="group flex items-start justify-between gap-2">
-          <div>
-            <div className="font-medium text-slate-900">{row.name}</div>
-            {row.type && <div className="text-xs text-slate-400">{row.type}</div>}
-          </div>
+          <div className="font-medium text-slate-900">{row.name}</div>
           <button
             type="button"
             title="Modifier le projet"
             data-testid={`edit-project-${row.id}`}
+            // Le mousedown doit être arrêté ici : sinon la cellule du mode
+            // tableur prend le focus, se ré-affiche, et le mouseup tombe sur un
+            // autre nœud — le navigateur émet alors le `click` sur la ligne au
+            // lieu du bouton, et la modale ne s'ouvrait jamais à la souris.
+            onMouseDown={e => e.stopPropagation()}
             onClick={e => { e.stopPropagation(); setEditProject(row) }}
             className="opacity-0 group-hover:opacity-100 transition-opacity p-1 -m-1 text-slate-400 hover:text-brand-600 flex-shrink-0"
           >
@@ -296,9 +303,6 @@ export default function Pipeline() {
       meta.id === 'company_name' ? row => row.company_id
         ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
         : <span className="text-slate-400">—</span> :
-      meta.id === 'status' ? row => (
-        <Badge color={projectStatusColor(row.status)}>{row.status}</Badge>
-      ) :
       meta.id === 'probability' ? row => {
         if (row.probability == null) return <span className="text-slate-400">—</span>
         const color = row.probability >= 75 ? 'text-green-600' : row.probability >= 40 ? 'text-amber-500' : 'text-red-500'
@@ -355,7 +359,13 @@ export default function Pipeline() {
             <h1 className="text-2xl font-bold text-slate-900">Projets</h1>
           </div>
           <div className="flex items-center gap-2">
-            <Link to="/projects/fields" className="btn-secondary flex items-center gap-2" title="Gérer les champs (renommer, type, mapping Airtable)">
+            {/* Prospection tirée du Registre des entreprises du Québec : les
+                serres et horticulteurs du registre encore absents de l'ERP. */}
+            <Link to="/tests-antoine/prospects-req" className="btn-secondary flex items-center gap-2" title="Entreprises horticoles du Registre des entreprises du Québec absentes de l'ERP" data-testid="pipeline-req-prospects-link">
+              <Landmark size={15} className="text-brand-500" />
+              <span>Prospects REQ</span>
+            </Link>
+            <Link to="/champs/projects?tab=projets" className="btn-secondary flex items-center gap-2" title="Gérer les champs (ordre, renommage, type, mapping Airtable)">
               <Database size={15} className="text-brand-500" />
               <span>Champs</span>
             </Link>
@@ -367,7 +377,7 @@ export default function Pipeline() {
 
         {monthFilter && (
           <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg text-sm text-brand-700">
-            <span>Filtre : {new Date(monthFilter + '-15').toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })} · groupés par statut</span>
+            <span>Filtre : {new Date(monthFilter + '-15').toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })}</span>
             <button onClick={() => setSearchParams({})} className="ml-auto flex items-center gap-1 text-xs text-brand-500 hover:text-brand-700">
               <X size={13} /> Effacer
             </button>
@@ -390,12 +400,15 @@ export default function Pipeline() {
           onRowClick={row => navigate(`/projects/${row.id}`)}
           onCellEdit={(row, col, value) => updateProjectField(row.id, col.field, value)}
           searchFields={['name', 'company_name', 'type', 'vendeur_label', 'nom_du_vendeur', 'value_cad', 'monthly_cad']}
-          initialGroupBy={monthFilter ? 'status' : null}
           forceAllView={!!monthFilter || !!createdMonthFilter}
           disabledColumns={disabledCols}
           onAddCustomField={() => setCustomFieldModal({ editing: null })}
           customFieldsByColumn={customFieldsByColumn}
           customFieldsLoaded={customFieldsLoaded}
+          // Le menu d'en-tête (duplication, masquage global) crée ou masque des
+          // champs sans passer par les gestionnaires de cette page : sans ce
+          // rappel, sa liste de champs resterait périmée jusqu'au rechargement.
+          onFieldsChanged={async () => { await reloadCustomFields(); load() }}
           onEditCustomField={(field) => setCustomFieldModal({ editing: field })}
           onDeleteCustomField={handleDeleteCustomField}
         />

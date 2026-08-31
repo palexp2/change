@@ -45,12 +45,63 @@
 }
 .range-slider-thumb::-moz-range-track { background: transparent; border: none; }
 
+/* ── Teintes de section (navigation) ──────────────────────────────────
+   Un repère de couleur par groupe de la sidebar, pour se situer d'un coup
+   d'œil dans une app à soixante écrans. Cantonnées à la navigation : jamais
+   dans un tableau, jamais dans une pastille de statut — sinon elles entrent
+   en concurrence avec les couleurs sémantiques.
+
+   Teintes choisies pour ne recouper aucune sémantique : ni rouge (critique),
+   ni ambre (attention), ni vert autre que la marque (succès). Triplets RGB,
+   pour pouvoir moduler l'alpha. Variantes claires en mode nuit. */
+:root {
+  --acc-brand:      33 177 75;
+  --acc-clients:    47 110 158;   /* bleu ardoise */
+  --acc-envois:     42 127 123;   /* sarcelle */
+  --acc-compta:    156 110 31;    /* ocre */
+  --acc-inventaire:124 86 143;    /* prune */
+  --acc-rh:        161 74 110;    /* framboise sourde */
+  --acc-outils:    122 110 94;    /* gris chaud — fourre-tout, donc neutre */
+  --nav-accent: var(--acc-brand);
+}
+.dark {
+  --acc-brand:      79 201 120;
+  --acc-clients:   105 174 221;
+  --acc-envois:     87 189 182;
+  --acc-compta:    210 164 76;
+  --acc-inventaire:183 143 199;
+  --acc-rh:        216 141 172;
+  --acc-outils:    176 163 143;
+}
+
+@layer components {
+  /* Entrée de navigation active. En jour : aplat de la teinte de section,
+     texte blanc. En nuit les teintes sont claires — un aplat écraserait le
+     texte — donc voile teinté + texte de la teinte. */
+  .nav-active {
+    background-color: rgb(var(--nav-accent));
+    color: #fff;
+  }
+  .dark .nav-active {
+    background-color: rgb(var(--nav-accent) / 0.18);
+    color: rgb(var(--nav-accent));
+  }
+}
+
 @layer base {
   * {
     box-sizing: border-box;
   }
   body {
     @apply bg-slate-50 text-slate-900 antialiased;
+    /* Réglages fins façon Airtable : a/g à simple étage (cv05/ss01 sur Inter),
+       tracking légèrement resserré. font-mono (n° de série, suivi) n'hérite
+       pas de font-sans donc n'est pas affecté. */
+    font-feature-settings: 'cv05', 'ss01';
+    letter-spacing: -0.011em;
+  }
+  h1, h2, h3, h4, h5, h6 {
+    letter-spacing: -0.02em;
   }
 
   /* Custom scrollbar — subtle, matches the ERP aesthetic */
@@ -78,22 +129,29 @@
     @apply inline-flex items-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed;
   }
   .btn-primary {
-    @apply btn bg-brand-600 text-white hover:bg-brand-500 focus:ring-brand-500 shadow-sm shadow-brand-200;
+    @apply btn bg-brand-600 text-white hover:bg-brand-500 focus:ring-brand-500;
   }
+  /* Reskin : les boutons sont des surfaces fixes — la bordure chaude suffit à
+     les poser sur le fond crème, l'ombre est réservée à ce qui flotte. */
   .btn-secondary {
-    @apply btn bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 hover:border-slate-300 focus:ring-brand-500 shadow-sm;
+    @apply btn bg-white text-slate-700 border border-slate-300 hover:bg-slate-50 hover:border-slate-400 focus:ring-brand-500;
   }
   .btn-danger {
-    @apply btn bg-red-600 text-white hover:bg-red-500 focus:ring-red-500 shadow-sm shadow-red-100;
+    @apply btn bg-red-600 text-white hover:bg-red-500 focus:ring-red-500;
   }
   .btn-sm {
     @apply px-3 py-1.5 text-xs;
   }
+  /* Surface fixe : blanche, cernée d'un filet chaud, sans ombre. */
   .card {
-    @apply bg-white rounded-xl border border-slate-200/80 shadow-sm;
+    @apply bg-white rounded-xl border border-slate-200;
+  }
+  /* Surface flottante : blanche elle aussi, mais franchement détachée. */
+  .card-floating {
+    @apply bg-white rounded-xl border border-slate-100 shadow-xl;
   }
   .input {
-    @apply block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400 transition-all;
+    @apply block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400 transition-all;
   }
   .label {
     @apply block text-sm font-medium text-slate-600 mb-1;

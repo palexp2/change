@@ -82,9 +82,14 @@ export function parseDuplicateNameId(message, qbCode) {
 //  (b) le nom appartient à un CLIENT/EMPLOYÉ (ou un fournisseur inactif) → on ne peut
 //      pas réutiliser une autre entité comme fournisseur : on crée un fournisseur
 //      distinct suffixé « (Fournisseur) ».
-async function createVendorHandlingDuplicate(name) {
+async function createVendorHandlingDuplicate(name, currency) {
+  const vendorPayload = { DisplayName: name }
+  // Devise du NOUVEAU fournisseur = devise de la facture qui a déclenché sa création,
+  // sinon QB pose la home currency (CAD) par défaut — un fournisseur facturant en USD
+  // se retrouvait créé en CAD, faussant toute transaction future avec lui.
+  if (currency && currency !== 'CAD') vendorPayload.CurrencyRef = { value: currency }
   try {
-    const created = await qbPost('/vendor', { DisplayName: name })
+    const created = await qbPost('/vendor', vendorPayload)
     return created.Vendor.Id
   } catch (e) {
     const dupId = parseDuplicateNameId(e.message, e.qbCode)
@@ -95,22 +100,33 @@ async function createVendorHandlingDuplicate(name) {
       if (v?.Vendor?.Id) return v.Vendor.Id
     } catch { /* pas un fournisseur joignable (client/employé ou inactif) → on suffixe */ }
     // (b) Conflit avec une autre liste de noms → fournisseur distinct suffixé.
-    const created = await qbPost('/vendor', { DisplayName: `${name} (Fournisseur)` })
+    const created = await qbPost('/vendor', { ...vendorPayload, DisplayName: `${name} (Fournisseur)` })
     return created.Vendor.Id
   }
 }
 
-export async function findOrCreateVendor(vendorName) {
+// Un fournisseur en devise étrangère est nommé "<nom> - <devise>" — visible d'un coup
+// d'œil dans les listes QB/ERP (ex. "Airtable - USD"), sans dupliquer le suffixe si le
+// nom source (Airtable, etc.) le porte déjà.
+function withCurrencySuffix(name, currency) {
+  if (!currency || currency === 'CAD') return name
+  const already = new RegExp(`(^|[\\s-])${currency}$`, 'i').test(name.trim())
+  return already ? name : `${name} - ${currency}`
+}
+
+export async function findOrCreateVendor(vendorName, currency = 'CAD') {
+  const effectiveName = withCurrencySuffix(vendorName, currency)
+
   // 1. Chercher dans companies par nom pour récupérer un quickbooks_vendor_id déjà connu
   const existing = db.prepare(
     "SELECT id, quickbooks_vendor_id FROM companies WHERE name=? LIMIT 1"
-  ).get(vendorName)
+  ).get(effectiveName)
 
   if (existing?.quickbooks_vendor_id) return existing.quickbooks_vendor_id
 
   // 2. Chercher dans QB — exact, puis LIKE insensible à la casse/aux espaces
-  const safe = vendorName.replace(/'/g, "\\'")
-  const target = vendorName.trim().toLowerCase()
+  const safe = effectiveName.replace(/'/g, "\\'")
+  const target = effectiveName.trim().toLowerCase()
   let qbVendorId
 
   const exactQ = new URLSearchParams({ query: `SELECT * FROM Vendor WHERE DisplayName = '${safe}' MAXRESULTS 1` })
@@ -122,19 +138,20 @@ export async function findOrCreateVendor(vendorName) {
     const likeQ = new URLSearchParams({ query: `SELECT * FROM Vendor WHERE DisplayName LIKE '${safe}' MAXRESULTS 5` })
     const like = await qbGet(`/query?${likeQ}`)
     const matched = (like.QueryResponse?.Vendor || []).find(v => (v.DisplayName || '').trim().toLowerCase() === target)
-    qbVendorId = matched ? matched.Id : await createVendorHandlingDuplicate(vendorName)
+    qbVendorId = matched ? matched.Id : await createVendorHandlingDuplicate(effectiveName, currency)
   }
 
-  // 3. Mettre à jour ou créer l'entreprise locale
+  // 3. Mettre à jour ou créer l'entreprise locale (devise seulement à la création — un
+  // fournisseur existant garde la devise déjà choisie, on ne l'écrase pas ici)
   if (existing) {
     db.prepare("UPDATE companies SET quickbooks_vendor_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
       .run(qbVendorId, existing.id)
     emitCompany('updated', existing.id, null)
   } else {
     db.prepare(`
-      INSERT OR IGNORE INTO companies (id, name, type, quickbooks_vendor_id)
-      VALUES (?, ?, 'Fournisseur', ?)
-    `).run(randomUUID(), vendorName, qbVendorId)
+      INSERT OR IGNORE INTO companies (id, name, type, quickbooks_vendor_id, currency)
+      VALUES (?, ?, 'Fournisseur', ?, ?)
+    `).run(randomUUID(), effectiveName, qbVendorId, currency || 'CAD')
   }
 
   return qbVendorId
@@ -159,9 +176,9 @@ async function resolveQBVendor(row) {
   if (row.vendor_id) {
     const company = db.prepare('SELECT quickbooks_vendor_id, name FROM companies WHERE id=?').get(row.vendor_id)
     if (company?.quickbooks_vendor_id) return company.quickbooks_vendor_id
-    if (company) return findOrCreateVendor(company.name)
+    if (company) return findOrCreateVendor(company.name, row.currency)
   }
-  if (row.vendor) return findOrCreateVendor(row.vendor)
+  if (row.vendor) return findOrCreateVendor(row.vendor, row.currency)
   return null
 }
 
@@ -202,6 +219,19 @@ export async function pushAchatToQB(achatId) {
   const lineDetail = { AccountRef: { value: expenseAccountId } }
   if (applyTax) lineDetail.TaxCodeRef = { value: row.tax_code_id }
 
+  // CurrencyRef obligatoire dès que la devise de l'achat diffère de la home currency —
+  // QB rejette sinon la transaction (le fournisseur, lui, est créé/résolu dans cette
+  // même devise par resolveQBVendor). Taux Banque du Canada à la date de l'achat.
+  let currencyFields = {}
+  if (row.currency && row.currency !== 'CAD') {
+    let rate = 1
+    if (row.currency === 'USD') {
+      rate = await getUsdCadRate(row.date_achat)
+      if (!rate) throw new Error(`Taux USD→CAD indisponible pour ${row.date_achat} (Banque du Canada). Réessayer plus tard.`)
+    }
+    currencyFields = { CurrencyRef: { value: row.currency }, ExchangeRate: rate }
+  }
+
   const persist = (qbId, paymentAccountId) => {
     db.prepare(`
       UPDATE achats_fournisseurs
@@ -225,6 +255,7 @@ export async function pushAchatToQB(achatId) {
         AccountBasedExpenseLineDetail: lineDetail,
         Description: row.description || row.category,
       }],
+      ...currencyFields,
       ...taxDetail,
     }
     // Mémo QB (« Memo », PrivateNote) : seulement si l'achat en porte un. Demande de
@@ -254,6 +285,7 @@ export async function pushAchatToQB(achatId) {
       AccountBasedExpenseLineDetail: lineDetail,
       Description: row.notes || row.vendor_invoice_number || row.vendor,
     }],
+    ...currencyFields,
     ...taxDetail,
   }
   if (row.qb_memo) bill.PrivateNote = row.qb_memo
@@ -294,7 +326,7 @@ export async function syncAllAchatsToQB() {
 // ── Import depuis QB → factures_fournisseurs ─────────────────────────────────
 
 // Trouve ou crée une entreprise locale pour un fournisseur QB (sans appel API QB)
-function upsertVendorCompany(qbVendorId, vendorName) {
+function upsertVendorCompany(qbVendorId, vendorName, currency) {
   const byQbId = db.prepare(
     "SELECT id FROM companies WHERE quickbooks_vendor_id=?"
   ).get(qbVendorId)
@@ -312,9 +344,9 @@ function upsertVendorCompany(qbVendorId, vendorName) {
 
   const id = randomUUID()
   db.prepare(`
-    INSERT INTO companies (id, name, type, quickbooks_vendor_id)
-    VALUES (?, ?, 'Fournisseur', ?)
-  `).run(id, vendorName, qbVendorId)
+    INSERT INTO companies (id, name, type, quickbooks_vendor_id, currency)
+    VALUES (?, ?, 'Fournisseur', ?, ?)
+  `).run(id, vendorName, qbVendorId, currency || 'CAD')
   emitCompany('created', id, null)
   return id
 }
@@ -443,9 +475,9 @@ export async function importFromQB({ incremental = false, trigger = 'manual' } =
       const status   = mapBillStatus(bill)
       const docNum   = bill.DocNumber || null
       const notes    = bill.PrivateNote || null
-      const vendorCompanyId = qbVendorId ? upsertVendorCompany(qbVendorId, vendor) : null
-      const lines = extractLines(bill.Line)
       const currency = bill.CurrencyRef?.value || 'CAD'
+      const vendorCompanyId = qbVendorId ? upsertVendorCompany(qbVendorId, vendor, currency) : null
+      const lines = extractLines(bill.Line)
       const exchangeRate = Number(bill.ExchangeRate) > 0 ? Number(bill.ExchangeRate) : 1
 
       const existing = db.prepare(
@@ -508,9 +540,9 @@ export async function importFromQB({ incremental = false, trigger = 'manual' } =
       const notes          = purchase.PrivateNote || null
       const paymentMethod  = QB_PAYMENT_METHOD[purchase.PaymentType] || 'Autre'
       const description    = purchase.Line?.[0]?.Description || vendor
-      const vendorCompanyId = upsertVendorCompany(qbVendorId, vendor)
-      const lines = extractLines(purchase.Line)
       const currency = purchase.CurrencyRef?.value || 'CAD'
+      const vendorCompanyId = upsertVendorCompany(qbVendorId, vendor, currency)
+      const lines = extractLines(purchase.Line)
       const exchangeRate = Number(purchase.ExchangeRate) > 0 ? Number(purchase.ExchangeRate) : 1
 
       const existing = db.prepare(
@@ -783,7 +815,7 @@ export function buildReceiptLines(items, targetHt, { lineDetail, fallbackDescrip
   //  - le sentinel NO_TAX_CODE → AUCUN TaxCodeRef (taxe explicitement nulle : on retire
   //    le code global hérité, sinon une ligne « sans taxe » serait taxée au code document) ;
   //  - null/absent → réutilise lineDetail tel quel (suit le code global ; identité préservée).
-  const mkLine = (amount, description, taxCodeId) => {
+  const mkLine = (amount, description, taxCodeId, accountId) => {
     let detail
     if (taxCodeId === NO_TAX_CODE) {
       detail = { ...lineDetail }
@@ -793,6 +825,10 @@ export function buildReceiptLines(items, targetHt, { lineDetail, fallbackDescrip
     } else {
       detail = lineDetail
     }
+    // Compte de dépense PAR LIGNE (comme dans QuickBooks) : un même achat peut se
+    // ventiler sur plusieurs comptes (pièces au stock + frais de transport, matériel +
+    // abonnement…). Absent → la ligne garde l'AccountRef du document (identité préservée).
+    if (accountId) detail = { ...detail, AccountRef: { value: String(accountId) } }
     return { Amount: amount, DetailType: 'AccountBasedExpenseLineDetail', AccountBasedExpenseLineDetail: detail, Description: description }
   }
   // Une ligne rattachée à un achat LIA est publiée avec le code ET le nom de la pièce
@@ -803,13 +839,14 @@ export function buildReceiptLines(items, targetHt, { lineDetail, fallbackDescrip
       description: completeLiaDescription((it?.description || '').trim()),
       amount: Number(it?.total) || (Number(it?.unit_price) * Number(it?.quantity)) || 0,
       taxCodeId: it?.tax_code_id || null,
+      accountId: it?.expense_account_id || null,
     }))
     .filter(it => it.amount > 0)
 
   if (itemized.length > 0 && targetHt > 0) {
     const rawSum = itemized.reduce((s, it) => s + it.amount, 0)
     const scale = rawSum > 0 ? targetHt / rawSum : 1
-    const lines = itemized.map(it => mkLine(round2(it.amount * scale), it.description, it.taxCodeId))
+    const lines = itemized.map(it => mkLine(round2(it.amount * scale), it.description, it.taxCodeId, it.accountId))
     // Reporte l'écart d'arrondi sur la dernière ligne pour que la somme = targetHt.
     const drift = round2(targetHt - lines.reduce((s, l) => s + l.Amount, 0))
     if (drift !== 0) lines[lines.length - 1].Amount = round2(lines[lines.length - 1].Amount + drift)
@@ -879,7 +916,7 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
   // Résoudre le fournisseur
   let vendorId = params.vendorId || null
   if (!vendorId && params.newVendorName) {
-    vendorId = await findOrCreateVendor(params.newVendorName)
+    vendorId = await findOrCreateVendor(params.newVendorName, (rec.currency || 'CAD').toUpperCase())
   } else if (!vendorId && rec.company) {
     // fallback : chercher par nom extrait (ne crée pas automatiquement)
     const q = new URLSearchParams({ query: `SELECT * FROM Vendor WHERE DisplayName = '${rec.company.replace(/'/g, "\\'")}' MAXRESULTS 1` })

@@ -184,7 +184,7 @@ function sanitizeXmlText(s) {
     .trim()
 }
 
-export function buildRecipient(shipment) {
+export function buildRecipient(shipment, role = 'destinataire') {
   // Préférence : contact rattaché à l'adresse > company (le contact est le
   // destinataire physique du colis, ses coordonnées sont les bonnes).
   const rawEmail = shipment.address_contact_email || shipment.company_email || ''
@@ -195,14 +195,16 @@ export function buildRecipient(shipment) {
   // Validation — Novoxpress exige un courriel et un numéro de 10 chiffres
   // valides. Avant on injectait silencieusement '5550000000', ce qui causait
   // des étiquettes avec de fausses coordonnées. Maintenant on lève une erreur
-  // claire pour que l'utilisateur corrige la fiche contact/company.
+  // claire pour que l'utilisateur corrige la fiche contact/company. `role` est
+  // paramétrable car pour une étiquette de retour c'est le CLIENT qui est
+  // l'expéditeur (sender), pas le destinataire — cf. buildReturnPayload.
   const missing = []
   if (!rawEmail) missing.push('courriel')
   if (phone.length !== 10) missing.push('numéro de téléphone (10 chiffres)')
   if (missing.length) {
     throw new Error(
-      `Coordonnées du destinataire manquantes — ${missing.join(' et ')}. ` +
-      `Ajoutez ${missing.join(' et ')} sur le contact rattaché à l'adresse de livraison ` +
+      `Coordonnées du ${role} manquantes — ${missing.join(' et ')}. ` +
+      `Ajoutez ${missing.join(' et ')} sur le contact rattaché à l'adresse ` +
       `(ou à défaut sur la fiche entreprise « ${shipment.company_name || 'Client'} ») avant d'acheter l'étiquette.`
     )
   }
@@ -222,10 +224,15 @@ export function buildRecipient(shipment) {
   // endpoints (rate-estimate ET create-shipment) avec « ... contact_name is not
   // allowed ». Le champ était autrefois accepté (on l'envoyait pour éviter « NA »
   // sur l'étiquette), mais leur schéma s'est durci. On ne l'envoie donc plus du
-  // tout — le destinataire reste lisible via `company_name`. Seul
-  // `sender.contact_name` est encore toléré (cf. SENDER).
+  // tout — le destinataire reste lisible via `company_name`. Seul le `sender`
+  // (Orisha en sortant, le client en retour — cf. buildReturnPayload) tolère
+  // `contact_name` : on le construit ici mais on ne l'inclut que si role='expéditeur'.
+  const contactName = [shipment.address_contact_first_name, shipment.address_contact_last_name]
+    .filter(Boolean).join(' ').trim()
+
   return {
     company_name: sanitizeXmlText(shipment.company_name || 'Client').slice(0, 30),
+    ...(role === 'expéditeur' && contactName ? { contact_name: sanitizeXmlText(contactName).slice(0, 30) } : {}),
     email_address: rawEmail,
     address: {
       street_address: sanitizeXmlText(street).slice(0, 35),
@@ -244,6 +251,34 @@ export function buildPayload(shipment, packaging_type, packages, declaredValue =
   return {
     sender: SENDER,
     recipient: buildRecipient(shipment),
+    payment_type: 'Sender',
+    packaging_type: packaging_type || 'package',
+    packaging_properties: { packages, weight: { unit: 'lb' } },
+    additional_options: { declared_value: declaredValue, signature_option: 'SNR' }
+  }
+}
+
+// Orisha en tant que DESTINATAIRE (étiquette de retour) — dérivé de SENDER en
+// retirant `contact_name` (toléré côté sender, rejeté côté recipient — même
+// contrainte que buildRecipient plus haut).
+const ORISHA_AS_RECIPIENT = (() => {
+  const { contact_name: _drop, ...rest } = SENDER
+  return rest
+})()
+
+// Construit le payload d'une étiquette DE RETOUR : le client expédie, Orisha
+// reçoit — l'inverse exact de buildPayload. `ctx` a la même forme que le
+// `shipment` attendu par buildRecipient (cf. resolveReturnAddressContext dans
+// returnContext.js), c'est le client qui y est décrit.
+//
+// ⚠️ `payment_type: 'Sender'` n'a jamais été vérifié sur un payload inversé —
+// avant tout achat réel, valider en environnement dev Novoxpress (aucune
+// facturation, vraie validation XML) que ça ne facture pas le client. Voir
+// POST /api/retours/:id/diagnostic et le commentaire dans returnLabel.js.
+export function buildReturnPayload(ctx, packaging_type, packages, declaredValue = '1') {
+  return {
+    sender: buildRecipient(ctx, 'expéditeur'),
+    recipient: ORISHA_AS_RECIPIENT,
     payment_type: 'Sender',
     packaging_type: packaging_type || 'package',
     packaging_properties: { packages, weight: { unit: 'lb' } },
@@ -275,6 +310,23 @@ export async function getRates(shipment, { packaging_type, packages, declared_va
   // Inclut la réponse brute (hors ratelist déjà extrait) + le payload envoyé,
   // pour permettre au client d'afficher warnings/erreurs/diagnostics Novoxpress
   // lorsque ratelist est vide ou inattendu.
+  const { ratelist: _omit, ...response } = data
+  return { request_id: data.request_id || null, rates, response, sent: payload }
+}
+
+// Miroir de getRates pour une étiquette DE RETOUR (client → Orisha).
+export async function getReturnRates(ctx, { packaging_type, packages, declared_value }) {
+  const payload = buildReturnPayload(ctx, packaging_type, packages, declared_value || '1')
+  let data
+  try {
+    data = await apiPost('/services/rate-estimate', payload)
+  } catch (e) {
+    if (!e.sentPayload) e.sentPayload = payload
+    throw e
+  }
+  const rates = (data.ratelist || [])
+    .filter(r => !isHiddenCarrier(r))
+    .sort((a, b) => parseFloat(a.total?.value ?? 0) - parseFloat(b.total?.value ?? 0))
   const { ratelist: _omit, ...response } = data
   return { request_id: data.request_id || null, rates, response, sent: payload }
 }
@@ -451,6 +503,81 @@ export async function createLabel(shipment, erpShipmentId, { request_id, service
   let labelError = null
   try {
     const pdf = await fetchAndSaveLabelPdf(novoxShipmentId, erpShipmentId)
+    filename = pdf.filename
+    if (!trackingNumber) trackingNumber = pdf.trackingNumber
+  } catch (e) {
+    labelError = e.message
+  }
+
+  return { shipment_id: novoxShipmentId, tracking_id: trackingNumber, status: data.status, filename, labelError }
+}
+
+// Miroir de createLabel pour une étiquette DE RETOUR. Différences clés :
+// - le gate douanier teste le pays de l'EXPÉDITEUR (le client), pas du
+//   destinataire — après inversion le destinataire est toujours Orisha (CA),
+//   donc tester `recipient.address.country` manquerait TOUJOURS un retour
+//   US→CA et ferait passer le colis sans déclaration douanière (bloqué à la
+//   frontière).
+// - la valeur déclarée vient des `return_items` (ce qui revient réellement
+//   dans la boîte), pas de la commande entière.
+// - sémantique retour : reason_for_export='Return' (pas 'Permanent'),
+//   non_delivery='RTS' signifie ici « retour au client » si Postes Canada ne
+//   peut livrer à Orisha.
+// - le fichier est nommé `return-<erpReturnId>.pdf` pour ne jamais collisionner
+//   avec un shipment sortant du même id numérique.
+export async function createReturnLabel(ctx, erpReturnId, { request_id, service_id, packaging_type, packages, declared_value }) {
+  const details = buildReturnPayload(ctx, packaging_type, packages, declared_value || '1')
+
+  const senderCountry = details.sender.address.country
+  if (senderCountry !== 'CA') {
+    const items = db.prepare(`
+      SELECT ri.qty, p.price_cad AS unit_cost
+      FROM return_items ri
+      LEFT JOIN products p ON p.id = ri.product_id
+      WHERE ri.return_id = ?
+    `).all(erpReturnId)
+
+    const totalValue = items.reduce((sum, i) => sum + (i.unit_cost || 0) * (i.qty || 1), 0)
+    const totalWeight = packages.reduce((sum, p) => sum + Math.ceil(parseFloat(p.weight)) * parseInt(p.quantity || 1), 0)
+
+    Object.assign(details, {
+      reason_for_export: 'Return',
+      business_relationship: 'NotRelated',
+      non_delivery: 'RTS',
+      internationalForms: {
+        product: [{
+          product_name: 'Intelligent greenhouse thermostat (retour)',
+          desc: 'Intelligent greenhouse thermostat (retour)',
+          hscode: '9032.10.0030',
+          qty: '1',
+          unit_weight: String(totalWeight),
+          value: String(Math.max(1, Math.ceil(totalValue))),
+          country: 'CA'
+        }]
+      }
+    })
+  }
+
+  const createPayload = { request_id, service_id, details }
+  const data = await apiPost('/shipment/create-shipment', createPayload)
+
+  const novoxShipmentId = data.shipment_id
+  let trackingNumber = extractTrackingNumber(data)
+  if (!novoxShipmentId) {
+    const { message, upstream } = describeCreateLabelFailure(data)
+    const err = new Error(message)
+    err.sentPayload = createPayload
+    err.responseBody = JSON.stringify(data)
+    err.status = 200
+    err.upstream = upstream
+    throw err
+  }
+
+  const key = `return-${erpReturnId}`
+  let filename = null
+  let labelError = null
+  try {
+    const pdf = await fetchAndSaveLabelPdf(novoxShipmentId, key)
     filename = pdf.filename
     if (!trackingNumber) trackingNumber = pdf.trackingNumber
   } catch (e) {

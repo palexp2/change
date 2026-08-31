@@ -7,7 +7,7 @@ import {
   ArrowLeftRight, Clock, Tag, Wallet, Mail, PhoneCall,
   FolderOpen, Building2, ListChecks, Bot, Activity, Zap, Plug, Instagram
 } from 'lucide-react'
-import { FINANCE_GROUPS } from './financeSections.js'
+import { FINANCE_GROUPS, FINANCE_SECTIONS } from './financeSections.js'
 
 // Structure canonique du menu de gauche, partagée entre la sidebar (Layout)
 // et la page Paramètres (customisation afficher/cacher).
@@ -23,6 +23,27 @@ import { FINANCE_GROUPS } from './financeSections.js'
 export function navKey(item) {
   if (item.group) return `group:${item.group}`
   return item.to || item.href
+}
+
+// Groupes renommés : le nom du groupe SERT de clé de préférence, donc un
+// renommage orphelinerait l'ordre et les masquages déjà enregistrés en DB
+// (la section renommée retomberait en fin de liste / redeviendrait visible).
+// Les préférences sont relues à travers cette table au chargement.
+const RENAMED_NAV_KEYS = {
+  'group:Envois': 'group:Transport',
+}
+
+const canonicalKey = (key) => RENAMED_NAV_KEYS[key] || key
+
+export function canonicalNavHidden(hidden) {
+  return hidden.map(canonicalKey)
+}
+
+export function canonicalNavOrder(order) {
+  return Object.fromEntries(Object.entries(order).map(([container, keys]) => [
+    canonicalKey(container),
+    Array.isArray(keys) ? keys.map(canonicalKey) : keys,
+  ]))
 }
 
 function sortByKeys(list, keys) {
@@ -43,9 +64,12 @@ export function applyNavOrder(items, order) {
   ))
 }
 
+// `accent` : teinte de section (cf. index.css, `--acc-*`). Attachée au nom du
+// groupe et non à sa position — l'ordre de la nav est personnalisable par
+// utilisateur (`applyNavOrder`), la couleur ne doit pas se déplacer avec.
 export const defaultNavItems = [
   { to: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard' },
-  { group: 'Clients', icon: Contact, items: [
+  { group: 'Clients', icon: Contact, accent: 'clients', items: [
     { to: '/contacts',     icon: Contact,       label: 'Contacts' },
     { to: '/companies',    icon: Building2,     label: 'Entreprises' },
     { to: '/pipeline',     icon: TrendingUp,    label: 'Projets' },
@@ -57,12 +81,12 @@ export const defaultNavItems = [
     { to: '/discovery-forms', icon: FileText, label: 'Formulaires de découverte' },
     { to: '/prospects-instagram', icon: Instagram, label: 'Prospects Instagram' },
   ]},
-  { group: 'Envois', icon: Truck, items: [
+  { group: 'Transport', icon: Truck, accent: 'envois', items: [
     { to: '/orders',   icon: ShoppingCart, label: 'Commandes' },
     { to: '/envois',   icon: Truck,        label: 'Envois' },
     { to: '/retours',  icon: RotateCcw,    label: 'Retours' },
   ]},
-  { group: 'Comptabilité', icon: Landmark, items: [
+  { group: 'Comptabilité', icon: Landmark, accent: 'compta', items: [
     // Espace finance, en tête du groupe : hub du suivi comptable quotidien.
     // `flyoutGroups` en fait une entrée qui déploie ses sections dans un
     // panneau flottant au survol (NavFlyoutItem) au lieu de mener à une page —
@@ -74,25 +98,27 @@ export const defaultNavItems = [
     { to: '/items-vendus',          icon: Tag,        label: 'Items vendus' },
     { to: '/abonnements',           icon: RefreshCw,  label: 'Abonnements' },
     { to: '/abonnements/mouvements', icon: RefreshCw, label: "Mouvements d'abonnements" },
+    // La collecte de factures est un onglet de cette page : elle vit dans son
+    // sous-menu (lib/navSubsections.js), pas dans une entrée de menu à part.
     { to: '/sale-receipts',         icon: ReceiptText,label: 'Extraction de données' },
     { to: '/journal-entries',       icon: BookOpen,   label: 'Écritures de journal' },
     { to: '/comptabilite/regles-serials', icon: BookOpen, label: 'Mouvements numéros de série' },
     { to: '/stock-movement',        icon: ArrowLeftRight, label: "Mouvements d'inventaire" },
   ]},
-  { group: 'Inventaire', icon: Package, items: [
+  { group: 'Inventaire', icon: Package, accent: 'inventaire', items: [
     { to: '/purchases',    icon: ShoppingBag, label: 'Achats' },
     { to: '/assemblages',  icon: Wrench,      label: 'Assemblages' },
     { to: '/products',     icon: Package,     label: 'Pièces/Produits' },
     { to: '/serials',      icon: Barcode,     label: 'Numéros de série' },
   ]},
-  { group: 'RH', icon: Users, items: [
+  { group: 'RH', icon: Users, accent: 'rh', items: [
     { to: '/employees',        icon: Users,    label: 'Employés',              hrOnly: true },
     { to: '/feuille-de-temps', icon: Clock,    label: 'Feuille de temps' },
     { to: '/codes-activite',   icon: Tag,      label: "Codes d'activité",      hrOnly: true },
     { to: '/paies',            icon: Banknote, label: 'Paies' },
     { to: '/banque-heures',    icon: Wallet,   label: "Banque d'heures" },
   ]},
-  { group: 'Autres outils', icon: Wrench, items: [
+  { group: 'Autres outils', icon: Wrench, accent: 'outils', items: [
     { to: '/priorite-assemblage', icon: ListChecks, label: "Priorité d'assemblage" },
     { to: '/automations',  icon: Zap,             label: 'Automatisations' },
     // La page existait mais n'était joignable que par l'onglet Connecteurs de
@@ -104,3 +130,32 @@ export const defaultNavItems = [
     { external: true, href: 'https://customer.orisha.io/chatbot/admin', icon: Bot, label: 'Admin Chatbot' },
   ]},
 ]
+
+/**
+ * Entrée de menu qui « possède » une route — icône + teinte de section.
+ * Sert aux titres de page (cf. `components/PageTitle.jsx`) pour reprendre le
+ * même repère visuel que la sidebar sans le redéclarer page par page.
+ *
+ * Le plus long préfixe gagne : `/comptes-prepayes/3` retombe sur
+ * `/comptes-prepayes`, et une entrée plus précise l'emporterait sur elle.
+ * Les sections de l'Espace finance sont incluses (teinte `compta`) : elles
+ * vivent sous le groupe Comptabilité, dans un panneau flottant.
+ */
+export function findNavEntry(pathname) {
+  if (!pathname) return null
+  let best = null
+  const consider = (item, accent) => {
+    const path = (item.to || '').split('?')[0]
+    if (!path) return
+    if (pathname !== path && !pathname.startsWith(path + '/')) return
+    if (!best || path.length > best.path.length) {
+      best = { path, icon: item.icon, accent, label: item.label }
+    }
+  }
+  for (const entry of defaultNavItems) {
+    if (entry.items) entry.items.forEach(item => consider(item, entry.accent))
+    else consider(entry, entry.accent)
+  }
+  FINANCE_SECTIONS.forEach(section => consider(section, 'compta'))
+  return best
+}

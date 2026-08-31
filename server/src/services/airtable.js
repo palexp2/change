@@ -273,7 +273,7 @@ export async function syncAirtable(changes = null) {
       purgeOrphans('companies', records)
       await syncDynamicFields('airtable_companies', 'companies', config.base_id, config.companies_table_id, fieldMap, records)
     } else {
-      updateDynamicFields('companies', fieldMap, records)
+      await updateDynamicFields('companies', fieldMap, records)
     }
     } catch (e) { console.error('❌ Airtable companies:', e.message) }
     } // end if (!changes || _companyIds?.length)
@@ -332,7 +332,7 @@ export async function syncAirtable(changes = null) {
       purgeOrphans('contacts', records)
       await syncDynamicFields('airtable_contacts', 'contacts', config.base_id, config.contacts_table_id, fieldMap, records)
     } else {
-      updateDynamicFields('contacts', fieldMap, records)
+      await updateDynamicFields('contacts', fieldMap, records)
     }
     } catch (e) { console.error('❌ Airtable contacts:', e.message) }
     } // end if (!changes || _contactIds?.length)
@@ -474,7 +474,7 @@ export async function syncOrders(changes = null) {
       purgeOrphans('orders', records)
       await syncDynamicFields('orders', 'orders', config.base_id, config.orders_table_id, fm, records)
     } else {
-      updateDynamicFields('orders', fm, records)
+      await updateDynamicFields('orders', fm, records)
     }
     await evaluateFieldRules({ erpTable: 'orders', tableId: config.orders_table_id, changes })
 
@@ -586,7 +586,7 @@ export async function syncOrders(changes = null) {
       purgeOrphans('order_items', records)
       await syncDynamicFields('order_items', 'order_items', config.base_id, config.items_table_id, fm, records)
     } else {
-      updateDynamicFields('order_items', fm, records)
+      await updateDynamicFields('order_items', fm, records)
     }
 
     // Backfill shipped_unit_cost from Airtable's frozen total cost
@@ -749,7 +749,7 @@ export async function syncPieces(changes = null) {
       purgeOrphans('products', records)
       await syncDynamicFields('pieces', 'products', config.base_id, config.table_id, fieldMap, records)
     } else {
-      updateDynamicFields('products', fieldMap, records)
+      await updateDynamicFields('products', fieldMap, records)
     }
     await evaluateFieldRules({ erpTable: 'products', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Pièces sync:', e.message) }
@@ -909,7 +909,7 @@ export async function syncAchats(changes = null) {
       purgeOrphans('purchases', records)
       await syncDynamicFields('achats', 'purchases', config.base_id, config.table_id, fieldMap, records)
     } else {
-      updateDynamicFields('purchases', fieldMap, records)
+      await updateDynamicFields('purchases', fieldMap, records)
     }
     await evaluateFieldRules({ erpTable: 'purchases', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Achats sync:', e.message) }
@@ -1010,7 +1010,7 @@ export async function syncSerials(changes = null) {
       purgeOrphans('serial_numbers', records)
       await syncDynamicFields('serials', 'serial_numbers', config.base_id, config.table_id, fieldMap, records)
     } else {
-      updateDynamicFields('serial_numbers', fieldMap, records)
+      await updateDynamicFields('serial_numbers', fieldMap, records)
     }
     await evaluateFieldRules({ erpTable: 'serial_numbers', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Serials sync:', e.message) }
@@ -1136,7 +1136,7 @@ export async function syncEnvois(changes = null) {
       purgeOrphans('shipments', records)
       await syncDynamicFields('envois', 'shipments', config.base_id, config.table_id, fieldMap, records)
     } else {
-      updateDynamicFields('shipments', fieldMap, records)
+      await updateDynamicFields('shipments', fieldMap, records)
     }
     await evaluateFieldRules({ erpTable: 'shipments', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Envois sync:', e.message) }
@@ -1261,7 +1261,7 @@ export async function syncBillets(changes = null) {
     if (!changes) {
       await syncDynamicFields('billets', 'tickets', config.base_id, config.table_id, fieldMap, records)
     } else {
-      updateDynamicFields('tickets', fieldMap, records)
+      await updateDynamicFields('tickets', fieldMap, records)
     }
 
     await evaluateFieldRules({ erpTable: 'tickets', tableId: config.table_id, changes })
@@ -1413,6 +1413,18 @@ function upsertProjectRecord(rec, fmap, frozenSet, allowMissingCompany = false) 
   const unmappedDerived = new Set()
   if (!fmap?.status) unmappedDerived.add('status')
   if (!fmap?.close_date) unmappedDerived.add('close_date')
+  // Idem probability : « Probabilité » n'est pas dans le field_map hardcodé (elle
+  // est importée par le mapping dynamique, cf. airtableAutoSync). Sans ce garde-fou
+  // chaque passe écrivait probability=NULL avant que la passe dynamique ne la
+  // réécrive — et une désactivation de l'import du champ l'effaçait pour de bon.
+  if (!fmap?.probability) unmappedDerived.add('probability')
+  // Idem pour company_id : « Client final » est vide dans Airtable sur une partie
+  // des projets (et la 2e passe, allowMissingCompany=true, laisse passer un lien
+  // vers une entreprise absente de l'ERP). Écrire null effaçait alors l'entreprise
+  // du projet à chaque sync — y compris celle saisie à la main dans l'ERP, qui
+  // « disparaissait » de la fiche. On n'écrit company_id que si on a résolu une
+  // entreprise ; le délier se fait depuis l'ERP.
+  if (!companyId) unmappedDerived.add('company_id')
   if (existing) {
     const writable = allPairs.filter(([c]) => !frozenSet.has(c) && !unmappedDerived.has(c))
     if (!writable.length) return 'skipped'
@@ -1629,7 +1641,7 @@ export async function syncProjets(changes = null) {
     if (!changes) {
       await syncDynamicFields('projets', 'projects', config.base_id, config.projects_table_id, fieldMap, records)
     } else {
-      updateDynamicFields('projects', fieldMap, records)
+      await updateDynamicFields('projects', fieldMap, records)
     }
     await evaluateFieldRules({ erpTable: 'projects', tableId: config.projects_table_id, changes })
   } catch (e) { console.error('❌ Inventaire sync:', e.message) }
@@ -1730,7 +1742,7 @@ export async function syncSoumissions(changes = null) {
       purgeOrphans('soumissions', records)
       await syncDynamicFields('soumissions', 'soumissions', config.base_id, config.table_id, fm, records)
     } else {
-      updateDynamicFields('soumissions', fm, records)
+      await updateDynamicFields('soumissions', fm, records)
     }
     // Recompute projects.valeur_cad_calc for every project whose soumissions
     // were touched by this sync (uses Bank of Canada FX for USD conversions).
@@ -1791,7 +1803,7 @@ export async function syncRetours(changes = null) {
       purgeOrphans('returns', records)
       await syncDynamicFields('retours', 'returns', config.base_id, config.table_id, fm, records)
     } else {
-      updateDynamicFields('returns', fm, records)
+      await updateDynamicFields('returns', fm, records)
     }
     await evaluateFieldRules({ erpTable: 'returns', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Retours sync:', e.message) }
@@ -1848,7 +1860,7 @@ export async function syncRetourItems(changes = null) {
       purgeOrphans('return_items', records)
       await syncDynamicFields('retour_items', 'return_items', config.base_id, config.table_id, fm, records)
     } else {
-      updateDynamicFields('return_items', fm, records)
+      await updateDynamicFields('return_items', fm, records)
     }
   } catch (e) { console.error('❌ Retour items sync:', e.message) }
 }
@@ -1898,7 +1910,7 @@ export async function syncAdresses(changes = null) {
       purgeOrphans('adresses', records)
       await syncDynamicFields('adresses', 'adresses', config.base_id, config.table_id, fm, records)
     } else {
-      updateDynamicFields('adresses', fm, records)
+      await updateDynamicFields('adresses', fm, records)
     }
     await evaluateFieldRules({ erpTable: 'adresses', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Adresses sync:', e.message) }
@@ -2071,7 +2083,7 @@ export async function syncAssemblages(changes = null) {
       purgeOrphans('assemblages', records)
       await syncDynamicFields('assemblages', 'assemblages', config.base_id, config.table_id, fm, records)
     } else {
-      updateDynamicFields('assemblages', fm, records)
+      await updateDynamicFields('assemblages', fm, records)
     }
     await evaluateFieldRules({ erpTable: 'assemblages', tableId: config.table_id, changes })
   } catch (e) { console.error('❌ Assemblages sync:', e.message) }
@@ -2521,7 +2533,7 @@ export async function syncFactures(changes = null) {
       purgeOrphans('factures', records)
       await syncDynamicFields('factures', 'factures', config.base_id, config.table_id, fm, records)
     } else {
-      updateDynamicFields('factures', fm, records)
+      await updateDynamicFields('factures', fm, records)
     }
     // Download invoice PDFs from Airtable (URLs are temporary — must dl during sync)
     await downloadFacturePdfs(records)

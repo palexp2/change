@@ -300,16 +300,7 @@ function CreateModal({ onClose, onCreated }) {
 
 const RENDERS = {
   title: row => (
-    <div>
-      <div className="font-medium text-slate-900">{row.title || <span className="text-slate-400 italic">Sans titre</span>}</div>
-      {row.contact_name && (
-        <div className="text-xs">
-          {row.contact_id
-            ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.contact_name}</Link>
-            : <span className="text-slate-500">{row.contact_name}</span>}
-        </div>
-      )}
-    </div>
+    <div className="font-medium text-slate-900">{row.title || <span className="text-slate-400 italic">Sans titre</span>}</div>
   ),
   company_name: row => row.company_id
     ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline text-sm">{row.company_name}</Link>

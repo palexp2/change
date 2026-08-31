@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/auth.jsx'
+import { Logo } from '../components/Logo.jsx'
 
 export default function Login() {
   const [email, setEmail] = useState('')
@@ -26,12 +27,9 @@ export default function Login() {
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="text-center mb-8">
-          <img
-            src="/erp/orisha-logo.png"
-            alt="Orisha"
-            className="mx-auto mb-3 h-16 w-auto drop-shadow-lg"
-          />
-          <p className="text-slate-300 text-lg font-medium">ERP</p>
+          <Logo size={56} className="mx-auto mb-3 text-brand-400 drop-shadow-lg" />
+          <p className="text-white text-2xl font-semibold tracking-tight">Boréal</p>
+          <p className="text-slate-400 text-xs uppercase tracking-[0.2em] mt-1">Orisha</p>
           <p className="text-slate-400 text-sm mt-1">Système de gestion intégré</p>
         </div>
 

@@ -5,6 +5,7 @@ import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import TableThumb from '../components/TableThumb.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 
@@ -14,14 +15,10 @@ import { fmtCad } from '../utils/formatters.js'
 
 const RENDERS = {
   image: row => row.product_image
-    ? <img src={row.product_image} alt="" className="h-10 w-10 object-cover rounded border border-slate-200" loading="lazy" />
+    ? <TableThumb src={row.product_image} className="border border-slate-200" />
     : <span className="text-slate-300">—</span>,
-  product_name: row => (
-    <div>
-      <div className="font-medium text-slate-900">{row.product_name || '—'}</div>
-      {row.sku && <div className="text-xs text-slate-400 font-mono">{row.sku}</div>}
-    </div>
-  ),
+  product_name: row => <div className="font-medium text-slate-900">{row.product_name || '—'}</div>,
+  sku: row => row.sku ? <span className="text-slate-500 font-mono">{row.sku}</span> : null,
   supplier: row => {
     if (row.supplier_company_id && row.supplier_company_name) {
       return (

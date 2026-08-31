@@ -14,6 +14,7 @@ import {
   listPayments, getPayment, createPayment, setCleared, autoClearFromBank,
   validatePayment, PAYMENT_FIELDS, PAYMENT_METHODS,
   vendorPaymentHints, learnPaymentNote, paymentTemplates, openBills,
+  enrichInvoiceDatesFromQb,
 } from '../services/treasuryPayments.js'
 
 import {
@@ -23,6 +24,10 @@ import {
 import {
   updateCardDue, payCardDue, unpayCardDue, dismissCardDue,
 } from '../services/cardDues.js'
+
+import {
+  buildCardCeilings, createCard, updateCard, deleteCard, clearQbCardCache,
+} from '../services/cardCeiling.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -122,11 +127,50 @@ router.delete('/card-dues/:id/dismiss', (req, res) => {
   res.json(out.due)
 })
 
+// ── Plafond des cartes de crédit ─────────────────────────────────────────────
+// Question complémentaire de celle du dessus (« as-tu payé la carte ? ») : « la
+// carte a-t-elle encore de la place ? ». Solde QuickBooks + achats du relevé pas
+// encore comptabilisés, confrontés au plafond cible et au prélèvement du mois.
+
+router.get('/card-ceilings', async (req, res) => {
+  try {
+    res.json(await buildCardCeilings({ refresh: !!req.query.refresh }))
+  } catch (e) {
+    res.status(502).json({ error: e.message || 'Lecture des soldes impossible' })
+  }
+})
+
+router.post('/card-ceilings', (req, res) => {
+  const out = createCard(req.body || {})
+  if (out.error) return res.status(out.status || 400).json({ error: out.error })
+  res.status(201).json(out.card)
+})
+
+// Autosave : un champ à la fois, PATCH.
+router.patch('/card-ceilings/:id', (req, res) => {
+  const out = updateCard(req.params.id, req.body || {})
+  if (out.error) return res.status(out.status || 400).json({ error: out.error })
+  // Le compte QB a pu changer : le cache de solde porterait sinon l'ancien.
+  clearQbCardCache()
+  res.json(out.card)
+})
+
+router.delete('/card-ceilings/:id', (req, res) => {
+  const out = deleteCard(req.params.id)
+  if (out.error) return res.status(out.status || 404).json({ error: out.error })
+  res.json(out)
+})
+
 // banque. Tant qu'il ne l'est pas, il pèse sur la projection.
 
-router.get('/payments', (req, res) => {
+router.get('/payments', async (req, res) => {
   const status = ['pending', 'cleared', 'all'].includes(req.query.status) ? req.query.status : 'all'
   const rows = listPayments({ status, from: req.query.from, to: req.query.to, limit: req.query.limit })
+  // Date de la facture manquante, sans lien vers un achat ERP, mais avec un n°
+  // de facture : on va la chercher chez QuickBooks (Bill/Purchase par
+  // DocNumber). Best-effort — un échec (offline, pas trouvée) ne bloque jamais
+  // l'affichage, la ligne réessaiera au prochain chargement.
+  await enrichInvoiceDatesFromQb(rows).catch(() => {})
   // Deux liens QuickBooks, deux natures :
   //   - `qb_url` : l'écriture qui a prouvé le passage à la banque ;
   //   - `bill_qb_url` : la facture fournisseur réglée par ce paiement — c'est
@@ -280,7 +324,13 @@ router.get('/solde-sheet/status', async (req, res) => {
 
 router.post('/solde-sheet/sync', async (req, res) => {
   try {
-    const { syncSoldeSheet } = await import('../services/treasurySoldeSheet.js')
+    const { syncSoldeSheet, soldeSheetStatus } = await import('../services/treasurySoldeSheet.js')
+    // Automation désactivée le 2026-08-29 (Charles : le fichier créait des
+    // paiements en double avec Pmt_Suivi/la cédule) — le bouton manuel ne doit
+    // pas rester une porte de derrière qui relance la sync quand même.
+    if (!soldeSheetStatus().active) {
+      return res.status(409).json({ error: 'Synchronisation désactivée — voir la page Automations pour la réactiver' })
+    }
     const dryRun = req.body?.dry_run === true || req.body?.dry_run === '1' || req.query.dry_run === '1'
     const result = await syncSoldeSheet({ trigger: 'manual', apply: !dryRun, userId: req.user.id })
     res.json(result)

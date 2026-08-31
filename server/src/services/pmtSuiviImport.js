@@ -158,6 +158,7 @@ export function parsePmtSuivi({ rows, fills, since = '2026-01-01' }) {
       currency: amt.currency,
       account: classifyAccount(label, comment),
       label,
+      invoice_date: parseFrDate(row[cols.invoiceDate]) || null,
       invoice_number: String(row[cols.invoice] ?? '').trim() || null,
       reference,
       method: classifyMethod(comment),
@@ -253,7 +254,7 @@ async function runPmtSuiviImport({ since, googleAccountEmail, fileId, tab, userI
   const upd = db.prepare(`
     UPDATE treasury_payments SET
       payment_date=?, direction=?, amount=?, currency=?, account=?, label=?,
-      invoice_number=?, reference=?, method=?, notes=?,
+      invoice_date=?, invoice_number=?, reference=?, method=?, notes=?,
       cleared_at = CASE WHEN ? THEN COALESCE(cleared_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) ELSE NULL END,
       cleared_source = CASE WHEN ? THEN COALESCE(cleared_source, 'sheet') ELSE NULL END,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), deleted_at = NULL
@@ -264,7 +265,7 @@ async function runPmtSuiviImport({ since, googleAccountEmail, fileId, tab, userI
     if (existing) {
       if (apply) {
         upd.run(p.payment_date, p.direction, p.amount, p.currency, p.account, p.label,
-          p.invoice_number, p.reference, p.method, p.notes, p.cleared ? 1 : 0, p.cleared ? 1 : 0, existing.id)
+          p.invoice_date, p.invoice_number, p.reference, p.method, p.notes, p.cleared ? 1 : 0, p.cleared ? 1 : 0, existing.id)
       }
       updated++
       continue

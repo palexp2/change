@@ -1313,7 +1313,12 @@ function runDetachedExecution(taskId, prompt, {
   // claude reads the prompt from stdin (PROMPT file); stream-json → LOG; exit code → CODE.
   // --settings : branche le hook de steering (voir EXEC_INBOX) sur CETTE exécution.
   // Le hook est inerte sans ERP_AGENT_TASK_ID, donc sans effet ailleurs.
-  const cmd = `printf '%s\\n%s\\n' "$$" "${taskId}" > "${pidFile}"; ` +
+  // ⚠️ `$$` (pid du shell) doit être écrit DIFFÉREMMENT selon le lanceur : systemd
+  // interprète `$` dans les lignes de commande et replie `$$` en un simple `$` —
+  // le fichier PID contenait alors littéralement « $ », donc un pid illisible : à la
+  // reprise après redémarrage, une exécution bien vivante était déclarée « bloquée ».
+  // Sous systemd il faut donc `$$$$`, et `$$` sous le repli setsid (bash direct).
+  const cmd = `printf '%s\\n%s\\n' "__SHELL_PID__" "${taskId}" > "${pidFile}"; ` +
     `"${CLAUDE_BIN}" -p --output-format stream-json --verbose${modelFlags}${resumeFlag} ` +
     `--settings "${STEER_SETTINGS}" ` +
     `--allowedTools "${tools}" < "${PROMPT}" > "${LOG}" 2>&1; echo $? > "${CODE}"`
@@ -1342,7 +1347,7 @@ function runDetachedExecution(taskId, prompt, {
     `--property=CPUQuota=${EXEC_CPU_QUOTA}`,
     `--property=TasksMax=${EXEC_TASKS_MAX}`,
     `--property=WorkingDirectory=${CWD}`,
-    'bash', '-c', cmd,
+    'bash', '-c', cmd.replace('__SHELL_PID__', () => '$$$$'),
   ]
 
   const proc = spawn('systemd-run', systemdArgs, {
@@ -1361,7 +1366,7 @@ function runDetachedExecution(taskId, prompt, {
     if (fellBack) return
     fellBack = true
     console.warn(`🤖 Agent: systemd-run inutilisable (${why}) — repli setsid SANS plafond de ressources (tâche ${taskId})`)
-    const fb = spawn('setsid', ['--fork', 'bash', '-c', cmd], {
+    const fb = spawn('setsid', ['--fork', 'bash', '-c', cmd.replace('__SHELL_PID__', () => '$$')], {
       cwd: CWD, env: execEnv, detached: true, stdio: 'ignore',
     })
     fb.on('error', (e) => console.error(`🤖 Agent: spawn de repli en échec: ${e.message}`))

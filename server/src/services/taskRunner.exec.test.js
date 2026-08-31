@@ -86,17 +86,33 @@ before(() => {
   // doit donc rien démarrer.
   const cur = (() => { try { return JSON.parse(originalSettingsRaw || '{}') } catch { return {} } })()
   writeSettingsAtomic({ ...cur, enabled: false })
+  // Filet de sécurité : `after()` ne tourne pas si la suite est interrompue (Ctrl-C,
+  // timeout du runner, crash). Sans ça, l'agent de PROD restait coupé (`enabled:false`)
+  // et `.agent-pid` gardait le faux PID du test — l'ordonnanceur croyait alors qu'une
+  // exécution tournait et la file n'avançait plus. Ces handlers sont synchrones, donc
+  // valides dans 'exit'.
+  process.on('exit', restoreRealState)
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+    process.on(sig, () => { restoreRealState(); process.exit(1) })
+  }
 })
-after(() => {
+after(restoreRealState)
+
+// Restauration idempotente de l'état réel (settings + PID). Appelée par after(), et
+// à nouveau à la sortie du process quel qu'en soit le motif.
+let restored = false
+function restoreRealState() {
+  if (restored) return
+  restored = true
   // Restaurer le fichier de settings réel à l'identique (sans déclencher kick()).
-  if (originalSettingsRaw !== null) writeSettingsAtomic(JSON.parse(originalSettingsRaw))
+  try { if (originalSettingsRaw !== null) writeSettingsAtomic(JSON.parse(originalSettingsRaw)) } catch {}
   // Rendre le fichier PID à son propriétaire (exécution réelle en cours), ou le
   // retirer s'il n'en avait pas avant le test.
   try {
     if (originalPidRaw !== null) writeFileSync(PID_FILE, originalPidRaw, 'utf8')
     else if (existsSync(PID_FILE)) unlinkSync(PID_FILE)
   } catch {}
-})
+}
 
 test('exit code 0 → done avec rapport (réussite préservée malgré un restart)', async () => {
   const id = `e2e-exec-ok-${Date.now()}`

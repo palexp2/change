@@ -349,10 +349,6 @@ export function ClaudeUsageBar() {
           />
         )}
       </div>
-      <p className="mt-2 text-[11px] text-slate-400">
-        Aucune limite journalière : seuls comptent la fenêtre glissante de 5 h et les totaux hebdomadaires.
-        {!usage?.extraUsageEnabled && ' Aucun crédit de dépassement — au plafond, le travail attend la réinitialisation.'}
-      </p>
     </div>
   )
 }

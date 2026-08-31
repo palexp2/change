@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Plus, Play, RefreshCw, Trash2, KeyRound, ShieldAlert, Camera, ChevronDown, ChevronRight, Cookie, Target, Link2 } from 'lucide-react'
+import { Plus, Play, RefreshCw, Trash2, KeyRound, ShieldAlert, Camera, ChevronDown, ChevronRight, Cookie, Target, Link2, Wand2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { Link } from 'react-router-dom'
@@ -47,6 +46,30 @@ const NEED_META = {
 
 const money = (v, cur) => `${Math.abs(Number(v) || 0).toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${cur || ''}`.trim()
 
+// Résumé d'un message d'erreur : les collecteurs journalisent un contexte
+// détaillé (voir la capture / le journal) mais l'écran ne doit montrer qu'une
+// ligne — le détail complet reste à un clic, pas imposé.
+const shortError = (text) => {
+  const s = String(text || '').trim()
+  const cut = s.search(/ — | \(voir | \? /)
+  const head = cut > 10 ? s.slice(0, cut) : s
+  return head.length > 90 ? `${head.slice(0, 90)}…` : head
+}
+
+function ErrorLine({ text, className = '' }) {
+  const [open, setOpen] = useState(false)
+  const summary = shortError(text)
+  const hasMore = summary !== text.trim()
+  return (
+    <div className={className}>
+      <button onClick={() => setOpen(o => !o)} className="text-left hover:underline decoration-dotted disabled:no-underline" disabled={!hasMore}>
+        {summary}{hasMore && <span className="text-red-400"> {open ? '▲' : '▾'}</span>}
+      </button>
+      {open && <div className="mt-1 text-[11px] text-red-600/80 whitespace-pre-wrap">{text}</div>}
+    </div>
+  )
+}
+
 function NeedRow({ need }) {
   const meta = NEED_META[need.status] || NEED_META.en_attente
   return (
@@ -68,6 +91,40 @@ function NeedRow({ need }) {
 // Ce que la collecte doit aller chercher, et ce qu'elle n'a pas trouvé. Les
 // fournisseurs reconnus mais sans collecteur sont la file de priorisation pour
 // brancher le prochain portail.
+// Demande à l'agent d'écrire le collecteur d'un fournisseur détecté sans
+// portail branché — une carte dans la file de travaux (/travaux) plutôt qu'un
+// message à composer soi-même.
+function RequestScraperButton({ vendor }) {
+  const { addToast } = useToast()
+  const [state, setState] = useState('idle') // idle | sending | done
+  if (state === 'done') return <span className="text-[11px] text-emerald-600 shrink-0">Demandé ✓</span>
+  return (
+    <button
+      disabled={state === 'sending'}
+      onClick={async () => {
+        setState('sending')
+        try {
+          await api.travaux.createPrompt({
+            title: `Collecte de factures — ${vendor}`,
+            prompt: `Ajouter ${vendor} à la collecte automatique de factures (/collecte-factures) : écrire un collecteur Playwright (services/scrapers/${vendor.toLowerCase().replace(/\W+/g, '')}.js) sur le modèle des collecteurs existants (amazon.js, wix.js, bell.js, digikey.js), l'enregistrer dans services/scrapers/index.js, et suivre les règles du CLAUDE.md (changelog, rebuild, redémarrage).`,
+            mode: 'implement',
+            space: 'finance',
+          })
+          setState('done')
+          addToast({ message: `${vendor} ajouté à la file de travaux`, type: 'success' })
+        } catch (e) {
+          setState('idle')
+          addToast({ message: e.message, type: 'error' })
+        }
+      }}
+      title="Demander à l'agent d'écrire ce collecteur"
+      className="shrink-0 p-0.5 text-slate-400 hover:text-brand-600 disabled:opacity-40"
+    >
+      <Wand2 size={12} />
+    </button>
+  )
+}
+
 function NeedsPanel({ needs, accounts }) {
   const [open, setOpen] = useState(true)
   if (!needs) return null
@@ -117,8 +174,9 @@ function NeedsPanel({ needs, accounts }) {
               </div>
               <div className="px-3 pb-3 flex flex-wrap gap-1.5">
                 {uncovered.map(([vendor, list]) => (
-                  <span key={vendor} className="px-2 py-1 text-[11px] rounded-lg border border-slate-200 bg-white text-slate-600">
+                  <span key={vendor} className="flex items-center gap-1.5 px-2 py-1 text-[11px] rounded-lg border border-slate-200 bg-white text-slate-600">
                     {vendor} · {list.length} · {money(list.reduce((t, n) => t + Math.abs(n.amount || 0), 0), list[0]?.currency)}
+                    <RequestScraperButton vendor={vendor} />
                   </span>
                 ))}
               </div>
@@ -308,10 +366,10 @@ function RunRow({ run }) {
       {open && (
         <div className="px-9 pb-3 space-y-2">
           {run.error && (
-            <div className="relative text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-2 pr-16" data-run-error>
+            <div className="relative bg-red-50 border border-red-200 rounded-lg p-2 pr-16" data-run-error>
               <CopyButton text={run.error} label="Copier" title="Copier le message d'erreur"
                 className="absolute top-1.5 right-1.5 border-red-200 text-red-600 hover:text-red-800 hover:bg-red-100" />
-              {run.error}
+              <ErrorLine text={run.error} className="text-xs text-red-700" />
             </div>
           )}
           {run.artifacts?.length > 0 && (
@@ -379,7 +437,7 @@ function AccountCard({ account, onChanged }) {
           </div>
           {account.last_status === 'error' && account.last_error && (
             <div className="flex items-start gap-1.5 mt-1">
-              <div className="text-xs text-red-700 min-w-0 flex-1">{account.last_error}</div>
+              <ErrorLine text={account.last_error} className="text-xs text-red-700 min-w-0 flex-1" />
               <CopyButton text={account.last_error} title="Copier le message d'erreur"
                 className="shrink-0 border-red-200 text-red-600 hover:text-red-800 hover:bg-red-50" />
             </div>
@@ -443,7 +501,11 @@ function AccountCard({ account, onChanged }) {
   )
 }
 
-export default function InvoiceCollection() {
+// Contenu de la page, sans <Layout> : monté tel quel dans l'onglet « Collecte
+// de factures » d'Extraction de données (voir SaleReceipts.jsx). L'accès
+// direct par le menu de gauche pointe vers ce même onglet — plus de route
+// séparée à maintenir en double.
+export function InvoiceCollectionPanel() {
   const { addToast } = useToast()
   const [data, setData] = useState(null)
   const [needs, setNeeds] = useState(null)
@@ -475,9 +537,11 @@ export default function InvoiceCollection() {
     .filter(Boolean)
 
   return (
-    <Layout>
-      <div className="flex items-center justify-between mb-1">
-        <h1 className="text-xl font-semibold text-slate-800">Collecte de factures</h1>
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm text-slate-500">
+          Pour les fournisseurs qui n'envoient pas leurs factures par courriel et n'offrent pas d'API.
+        </p>
         <div className="flex items-center gap-2">
           <button onClick={load} className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg">
             <RefreshCw size={15} />
@@ -492,10 +556,6 @@ export default function InvoiceCollection() {
           </button>
         </div>
       </div>
-      <p className="text-sm text-slate-500 mb-4">
-        Pour les fournisseurs qui n'envoient pas leurs factures par courriel et n'offrent pas d'API.
-        Les factures récupérées tombent directement dans l'extracteur de données.
-      </p>
 
       {data?.chromium === false && (
         <div className="mb-4 p-3 rounded-xl border border-red-200 bg-red-50 text-sm text-red-800">
@@ -525,6 +585,6 @@ export default function InvoiceCollection() {
         <NewAccountModal vendors={data?.vendors || []} vendorProfiles={data?.vendor_profiles || []}
           onClose={() => setCreating(false)} onCreated={load} />
       )}
-    </Layout>
+    </div>
   )
 }

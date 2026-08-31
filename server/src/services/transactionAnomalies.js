@@ -312,7 +312,7 @@ export function detectReceiptAnomalies(rec) {
         kind: 'extraction_incomplete',
         severity: 'medium',
         fingerprint: `extraction_incomplete:${rec.id}`,
-        message: `Extraction sans résultat${context ? ` (${context})` : ''} : ni date, ni ligne, ni montant — document illisible ou capture ratée du collecteur. Ce n'est PAS un document à 0,00 $ : relancer l'extraction ou récupérer le vrai document.`,
+        message: `${context ? `${context} — ` : ''}ni date, ni ligne, ni montant : document illisible, pas un 0,00 $. Relancer l'extraction.`,
         details: { source: rec.source || null, original_name: rec.original_name || null },
       })
     } else {
@@ -320,7 +320,7 @@ export function detectReceiptAnomalies(rec) {
         kind: 'zero_total',
         severity: 'low',
         fingerprint: `zero_total:${rec.id}`,
-        message: `Document à 0,00 ${rec.currency || 'CAD'}${context ? ` (${context})` : ''} — rien à payer ni à comptabiliser. Il peut être archivé.`,
+        message: `0,00 ${rec.currency || 'CAD'}${context ? ` · ${context}` : ''} — rien à payer ni à comptabiliser, archivable.`,
         details: {},
       })
     }
@@ -346,7 +346,7 @@ export function detectReceiptAnomalies(rec) {
         kind: 'duplicate_number',
         severity: 'high',
         fingerprint: pairFingerprint('duplicate_number', rec.id, p.id),
-        message: `Doublon probable : facture nº ${rec.receipt_number} (${total.toFixed(2)} ${rec.currency || 'CAD'}) déjà présente — « ${p.company || '?'} » du ${p.receipt_date || '?'}${p.quickbooks_id ? `, déjà publiée sur QB (#${p.quickbooks_id})` : ''}.`,
+        message: `Nº ${rec.receipt_number} (${total.toFixed(2)} ${rec.currency || 'CAD'}) déjà présent : ${p.company || '?'} du ${p.receipt_date || '?'}${p.quickbooks_id ? ` · publié QB #${p.quickbooks_id}` : ''}.`,
         details: { other_receipt_id: p.id, other_qb_id: p.quickbooks_id, other_source: p.source },
       })
       continue
@@ -365,7 +365,7 @@ export function detectReceiptAnomalies(rec) {
             kind: 'duplicate_amount',
             severity: 'medium',
             fingerprint: pairFingerprint('duplicate_amount', rec.id, p.id),
-            message: `Doublon possible : ${rec.company || '?'} — deux documents de ${total.toFixed(2)} ${rec.currency || 'CAD'} à ${Math.round(gap)} jour(s) d'écart (${rec.receipt_date || '?'} et ${p.receipt_date || '?'})${evidence.length ? `, ${evidence.join(', ')}` : ''}.`,
+            message: `${rec.company || '?'} · 2 documents de ${total.toFixed(2)} ${rec.currency || 'CAD'} à ${Math.round(gap)} j d'écart (${rec.receipt_date || '?'}, ${p.receipt_date || '?'})${evidence.length ? ` · ${evidence.join(', ')}` : ''}.`,
             details: { other_receipt_id: p.id, other_qb_id: p.quickbooks_id, gap_days: gap, evidence },
           })
         }
@@ -389,9 +389,9 @@ export function detectReceiptAnomalies(rec) {
     const gap = daysBetween(rec.receipt_date, a.date_achat)
     const paid = round2(a.amount_paid_cad) > 0
     const paidNote = paid
-      ? ` ⚠️ L'écriture existante est déjà payée (${round2(a.amount_paid_cad).toFixed(2)} $)${rec.quickbooks_id ? '.' : " — la comptabiliser une seconde fois exposerait à un double paiement."}`
+      ? ` ⚠️ Écriture déjà payée (${round2(a.amount_paid_cad).toFixed(2)} $)${rec.quickbooks_id ? '.' : ' — risque de double paiement.'}`
       : ''
-    const label = `${a.vendor || '?'} · ${round2(a.total_cad).toFixed(2)} ${a.currency || 'CAD'} du ${a.date_achat || '?'} (QB ${a.type === 'bill' ? 'facture' : 'dépense'} #${a.quickbooks_id})`
+    const label = `${a.vendor || '?'} · ${round2(a.total_cad).toFixed(2)} ${a.currency || 'CAD'} du ${a.date_achat || '?'} · QB ${a.type === 'bill' ? 'facture' : 'dépense'} #${a.quickbooks_id}`
 
     // Même numéro de pièce + même total : quasi certain. Numéro court → exiger
     // aussi le même fournisseur et des dates proches (cf. duplicate_number).
@@ -407,8 +407,8 @@ export function detectReceiptAnomalies(rec) {
         // Reçu déjà publié : l'avertissement n'est plus préventif mais constate une
         // double écriture dans QB — c'est l'écriture en trop qu'il faut aller annuler.
         message: rec.quickbooks_id
-          ? `Double écriture dans QuickBooks : la facture nº ${rec.receipt_number} (${total.toFixed(2)} ${rec.currency || 'CAD'}), publiée ici sous #${rec.quickbooks_id}, existe AUSSI sous — ${label}.${paidNote}`
-          : `Déjà comptabilisée dans QuickBooks : la facture nº ${rec.receipt_number} (${total.toFixed(2)} ${rec.currency || 'CAD'}) correspond à une écriture existante — ${label}. Ne pas la publier une seconde fois.${paidNote}`,
+          ? `Nº ${rec.receipt_number} (${total.toFixed(2)} ${rec.currency || 'CAD'}) publié ici #${rec.quickbooks_id} ET sous ${label} — annuler l'écriture en trop.${paidNote}`
+          : `Nº ${rec.receipt_number} (${total.toFixed(2)} ${rec.currency || 'CAD'}) déjà comptabilisé : ${label}. Ne pas republier.${paidNote}`,
         details: { achat_id: a.id, qb_id: a.quickbooks_id, qb_type: a.type, amount_paid: round2(a.amount_paid_cad), match: 'number' },
       })
       continue
@@ -423,7 +423,7 @@ export function detectReceiptAnomalies(rec) {
         kind: 'possible_duplicate_in_qb',
         severity: 'medium',
         fingerprint: `possible_duplicate_in_qb:${rec.id}:${a.id}`,
-        message: `Peut-être déjà comptabilisée dans QuickBooks : une écriture du même fournisseur et du même montant existe à ${Math.round(gap)} jour(s) d'écart — ${label}.${paidNote}`,
+        message: `Même fournisseur, même montant à ${Math.round(gap)} j d'écart : ${label}.${paidNote}`,
         details: { achat_id: a.id, qb_id: a.quickbooks_id, qb_type: a.type, amount_paid: round2(a.amount_paid_cad), gap_days: gap, match: 'amount' },
       })
     }
@@ -456,7 +456,7 @@ export function detectReceiptAnomalies(rec) {
           kind: 'amount_outlier',
           severity: 'medium',
           fingerprint: `amount_outlier:${rec.id}`,
-          message: `Montant inhabituel : ${total.toFixed(2)} ${rec.currency || 'CAD'} pour ${rec.company}, soit ${(total / med).toFixed(1)}× la médiane des 12 derniers mois (${med.toFixed(2)} $, ${totals.length} documents).`,
+          message: `${total.toFixed(2)} ${rec.currency || 'CAD'} pour ${rec.company} = ${(total / med).toFixed(1)}× la médiane 12 mois (${med.toFixed(2)} $, ${totals.length} documents).`,
           details: { median: med, samples: totals.length },
         })
       }
@@ -473,7 +473,7 @@ export function detectReceiptAnomalies(rec) {
           kind: 'currency_mismatch',
           severity: 'medium',
           fingerprint: `currency_mismatch:${rec.id}`,
-          message: `Devise inhabituelle : ${recCurrency} pour ${rec.company}, alors que ${share}/${currencies.length} documents des 12 derniers mois sont en ${dominant}. Vérifier que les montants ne sont pas dans la mauvaise devise.`,
+          message: `${recCurrency} pour ${rec.company}, alors que ${share}/${currencies.length} documents des 12 derniers mois sont en ${dominant}.`,
           details: { dominant, share, samples: currencies.length },
         })
       }
@@ -701,8 +701,8 @@ export async function verifyPublishedQbLinks({ fetchEntity, sinceDays = 400 } = 
       severity: twin ? 'medium' : 'high',
       fingerprint,
       message: twin
-        ? `Lien QuickBooks périmé : ${label} se dit publiée sous #${rec.quickbooks_id}, mais cette écriture n'existe plus dans QuickBooks. Le même montant est comptabilisé sous #${twin.quickbooks_id} du ${twin.date_achat}${twin.sameVendor ? '' : ` (au nom de « ${twin.vendor} »)`} — à confirmer, puis rattacher le reçu.`
-        : `Écriture disparue de QuickBooks : ${label} se dit publiée sous #${rec.quickbooks_id}, mais cette écriture n'existe plus et aucune écriture du même montant n'a été trouvée à ±15 jours. La dépense n'est plus comptabilisée — la republier.`,
+        ? `${label} : #${rec.quickbooks_id} n'existe plus dans QB. Même montant sous #${twin.quickbooks_id} du ${twin.date_achat}${twin.sameVendor ? '' : ` (« ${twin.vendor} »)`} — à confirmer et rattacher.`
+        : `${label} : #${rec.quickbooks_id} n'existe plus dans QB, rien d'équivalent à ±15 j — la dépense n'est plus comptabilisée, à republier.`,
       details: {
         qb_id: rec.quickbooks_id, qb_type: rec.quickbooks_type,
         replacement_qb_id: twin?.quickbooks_id || null, achat_id: twin?.id || null,

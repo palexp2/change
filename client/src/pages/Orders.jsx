@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
-import { Plus, Package, SlidersHorizontal } from 'lucide-react'
+import { Plus, Package } from 'lucide-react'
 import api from '../lib/api.js'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
@@ -8,7 +8,6 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { AirtableCoreMapModal } from '../components/AirtableCoreMapModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -96,7 +95,6 @@ function NewOrderModal({ companies, users, onSave, onClose }) {
 export default function Orders() {
   const navigate = useNavigate()
   const [showModal, setShowModal] = useState(false)
-  const [airtableMapOpen, setAirtableMapOpen] = useState(false)
 
   // Cache global : hydraté au login par /api/bootstrap, rafraîchi par delta
   // polling toutes les 10s. Pas de WS direct ici — lag max ~10s acceptable
@@ -138,14 +136,6 @@ export default function Orders() {
             <h1 className="text-2xl font-bold text-slate-900">Commandes</h1>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setAirtableMapOpen(true)}
-              className="btn-secondary btn-sm flex items-center gap-1.5"
-              title="Choisir quels champs Airtable alimentent les commandes et leurs lignes"
-              data-testid="orders-airtable-map-open"
-            >
-              <SlidersHorizontal size={13} /> Sync Airtable
-            </button>
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouvelle commande
             </button>
@@ -169,16 +159,6 @@ export default function Orders() {
         <NewOrderModal companies={companies} users={users} onSave={handleCreate} onClose={() => setShowModal(false)} />
       </Modal>
 
-      <AirtableCoreMapModal
-        isOpen={airtableMapOpen}
-        onClose={() => setAirtableMapOpen(false)}
-        modules={[
-          { module: 'orders', title: 'Commandes' },
-          { module: 'order_items', title: 'Lignes de commande' },
-        ]}
-        title="Mapping des champs Airtable"
-        onSaved={syncStore}
-      />
     </Layout>
   )
 }

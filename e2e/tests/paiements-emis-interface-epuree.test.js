@@ -11,8 +11,10 @@
 //      dans le premier écran ;
 //   2. « Nouveau paiement » ouvre la saisie (avec les factures à payer), la croix
 //      la referme ;
-//   3. une ligne = une seule ligne ; les champs secondaires (référence, note,
-//      sens…) n'apparaissent qu'au clic sur le chevron ;
+//   3. une ligne = une seule ligne — dans l'ordre des colonnes de l'onglet
+//      Pmt_Suivi du fichier CTB - Suivi (référence et commentaire y compris) ;
+//      seuls les champs sans équivalent dans le fichier (sens, comptes,
+//      bénéficiaire réel) s'ouvrent au clic sur le chevron ;
 //   4. les actions rares (import, appariement) vivent dans le menu « ⋯ ».
 //
 // Aucun record réel n'est touché : le paiement créé porte un libellé jetable E2E
@@ -112,26 +114,26 @@ describe('Paiements émis — interface épurée', () => {
     assert.equal(await count('[data-testid="open-bills-panel"]'), 0)
   })
 
-  test('une ligne tient sur une ligne : les détails s\'ouvrent au chevron', async () => {
+  test('une ligne tient sur une ligne, avec les colonnes de Pmt_Suivi', async () => {
     const row = `[data-testid="payment-row-${paymentId}"]`
     await page.waitForSelector(row, { timeout: 20000 })
 
-    // Replié : que l'essentiel (statut, date, bénéficiaire, montant).
-    assert.equal(await count(`[data-testid="payment-reference-${paymentId}"]`), 0,
-      'le n° de confirmation ne doit pas encombrer la ligne')
-    assert.equal(await count(`[data-testid="payment-notes-${paymentId}"]`), 0,
-      'la note ne doit pas encombrer la ligne')
+    // Colonnes de l'onglet Pmt_Suivi : visibles directement dans la ligne, pas
+    // derrière le chevron.
     assert.equal(await count(`[data-testid="payment-cleared-${paymentId}"]`), 1,
       '« passé à la banque » reste visible sans rien ouvrir')
+    assert.equal(await page.inputValue(`[data-testid="payment-reference-${paymentId}"]`), `CONF${STAMP}`,
+      '# Paiement doit être visible dans la ligne, comme dans Pmt_Suivi')
+    assert.equal(await page.inputValue(`[data-testid="payment-notes-${paymentId}"]`), 'note jetable e2e',
+      'Commentaire doit être visible dans la ligne, comme dans Pmt_Suivi')
 
     const height = (await page.locator(row).boundingBox()).height
-    assert.ok(height < 48, `la ligne repliée doit tenir sur une ligne (${Math.round(height)} px)`)
+    assert.ok(height < 48, `la ligne doit tenir sur une seule ligne (${Math.round(height)} px)`)
 
-    // Déplié : tous les champs de saisie, autosauvegardés comme avant.
+    // Déplié : les champs sans équivalent dans le fichier (sens, comptes,
+    // bénéficiaire réel), autosauvegardés comme avant.
     await page.click(`[data-testid="payment-expand-${paymentId}"]`)
     await page.waitForSelector(`[data-testid="payment-details-${paymentId}"]`, { timeout: 5000 })
-    assert.equal(await page.inputValue(`[data-testid="payment-reference-${paymentId}"]`), `CONF${STAMP}`)
-    assert.equal(await page.inputValue(`[data-testid="payment-notes-${paymentId}"]`), 'note jetable e2e')
 
     // Et le détail se referme.
     await page.click(`[data-testid="payment-expand-${paymentId}"]`)

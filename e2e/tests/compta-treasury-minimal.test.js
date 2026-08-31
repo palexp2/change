@@ -1,10 +1,14 @@
 // Dashboard comptabilité → « Projection du solde BNC » réduite à l'essentiel.
 //
-// La projection portait une pile d'annexes (contrôle prévu/réel, vue calendrier,
-// passé réel du relevé, rentrées estimées, bandeaux d'écart et de paiements émis).
-// Tout ça vit maintenant dans les pages dédiées — Rapprochement bancaire et
-// Paiements émis. Ce test verrouille les deux sens : l'essentiel est là, les
-// annexes ne reviennent pas.
+// La projection portait une pile d'annexes (contrôle prévu/réel, passé réel du
+// relevé, rentrées estimées, bandeaux d'écart et de paiements émis). Tout ça vit
+// maintenant dans les pages dédiées — Rapprochement bancaire et Paiements émis.
+// Ce test verrouille les deux sens : l'essentiel est là, les annexes ne
+// reviennent pas.
+//
+// Exception : la bascule liste / calendrier a été redemandée et remise (voir
+// compta-treasury-calendrier.test.js) — elle n'est donc plus dans la liste des
+// annexes bannies.
 //
 // Lecture seule — aucun record créé, aucune configuration modifiée.
 const { test, describe, before, after } = require('node:test')
@@ -58,9 +62,6 @@ describe('Comptabilité — projection du solde minimale', () => {
       'treasury-variance',           // bandeau d'écart de réconciliation
       'treasury-pending-payments',   // bandeau des paiements émis
       'treasury-toggle-estimates',   // rentrées estimées
-      'treasury-view-list',          // bascule liste / calendrier
-      'treasury-view-calendar',
-      'treasury-calendar',
       'treasury-past-range',         // menu du passé réel
       'treasury-past-header',
     ]) {

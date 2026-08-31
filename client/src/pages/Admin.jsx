@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Trash2, Plug, Bot, Users, Hash, Network, Activity } from 'lucide-react'
+import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Trash2, Plug, Users, Network, Activity } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { fmtDateTime } from '../lib/formatDate.js'
@@ -9,13 +9,12 @@ import { Modal } from '../components/Modal.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { CorbeilleContent } from './Corbeille.jsx'
 import { ConnectorsContent } from './Connectors.jsx'
-import { AgentContent } from './Agent.jsx'
 import { ArchitectureContent } from './Architecture.jsx'
 import { ActivityContent } from './ActivityFeed.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { TABLE_COLUMN_META, TABLE_LABELS } from '../lib/tableDefs.js'
-import { FieldSelect } from '../components/FilterRow.jsx'
-import { useDecimalPrefs } from '../lib/decimalPrefs.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 function fmt(bytes) {
   if (bytes == null) return '—'
@@ -433,75 +432,13 @@ function ResetPasswordForm({ userId, onClose }) {
   )
 }
 
-// Réglage du nombre de décimales affichées par colonne numérique. La préférence
-// est par utilisateur (users.decimal_preferences) et appliquée dans DataTable.
-function DecimalsSection() {
-  const { getDecimals, setDecimals } = useDecimalPrefs()
-
-  // Tables possédant au moins une colonne type:'number'. Picker recherchable.
-  const tableOptions = Object.keys(TABLE_COLUMN_META)
-    .filter(t => (TABLE_COLUMN_META[t] || []).some(c => c.type === 'number'))
-    .map(t => ({ id: t, field: t, label: TABLE_LABELS[t] || t }))
-    .sort((a, b) => a.label.localeCompare(b.label, 'fr'))
-
-  const [table, setTable] = useState(tableOptions[0]?.field || '')
-
-  const numericCols = (TABLE_COLUMN_META[table] || []).filter(c => c.type === 'number')
-
-  return (
-    <div className="bg-white rounded-xl border border-slate-200 p-5 max-w-2xl">
-      <h2 className="font-semibold text-slate-800 flex items-center gap-2 mb-1">
-        <Hash size={16} /> Décimales d'affichage
-      </h2>
-      <p className="text-slate-500 text-sm mb-4">
-        Choisissez le nombre de décimales affichées pour chaque colonne numérique dans les tableaux.
-        Le réglage est propre à votre compte. « Brut » conserve la valeur telle quelle.
-      </p>
-
-      <div className="mb-4">
-        <label className="block text-xs font-medium text-slate-500 mb-1">Table</label>
-        <div className="flex max-w-xs">
-          <FieldSelect columns={tableOptions} value={table} onChange={setTable} cls="text-sm" />
-        </div>
-      </div>
-
-      {numericCols.length === 0 ? (
-        <p className="text-sm text-slate-400">Aucune colonne numérique pour cette table.</p>
-      ) : (
-        <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg overflow-hidden">
-          {numericCols.map(col => {
-            const current = getDecimals(table, col.field)
-            return (
-              <div key={col.id} className="flex items-center justify-between gap-3 px-3 py-2">
-                <span className="text-sm text-slate-700 truncate">{col.label}</span>
-                <select
-                  value={current == null ? '' : String(current)}
-                  onChange={e => {
-                    const v = e.target.value
-                    setDecimals(table, col.field, v === '' ? null : Number(v))
-                  }}
-                  className="select text-sm w-32 flex-shrink-0"
-                >
-                  <option value="">Brut</option>
-                  {[0, 1, 2, 3, 4, 5].map(n => (
-                    <option key={n} value={n}>{n} décimale{n > 1 ? 's' : ''}</option>
-                  ))}
-                </select>
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
-}
-
+// L'onglet « Affichage » (décimales par colonne, préférence par utilisateur) a
+// été retiré : le nombre de décimales se configure au niveau du champ, dans la
+// modale de configuration de champ des tableaux.
 const TABS = [
   { key: 'systeme',     label: 'Système',     icon: Server },
   { key: 'utilisateurs', label: 'Utilisateurs', icon: Users },
-  { key: 'affichage',   label: 'Affichage',   icon: Hash },
   { key: 'connecteurs', label: 'Connecteurs', icon: Plug },
-  { key: 'agent',       label: 'Agent',       icon: Bot },
   { key: 'activite',    label: 'Activité',    icon: Activity },
   { key: 'architecture', label: 'Architecture', icon: Network },
   { key: 'corbeille',   label: 'Corbeille',   icon: Trash2 },
@@ -513,12 +450,23 @@ function UsersSection({ currentUser }) {
   const [showModal, setShowModal] = useState(false)
   const [editUser, setEditUser] = useState(null)
   const [resetUser, setResetUser] = useState(null)
+  const [hubspot, setHubspot] = useState(null)
+  // Le DataTable fige la liste des colonnes visibles au montage : tant que
+  // l'état du connecteur HubSpot n'est pas connu, la colonne « Owner HubSpot »
+  // n'existe pas encore et resterait masquée. On attend donc les deux chargements.
+  const [ready, setReady] = useState(false)
+  const { addToast } = useToast()
 
   async function load() {
     setLoading(true)
     try { setUsers(await api.admin.listUsers()) } finally { setLoading(false) }
   }
-  useEffect(() => { load() }, [])
+  async function loadHubspot() {
+    try { setHubspot(await api.hubspot.info()) } catch { setHubspot(null) }
+  }
+  useEffect(() => {
+    Promise.all([load(), loadHubspot()]).finally(() => setReady(true))
+  }, [])
 
   async function handleCreate(form) { await api.admin.createUser(form); load() }
   async function handleUpdate(form) {
@@ -534,7 +482,41 @@ function UsersSection({ currentUser }) {
     setEditUser(null); load()
   }
 
-  const columns = TABLE_COLUMN_META.users.map(meta => {
+  // ── Mapping HubSpot au niveau du tableau des utilisateurs ────────────────
+  // Le connecteur renvoie, par utilisateur, l'owner déduit par email
+  // (auto_owner_id) et l'override manuel (override_owner_id). On fusionne les
+  // deux dans les lignes pour que tri / filtre / groupe portent sur le nom de
+  // l'owner effectif.
+  const hsReady = !!hubspot?.configured && !hubspot?.error
+  const hsOwners = hubspot?.owners || []
+  const hsOwnerById = Object.fromEntries(hsOwners.map(o => [o.id, o]))
+  const hsByUserId = Object.fromEntries((hubspot?.users || []).map(u => [u.id, u]))
+  const hsMappedCount = hsReady ? users.filter(u => hsByUserId[u.id]?.effective_owner_id).length : 0
+
+  const rows = hsReady
+    ? users.map(u => {
+        const m = hsByUserId[u.id] || {}
+        const effective = m.override_owner_id || m.auto_owner_id || null
+        return {
+          ...u,
+          hubspot_auto_owner_id: m.auto_owner_id || null,
+          hubspot_override_owner_id: m.override_owner_id || null,
+          hubspot_owner_name: effective ? (hsOwnerById[effective]?.name || effective) : '',
+        }
+      })
+    : users
+
+  async function setHubspotOwner(userId, ownerId) {
+    // Autosave : le choix part immédiatement, pas de bouton « Enregistrer ».
+    try {
+      await api.hubspot.setMapping(userId, ownerId || null)
+      await loadHubspot()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  const columns = TABLE_COLUMN_META.users
+    .filter(meta => meta.id !== 'hubspot_owner' || hsReady)
+    .map(meta => {
     const renders = {
       name: u => (
         <div className="flex items-center gap-3">
@@ -549,6 +531,47 @@ function UsersSection({ currentUser }) {
       email: u => <span className="text-slate-500">{u.email}</span>,
       role: u => <Badge color={roleColors[u.role]}>{roleLabels[u.role]}</Badge>,
       active: u => <Badge color={u.active ? 'green' : 'red'}>{u.active ? 'Actif' : 'Inactif'}</Badge>,
+      hubspot_owner: u => {
+        const auto = u.hubspot_auto_owner_id
+        const override = u.hubspot_override_owner_id
+        const autoName = auto ? (hsOwnerById[auto]?.name || auto) : null
+        return (
+          // stopPropagation : sans ça, le clic dans la cellule ouvre aussi la
+          // modale d'édition de la ligne (cf. onRowClick).
+          <div
+            className="flex items-center gap-1.5 w-full min-w-0"
+            data-testid={`hubspot-owner-cell-${u.id}`}
+            onMouseDown={e => e.stopPropagation()}
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex-1 min-w-0">
+              <SearchableSelect
+                value={override || ''}
+                options={hsOwners}
+                getOptionValue={o => o.id}
+                getOptionLabel={o => `${o.name}${o.email && o.email !== o.name ? ` (${o.email})` : ''}`}
+                getOptionKey={o => o.id}
+                // Sans override, le déclencheur affiche en gris l'owner déduit
+                // par courriel — la valeur réellement utilisée par le sync.
+                emptyOption={`— ${autoName ? `auto : ${autoName}` : 'aucun'} —`}
+                onChange={v => setHubspotOwner(u.id, v || null)}
+                placeholder={autoName || '—'}
+                className="input py-1 text-xs w-full"
+                searchPlaceholder="Rechercher un owner…"
+                testId={`hubspot-owner-select-${u.id}`}
+              />
+            </div>
+            <span
+              className="text-[10px] uppercase tracking-wide flex-shrink-0"
+              title={override ? 'Owner choisi manuellement' : auto ? 'Owner déduit du courriel' : 'Aucun owner HubSpot'}
+            >
+              {override ? <span className="text-blue-600 font-medium">manuel</span>
+                : auto ? <span className="text-green-600">auto</span>
+                : <span className="text-amber-500">—</span>}
+            </span>
+          </div>
+        )
+      },
       reset: u => (
         <button onClick={e => { e.stopPropagation(); setResetUser(u) }}
           className="text-xs text-slate-400 hover:text-brand-600 hover:bg-brand-50 px-2 py-1 rounded transition-colors">
@@ -562,20 +585,31 @@ function UsersSection({ currentUser }) {
   return (
     <>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="font-semibold text-slate-900">Utilisateurs ({users.length})</h2>
+        <div>
+          <h2 className="font-semibold text-slate-900">Utilisateurs ({users.length})</h2>
+          {hsReady && (
+            <p className="text-xs text-slate-500 mt-0.5" data-testid="hubspot-mapping-summary">
+              Owners HubSpot : {hsMappedCount}/{users.length} mappés · auto par email avec override manuel possible
+            </p>
+          )}
+        </div>
         <button onClick={() => setShowModal(true)} className="btn-primary btn-sm">
           <Plus size={14} /> Nouvel utilisateur
         </button>
       </div>
       <div className="mb-6">
-        <DataTable
-          table="users"
-          columns={columns}
-          data={users}
-          loading={loading}
-          onRowClick={u => setEditUser(u)}
-          searchFields={['name', 'email']}
-        />
+        {ready ? (
+          <DataTable
+            table="users"
+            columns={columns}
+            data={rows}
+            loading={loading}
+            onRowClick={u => setEditUser(u)}
+            searchFields={['name', 'email']}
+          />
+        ) : (
+          <div className="card p-8 text-center text-sm text-slate-400">Chargement…</div>
+        )}
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouvel utilisateur">
@@ -596,6 +630,10 @@ function UsersSection({ currentUser }) {
 
 const VALID_TABS = new Set(TABS.map(t => t.key))
 
+// Onglets retirés d'Admin mais qui gardent une page à part entière dans le
+// menu latéral — les anciennes URL /admin/<onglet> y sont redirigées.
+const MOVED_TABS = { automations: '/automations', agent: '/agent' }
+
 export default function Admin() {
   const { user: currentUser } = useAuth()
   const { tab } = useParams()
@@ -603,10 +641,8 @@ export default function Admin() {
   const activeTab = VALID_TABS.has(tab) ? tab : 'systeme'
   const setActiveTab = (key) => navigate(`/admin/${key}`, { replace: true })
 
-  // La page Automations a été déplacée dans le menu latéral (Autres outils) —
-  // rediriger l'ancienne URL /admin/automations vers la page standalone.
   useEffect(() => {
-    if (tab === 'automations') navigate('/automations', { replace: true })
+    if (MOVED_TABS[tab]) navigate(MOVED_TABS[tab], { replace: true })
   }, [tab, navigate])
 
   return (
@@ -617,7 +653,7 @@ export default function Admin() {
             <Settings size={20} className="text-brand-600" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Paramètres</h1>
+            <h1 className="text-2xl font-bold text-slate-900">Admin</h1>
             <p className="text-slate-500 text-sm">Administration de l'ERP</p>
           </div>
         </div>
@@ -641,10 +677,7 @@ export default function Admin() {
 
         {activeTab === 'systeme' && <HealthDashboard />}
         {activeTab === 'utilisateurs' && <UsersSection currentUser={currentUser} />}
-        {activeTab === 'affichage' && <DecimalsSection />}
-
         {activeTab === 'connecteurs' && <ConnectorsContent />}
-        {activeTab === 'agent' && <AgentContent />}
         {activeTab === 'activite' && <ActivityContent />}
         {activeTab === 'architecture' && <ArchitectureContent />}
         {activeTab === 'corbeille' && <CorbeilleContent />}

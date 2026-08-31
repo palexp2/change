@@ -59,7 +59,7 @@ export async function publishDebtPaymentExpense(debt, payment) {
     AccountRef: { value: bankId },
     EntityRef: entityRef,
     TxnDate: payment.payment_date,
-    PrivateNote: `Versement dette LT ${ref} — ${payment.payment_date} (ERP, dettes long terme)`,
+    PrivateNote: `Versement — ${ref}`,
     Line: lines,
   }
   const result = await qbPost('/purchase', purchase)

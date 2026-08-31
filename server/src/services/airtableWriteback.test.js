@@ -15,14 +15,23 @@ import assert from 'node:assert/strict'
 process.env.DATABASE_PATH = join(tmpdir(), `erp-test-writeback-${process.pid}.db`)
 
 const db = (await import('../db/database.js')).default
-// schema.js n'est pas exécuté en test : on recrée la table de garde à l'identique.
+// schema.js n'est pas exécuté en test : on recrée les tables utilisées à l'identique.
 db.exec(`CREATE TABLE IF NOT EXISTS airtable_writeback_guard (
   airtable_id TEXT PRIMARY KEY,
   fields_json TEXT NOT NULL,
   written_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 )`)
+db.exec(`CREATE TABLE IF NOT EXISTS airtable_field_directions (
+  module TEXT NOT NULL,
+  field_key TEXT NOT NULL,
+  direction TEXT NOT NULL DEFAULT 'both',
+  PRIMARY KEY (module, field_key)
+)`)
 
-const { recordWriteback, consumeWritebackEcho } = await import('./airtableWriteback.js')
+const {
+  recordWriteback, consumeWritebackEcho,
+  setFieldDirection, dynamicFieldDirection, fieldMapDirection, writebackModuleForTable,
+} = await import('./airtableWriteback.js')
 
 test('echo reconnu : mêmes valeurs poussées puis reçues → ignoré par le sync', () => {
   recordWriteback('recEchoSame', { Statut: 'Reçu', 'Prix unitaire': 12.5 })
@@ -72,4 +81,38 @@ test('echo partiel : un seul champ poussé qui matche, autres champs Airtable ig
   recordWriteback('recPartial', { Statut: 'Reçu' })
   // Le webhook contient d'autres champs (gelés/non poussés) — seul le champ poussé compte.
   assert.equal(consumeWritebackEcho('recPartial', { Statut: 'Reçu', 'Champ gelé': 'xyz' }), true)
+})
+
+// ── Sens de sync des champs dynamiques (clés `dyn:<colonne>`) ────────────────
+
+test('champ dynamique : défaut pull (jamais poussé) sur un module write-back', () => {
+  assert.equal(dynamicFieldDirection('achats', 'cf_commentaire'), 'pull')
+})
+
+test('champ dynamique : module sans write-back → toujours pull', () => {
+  assert.equal(dynamicFieldDirection('pieces', 'cf_commentaire'), 'pull')
+  assert.equal(dynamicFieldDirection(null, 'cf_commentaire'), 'pull')
+})
+
+test('setFieldDirection accepte une clé dyn: sur un module write-back et persiste', () => {
+  setFieldDirection('achats', 'dyn:cf_commentaire', 'both')
+  assert.equal(dynamicFieldDirection('achats', 'cf_commentaire'), 'both')
+  setFieldDirection('achats', 'dyn:cf_commentaire', 'push')
+  assert.equal(dynamicFieldDirection('achats', 'cf_commentaire'), 'push')
+  // La clé cœur homonyme n'est pas affectée par l'override dyn:.
+  assert.equal(fieldMapDirection('achats', 'cf_commentaire'), 'both')
+})
+
+test('setFieldDirection refuse une clé dyn: sur un module sans write-back', () => {
+  assert.throws(() => setFieldDirection('pieces', 'dyn:cf_x', 'both'), /ne supporte pas/)
+})
+
+test('setFieldDirection refuse toujours une clé cœur non configurable (skipKeys)', () => {
+  assert.throws(() => setFieldDirection('achats', 'product', 'both'), /ne supporte pas/)
+})
+
+test('writebackModuleForTable : table ERP → clé module write-back', () => {
+  assert.equal(writebackModuleForTable('purchases'), 'achats')
+  assert.equal(writebackModuleForTable('shipments'), 'envois')
+  assert.equal(writebackModuleForTable('products'), null)
 })

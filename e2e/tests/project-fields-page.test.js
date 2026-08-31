@@ -10,28 +10,32 @@ const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 const DB_PATH = process.env.ERP_DB_PATH || '/home/ec2-user/erp/server/data/erp.db'
 
-// Vérifie la page de gestion des champs /projects/fields :
-// - Bouton "Champs" sur Pipeline navigue vers la page
-// - La page rend le tableau avec les colonnes ERP
-// - PATCH display_label modifie le label visible
-// - PATCH field_type modifie le type
-// - PUT /by-column crée une def pour une colonne orpheline
-describe('Page de gestion des champs — /projects/fields', () => {
+// Gestion des champs projets — désormais la page de configuration des champs
+// (/champs/projects, ex-/projects/fields), dont le tableau unique réunit les
+// champs et leur mapping Airtable :
+//   • le bouton « Champs » de /pipeline y navigue ;
+//   • le tableau liste les colonnes ERP avec leur nom d'affichage et leur type ;
+//   • renommage / changement de type = PUT /api/custom-fields/:id (le nom et le
+//     type d'une colonne vivent dans custom_fields depuis la fusion de
+//     l'ancien `airtable_field_defs`) ;
+//   • adoption d'une colonne orpheline = POST /api/custom-fields/projects/adopt
+//     (remplace l'ancien PUT /airtable-fields/by-column).
+//
+// Colonnes JETABLES ajoutées à projects, supprimées en after() — aucun record
+// ni champ réel touché.
+describe('Page de gestion des champs — projets', () => {
   let browser, ctx, page, token, db
-  const testCol = 'cf_pftest_' + randomUUID().replace(/-/g, '').slice(0, 8)
-  const orphanCol = 'cf_pforph_' + randomUUID().replace(/-/g, '').slice(0, 8)
-  let testDefId = null
+  const ERP_TABLE = 'projects'
+  const testCol = 'e2e_pftest_' + randomUUID().replace(/-/g, '').slice(0, 8)
+  const orphanCol = 'e2e_pforph_' + randomUUID().replace(/-/g, '').slice(0, 8)
+  const testLabel = 'PFTest Label'
+  let testCfId = null
 
   before(async () => {
     db = new Database(DB_PATH, { readonly: false })
-    // Crée 2 colonnes test : une avec def, une orpheline
-    db.exec(`ALTER TABLE projects ADD COLUMN ${testCol} TEXT`)
-    db.exec(`ALTER TABLE projects ADD COLUMN ${orphanCol} TEXT`)
-    testDefId = randomUUID()
-    db.prepare(`
-      INSERT INTO airtable_field_defs (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, field_type, options, sort_order)
-      VALUES (?, 'projets', 'projects', ?, ?, ?, 'text', '{}', 999)
-    `).run(testDefId, 'native_' + testCol, 'PFTest Label', testCol)
+    // Deux colonnes test : une avec présentation (champ adopté), une orpheline.
+    db.exec(`ALTER TABLE ${ERP_TABLE} ADD COLUMN ${testCol} TEXT`)
+    db.exec(`ALTER TABLE ${ERP_TABLE} ADD COLUMN ${orphanCol} TEXT`)
 
     browser = await chromium.launch()
     ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
@@ -42,109 +46,117 @@ describe('Page de gestion des champs — /projects/fields', () => {
     await page.click('button:has-text("Se connecter")')
     await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 15000 })
     token = await page.evaluate(() => localStorage.getItem('erp_token'))
+
+    const adopt = await adoptColumn(testCol, testLabel, 'text')
+    assert.equal(adopt.status, 201, JSON.stringify(adopt.body))
+    testCfId = adopt.body.id
   })
 
   after(async () => {
-    try { db.prepare('DELETE FROM airtable_field_defs WHERE id=?').run(testDefId) } catch {}
     try {
-      db.prepare(`DELETE FROM airtable_field_defs WHERE erp_table='projects' AND column_name=?`).run(orphanCol)
-      db.prepare(`DELETE FROM airtable_field_defs WHERE erp_table='projects' AND column_name=?`).run(testCol)
-    } catch {}
-    try {
-      const cols = db.prepare(`PRAGMA table_info(projects)`).all().map(c => c.name)
-      if (cols.includes(testCol)) db.exec(`ALTER TABLE projects DROP COLUMN ${testCol}`)
-      if (cols.includes(orphanCol)) db.exec(`ALTER TABLE projects DROP COLUMN ${orphanCol}`)
-    } catch {}
+      for (const col of [testCol, orphanCol]) {
+        db.prepare('DELETE FROM custom_fields WHERE erp_table=? AND column_name=?').run(ERP_TABLE, col)
+        db.prepare('DELETE FROM airtable_field_mappings WHERE erp_table=? AND column_name=?').run(ERP_TABLE, col)
+      }
+      const cols = db.prepare(`PRAGMA table_info(${ERP_TABLE})`).all().map(c => c.name)
+      if (cols.includes(testCol)) db.exec(`ALTER TABLE ${ERP_TABLE} DROP COLUMN ${testCol}`)
+      if (cols.includes(orphanCol)) db.exec(`ALTER TABLE ${ERP_TABLE} DROP COLUMN ${orphanCol}`)
+    } catch (e) { console.warn('cleanup:', e.message) }
     db?.close()
     await browser?.close()
   })
 
-  test('Bouton "Champs" sur /pipeline navigue vers /projects/fields', async () => {
+  function adoptColumn(column_name, name, type) {
+    return page.evaluate(async ({ tok, tbl, body }) => {
+      const res = await fetch(`/erp/api/custom-fields/${tbl}/adopt`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      return { status: res.status, body: await res.json() }
+    }, { tok: token, tbl: ERP_TABLE, body: { column_name, name, type } })
+  }
+
+  function updateField(id, body) {
+    return page.evaluate(async ({ tok, fid, payload }) => {
+      const res = await fetch(`/erp/api/custom-fields/${fid}`, {
+        method: 'PUT',
+        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      return { status: res.status, body: await res.json() }
+    }, { tok: token, fid: id, payload: body })
+  }
+
+  function cfRow() {
+    return db.prepare('SELECT name, type FROM custom_fields WHERE id=?').get(testCfId)
+  }
+
+  test('Bouton "Champs" sur /pipeline navigue vers la config des champs projets', async () => {
     await page.goto(URL + '/pipeline', { waitUntil: 'domcontentloaded' })
     await page.locator('a:has-text("Champs")').first().waitFor({ state: 'visible', timeout: 15000 })
     await page.locator('a:has-text("Champs")').first().click()
-    await page.waitForURL(/\/projects\/fields/, { timeout: 5000 })
-    await page.locator('h1:has-text("Champs — Projets")').waitFor({ state: 'visible', timeout: 5000 })
+    await page.waitForURL(/\/champs\/projects/, { timeout: 5000 })
+    await page.locator('h1:has-text("Configuration des champs — Projets")').waitFor({ state: 'visible', timeout: 5000 })
   })
 
-  test('La page liste la colonne test avec son label et type', async () => {
-    // Cherche dans la table notre colonne test
-    await page.locator(`code:has-text("${testCol}")`).first().waitFor({ state: 'visible', timeout: 10000 })
-    // Le label "PFTest Label" doit être présent
-    await page.locator('text=PFTest Label').first().waitFor({ state: 'visible', timeout: 5000 })
+  test('Le tableau liste la colonne test avec son label et son type', async () => {
+    // Le tableau fusionné attend les métadonnées Airtable (quelques secondes).
+    await page.waitForSelector('[data-testid^="fieldcfg-airtable-"]', { timeout: 30000 })
+    await page.fill('[data-testid="fieldcfg-search"]', testCol)
+    const row = page.locator(`[data-testid="fieldcfg-row-${testCol}"]`)
+    await row.waitFor({ state: 'visible', timeout: 10000 })
+    // Nom éditable + type (celui de custom_fields, adopté en 'text').
+    assert.equal(await row.locator(`[data-testid="fieldcfg-name-${testCol}"]`).inputValue(), testLabel)
+    assert.match(await row.innerText(), /Texte/)
+    // Colonne adoptée → pas de sélecteur d'adoption, mais une cellule de mapping.
+    assert.equal(await row.locator(`[data-testid="fieldcfg-type-${testCol}"]`).count(), 0)
+    assert.equal(await row.locator(`[data-testid="fieldcfg-airtable-${testCol}"]`).count(), 1)
   })
 
-  test('PATCH display_label via API met à jour le label', async () => {
-    const r = await page.evaluate(async ({ tok, id }) => {
-      const res = await fetch(`/erp/api/airtable-fields/${id}`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ display_label: 'Nouveau Label E2E' }),
-      })
-      return { status: res.status, body: await res.json() }
-    }, { tok: token, id: testDefId })
+  test('PUT /custom-fields/:id renomme le champ', async () => {
+    const r = await updateField(testCfId, { name: 'Nouveau Label E2E' })
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    const def = db.prepare('SELECT display_label FROM airtable_field_defs WHERE id=?').get(testDefId)
-    assert.equal(def.display_label, 'Nouveau Label E2E')
+    assert.equal(cfRow().name, 'Nouveau Label E2E')
   })
 
-  test('PATCH field_type modifie le type', async () => {
-    const r = await page.evaluate(async ({ tok, id }) => {
-      const res = await fetch(`/erp/api/airtable-fields/${id}`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ field_type: 'long_text' }),
-      })
-      return { status: res.status, body: await res.json() }
-    }, { tok: token, id: testDefId })
-    assert.equal(r.status, 200)
-    const def = db.prepare('SELECT field_type FROM airtable_field_defs WHERE id=?').get(testDefId)
-    assert.equal(def.field_type, 'long_text')
-  })
-
-  test('PUT /by-column crée une def pour une colonne orpheline', async () => {
-    // Avant : pas de def pour orphanCol
-    let def = db.prepare(`SELECT id FROM airtable_field_defs WHERE erp_table='projects' AND column_name=?`).get(orphanCol)
-    assert.equal(def, undefined, 'pré-condition : pas de def')
-
-    const r = await page.evaluate(async ({ tok, col }) => {
-      const res = await fetch(`/erp/api/airtable-fields/by-column/projects/${col}`, {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ display_label: 'Orphelin Label', field_type: 'number' }),
-      })
-      return { status: res.status, body: await res.json() }
-    }, { tok: token, col: orphanCol })
+  test('PUT /custom-fields/:id change le type d\'une colonne adoptée', async () => {
+    // Autorisé parce que le champ vient d'une adoption Airtable (source='airtable',
+    // kind='data') — un champ créé nativement garde son type figé.
+    const r = await updateField(testCfId, { type: 'long_text' })
     assert.equal(r.status, 200, JSON.stringify(r.body))
-    assert.equal(r.body.created, true)
-
-    def = db.prepare(`SELECT display_label, field_type FROM airtable_field_defs WHERE erp_table='projects' AND column_name=?`).get(orphanCol)
-    assert.equal(def.display_label, 'Orphelin Label')
-    assert.equal(def.field_type, 'number')
+    assert.equal(cfRow().type, 'long_text')
   })
 
-  test('PUT /by-column refuse colonne système', async () => {
-    const r = await page.evaluate(async ({ tok }) => {
-      const res = await fetch(`/erp/api/airtable-fields/by-column/projects/id`, {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ display_label: 'Hack' }),
-      })
-      return { status: res.status, body: await res.json() }
-    }, { tok: token })
+  test('POST /adopt crée la présentation d\'une colonne orpheline', async () => {
+    const before = db.prepare('SELECT id FROM custom_fields WHERE erp_table=? AND column_name=? AND deleted_at IS NULL')
+      .get(ERP_TABLE, orphanCol)
+    assert.equal(before, undefined, 'pré-condition : pas de champ sur la colonne orpheline')
+
+    const r = await adoptColumn(orphanCol, 'Orphelin Label', 'number')
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+
+    const created = db.prepare('SELECT name, type, source FROM custom_fields WHERE erp_table=? AND column_name=? AND deleted_at IS NULL')
+      .get(ERP_TABLE, orphanCol)
+    assert.equal(created.name, 'Orphelin Label')
+    assert.equal(created.type, 'number')
+    assert.equal(created.source, 'airtable')
+  })
+
+  test('POST /adopt refuse une colonne déjà adoptée', async () => {
+    const r = await adoptColumn(orphanCol, 'Doublon', 'text')
+    assert.equal(r.status, 400)
+    assert.match(r.body.error || '', /déjà un champ actif/i)
+  })
+
+  test('POST /adopt refuse une colonne système', async () => {
+    const r = await adoptColumn('id', 'Hack', 'text')
     assert.equal(r.status, 400)
     assert.match(r.body.error || '', /système|system/i)
   })
 
-  test('PUT /by-column refuse colonne inexistante', async () => {
-    const r = await page.evaluate(async ({ tok }) => {
-      const res = await fetch(`/erp/api/airtable-fields/by-column/projects/colonne_qui_nexiste_pas`, {
-        method: 'PUT',
-        headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ field_type: 'text' }),
-      })
-      return { status: res.status, body: await res.json() }
-    }, { tok: token })
+  test('POST /adopt refuse une colonne inexistante', async () => {
+    const r = await adoptColumn('colonne_qui_nexiste_pas', 'Fantôme', 'text')
     assert.equal(r.status, 400)
     assert.match(r.body.error || '', /introuvable|inconnue/i)
   })

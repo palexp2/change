@@ -2,7 +2,7 @@
 //
 // Vérifie : le bouton flottant est présent sur une page quelconque, son clic
 // ouvre directement la modale, et la soumission émet un POST
-// /api/travaux/prompts (destination unique : la file de la section Travaux)
+// /api/travaux/prompts (destination unique : la file de la section Agent)
 // avec la route courante jointe au prompt, puis la modale se referme (aucun
 // écran de confirmation).
 //
@@ -61,7 +61,7 @@ describe('FAB feedback → file Travaux', () => {
       await route.fulfill({
         status: 201,
         contentType: 'application/json',
-        body: JSON.stringify({ id: 'e2e-fake', prompt: captured?.prompt, status: 'queued', space: 'finance' }),
+        body: JSON.stringify({ id: 'e2e-fake', prompt: captured?.prompt, status: 'queued', space: 'agent' }),
       })
     })
 
@@ -81,10 +81,10 @@ describe('FAB feedback → file Travaux', () => {
     await textarea.waitFor({ state: 'detached', timeout: 5000 })
 
     // Le contrat de la requête : le texte saisi + la route courante en contexte,
-    // dans la file de la section Travaux.
+    // dans la file de la section Agent.
     assert.ok(captured, 'un POST /travaux/prompts doit avoir été émis')
     assert.ok(String(captured.prompt || '').includes(MARKER), 'le texte saisi doit être envoyé dans le prompt')
-    assert.equal(captured.space, 'finance', 'la demande part dans la file de la section Travaux')
+    assert.equal(captured.space, 'agent', 'la demande part dans la file de la section Agent')
     assert.ok(
       String(captured.prompt || '').includes('/dashboard'),
       'la route courante /dashboard doit être jointe en contexte',

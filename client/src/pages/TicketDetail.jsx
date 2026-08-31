@@ -10,6 +10,7 @@ import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import Attachments from '../components/Attachments.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { MultiSelectField } from '../components/MultiSelectField.jsx'
 import { Modal } from '../components/Modal.jsx'
 import TaskForm from '../components/TaskForm.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -55,6 +56,7 @@ export default function TicketDetail({ recordId, embedded = false, onClose }) {
   const [surveyKey, setSurveyKey] = useState(0)
   const [fieldSaving, setFieldSaving] = useState({})
   const [ticketIds, setTicketIds] = useState([])
+  const [keywordOptions, setKeywordOptions] = useState([])
   const [linkedInteractions, setLinkedInteractions] = useState([])
   const [interactionsTotal, setInteractionsTotal] = useState(0)
   const [interactionsOffset, setInteractionsOffset] = useState(0)
@@ -88,6 +90,14 @@ export default function TicketDetail({ recordId, embedded = false, onClose }) {
   useEffect(() => {
     api.tickets.ids()
       .then(ids => setTicketIds(ids || []))
+      .catch(() => {})
+  }, [])
+
+  // Options du champ « Mots clés » : dérivées des valeurs déjà utilisées sur les
+  // billets (le champ vient d'Airtable, sans liste de choix côté ERP).
+  useEffect(() => {
+    api.tickets.keywords()
+      .then(k => setKeywordOptions(Array.isArray(k) ? k : []))
       .catch(() => {})
   }, [])
 
@@ -263,7 +273,7 @@ export default function TicketDetail({ recordId, embedded = false, onClose }) {
               <OrishaLinks controllers={ticket.central_controllers} />
             </div>
           </div>
-          <SurveySection ticketId={id} onSent={() => setSurveyKey(k => k + 1)} />
+          <SurveySection ticketId={id} contactId={ticket.contact_id} onSent={() => setSurveyKey(k => k + 1)} />
           {!embedded && (
             <div className="flex items-center gap-1">
               <button
@@ -395,7 +405,16 @@ export default function TicketDetail({ recordId, embedded = false, onClose }) {
             </div>
             <div className="sm:col-span-2">
               <FieldLabel label="Mots-clés" saving={fieldSaving.mots_cles} />
-              <InlineText value={ticket.mots_cles} saving={!!fieldSaving.mots_cles} onSave={v => saveField('mots_cles', v)} placeholder="mot1, mot2, mot3" />
+              {/* Sélection multiple : les mots-clés sont stockés en tableau JSON
+                  (même format que le sync Airtable et que la colonne du tableau). */}
+              <MultiSelectField
+                value={ticket.mots_cles}
+                options={keywordOptions}
+                saving={!!fieldSaving.mots_cles}
+                onChange={v => saveField('mots_cles', v.length ? JSON.stringify(v) : '')}
+                placeholder="Ajouter un mot-clé"
+                testId="ticket-mots-cles"
+              />
             </div>
             <div className="sm:col-span-2">
               <FieldLabel label="Documents" saving={fieldSaving.documents} />
@@ -565,7 +584,7 @@ const SEND_STATUS_LABEL = {
 
 // Bouton + modale + encart de résultat. Un seul composant : les trois vues
 // partagent le même état serveur, les séparer forcerait à le recharger deux fois.
-function SurveySection({ ticketId, onSent }) {
+function SurveySection({ ticketId, contactId, onSent }) {
   const { addToast } = useToast()
   const [state, setState] = useState(null)     // { eligibility, survey, survey_url }
   const [loading, setLoading] = useState(true)
@@ -578,7 +597,10 @@ function SurveySection({ ticketId, onSent }) {
     try { setState(await api.tickets.survey(ticketId)) }
     catch { /* silencieux : le sondage n'est pas la raison d'être de la page */ }
     finally { setLoading(false) }
-  }, [ticketId])
+    // L'éligibilité dépend du contact (numéro de téléphone) : la recharger
+    // quand le contact du billet change, sinon le bouton reste bloqué après
+    // l'ajout d'un contact tant que la page n'est pas rechargée.
+  }, [ticketId, contactId])
 
   useEffect(() => { load() }, [load])
 

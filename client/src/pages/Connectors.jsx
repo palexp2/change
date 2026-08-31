@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent, ShoppingCart, User, Instagram } from 'lucide-react'
+import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent, ShoppingCart, User, Instagram, Cpu, FileText } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
@@ -329,8 +329,11 @@ const CONNECTORS = [
   { id: 'quickbooks', name: 'QuickBooks',  icon: BookOpen,   color: 'bg-green-50 text-green-700' },
   { id: 'stripe',     name: 'Stripe',      icon: CreditCard, color: 'bg-purple-50 text-purple-600', apiKeyManaged: true },
   { id: 'novoxpress', name: 'Novoxpress',  icon: Truck,      color: 'bg-orange-50 text-orange-600', apiKeyManaged: true },
+  { id: 'ups',        name: 'UPS',         icon: Truck,      color: 'bg-amber-50 text-amber-800',  apiKeyManaged: true },
+  { id: 'purolator',  name: 'Purolator',   icon: Truck,      color: 'bg-purple-50 text-purple-700', apiKeyManaged: true },
   { id: 'hubspot',    name: 'HubSpot',     icon: Users,      color: 'bg-rose-50 text-rose-600',     apiKeyManaged: true },
   { id: 'amazon',     name: 'Amazon Business', icon: ShoppingCart, color: 'bg-orange-50 text-orange-700' },
+  { id: 'digikey',    name: 'DigiKey',     icon: Cpu,        color: 'bg-red-50 text-red-700',      apiKeyManaged: true },
   { id: 'instagram',  name: 'Instagram',   icon: Instagram,  color: 'bg-pink-50 text-pink-600',    apiKeyManaged: true },
 ]
 
@@ -960,6 +963,607 @@ function AmazonConfig({ accounts, configured, syncStatus, onRefresh }) {
   )
 }
 
+// UPS — OAuth 2.0 « client credentials » (POST /security/v1/oauth/token) : une
+// paire client_id / client_secret du portail developer.ups.com + le numéro de
+// compte UPS (payeur des étiquettes). Les trois sont chiffrés en base.
+// Deux environnements strictement séparés : CIE (bac à sable, aucune
+// facturation, étiquettes non utilisables) et production.
+function UpsConfig({ configured: initialConfigured, onRefresh }) {
+  const { addToast } = useToast()
+  const confirm = useConfirm()
+  const [status, setStatus] = useState(null)
+  const [configured, setConfigured] = useState(initialConfigured)
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [accountNumber, setAccountNumber] = useState('')
+  const [showSecret, setShowSecret] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [testResult, setTestResult] = useState(null) // { ok, message }
+  const [advanced, setAdvanced] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const st = await api.ups.status()
+      setStatus(st)
+      setConfigured(st.configured)
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }, [addToast])
+
+  useEffect(() => { load() }, [load])
+
+  // Exception documentée à la règle d'autosave : les trois identifiants n'ont
+  // de sens qu'ensemble (un client_id sans secret ne sert à rien) et le secret
+  // est en écriture seule — on enregistre le bloc, comme DigiKey et Stripe.
+  const saveCredentials = async () => {
+    setSaving(true)
+    try {
+      await api.ups.saveConfig({
+        ...(clientId ? { client_id: clientId } : {}),
+        ...(clientSecret ? { client_secret: clientSecret } : {}),
+        ...(accountNumber ? { account_number: accountNumber } : {}),
+      })
+      setClientSecret('')
+      setTestResult(null)
+      await load()
+      onRefresh?.()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setSaving(false) }
+  }
+
+  // Réglages non secrets : autosave immédiate (règle de design CLAUDE.md).
+  const saveField = async (key, value) => {
+    if (status?.config?.[key] === value) return
+    try {
+      const r = await api.ups.saveConfig({ [key]: value })
+      setStatus(st => ({ ...st, config: r.config, configured: r.configured }))
+      setConfigured(r.configured)
+      setTestResult(null)
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  const removeCredentials = async () => {
+    if (!(await confirm({
+      title: 'Supprimer les identifiants UPS',
+      message: "Les clés OAuth et le numéro de compte seront effacés. Les étiquettes déjà achetées et leur suivi restent en place.",
+      confirmLabel: 'Supprimer',
+    }))) return
+    try {
+      await api.ups.deleteConfig()
+      setClientId(''); setClientSecret(''); setAccountNumber(''); setTestResult(null)
+      await load()
+      onRefresh?.()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  // Test de connexion : mint d'un jeton OAuth uniquement — rien de facturable.
+  const testConnection = async () => {
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const r = await api.ups.test()
+      setTestResult({ ok: true, message: `Connexion réussie — environnement ${r.environment === 'production' ? 'production' : 'CIE (test)'} (${r.base_url})` })
+    } catch (e) {
+      // Message BRUT de l'API UPS, jamais masqué (CLAUDE.md).
+      setTestResult({ ok: false, message: e.message })
+    } finally { setTesting(false) }
+  }
+
+  const cfg = status?.config || {}
+  const last = status?.last_sync
+
+  return (
+    <div className="mt-4 space-y-4" data-testid="ups-config">
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Identifiants OAuth UPS</p>
+        {configured
+          ? <p className="text-sm text-green-600 font-medium flex items-center gap-1.5"><CheckCircle size={14} /> Application configurée</p>
+          : <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5"><XCircle size={14} /> Aucune application configurée</p>
+        }
+        <div className="space-y-2">
+          <input
+            type="text"
+            className="input font-mono text-sm"
+            placeholder={cfg.client_id_set ? 'Client ID (enregistré — laisser vide pour ne pas changer)' : 'Client ID (portail developer.ups.com)'}
+            value={clientId}
+            onChange={e => setClientId(e.target.value)}
+            autoComplete="off"
+            data-testid="ups-client-id"
+          />
+          <div className="relative">
+            <input
+              type={showSecret ? 'text' : 'password'}
+              className="input pr-8 font-mono text-sm"
+              placeholder={cfg.client_secret_set ? 'Client Secret (enregistré — laisser vide pour ne pas changer)' : 'Client Secret'}
+              value={clientSecret}
+              onChange={e => setClientSecret(e.target.value)}
+              autoComplete="new-password"
+              data-testid="ups-client-secret"
+            />
+            <button onClick={() => setShowSecret(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+              {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+          <input
+            type="text"
+            className="input font-mono text-sm"
+            placeholder={cfg.account_number_set ? `N° de compte UPS (${cfg.account_number_hint})` : 'N° de compte UPS (payeur des étiquettes)'}
+            value={accountNumber}
+            onChange={e => setAccountNumber(e.target.value)}
+            autoComplete="off"
+            data-testid="ups-account-number"
+          />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={saveCredentials}
+            disabled={saving || (!clientId && !clientSecret && !accountNumber)}
+            className="btn-primary btn-sm"
+            data-testid="ups-save-credentials"
+          >
+            {saving ? 'Sauvegarde…' : configured ? 'Mettre à jour' : 'Enregistrer'}
+          </button>
+          <button
+            onClick={testConnection}
+            disabled={testing}
+            className="btn-secondary btn-sm"
+            data-testid="ups-test-connection"
+          >
+            {testing ? 'Test en cours…' : 'Tester la connexion'}
+          </button>
+          {configured && (
+            <button onClick={removeCredentials} className="btn-secondary btn-sm text-red-500 hover:text-red-600">
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+        {testResult && (
+          <p
+            data-testid="ups-test-result"
+            className={`text-xs rounded-lg px-3 py-2 whitespace-pre-wrap break-words ${testResult.ok ? 'bg-green-50 border border-green-200 text-green-700' : 'bg-red-50 border border-red-200 text-red-600'}`}
+          >
+            {testResult.message}
+          </p>
+        )}
+      </div>
+
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Environnement</p>
+        <div className="flex flex-wrap gap-2">
+          {[['cie', 'CIE (test)'], ['production', 'Production']].map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => saveField('environment', value)}
+              data-testid={`ups-env-${value}`}
+              className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${cfg.environment === value ? 'border-brand-500 bg-brand-50 text-brand-700 font-medium' : 'border-slate-200 text-slate-600 hover:border-slate-300'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-slate-400">
+          En CIE (wwwcie.ups.com), les étiquettes sont des tests : rien n'est facturé et elles ne sont pas utilisables pour expédier.
+          La valeur par défaut vient de la variable d'environnement <code className="font-mono">UPS_ENV</code>.
+        </p>
+        <button onClick={() => setAdvanced(v => !v)} className="text-xs text-slate-400 hover:text-slate-600">
+          {advanced ? 'Masquer' : 'Afficher'} les versions d'API
+        </button>
+        {advanced && (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+            {[['shipping_version', 'Shipping'], ['rating_version', 'Rating'], ['tracking_version', 'Tracking']].map(([k, label]) => (
+              <div key={k}>
+                <p className="text-[11px] text-slate-400 mb-0.5">{label}</p>
+                <input
+                  type="text" className="input font-mono text-xs"
+                  defaultValue={cfg[k] || ''} key={`${k}-${cfg[k] || ''}`}
+                  onBlur={e => saveField(k, e.target.value.trim())}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {last && (
+        <p className="text-xs text-slate-400">
+          Dernier appel UPS : {fmtDateTime(last.created_at)} — {last.status === 'success'
+            ? 'OK'
+            : <span className="text-red-500">{last.error_message || 'erreur'}</span>}
+        </p>
+      )}
+      <p className="text-xs text-slate-400">
+        Utilisé pour les <strong>étiquettes de retour</strong> (fiche retour), la comparaison de tarifs et le suivi des envois.
+        Chaque appel est tracé dans le journal des synchronisations ci-dessous (module « UPS »).
+      </p>
+    </div>
+  )
+}
+
+// Purolator — E-Ship Web Services (SOAP), authentification HTTP Basic : une
+// clé + mot de passe délivrés ensemble par Purolator, plus le numéro de compte
+// (payeur des étiquettes). Deux environnements strictement séparés — Dev
+// (bac à sable devwebservices.purolator.com, aucune facturation) et
+// Production. On démarre toujours en dev tant que les identifiants prod n'ont
+// pas été confirmés. Sens unique ERP → Purolator (achat d'étiquette + suivi).
+function PurolatorConfig({ configured: initialConfigured, onRefresh }) {
+  const { addToast } = useToast()
+  const confirm = useConfirm()
+  const [status, setStatus] = useState(null)
+  const [configured, setConfigured] = useState(initialConfigured)
+  const [key, setKey] = useState('')
+  const [password, setPassword] = useState('')
+  const [accountNumber, setAccountNumber] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const st = await api.purolator.status()
+      setStatus(st)
+      setConfigured(st.configured)
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }, [addToast])
+
+  useEffect(() => { load() }, [load])
+
+  // Exception documentée à la règle d'autosave : les trois identifiants n'ont
+  // de sens qu'ensemble et le mot de passe est en écriture seule — on
+  // enregistre le bloc, comme UPS/DigiKey/Novoxpress.
+  const saveCredentials = async () => {
+    setSaving(true)
+    try {
+      await api.purolator.saveConfig({
+        ...(key ? { key } : {}),
+        ...(password ? { password } : {}),
+        ...(accountNumber ? { account_number: accountNumber } : {}),
+      })
+      setPassword('')
+      await load()
+      onRefresh?.()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setSaving(false) }
+  }
+
+  const saveField = async (k, value) => {
+    if (status?.config?.[k] === value) return
+    try {
+      const r = await api.purolator.saveConfig({ [k]: value })
+      setStatus(st => ({ ...st, config: r.config, configured: r.configured }))
+      setConfigured(r.configured)
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  const removeCredentials = async () => {
+    if (!(await confirm({
+      title: 'Supprimer les identifiants Purolator',
+      message: "La clé, le mot de passe et le numéro de compte seront effacés. Les étiquettes déjà achetées et leur suivi restent en place.",
+      confirmLabel: 'Supprimer',
+    }))) return
+    try {
+      await api.purolator.deleteConfig()
+      setKey(''); setPassword(''); setAccountNumber('')
+      await load()
+      onRefresh?.()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  const cfg = status?.config || {}
+  const last = status?.last_sync
+
+  return (
+    <div className="mt-4 space-y-4" data-testid="purolator-config">
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Identifiants Purolator (E-Ship)</p>
+        {configured
+          ? <p className="text-sm text-green-600 font-medium flex items-center gap-1.5"><CheckCircle size={14} /> Application configurée</p>
+          : <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5"><XCircle size={14} /> Aucune application configurée</p>
+        }
+        <div className="space-y-2">
+          <input
+            type="text"
+            className="input font-mono text-sm"
+            placeholder={cfg.key_set ? 'Clé (enregistrée — laisser vide pour ne pas changer)' : 'Clé Purolator (Key)'}
+            value={key}
+            onChange={e => setKey(e.target.value)}
+            autoComplete="off"
+            data-testid="purolator-key"
+          />
+          <div className="relative">
+            <input
+              type={showPassword ? 'text' : 'password'}
+              className="input pr-8 font-mono text-sm"
+              placeholder={cfg.password_set ? 'Mot de passe (enregistré — laisser vide pour ne pas changer)' : 'Mot de passe Purolator'}
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              autoComplete="new-password"
+              data-testid="purolator-password"
+            />
+            <button onClick={() => setShowPassword(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+              {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+          <input
+            type="text"
+            className="input font-mono text-sm"
+            placeholder={cfg.account_number_set ? `N° de compte Purolator (${cfg.account_number_hint})` : 'N° de compte Purolator (payeur des étiquettes)'}
+            value={accountNumber}
+            onChange={e => setAccountNumber(e.target.value)}
+            autoComplete="off"
+            data-testid="purolator-account-number"
+          />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button
+            onClick={saveCredentials}
+            disabled={saving || (!key && !password && !accountNumber)}
+            className="btn-primary btn-sm"
+            data-testid="purolator-save-credentials"
+          >
+            {saving ? 'Sauvegarde…' : configured ? 'Mettre à jour' : 'Enregistrer'}
+          </button>
+          {configured && (
+            <button onClick={removeCredentials} className="btn-secondary btn-sm text-red-500 hover:text-red-600">
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Environnement</p>
+        <div className="flex flex-wrap gap-2">
+          {[['dev', 'Développement'], ['production', 'Production']].map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => saveField('environment', value)}
+              data-testid={`purolator-env-${value}`}
+              className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${cfg.environment === value ? 'border-brand-500 bg-brand-50 text-brand-700 font-medium' : 'border-slate-200 text-slate-600 hover:border-slate-300'}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-slate-400">
+          En Développement (devwebservices.purolator.com), rien n'est facturé — utile pour valider l'intégration avant de passer en production.
+          La valeur par défaut vient de la variable d'environnement <code className="font-mono">PUROLATOR_ENV</code>.
+        </p>
+      </div>
+
+      {last && (
+        <p className="text-xs text-slate-400">
+          Dernier appel Purolator : {fmtDateTime(last.created_at)} — {last.status === 'success'
+            ? 'OK'
+            : <span className="text-red-500">{last.error_message || 'erreur'}</span>}
+        </p>
+      )}
+      <p className="text-xs text-slate-400">
+        Utilisé pour la <strong>tarification et l'achat d'étiquettes sortantes</strong> (fiche envoi, bouton « Tarifer », côte à côte avec Novoxpress) et le suivi horaire.
+        Sens unique ERP → Purolator. Chaque appel est tracé dans le journal des synchronisations ci-dessous (module « Purolator »).
+      </p>
+    </div>
+  )
+}
+
+// DigiKey — OAuth2 « client credentials » (plan développeur DigiKey) : pas de
+// redirection d'autorisation, juste une paire client_id / client_secret. La
+// tournée rapatrie les commandes récentes et leur facture PDF, et dépose un
+// achat fournisseur EN BROUILLON. Sens unique : rien n'est écrit chez DigiKey.
+function DigikeyConfig({ configured: initialConfigured, syncStatus, onRefresh }) {
+  const { addToast } = useToast()
+  const confirm = useConfirm()
+  const [status, setStatus] = useState(null)
+  const [configured, setConfigured] = useState(initialConfigured)
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [showSecret, setShowSecret] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [advanced, setAdvanced] = useState(false)
+  const [orders, setOrders] = useState([])
+
+  const load = useCallback(async () => {
+    try {
+      const st = await api.digikey.status()
+      setStatus(st)
+      setConfigured(st.configured)
+      setClientId(st.config?.client_id || '')
+      const o = await api.digikey.orders(10)
+      setOrders(o.data || [])
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }, [addToast])
+
+  useEffect(() => { load() }, [load])
+
+  // Exception documentée à la règle d'autosave : le secret OAuth est un champ
+  // en écriture seule (jamais réaffiché) et n'a de sens qu'avec son client_id —
+  // on enregistre la paire d'un bloc, comme pour Stripe et Novoxpress.
+  const saveCredentials = async () => {
+    setSaving(true)
+    try {
+      await api.digikey.saveConfig({ client_id: clientId, client_secret: clientSecret })
+      setClientSecret('')
+      await load()
+      onRefresh()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setSaving(false) }
+  }
+
+  // Réglages non secrets : autosave au blur (règle de design CLAUDE.md).
+  const saveField = async (key, value) => {
+    if (status?.config?.[key] === value) return
+    try {
+      const r = await api.digikey.saveConfig({ [key]: value })
+      setStatus(st => ({ ...st, config: r.config, configured: r.configured }))
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  const removeCredentials = async () => {
+    if (!(await confirm({
+      title: 'Supprimer les identifiants DigiKey',
+      message: 'Les clés OAuth seront effacées et la tournée quotidienne cessera de rapatrier les commandes. Les achats déjà créés restent en place.',
+      confirmLabel: 'Supprimer',
+    }))) return
+    try {
+      await api.digikey.deleteConfig()
+      setClientId(''); setClientSecret('')
+      await load()
+      onRefresh()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  const sync = async () => {
+    try {
+      await api.digikey.sync()
+      addToast({ message: 'Importation DigiKey lancée', type: 'success' })
+      setTimeout(load, 4000)
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  const cfg = status?.config || {}
+  const last = status?.last_sync
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Identifiants OAuth DigiKey</p>
+        {configured
+          ? <p className="text-sm text-green-600 font-medium flex items-center gap-1.5"><CheckCircle size={14} /> Application configurée</p>
+          : <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5"><XCircle size={14} /> Aucune application configurée</p>
+        }
+        <div className="space-y-2">
+          <input
+            type="text"
+            className="input font-mono text-sm"
+            placeholder="Client ID (portail developer.digikey.com)"
+            value={clientId}
+            onChange={e => setClientId(e.target.value)}
+            autoComplete="off"
+          />
+          <div className="relative">
+            <input
+              type={showSecret ? 'text' : 'password'}
+              className="input pr-8 font-mono text-sm"
+              placeholder={cfg.client_secret_set ? 'Client Secret (enregistré — laisser vide pour ne pas changer)' : 'Client Secret'}
+              value={clientSecret}
+              onChange={e => setClientSecret(e.target.value)}
+              autoComplete="new-password"
+            />
+            <button onClick={() => setShowSecret(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+              {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={saveCredentials}
+            disabled={saving || !clientId || (!clientSecret && !cfg.client_secret_set)}
+            className="btn-primary btn-sm"
+            data-testid="digikey-save-credentials"
+          >
+            {saving ? 'Sauvegarde…' : configured ? 'Mettre à jour' : 'Enregistrer'}
+          </button>
+          {configured && (
+            <button onClick={removeCredentials} className="btn-secondary btn-sm text-red-500 hover:text-red-600">
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Compte et région</p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <input
+            type="text" className="input text-sm" placeholder="N° de client DigiKey (optionnel)"
+            defaultValue={cfg.customer_id || ''} key={`cust-${cfg.customer_id || ''}`}
+            onBlur={e => saveField('customer_id', e.target.value.trim())}
+          />
+          <input
+            type="text" className="input text-sm" placeholder="Site (CA)"
+            defaultValue={cfg.locale_site || ''} key={`site-${cfg.locale_site || ''}`}
+            onBlur={e => saveField('locale_site', e.target.value.trim().toUpperCase())}
+          />
+          <input
+            type="text" className="input text-sm" placeholder="Devise (CAD)"
+            defaultValue={cfg.locale_currency || ''} key={`cur-${cfg.locale_currency || ''}`}
+            onBlur={e => saveField('locale_currency', e.target.value.trim().toUpperCase())}
+          />
+        </div>
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          <input
+            type="checkbox" className="rounded border-slate-300"
+            checked={cfg.sandbox === '1'}
+            onChange={e => saveField('sandbox', e.target.checked ? '1' : '0')}
+          />
+          Utiliser l'environnement bac à sable de DigiKey
+        </label>
+        <button onClick={() => setAdvanced(v => !v)} className="text-xs text-slate-400 hover:text-slate-600">
+          {advanced ? 'Masquer' : 'Afficher'} les adresses d'API
+        </button>
+        {advanced && (
+          <div className="space-y-2">
+            {['api_base', 'history_path', 'salesorder_path', 'invoice_path'].map(k => (
+              <div key={k}>
+                <p className="text-[11px] text-slate-400 mb-0.5">{k}</p>
+                <input
+                  type="text" className="input font-mono text-xs"
+                  defaultValue={cfg[k] || ''} key={`${k}-${cfg[k] || ''}`}
+                  onBlur={e => saveField(k, e.target.value.trim())}
+                />
+              </div>
+            ))}
+            <p className="text-xs text-slate-400">
+              À ne toucher que si DigiKey change de version d'API. Les jetons {'{salesOrderId}'} et {'{invoiceId}'} sont remplacés à l'appel.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {configured && (
+        <div className="space-y-2">
+          <SyncBtn label="Importer les commandes" syncKey="digikey" syncStatus={syncStatus} onSync={sync} />
+          {last && (
+            <p className="text-xs text-slate-400">
+              Dernière tournée : {fmtDateTime(last.created_at)} — {last.status === 'success'
+                ? `${last.records_modified || 0} achat(s) touché(s)`
+                : <span className="text-red-500">{last.error_message || 'erreur'}</span>}
+            </p>
+          )}
+          <p className="text-xs text-slate-400">
+            Chaque commande facturée devient une <strong>facture fournisseur en brouillon</strong> dans{' '}
+            <Link to="/fournisseurs/achats" className="text-blue-500 hover:underline">Fournisseurs → Achats</Link>,
+            avec son PDF en pièce jointe. Rien n'est publié dans QuickBooks sans votre clic.
+            La fenêtre d'historique se règle dans{' '}
+            <Link to="/automations/sys_digikey_orders" className="text-blue-500 hover:underline">l'automation DigiKey</Link>.
+          </p>
+        </div>
+      )}
+
+      {orders.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Dernières commandes rapatriées</p>
+          <div className="rounded-lg border border-slate-200 divide-y divide-slate-100">
+            {orders.map(o => (
+              <div key={o.id} className="flex items-center gap-2 px-3 py-2 text-sm">
+                <span className="text-slate-500 tabular-nums w-24 shrink-0">{o.order_date || '—'}</span>
+                <span className="font-medium text-slate-700 flex-1 truncate">
+                  {o.invoice_id ? `Facture ${o.invoice_id}` : `Commande ${o.sales_order_id}`}
+                </span>
+                {o.pdf_path && <FileText size={13} className="text-slate-400" title="PDF téléchargé" />}
+                <span className="tabular-nums text-slate-600">{o.total != null ? `${Number(o.total).toFixed(2)} ${o.currency || ''}` : '—'}</span>
+                {o.achat_id && (
+                  <Link to={`/fournisseurs/achats?id=${o.achat_id}`} className="text-blue-500 hover:underline text-xs">
+                    {o.achat_status || 'Achat'}
+                  </Link>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function NovoxpressConfig({ configured: initialConfigured, onRefresh }) {
   const { addToast } = useToast()
   const [configured, setConfigured] = useState(initialConfigured)
@@ -1169,16 +1773,8 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
   }
 
   const users = info?.users || []
-  const owners = info?.owners || []
-  const ownerById = Object.fromEntries(owners.map(o => [o.id, o]))
   const mappedCount = users.filter(u => u.effective_owner_id).length
-
-  const setMapping = async (userId, ownerId) => {
-    try {
-      await api.hubspot.setMapping(userId, ownerId || null)
-      await loadInfo()
-    } catch (e) { addToast({ message: e.message, type: 'error' }) }
-  }
+  const unmappedNames = users.filter(u => !u.effective_owner_id).map(u => u.name)
 
   return (
     <div className="mt-4 space-y-4">
@@ -1218,67 +1814,31 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
 
       {configured && (
         <>
+          {/* Le mapping s'édite dans le tableau des utilisateurs (colonne
+              « Owner HubSpot ») — ici on ne garde que l'état de couverture. */}
           <div className="bg-slate-50 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping utilisateurs ERP ↔ owners HubSpot</p>
                 {info && !info.error && (
-                  <p className="text-xs text-slate-500 mt-0.5">{mappedCount}/{users.length} mappés · auto par email avec override manuel possible</p>
+                  <p className="text-xs text-slate-500 mt-0.5" data-testid="hubspot-mapping-count">{mappedCount}/{users.length} mappés · auto par email avec override manuel possible</p>
                 )}
               </div>
-              <button onClick={loadInfo} className="btn-secondary btn-sm py-1 text-xs" disabled={loadingInfo}>
-                <RefreshCw size={12} className={loadingInfo ? 'animate-spin' : ''} /> Rafraîchir
-              </button>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button onClick={loadInfo} className="btn-secondary btn-sm py-1 text-xs" disabled={loadingInfo}>
+                  <RefreshCw size={12} className={loadingInfo ? 'animate-spin' : ''} /> Rafraîchir
+                </button>
+                <Link to="/admin/utilisateurs" className="btn-secondary btn-sm py-1 text-xs" data-testid="hubspot-mapping-users-link">
+                  <Users size={12} /> Gérer dans les utilisateurs
+                </Link>
+              </div>
             </div>
             {info?.error && <p className="text-sm text-red-500">⚠ {info.error}</p>}
             {info && !info.error && (
-              <div className="overflow-x-auto -mx-1">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-xs text-slate-500 border-b border-slate-200">
-                      <th className="py-1.5 px-2 font-medium">Utilisateur ERP</th>
-                      <th className="py-1.5 px-2 font-medium">Owner HubSpot</th>
-                      <th className="py-1.5 px-2 font-medium w-24">Source</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {users.map(u => {
-                      const isOverride = !!u.override_owner_id
-                      const isAuto = !isOverride && !!u.auto_owner_id
-                      const value = u.override_owner_id || ''
-                      return (
-                        <tr key={u.id} className="border-b border-slate-100 last:border-0">
-                          <td className="py-1.5 px-2">
-                            <div className="font-medium text-slate-700">{u.name}</div>
-                            <div className="text-xs text-slate-400">{u.email || '—'}</div>
-                          </td>
-                          <td className="py-1.5 px-2">
-                            <div className="max-w-xs">
-                              <SearchableSelect
-                                value={value}
-                                options={owners}
-                                getOptionValue={o => o.id}
-                                getOptionLabel={o => `${o.name}${o.email && o.email !== o.name ? ` (${o.email})` : ''}`}
-                                getOptionKey={o => o.id}
-                                emptyOption={`— ${u.auto_owner_id ? `auto: ${ownerById[u.auto_owner_id]?.name || u.auto_owner_id}` : 'aucun'} —`}
-                                onChange={v => setMapping(u.id, v || null)}
-                                placeholder="—"
-                                className="input py-1 text-xs w-full"
-                                testId={`hubspot-owner-select-${u.id}`}
-                              />
-                            </div>
-                          </td>
-                          <td className="py-1.5 px-2 text-xs">
-                            {isOverride && <span className="text-blue-600 font-medium">manuel</span>}
-                            {isAuto && <span className="text-green-600">auto</span>}
-                            {!isOverride && !isAuto && <span className="text-amber-600">non mappé</span>}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <p className="text-xs text-slate-500">
+                Chaque owner se choisit dans la colonne <span className="font-medium text-slate-600">Owner HubSpot</span> du tableau des utilisateurs.
+                {unmappedNames.length > 0 && <> Sans owner : {unmappedNames.join(', ')}.</>}
+              </p>
             )}
           </div>
 
@@ -1303,7 +1863,7 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
   )
 }
 
-function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured, novoxpressConfigured, hubspotConfigured, amazonConfigured }) {
+function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured, novoxpressConfigured, hubspotConfigured, amazonConfigured, digikeyConfigured, upsConfigured, purolatorConfigured }) {
   const [expanded, setExpanded] = useState(false)
   const { icon: Icon, color } = connector
   const connectorAccounts = accounts.filter(a => a.connector === connector.id)
@@ -1312,6 +1872,9 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
         connector.id === 'stripe' ? stripeConfigured :
         connector.id === 'novoxpress' ? novoxpressConfigured :
         connector.id === 'hubspot' ? hubspotConfigured :
+        connector.id === 'digikey' ? digikeyConfigured :
+        connector.id === 'ups' ? upsConfigured :
+        connector.id === 'purolator' ? purolatorConfigured :
         false
       )
     : connectorAccounts.length > 0
@@ -1386,6 +1949,15 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
           {connector.id === 'amazon' && (
             <AmazonConfig accounts={connectorAccounts} configured={amazonConfigured} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
+          {connector.id === 'digikey' && (
+            <DigikeyConfig configured={digikeyConfigured} syncStatus={syncStatus} onRefresh={onRefresh} />
+          )}
+          {connector.id === 'ups' && (
+            <UpsConfig configured={upsConfigured} onRefresh={onRefresh} />
+          )}
+          {connector.id === 'purolator' && (
+            <PurolatorConfig configured={purolatorConfigured} onRefresh={onRefresh} />
+          )}
         </div>
       )}
     </div>
@@ -1402,7 +1974,7 @@ const MODULE_LABELS = {
   achats: 'Achats', billets: 'Billets', serials: 'N° de série', envois: 'Envois',
   soumissions: 'Soumissions', retours: 'Retours', retour_items: 'Items retour',
   adresses: 'Adresses', bom: 'BOM', serial_changes: 'Changements série',
-  assemblages: 'Assemblages', factures: 'Factures', amazon: 'Amazon Business',
+  assemblages: 'Assemblages', factures: 'Factures', amazon: 'Amazon Business', digikey: 'DigiKey', ups: 'UPS', purolator: 'Purolator',
   instagram: 'Prospects Instagram',
 }
 
@@ -1511,7 +2083,7 @@ const SYNC_LABELS = {
 }
 
 export function ConnectorsContent() {
-  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, projets_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false, novoxpress_configured: false, hubspot_configured: false, amazon_configured: false })
+  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, projets_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false, novoxpress_configured: false, hubspot_configured: false, amazon_configured: false, digikey_configured: false, ups_configured: false, purolator_configured: false })
   const [loading, setLoading] = useState(true)
   const { status: syncStatus, anyRunning } = useSyncStatus(3000)
 
@@ -1538,7 +2110,7 @@ export function ConnectorsContent() {
     <div>
       <div className="mb-6">
         <h2 className="text-2xl font-bold text-slate-900">Connecteurs</h2>
-        <p className="text-sm text-slate-500 mt-0.5">Intégrez vos outils externes à l'ERP</p>
+        <p className="text-sm text-slate-500 mt-0.5">Intégrez vos outils externes à Boréal</p>
       </div>
 
         {anyRunning && (
@@ -1571,6 +2143,9 @@ export function ConnectorsContent() {
                   novoxpressConfigured={!!data.novoxpress_configured}
                   hubspotConfigured={!!data.hubspot_configured}
                   amazonConfigured={!!data.amazon_configured}
+                  digikeyConfigured={!!data.digikey_configured}
+                  upsConfigured={!!data.ups_configured}
+                  purolatorConfigured={!!data.purolator_configured}
                   syncConfigs={{
                     contacts:      data.contacts_sync    || {},
                     companies:     data.companies_sync   || {},

@@ -116,14 +116,20 @@ describe('Travaux — utilisation Claude, pause de la file, arrêt après une t�
     await page.goto(URL + '/agent', { waitUntil: 'domcontentloaded' })
     const bar = page.locator('[data-testid="claude-usage-bar"]')
     await bar.waitFor({ timeout: 15000 })
-    await page.waitForSelector('[data-testid="claude-usage-bar"] [data-testid="usage-pct"], [data-testid="claude-usage-bar"] [data-testid="usage-tokens"]', { timeout: 20000 })
+    // On attend le POURCENTAGE, pas les jetons : tant que l'API n'a pas répondu, les
+    // cartes affichent déjà « 0 jetons » (état de repli), et le texte serait lu avant
+    // que le plafond propre au modèle ait eu la chance d'apparaître.
+    await page.waitForSelector('[data-testid="claude-usage-bar"] [data-testid="usage-pct"]', { timeout: 20000 })
 
     // Les libellés des cartes sont mis en majuscules par CSS — `innerText` rend le
     // texte transformé, d'où les comparaisons insensibles à la casse.
     const text = await bar.innerText()
     assert.match(text, /Fenêtre 5 h/i, 'la fenêtre glissante de 5 h doit être nommée comme telle')
     assert.match(text, /Cette semaine/i, 'le total hebdomadaire doit être visible')
-    assert.match(text, /Aucune limite journalière/i, 'la note corrigeant l\'idée d\'un quota par jour doit être là')
+    // Note retirée à la demande : la page Agent ne commente plus l'absence de quota
+    // journalier ni les crédits de dépassement — seules les jauges parlent.
+    assert.doesNotMatch(text, /Aucune limite journalière/i, 'la note sur le quota journalier ne doit plus être affichée')
+    assert.doesNotMatch(text, /crédit de dépassement/i, 'la note sur les crédits de dépassement ne doit plus être affichée')
 
     const scoped = await page.evaluate(async () => {
       const token = localStorage.getItem('erp_token')

@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { ExternalLink, Check, Zap, Phone } from 'lucide-react'
-import { fmtDate } from './formatDate.js'
+import { ExternalLink, Check, Zap, Phone, ImageOff } from 'lucide-react'
+import { fmtDate, fmtDateWithFormat, normalizeDateFormat } from './formatDate.js'
 import { formatDurationSeconds, normalizeDurationFormat } from './duration.js'
 import { Badge } from '../components/Badge.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -69,26 +69,93 @@ export function isValidUrl(str) {
 // donc un faux positif reste sans dommage.
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico|heic|heif)$/i
 const IMAGE_HOST_RE = /(?:^|\.)airtableusercontent\.com$/i
-export function isImageUrl(str) {
-  const href = normalizeUrl(str)
-  if (!href) return false
+// Répertoires same-origin qui ne contiennent QUE des images : le nom de fichier
+// y porte normalement une extension, mais on ne veut pas dépendre de ça (des
+// copies historiques n'en ont pas).
+const IMAGE_PATH_RE = /^\/(?:erp\/)?api\/(?:product-images|attachments\/airtable)\//
+
+// Source utilisable dans un <img> : URL absolue http(s) OU chemin same-origin
+// servi par l'app (ex. `/erp/api/product-images/recXXX.jpeg`, les images produit
+// stockées dans uploads/). Retourne null si la valeur n'est pas exploitable.
+export function imageSrc(value) {
+  if (value == null) return null
+  const raw = String(value).trim()
+  if (!raw) return null
+  if (raw.startsWith('/')) return raw
+  return normalizeUrl(raw)
+}
+
+function isSingleImageUrl(str) {
+  const src = imageSrc(str)
+  if (!src) return false
+  // Chemin same-origin : ni espace ni virgule (les noms de fichiers servis par
+  // l'app sont assainis) — sinon « /a.png, /b.png » passerait pour UNE image,
+  // son extension finale étant valide (cf. imageSrcList).
+  if (src.startsWith('/')) {
+    if (/[\s,]/.test(src)) return false
+    const p = src.split(/[?#]/)[0]
+    return IMAGE_EXT_RE.test(p) || IMAGE_PATH_RE.test(p)
+  }
   try {
-    const u = new URL(href)
+    const u = new URL(src)
     return IMAGE_EXT_RE.test(u.pathname) || IMAGE_HOST_RE.test(u.hostname)
   } catch {
     return false
   }
 }
 
-// Affiche une image (champ dont la valeur est une URL d'image) sous forme de
-// vignette cliquable ouvrant l'original dans un nouvel onglet. En cas d'échec de
-// chargement (URL expirée, hôte inaccessible), bascule sur un lien texte plutôt
-// qu'une image cassée. stopPropagation pour ne pas déclencher la navigation de
-// ligne ni l'entrée en mode édition de la cellule (même pattern que UrlValue).
-export function ImageValue({ value }) {
-  const [failed, setFailed] = useState(false)
-  const href = normalizeUrl(value)
-  if (!href || failed) return <UrlValue value={value} />
+// Sources d'un champ image. Une cellule peut porter PLUSIEURS images : un champ
+// « pièces jointes » Airtable en accepte plusieurs, et la sync les stocke jointes
+// par « , » (cf. `convertValue` / `mirrorImageAttachments` côté serveur). On ne
+// découpe que si CHAQUE morceau est une URL d'image — sinon la virgule fait
+// partie de la valeur et on garde la chaîne entière. Retourne [] si ce n'est pas
+// un champ image.
+export function imageSrcList(value) {
+  if (value == null) return []
+  const raw = String(value).trim()
+  if (!raw) return []
+  if (raw.includes(',')) {
+    const parts = raw.split(',').map(s => s.trim()).filter(Boolean)
+    if (parts.length > 1 && parts.every(isSingleImageUrl)) return parts.map(imageSrc)
+  }
+  return isSingleImageUrl(raw) ? [imageSrc(raw)] : []
+}
+
+export function isImageUrl(str) {
+  return imageSrcList(str).length > 0
+}
+
+// Placeholder compact quand l'image ne charge pas (typiquement une URL de pièce
+// jointe Airtable expirée : elles ne vivent que quelques heures). On garde le
+// lien d'origine accessible via l'icône, mais on n'étale JAMAIS l'URL brute dans
+// la cellule — une colonne « Image » doit montrer une image, pas une adresse.
+function ImageUnavailable({ href }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      data-testid="cf-image-unavailable"
+      title="Image indisponible — ouvrir le lien d'origine"
+      className="inline-flex h-7 w-7 items-center justify-center rounded border border-dashed border-slate-300 bg-slate-50 text-slate-300 hover:border-slate-400 hover:text-slate-500"
+    >
+      <ImageOff size={13} />
+    </a>
+  )
+}
+
+// Affiche une image (champ dont la valeur est une URL / un chemin d'image) sous
+// forme de vignette cliquable ouvrant l'original dans un nouvel onglet. En cas
+// d'échec de chargement (URL expirée, hôte inaccessible), bascule sur un
+// placeholder discret plutôt qu'une image cassée ou l'URL en toutes lettres.
+// stopPropagation pour ne pas déclencher la navigation de ligne ni l'entrée en
+// mode édition de la cellule (même pattern que UrlValue).
+function ImageThumb({ href }) {
+  // Mémorise la source EN ÉCHEC (pas un simple booléen) pour que le placeholder
+  // se réinitialise tout seul quand la valeur de la cellule change.
+  const [failedSrc, setFailedSrc] = useState(null)
+  if (failedSrc === href) return <ImageUnavailable href={href} />
   return (
     <a
       href={href}
@@ -102,10 +169,25 @@ export function ImageValue({ value }) {
         src={href}
         alt=""
         loading="lazy"
-        onError={() => setFailed(true)}
+        data-testid="cf-image-thumb"
+        onError={() => setFailedSrc(href)}
         className="max-h-7 max-w-[7rem] w-auto rounded border border-slate-200 object-contain bg-white"
       />
     </a>
+  )
+}
+
+export function ImageValue({ value }) {
+  const sources = imageSrcList(value)
+  if (!sources.length) {
+    const single = imageSrc(value)
+    return single ? <ImageThumb href={single} /> : <UrlValue value={value} />
+  }
+  if (sources.length === 1) return <ImageThumb href={sources[0]} />
+  return (
+    <span className="inline-flex items-center gap-1">
+      {sources.map(src => <ImageThumb key={src} href={src} />)}
+    </span>
   )
 }
 
@@ -247,12 +329,38 @@ export function parseSelectChoices(field) {
   return Array.isArray(opts?.choices) ? opts.choices : []
 }
 
+// Valeurs d'un champ multi_select, quelle que soit la forme stockée : tableau
+// déjà parsé, chaîne JSON (`["a","b"]` — forme produite par le sync Airtable et
+// par les éditeurs de l'app) ou texte libre séparé par des virgules (valeurs
+// saisies avant que le champ ne devienne une sélection multiple).
+export function parseMultiSelectItems(value) {
+  if (Array.isArray(value)) return value.map(v => String(v ?? '').trim()).filter(Boolean)
+  if (value == null || value === '') return []
+  const str = String(value)
+  if (str.trim().startsWith('[')) {
+    try {
+      const arr = JSON.parse(str)
+      if (Array.isArray(arr)) return arr.map(v => String(v ?? '').trim()).filter(Boolean)
+    } catch { /* chaîne non-JSON : traitée comme du texte libre ci-dessous */ }
+  }
+  return str.split(',').map(s => s.trim()).filter(Boolean)
+}
+
 // Format d'affichage ('h:mm' / 'h:mm:ss') d'un champ de type duration, lu depuis
 // sa config `options` (JSON). Défaut 'h:mm'.
 export function durationFormatOf(field) {
   let opts = field?.options
   if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch { opts = null } }
   return normalizeDurationFormat(opts?.format)
+}
+
+// Format d'affichage d'un champ date (data/formula/lookup/rollup), lu depuis
+// sa config `options` (JSON) — voir DATE_DISPLAY_FORMATS. Défaut 'iso_date'
+// (comportement historique, rétro-compatible avec les champs créés avant ce réglage).
+export function dateFormatOf(field) {
+  let opts = field?.options
+  if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch { opts = null } }
+  return normalizeDateFormat(opts?.format)
 }
 
 // Couleur (palette Badge) associée à un label de choix. Défaut 'gray' si le
@@ -418,9 +526,15 @@ export function renderCustomFieldValue(field, value, row) {
     if (!Array.isArray(items)) items = value != null && value !== '' ? [items] : []
     if (!items.length) return <span className="text-slate-400">—</span>
     const choices = parseSelectChoices(field)
+    // Une seule ligne : ce rendu ne sert que dans une cellule de DataTable, dont
+    // la hauteur est fixe (lignes virtualisées). Un `flex-wrap` faisait déborder
+    // les pastilles hors de la ligne, par-dessus l'en-tête et les lignes
+    // voisines. On garde donc `flex-nowrap` + `shrink-0` (les pastilles ne se
+    // compressent pas les unes sur les autres) et on laisse la cellule rogner,
+    // comme Airtable. Le titre au survol donne la liste complète.
     return (
-      <div className="flex gap-1 flex-wrap">
-        {items.map((v, i) => <Badge key={i} color={colorForChoice(choices, v)}>{v}</Badge>)}
+      <div className="flex items-center gap-1 overflow-hidden" title={items.join(', ')}>
+        {items.map((v, i) => <Badge key={i} color={colorForChoice(choices, v)} className="shrink-0 whitespace-nowrap">{v}</Badge>)}
       </div>
     )
   }
@@ -434,7 +548,9 @@ export function renderCustomFieldValue(field, value, row) {
     const choices = parseSelectChoices(field)
     return <Badge color={colorForChoice(choices, value)}>{value}</Badge>
   }
-  if (field.result_type === 'date') return <span className="text-slate-500">{fmtDate(value)}</span>
+  if (field.type === 'date' || field.result_type === 'date') {
+    return <span className="text-slate-500">{fmtDateWithFormat(value, dateFormatOf(field))}</span>
+  }
   if (field.type === 'currency') {
     const formatted = formatCurrency(value, field.decimals ?? 2, currencyCodeOf(field))
     return <span className="tabular-nums text-slate-700">{formatted != null ? formatted : value}</span>

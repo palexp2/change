@@ -75,7 +75,7 @@ describe('FAB feedback — envoi sans étape de confirmation', () => {
     assert.ok(String(captured.prompt || '').includes(text), 'le texte saisi doit être envoyé')
 
     // 4. Un toast accuse réception, sans bloquer.
-    await page.locator('text=/ta file Travaux|tout de suite/').first().waitFor({ timeout: 5000 })
+    await page.locator('text=/file de l\'Agent|tout de suite/').first().waitFor({ timeout: 10000 })
 
     // 5. Le brouillon est vidé : rouvrir la bulle donne un champ vierge.
     await page.click('[data-testid="feedback-fab"]')

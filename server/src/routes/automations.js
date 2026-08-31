@@ -178,6 +178,44 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       if (!ACCTNUM_RE.test(v)) throw new Error(`${key} : numéro de compte invalide`)
     },
   },
+  // Registre des entreprises du Québec : chemin du ZIP déposé à la main (le
+  // téléchargement direct est bloqué par Cloudflare) et définition de ce qui
+  // compte comme activité horticole sur la page Prospects REQ.
+  sys_req_import: {
+    actionKeys: new Set(['local_zip_path', 'activity_codes', 'activity_keywords']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'local_zip_path') {
+        if (v.length > 400) throw new Error('local_zip_path trop long (max 400 caractères)')
+        if (!v.startsWith('/')) throw new Error('local_zip_path doit être un chemin absolu sur le serveur')
+        return
+      }
+      if (key === 'activity_codes') {
+        if (!/^[0-9A-Za-z]{1,15}([,;\s]+[0-9A-Za-z]{1,15})*$/.test(v.trim())) {
+          throw new Error("activity_codes : liste de codes d'activité séparés par des virgules")
+        }
+        return
+      }
+      if (key === 'activity_keywords') {
+        if (v.length > 500) throw new Error('activity_keywords trop long (max 500 caractères)')
+        try { new RegExp(v, 'i') } catch { throw new Error('activity_keywords : expression régulière invalide') }
+      }
+    },
+  },
+  // DigiKey : fenêtre d'historique balayée et nom du fournisseur porté par les
+  // achats créés. Les identifiants OAuth vivent dans Connecteurs, pas ici.
+  sys_digikey_orders: {
+    actionKeys: new Set(['lookback_days', 'vendor_name']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'lookback_days' && !/^\d{1,4}$/.test(v)) {
+        throw new Error('lookback_days doit être un nombre de jours')
+      }
+      if (key === 'vendor_name' && v.length > 120) {
+        throw new Error('vendor_name : 120 caractères maximum')
+      }
+    },
+  },
   // Alerte solde CARM : point de départ du compte, seuil, comptes d'imputation.
   sys_carm_balance_alert: {
     actionKeys: new Set(['opening_balance', 'opening_date', 'threshold', 'ap_acctnum', 'duty_acctnum',
@@ -280,6 +318,41 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       }
       if (key === 'work_days' && !/^[0-6](\s*,\s*[0-6])*$/.test(v)) {
         throw new Error('work_days : liste de jours 0 (dimanche) à 6 (samedi), séparés par des virgules')
+      }
+      if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
+        throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
+      }
+    },
+  },
+  // Plafond des cartes : périmètre (comptes QB suivis), fenêtre J-N, seuil de
+  // matérialité et canal. Les seuils PROPRES à chaque carte (limite, plafond,
+  // jour de prélèvement) vivent dans card_ceilings et s'éditent sur le dashboard
+  // comptabilité — les redoubler ici créerait deux vérités.
+  sys_card_ceiling_alert: {
+    actionKeys: new Set(['acctnums', 'lead_days', 'min_alert_amount', 'pending_lookback_days',
+      'lead_always', 'slack_channel', 'slack_webhook_url', 'slack_webhook_env']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'acctnums' && !/^\d{1,10}(\s*,\s*\d{1,10})*$/.test(v)) {
+        throw new Error('acctnums : numéros de comptes QuickBooks séparés par des virgules')
+      }
+      if (key === 'lead_days' && !/^\d{1,2}$/.test(v)) {
+        throw new Error('lead_days doit être un nombre de jours (0 à 99)')
+      }
+      if (key === 'min_alert_amount' && !/^\d{1,7}$/.test(v)) {
+        throw new Error('min_alert_amount doit être un entier positif (CAD)')
+      }
+      if (key === 'pending_lookback_days' && !/^[1-9]\d{0,3}$/.test(v)) {
+        throw new Error('pending_lookback_days doit être un nombre de jours positif')
+      }
+      if (key === 'lead_always' && v !== '0' && v !== '1') {
+        throw new Error('lead_always doit valoir 0 ou 1')
+      }
+      if (key === 'slack_channel' && v.length > 120) {
+        throw new Error('slack_channel trop long (max 120 caractères)')
+      }
+      if (key === 'slack_webhook_url' && !/^https:\/\/hooks\.slack\.com\//.test(v)) {
+        throw new Error('slack_webhook_url doit être une URL https://hooks.slack.com/…')
       }
       if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
         throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
@@ -417,7 +490,9 @@ function validateCtbSheetKey(key, v) {
 function configurableTriggerColumns(erpTable) {
   const physical = db.prepare(`PRAGMA table_info(${erpTable})`).all().map(c => c.name)
   const custom = db.prepare(
-    'SELECT column_name FROM custom_fields WHERE erp_table = ? AND deleted_at IS NULL'
+    // kind='native' exclu : ces lignes personnalisent une colonne déjà listée par
+    // le PRAGMA (ou un champ calculé par la requête, sans colonne physique).
+    "SELECT column_name FROM custom_fields WHERE erp_table = ? AND deleted_at IS NULL AND kind <> 'native'"
   ).all(erpTable).map(r => r.column_name)
   return new Set([...physical, ...custom])
 }
@@ -659,7 +734,8 @@ router.get('/field-defs', (req, res) => {
     const seen = new Set(columns.map(c => c.column_name))
     for (const cf of db.prepare(
       `SELECT column_name, name, kind, COALESCE(result_type, type) AS field_type
-       FROM custom_fields WHERE erp_table = ? AND deleted_at IS NULL ORDER BY name`
+       FROM custom_fields WHERE erp_table = ? AND deleted_at IS NULL AND kind <> 'native'
+       ORDER BY name`
     ).all(erpTable)) {
       if (seen.has(cf.column_name) || nativeNames.has(cf.column_name)) continue
       columns.push({

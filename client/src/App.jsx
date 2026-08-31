@@ -20,7 +20,7 @@ import Login from './pages/Login.jsx'
 import Setup from './pages/Setup.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Pipeline from './pages/Pipeline.jsx'
-import ProjectFields from './pages/ProjectFields.jsx'
+import FieldConfig, { AirtableFieldsRedirect } from './pages/FieldConfig.jsx'
 import Orders from './pages/Orders.jsx'
 import OrderDetail from './pages/OrderDetail.jsx'
 import Products from './pages/Products.jsx'
@@ -61,10 +61,11 @@ import VendorSubscriptions from './pages/VendorSubscriptions.jsx'
 import VendorProfiles from './pages/VendorProfiles.jsx'
 import PrepaidAccounts from './pages/PrepaidAccounts.jsx'
 import DriveInventory from './pages/DriveInventory.jsx'
+import TestsAntoine from './pages/TestsAntoine.jsx'
+import ReqProspects from './pages/ReqProspects.jsx'
 import FinDeMois from './pages/FinDeMois.jsx'
 import Travaux from './pages/Travaux.jsx'
 import DettesLT from './pages/DettesLT.jsx'
-import InvoiceCollection from './pages/InvoiceCollection.jsx'
 import MarketingBudget from './pages/MarketingBudget.jsx'
 import InstagramProspects from './pages/InstagramProspects.jsx'
 import ComptaDashboard from './pages/ComptaDashboard.jsx'
@@ -109,6 +110,16 @@ function LegacyFinanceRedirect() {
   return <Navigate to={legacyFinanceTarget(rest)} replace />
 }
 
+// Identité « page » d'une URL, utilisée comme clé de remontage. Certains
+// segments ne désignent pas une autre page mais une ancre dans la page courante
+// (les sections du dashboard : /dashboard/couts-expedition). On les ignore pour
+// que la navigation vers une ancre ne remonte pas la page.
+const ANCHOR_ROUTE_PREFIXES = ['/dashboard/']
+function pageKey(pathname) {
+  const prefix = ANCHOR_ROUTE_PREFIXES.find(p => pathname.startsWith(p))
+  return prefix ? prefix.slice(0, -1) : pathname
+}
+
 function ProtectedRoute({ children, adminOnly = false, hrOnly = false }) {
   const { user } = useAuth()
   if (!user) return <Navigate to="/login" replace />
@@ -145,9 +156,13 @@ function AppRoutes() {
   const homePath = user?.id === PAP_USER_ID ? '/agent' : '/dashboard'
 
   return (
-    // key={location.pathname} : remonte le boundary à chaque navigation, ce qui
-    // efface automatiquement un état d'erreur quand l'utilisateur change de page.
-    <ErrorBoundary key={location.pathname}>
+    // key={pageKey(...)} : remonte le boundary quand on change réellement de
+    // page (ce qui repart d'un conteneur de scroll neuf, en haut). Les segments
+    // qui ne sont qu'une ancre dans la page courante — /dashboard/:section — ne
+    // changent pas la clé : sinon cliquer une section du dashboard détruisait
+    // toute la page et renvoyait le scroll en haut.
+    // resetKey : efface l'état d'erreur même sur ces navigations internes.
+    <ErrorBoundary key={pageKey(location.pathname)} resetKey={location.pathname}>
     <Routes>
       <Route path="/" element={<Navigate to={user ? homePath : '/login'} replace />} />
       <Route path="/login" element={user ? <Navigate to={homePath} replace /> : <Login />} />
@@ -161,11 +176,12 @@ function AppRoutes() {
       <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/dashboard/:section" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
       <Route path="/pipeline" element={<ProtectedRoute><Pipeline /></ProtectedRoute>} />
-      <Route path="/projects/fields" element={<ProtectedRoute adminOnly><ProjectFields /></ProtectedRoute>} />
-      {/* Contrôle des champs Airtable généralisé à tous les modules synchronisés
-          (contacts, companies, pieces, orders, achats, envois…). Même page que
-          /projects/fields, paramétrée par :module. */}
-      <Route path="/airtable/fields/:module" element={<ProtectedRoute adminOnly><ProjectFields /></ProtectedRoute>} />
+      <Route path="/projects/fields" element={<ProtectedRoute adminOnly><AirtableFieldsRedirect /></ProtectedRoute>} />
+      {/* Anciennes URL du contrôle des champs Airtable : redirigées vers
+          l'onglet correspondant de /champs/:table, où cette interface est
+          maintenant fusionnée avec la configuration des champs. */}
+      <Route path="/airtable/fields/:module" element={<ProtectedRoute adminOnly><AirtableFieldsRedirect /></ProtectedRoute>} />
+      <Route path="/champs/:table" element={<ProtectedRoute><FieldConfig /></ProtectedRoute>} />
       <Route path="/orders" element={<ProtectedRoute><Orders /></ProtectedRoute>} />
       <Route path="/orders/:id" element={<ProtectedRoute><OrderDetail /></ProtectedRoute>} />
       <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
@@ -206,10 +222,16 @@ function AppRoutes() {
       <Route path="/abonnements-fournisseurs" element={<Navigate to="/fournisseurs/abonnements" replace />} />
       <Route path="/comptes-prepayes" element={<ProtectedRoute><PrepaidAccounts /></ProtectedRoute>} />
       <Route path="/inventaire-drive" element={<ProtectedRoute><DriveInventory /></ProtectedRoute>} />
+      <Route path="/tests-antoine" element={<ProtectedRoute><TestsAntoine /></ProtectedRoute>} />
+      {/* Sous-route de « Tests – Antoine » : elle apparaît dans le sous-menu de
+          cette entrée du flyout Espace finance (cf. lib/navSubsections.js), et
+          Projets y renvoie depuis sa barre d'actions. */}
+      <Route path="/tests-antoine/prospects-req" element={<ProtectedRoute><ReqProspects /></ProtectedRoute>} />
       <Route path="/fin-de-mois" element={<ProtectedRoute><FinDeMois /></ProtectedRoute>} />
       <Route path="/travaux" element={<ProtectedRoute><Travaux /></ProtectedRoute>} />
       <Route path="/dettes-lt" element={<ProtectedRoute><DettesLT /></ProtectedRoute>} />
-      <Route path="/collecte-factures" element={<ProtectedRoute><InvoiceCollection /></ProtectedRoute>} />
+      {/* Devenue un onglet d'Extraction de données (SaleReceipts) : la route reste pour ne pas casser les signets. */}
+      <Route path="/collecte-factures" element={<Navigate to="/sale-receipts?onglet=collecte" replace />} />
       <Route path="/budget-marketing" element={<ProtectedRoute><MarketingBudget /></ProtectedRoute>} />
       <Route path="/prospects-instagram" element={<ProtectedRoute><InstagramProspects /></ProtectedRoute>} />
       {/* Douanes (ASFC) : le suivi CARM est devenu un onglet des Comptes prépayés

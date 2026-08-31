@@ -139,13 +139,15 @@ describe('Pipeline — édition projet en autosave (pas de bouton Enregistrer)',
     await dialog.getByText('Enregistré', { exact: true }).waitFor({ state: 'visible', timeout: 8000 })
   })
 
-  test('changement de Statut → autosave persisté', async () => {
+  // Le select couvert ici était « Statut » ; ce champ a été retiré de la table
+  // Projet (voir projects-no-status-field.test.js). « Type » est le select
+  // restant et donne la même couverture : autosave d'un <select>.
+  test('changement de Type → autosave persisté', async () => {
     const dialog = page.locator('div[role="dialog"]:has(h2:has-text("Modifier le projet"))')
-    // Le select Statut est le premier <select> contenant l'option "Gagné".
-    const statusSelect = dialog.locator('select:has(option[value="Gagné"])')
-    await statusSelect.selectOption('Gagné')
+    const typeSelect = dialog.locator('select:has(option[value="Expansion"])')
+    await typeSelect.selectOption('Expansion')
 
-    const proj = await waitForProject(token, projectId, p => p.status === 'Gagné', 12000)
-    assert.equal(proj.status, 'Gagné', 'le Statut doit être autosauvegardé')
+    const proj = await waitForProject(token, projectId, p => p.type === 'Expansion', 12000)
+    assert.equal(proj.type, 'Expansion', 'le Type doit être autosauvegardé')
   })
 })

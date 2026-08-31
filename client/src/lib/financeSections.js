@@ -1,6 +1,6 @@
 import {
   Landmark, ListChecks, BookUser, Wallet, CalendarCheck,
-  Banknote, ArrowLeftRight, CreditCard, Ship, Megaphone, HardDrive, DownloadCloud,
+  Banknote, ArrowLeftRight, CreditCard, Ship, Megaphone, HardDrive, FlaskConical,
 } from 'lucide-react'
 
 // Espace finance — les pages du suivi comptable quotidien, réunies derrière une
@@ -25,13 +25,15 @@ export const FINANCE_SECTIONS = [
 
   { to: '/fournisseurs',     label: 'Fournisseurs',             icon: BookUser,       group: 'Fournisseurs & engagements' },
   { to: '/dettes-lt',        label: 'Dettes long terme',        icon: Landmark,       group: 'Fournisseurs & engagements' },
-  { to: '/collecte-factures', label: 'Collecte de factures',     icon: DownloadCloud,  group: 'Fournisseurs & engagements' },
-
   { to: '/budget-marketing', label: 'Budget marketing',         icon: Megaphone,      group: 'Fournisseurs & engagements' },
 
   { to: '/fin-de-mois',      label: 'Écritures de fin de mois', icon: CalendarCheck,  group: 'Écritures' },
 
   { to: '/inventaire-drive', label: 'Inventaire Drive',         icon: HardDrive,      group: 'Pilotage' },
+
+  // Bac à sable : les chantiers en cours de validation avant d'être promus dans
+  // leur section définitive (aujourd'hui l'import MAPAQ des exploitations en serre).
+  { to: '/tests-antoine',    label: 'Tests – Antoine',          icon: FlaskConical,   group: 'Tests' },
 ]
 
 // Onglets revendiqués par une entrée de menu, par page (`/page` → ['douanes']).

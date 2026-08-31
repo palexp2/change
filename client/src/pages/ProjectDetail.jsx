@@ -13,7 +13,7 @@ function pdfUrl(id, download = false) {
 }
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { Badge, projectStatusColor } from '../components/Badge.jsx'
+import { Badge } from '../components/Badge.jsx'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -319,6 +319,8 @@ export default function ProjectDetail() {
   const [showPdf, setShowPdf] = useState(null) // { id, title }
   const [vendeurOptions, setVendeurOptions] = useState([])
   const [savingVendeur, setSavingVendeur] = useState(false)
+  const [companies, setCompanies] = useState([])
+  const [savingCompany, setSavingCompany] = useState(false)
   const disabledCols = useDisabledColumns('projects')
 
   const load = useCallback(() => {
@@ -342,6 +344,39 @@ export default function ProjectDetail() {
       .then(r => setVendeurOptions(r.data || []))
       .catch(() => setVendeurOptions([]))
   }, [])
+
+  // Liste minimale (id + nom) pour le picker Entreprise du panneau Informations.
+  useEffect(() => {
+    api.companies.lookup()
+      .then(d => setCompanies(Array.isArray(d) ? d : (d?.data || [])))
+      .catch(() => setCompanies([]))
+  }, [])
+
+  // Options du picker Entreprise. On y injecte toujours l'entreprise déjà liée :
+  // `/companies/lookup` exclut les entreprises archivées (deleted_at) et n'est
+  // pas encore chargé au premier rendu — sans cette injection, LinkedRecordField
+  // ne trouverait pas l'option correspondant à company_id et afficherait un
+  // champ vide alors que le projet EST lié.
+  const companyOptions = useMemo(() => {
+    if (!project?.company_id) return companies
+    if (companies.some(c => String(c.id) === String(project.company_id))) return companies
+    return [{ id: project.company_id, name: project.company_name || 'Entreprise liée' }, ...companies]
+  }, [companies, project?.company_id, project?.company_name])
+
+  // Autosave du lien Entreprise (règle CLAUDE.md : pas de bouton Enregistrer).
+  // La réponse du PUT ramène company_name, donc l'entête et le champ restent
+  // cohérents sans recharger la fiche.
+  async function saveCompany(companyId) {
+    setSavingCompany(true)
+    try {
+      const updated = await api.projects.update(id, { company_id: companyId || null })
+      setProject(p => ({ ...p, ...updated, orders: p.orders }))
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally {
+      setSavingCompany(false)
+    }
+  }
 
   async function saveVendeur(ref) {
     setSavingVendeur(true)
@@ -468,7 +503,6 @@ export default function ProjectDetail() {
           <div className="flex-1">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-2xl font-bold text-slate-900">{project.name}</h1>
-              <Badge color={projectStatusColor(project.status)} size="md">{project.status}</Badge>
             </div>
             <div className="text-sm text-slate-500 mt-1">
               {project.company_name && project.company_id && (
@@ -496,13 +530,28 @@ export default function ProjectDetail() {
         {tab === 'info' && (
           <div className="card p-6">
             <dl className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-4 text-sm">
+              {/* Entreprise : champ référence à part entière (picker recherchable
+                  + lien vers la fiche), et non plus seulement un sous-titre —
+                  sans lui, un projet sans entreprise n'affichait rien et il n'y
+                  avait aucun moyen d'en lier une depuis la fiche. */}
+              <div data-testid="project-company-field">
+                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Entreprise</dt>
+                <dd>
+                  <LinkedRecordField
+                    name="project_company_id"
+                    value={project.company_id}
+                    options={companyOptions}
+                    labelFn={c => c.name}
+                    getHref={c => `/companies/${c.id}`}
+                    placeholder="Entreprise"
+                    saving={savingCompany}
+                    onChange={saveCompany}
+                  />
+                </dd>
+              </div>
               <div>
                 <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Type</dt>
                 <dd className="text-slate-900">{project.type || '—'}</dd>
-              </div>
-              <div>
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Statut</dt>
-                <dd><Badge color={projectStatusColor(project.status)}>{project.status}</Badge></dd>
               </div>
               <div>
                 <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Probabilité</dt>

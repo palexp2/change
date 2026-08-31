@@ -2,14 +2,14 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-08-27T18:00:02.812Z",
+  "generatedAt": "2026-08-31T02:16:48.875Z",
   "stats": {
-    "routes": 92,
-    "pages": 85,
+    "routes": 95,
+    "pages": 87,
     "groups": 6,
-    "api": 90,
-    "tables": 154,
-    "connectors": 5
+    "api": 97,
+    "tables": 158,
+    "connectors": 8
   },
   "groups": [
     {
@@ -98,7 +98,7 @@ export const architectureManifest = {
       ]
     },
     {
-      "group": "Envois",
+      "group": "Transport",
       "items": [
         {
           "to": "/orders",
@@ -122,7 +122,7 @@ export const architectureManifest = {
           "component": "Retours",
           "adminOnly": false,
           "hrOnly": false,
-          "api": null
+          "api": "/api/retours"
         }
       ]
     },
@@ -398,17 +398,25 @@ export const architectureManifest = {
     },
     {
       "to": "/projects/fields",
-      "label": "ProjectFields",
-      "component": "ProjectFields",
+      "label": "AirtableFieldsRedirect",
+      "component": "AirtableFieldsRedirect",
       "adminOnly": true,
       "hrOnly": false,
       "api": "/api/projects"
     },
     {
       "to": "/airtable/fields/:module",
-      "label": "ProjectFields",
-      "component": "ProjectFields",
+      "label": "AirtableFieldsRedirect",
+      "component": "AirtableFieldsRedirect",
       "adminOnly": true,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/champs/:table",
+      "label": "FieldConfig",
+      "component": "FieldConfig",
+      "adminOnly": false,
       "hrOnly": false,
       "api": null
     },
@@ -466,7 +474,7 @@ export const architectureManifest = {
       "component": "RetourDetail",
       "adminOnly": false,
       "hrOnly": false,
-      "api": null
+      "api": "/api/retours"
     },
     {
       "to": "/factures/:id",
@@ -541,6 +549,22 @@ export const architectureManifest = {
       "api": null
     },
     {
+      "to": "/tests-antoine",
+      "label": "TestsAntoine",
+      "component": "TestsAntoine",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/tests-antoine/prospects-req",
+      "label": "ReqProspects",
+      "component": "ReqProspects",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
       "to": "/fin-de-mois",
       "label": "FinDeMois",
       "component": "FinDeMois",
@@ -560,14 +584,6 @@ export const architectureManifest = {
       "to": "/dettes-lt",
       "label": "DettesLT",
       "component": "DettesLT",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": null
-    },
-    {
-      "to": "/collecte-factures",
-      "label": "InvoiceCollection",
-      "component": "InvoiceCollection",
       "adminOnly": false,
       "hrOnly": false,
       "api": null
@@ -698,7 +714,7 @@ export const architectureManifest = {
       "component": "Changelog",
       "adminOnly": false,
       "hrOnly": false,
-      "api": null
+      "api": "/api/changelog"
     },
     {
       "to": "/architecture",
@@ -749,6 +765,7 @@ export const architectureManifest = {
     "/api/calls",
     "/api/carm",
     "/api/catalog",
+    "/api/changelog",
     "/api/comments",
     "/api/companies",
     "/api/connectors",
@@ -756,13 +773,13 @@ export const architectureManifest = {
     "/api/custom-fields",
     "/api/customer/post-payment",
     "/api/dashboard",
+    "/api/digikey",
     "/api/discovery-forms",
     "/api/documents",
     "/api/drive-inventory",
     "/api/email-relance",
     "/api/email-tracking",
     "/api/employees",
-    "/api/field-overrides",
     "/api/field-visibility-rules",
     "/api/fx",
     "/api/hooks",
@@ -774,7 +791,9 @@ export const architectureManifest = {
     "/api/interaction-files",
     "/api/interactions",
     "/api/journal-entries",
+    "/api/labels",
     "/api/lt-debts",
+    "/api/mapaq",
     "/api/marketing-budget",
     "/api/month-end",
     "/api/notifications",
@@ -794,11 +813,14 @@ export const architectureManifest = {
     "/api/public/installation-feedback",
     "/api/public/ticket-survey",
     "/api/purchases",
+    "/api/purolator",
     "/api/qualification-calls",
     "/api/receipt-files",
     "/api/recordings",
     "/api/records",
     "/api/reports",
+    "/api/req",
+    "/api/retours",
     "/api/sale-receipts",
     "/api/scrapers",
     "/api/search",
@@ -819,6 +841,7 @@ export const architectureManifest = {
     "/api/travaux",
     "/api/treasury",
     "/api/undo",
+    "/api/ups",
     "/api/vacations",
     "/api/vendor-profiles",
     "/api/vendor-subscriptions",
@@ -860,6 +883,8 @@ export const architectureManifest = {
     "base_interactions",
     "bom_items",
     "calls",
+    "card_ceiling_alerts",
+    "card_ceilings",
     "card_payment_dues",
     "carm_allocations",
     "carm_transactions",
@@ -873,6 +898,7 @@ export const architectureManifest = {
     "customer_onboarding_responses",
     "customer_tech_info_responses",
     "detail_field_configs",
+    "digikey_orders",
     "document_items",
     "drive_inventory_items",
     "drive_inventory_state",
@@ -928,6 +954,7 @@ export const architectureManifest = {
     "recurring_outflows",
     "recurring_task_completions",
     "recurring_tasks",
+    "req_entreprises",
     "return_items",
     "returns",
     "revenue_recognition_queue",
@@ -984,8 +1011,11 @@ export const architectureManifest = {
   "connectors": [
     "airtable",
     "amazon",
+    "digikey",
     "google",
     "hubspot",
-    "quickbooks"
+    "purolator",
+    "quickbooks",
+    "ups"
   ]
 }

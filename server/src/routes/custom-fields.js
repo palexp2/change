@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { regenerateView, validateFormulaExpr, validateFormulaReferences, validateLookup, validateRollup, validateLink, setLinkValue, readLinkValue, getLinkOptions, deleteLinkGroup, LINK_TARGET_WHITELIST, getLookupMeta, previewFormula, getFieldDependents, ACTIVITY_ENTITY_MAP } from '../services/customFieldsView.js'
 import { parseDurationToSeconds, normalizeDurationFormat } from '../services/duration.js'
 import { runRuleActionForRecord } from '../services/fieldRuleEngine.js'
+import { findLabelConflict, labelConflictError } from '../utils/fieldLabels.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -232,6 +233,20 @@ function normalizePhoneOptions(raw) {
   return { json: JSON.stringify({ country_code: cc }) }
 }
 
+// Formats de date proposés à l'affichage — miroir de DATE_DISPLAY_FORMATS
+// (client/src/lib/formatDate.js). Tenir les deux listes alignées.
+const DATE_FORMATS = new Set(['iso_date', 'iso_24h', 'iso_12h', 'local_date', 'local_datetime'])
+
+// Normalise/valide la config d'un champ 'date' (data, ou formula/lookup/rollup
+// en result_type='date'). La config tient dans la colonne `options` (JSON) :
+// { format: 'iso_date' | 'iso_24h' | 'iso_12h' | 'local_date' | 'local_datetime' }.
+// Défaut 'iso_date' (comportement historique, rétro-compatible avec les champs
+// créés avant ce réglage). Retourne { json }.
+function normalizeDateOptions(raw) {
+  const format = DATE_FORMATS.has(raw?.format) ? raw.format : 'iso_date'
+  return { json: JSON.stringify({ format }) }
+}
+
 // Normalise/valide une valeur par défaut pour un champ kind='data'.
 //   raw  : valeur brute du body (string/number/null/undefined)
 //   type : 'text' | 'number' | 'currency' | 'url' | 'duration' | 'checkbox'
@@ -287,6 +302,10 @@ router.get('/:id/dependents', (req, res) => {
 })
 
 // GET /api/custom-fields/:erpTable — liste les champs custom actifs pour une table.
+// Les lignes kind='native' (personnalisation d'un champ défini dans tableDefs.js)
+// sont EXCLUES : elles ne décrivent pas un champ à ajouter aux colonnes de la
+// page, mais une retouche d'un champ qui s'y trouve déjà. Elles se lisent par
+// GET /:erpTable/native.
 router.get('/:erpTable', (req, res) => {
   const { erpTable } = req.params
   if (!ALLOWED_TABLES.has(erpTable)) return res.status(400).json({ error: 'Table non supportée pour les champs custom' })
@@ -296,100 +315,602 @@ router.get('/:erpTable', (req, res) => {
             rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, view_error, options, default_value,
             link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id
      FROM custom_fields
-     WHERE erp_table=? AND deleted_at IS NULL
+     WHERE erp_table=? AND deleted_at IS NULL AND kind <> 'native'
      ORDER BY sort_order, created_at`
   ).all(erpTable)
   res.json({ data: rows })
 })
 
-// POST /api/custom-fields/:erpTable — crée un nouveau champ custom.
-// Body : { name, type ('text'|'number'|'currency'|'url'), decimals (0..5) }
+// ── Champs NATIFS (kind='native') ────────────────────────────────────────────
 //
-// Les types 'currency' et 'url' sont des variantes de format/rendu par-dessus le
-// mécanisme 'data' existant : aucune colonne métier nouvelle.
-//   - currency : nombre stocké en REAL, rendu avec format monétaire ($, séparateurs).
-//                `decimals` optionnel, défaut 2.
-//   - url      : texte stocké en TEXT, rendu comme lien cliquable si URL valide.
-//   - phone    : texte stocké en TEXT, formaté à l'affichage — (514) 123-4567 —
-//                et rendu comme lien tel: cliquable.
+// Personnalisation des colonnes définies en dur dans client/src/lib/tableDefs.js :
+// renommage, type d'affichage, décimales, indicatif téléphonique, ordre. Purement
+// cosmétique — aucune colonne SQL n'est touchée, les syncs continuent d'écrire
+// dans les colonnes d'origine.
+//
+// Ces routes remplacent /api/field-overrides (table field_overrides), supprimé :
+// un seul stockage, une seule route, un seul vocabulaire de types. La forme des
+// réponses est conservée (`field_id`) pour rester le contrat attendu par le
+// client. Voir la migration dans db/schema.js pour les conventions (name/type
+// vides = « pas de personnalisation »).
+//
+// `erp_table` est une clé de vue DataTable (ex. 'company_orders'), pas forcément
+// une table SQL : on valide le format, pas l'appartenance à ALLOWED_TABLES.
+const NATIVE_TABLE_RE = /^[a-z0-9_]{1,64}$/
+const NATIVE_FIELD_RE = /^[a-zA-Z0-9_]{1,80}$/
+// Types d'affichage supportés par applyFieldOverrides côté client. 'boolean'
+// reste accepté en entrée (ancien vocabulaire) mais est stocké 'checkbox'.
+const NATIVE_TYPES = new Set(['text', 'number', 'currency', 'date', 'checkbox', 'url', 'phone'])
+
+function nativeParams(req, res) {
+  const { erpTable, fieldId } = req.params
+  if (!NATIVE_TABLE_RE.test(erpTable)) { res.status(400).json({ error: 'Table invalide' }); return null }
+  if (fieldId !== undefined && !NATIVE_FIELD_RE.test(fieldId)) { res.status(400).json({ error: 'Champ invalide' }); return null }
+  return { erpTable, fieldId }
+}
+
+// Ligne native → forme attendue par le client. Les sentinelles vides
+// redeviennent des `null` : « rien de personnalisé sur cet aspect ».
+function nativeRow(r) {
+  return {
+    field_id: r.column_name,
+    label: r.name || null,
+    type: r.type || null,
+    decimals: r.decimals,
+    country_code: r.country_code,
+    sort_order: r.sort_order,
+    hidden: r.hidden === 1,
+  }
+}
+
+router.get('/:erpTable/native', (req, res) => {
+  const p = nativeParams(req, res)
+  if (!p) return
+  const rows = db.prepare(
+    `SELECT column_name, name, type, decimals, country_code, sort_order, hidden
+     FROM custom_fields
+     WHERE erp_table=? AND deleted_at IS NULL AND kind='native'`
+  ).all(p.erpTable)
+  res.json({ data: rows.map(nativeRow) })
+})
+
+// Upsert d'une personnalisation. Body : { label?, type?, decimals?, country_code? }
+// — au moins l'un des trois aspects requis (l'ordre passe par PATCH .../native/order).
+router.put('/:erpTable/native/:fieldId', (req, res) => {
+  const p = nativeParams(req, res)
+  if (!p) return
+  const { label, type, decimals, country_code } = req.body || {}
+
+  let cleanLabel = null
+  if (label != null) {
+    if (typeof label !== 'string' || !label.trim() || label.trim().length > 120) {
+      return res.status(400).json({ error: 'Libellé invalide (1 à 120 caractères)' })
+    }
+    cleanLabel = label.trim()
+  }
+  let cleanType = null
+  if (type != null) {
+    cleanType = type === 'boolean' ? 'checkbox' : type
+    if (!NATIVE_TYPES.has(cleanType)) {
+      return res.status(400).json({ error: `Type invalide (${[...NATIVE_TYPES].join(', ')})` })
+    }
+  }
+  let cleanDecimals = null
+  if (decimals != null) {
+    const d = Number(decimals)
+    if (!Number.isInteger(d) || d < 0 || d > 5) return res.status(400).json({ error: 'Décimales invalides (0 à 5)' })
+    cleanDecimals = d
+  }
+  let cleanCountryCode = null
+  if (country_code != null) {
+    if (country_code !== 'show' && country_code !== 'hide') {
+      return res.status(400).json({ error: "Indicatif invalide ('show' ou 'hide')" })
+    }
+    cleanCountryCode = country_code
+  }
+  if (cleanLabel == null && cleanType == null && cleanCountryCode == null) {
+    return res.status(400).json({ error: 'Rien à enregistrer : libellé, type ou indicatif requis' })
+  }
+
+  // Unicité du libellé dans la table : deux champs homonymes rendent tout
+  // sélecteur de champ ambigu (filtres, formules, mapping Airtable).
+  if (cleanLabel != null) {
+    const conflict = findLabelConflict(p.erpTable, cleanLabel, { fieldId: p.fieldId })
+    if (conflict) return res.status(409).json({ error: labelConflictError(conflict) })
+  }
+
+  // Le sort_order existant est préservé : renommer un champ ne doit jamais le
+  // déplacer. Une ligne absente naît sans ordre explicite (NULL).
+  const existing = db.prepare(
+    `SELECT id, sort_order FROM custom_fields WHERE erp_table=? AND column_name=?`
+  ).get(p.erpTable, p.fieldId)
+
+  if (existing) {
+    db.prepare(`
+      UPDATE custom_fields
+      SET name=?, type=?, decimals=?, country_code=?, kind='native', deleted_at=NULL,
+          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id=?
+    `).run(cleanLabel || '', cleanType || '', cleanDecimals, cleanCountryCode, existing.id)
+  } else {
+    // sort_order explicitement NULL : la colonne a un DEFAULT 0, or un champ
+    // seulement renommé n'a AUCUN ordre choisi. Avec 0, applyFieldOrder le
+    // considérerait comme ordonné et le ferait remonter en tête du tableau.
+    db.prepare(`
+      INSERT INTO custom_fields
+        (id, erp_table, name, column_name, type, decimals, country_code, sort_order, kind, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'native', 'native')
+    `).run(uuid(), p.erpTable, cleanLabel || '', p.fieldId, cleanType || '', cleanDecimals, cleanCountryCode)
+  }
+
+  res.json({ data: { field_id: p.fieldId, label: cleanLabel, type: cleanType, decimals: cleanDecimals, country_code: cleanCountryCode } })
+})
+
+// PATCH /:erpTable/native/order — retirée avec le réordonnancement des champs
+// de la page de configuration (/champs/:table) : plus aucun client ne l'appelle.
+// Les `sort_order` déjà en base restent lus par la liste des champs natifs et
+// pilotent toujours l'ordre d'affichage (applyFieldOrder côté client).
+
+// « Supprimer » un champ natif = le masquer partout, réversible. La colonne SQL
+// et les données ne sont jamais détruites : des routes serveur, des syncs et les
+// fiches détail lisent ces colonnes. Body : { hidden: true|false }.
+router.patch('/:erpTable/native/:fieldId/hidden', (req, res) => {
+  const p = nativeParams(req, res)
+  if (!p) return
+  const hidden = req.body?.hidden
+  if (typeof hidden !== 'boolean') return res.status(400).json({ error: 'hidden doit être un booléen' })
+
+  const existing = db.prepare(
+    `SELECT id FROM custom_fields WHERE erp_table=? AND column_name=?`
+  ).get(p.erpTable, p.fieldId)
+  if (existing) {
+    db.prepare(`
+      UPDATE custom_fields SET hidden=?, deleted_at=NULL,
+             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id=?
+    `).run(hidden ? 1 : 0, existing.id)
+  } else if (hidden) {
+    // sort_order NULL : masquer un champ ne choisit pas sa position (voir le PUT).
+    db.prepare(`
+      INSERT INTO custom_fields
+        (id, erp_table, name, column_name, type, sort_order, hidden, kind, source)
+      VALUES (?, ?, '', ?, '', NULL, 1, 'native', 'native')
+    `).run(uuid(), p.erpTable, p.fieldId)
+  }
+  res.json({ data: { field_id: p.fieldId, hidden } })
+})
+
+// Retour à l'original : la ligne est SUPPRIMÉE, pas soft-deletée — la contrainte
+// UNIQUE(erp_table, column_name) ne distingue pas les lignes supprimées, une
+// ligne fantôme bloquerait toute repersonnalisation ultérieure du même champ.
+// L'ordre est conservé s'il en existe un (on ne remet pas le champ à sa place
+// d'origine juste parce qu'on annule un renommage).
+router.delete('/:erpTable/native/:fieldId', (req, res) => {
+  const p = nativeParams(req, res)
+  if (!p) return
+  const row = db.prepare(
+    `SELECT id, sort_order, hidden FROM custom_fields WHERE erp_table=? AND column_name=? AND kind='native'`
+  ).get(p.erpTable, p.fieldId)
+  if (!row) return res.json({ data: { field_id: p.fieldId, reset: true } })
+  // Une ligne qui porte encore un ordre choisi ou un masquage doit survivre au
+  // retour à l'original : ce sont des décisions distinctes du renommage/type.
+  if (row.sort_order != null || row.hidden === 1) {
+    db.prepare(`
+      UPDATE custom_fields SET name='', type='', decimals=NULL, country_code=NULL,
+             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE id=?
+    `).run(row.id)
+  } else {
+    db.prepare(`DELETE FROM custom_fields WHERE id=?`).run(row.id)
+  }
+  res.json({ data: { field_id: p.fieldId, reset: true } })
+})
+
+// Champs auto-remplis (parité Airtable), déclarés AVANT FIELD_KINDS qui les
+// parcourt à l'évaluation du module :
+//   - created_time       : date de création (colonne created_at)
+//   - last_modified_time : date de dernière modification (colonne updated_at)
+//   - created_by         : utilisateur ayant créé l'enregistrement (activity_log)
+//   - last_modified_by   : dernier utilisateur ayant modifié (activity_log)
+const AUTO_TYPES = {
+  created_time:       { result_type: 'date', needsCreatedAt: true },
+  last_modified_time: { result_type: 'date', needsUpdatedAt: true },
+  created_by:         { result_type: 'text', needsEntity: true },
+  last_modified_by:   { result_type: 'text', needsEntity: true },
+}
+
+// ── Création d'un champ — une seule porte d'entrée ───────────────────────────
+//
+// Il y avait sept routes de création (`/`, `/formula`, `/lookup`, `/rollup`,
+// `/auto`, `/button`, `/link`), chacune refaisant les mêmes gestes : contrôle de
+// la table, nom requis, calcul du `column_name`, `MAX(sort_order)`, insertion,
+// régénération de la vue. Tout ça vit maintenant ici une seule fois ; il ne
+// reste, par `kind`, que ce qui lui est PROPRE : sa validation et les colonnes
+// qu'il remplit. C'est aussi ce qui rend la conversion de `kind` (PUT plus bas)
+// bon marché — convertir, c'est rejouer la validation d'un autre kind.
+//
+// Body : { kind?, name, … } — `kind` absent = 'data' (le cas courant).
+
+class FieldError extends Error {
+  constructor(status, message) { super(message); this.status = status }
+}
+const fieldError = (status, message) => new FieldError(status, message)
+
+const RESULT_TYPES = ['text', 'number', 'date']
+function requireResultType(value, { fallback = null } = {}) {
+  const rt = value || fallback
+  if (!RESULT_TYPES.includes(rt)) {
+    throw fieldError(400, "result_type doit être 'text', 'number' ou 'date'")
+  }
+  return rt
+}
+
+// Chaque kind valide son corps de requête et retourne les colonnes qui lui sont
+// propres. `virtual: true` = pas de colonne physique (la valeur vit dans la vue
+// <table>_v ou, pour un bouton, nulle part).
+const FIELD_KINDS = {
+  data: {
+    virtual: false,
+    build(erpTable, body) {
+      const type = body?.type
+      if (!DATA_TYPES.has(type)) {
+        return { error: `Type doit être l'un de : ${[...DATA_TYPES].join(', ')}` }
+      }
+      let options = null
+      if (type === 'single_select' || type === 'multi_select') options = normalizeSelectOptions(body?.options).json
+      else if (type === 'duration') options = normalizeDurationOptions(body?.options).json
+      else if (type === 'currency') options = normalizeCurrencyOptions(body?.options).json
+      else if (type === 'phone') options = normalizePhoneOptions(body?.options).json
+      else if (type === 'date') options = normalizeDateOptions(body?.options).json
+
+      let decimals = null
+      if (type === 'number' || type === 'currency') {
+        const raw = body?.decimals
+        decimals = (raw === undefined || raw === null || raw === '') && type === 'currency' ? 2 : parseInt(raw)
+        if (!Number.isInteger(decimals) || decimals < 0 || decimals > 5) {
+          return { error: 'Décimales doit être entre 0 et 5' }
+        }
+      }
+      let defaultValue = null
+      if (['text', 'number', 'currency', 'url', 'phone', 'duration', 'checkbox'].includes(type)) {
+        defaultValue = normalizeDefaultValue(body?.default_value, type)
+      }
+      // SQLite n'est pas typé strictement : number/currency/duration → REAL
+      // (duration en secondes), checkbox → INTEGER (0/1), le reste → TEXT.
+      const sqlType = (type === 'number' || type === 'currency' || type === 'duration')
+        ? 'REAL'
+        : (type === 'checkbox' ? 'INTEGER' : 'TEXT')
+      return { type, sqlType, columns: { decimals, options, default_value: defaultValue } }
+    },
+  },
+
+  formula: {
+    virtual: true, regenerate: true,
+    build(erpTable, body) {
+      const expr = String(body?.formula_expr || '').trim()
+      const resultType = requireResultType(body?.result_type)
+      validateFormulaExpr(expr)
+      // Rejette dès la création une formule référençant une colonne inexistante,
+      // plutôt que de créer un champ qui afficherait #ERROR.
+      validateFormulaReferences(expr, erpTable)
+      return {
+        type: resultType === 'number' ? 'number' : 'text',
+        columns: { formula_expr: expr, result_type: resultType },
+      }
+    },
+  },
+
+  lookup: {
+    virtual: true, regenerate: true,
+    build(erpTable, body) {
+      const lookup = {
+        lookup_fk: body?.lookup_fk,
+        lookup_target_table: body?.lookup_target_table,
+        lookup_target_column: body?.lookup_target_column,
+      }
+      const resultType = requireResultType(body?.result_type)
+      validateLookup(lookup, erpTable)
+      return { type: resultType === 'number' ? 'number' : 'text', columns: { ...lookup, result_type: resultType } }
+    },
+  },
+
+  rollup: {
+    virtual: true, regenerate: true,
+    build(erpTable, body) {
+      const rollup = {
+        rollup_target_table: body?.rollup_target_table,
+        rollup_target_fk: body?.rollup_target_fk,
+        // COUNT n'a pas besoin de colonne — on normalise '' → null.
+        rollup_target_column: body?.rollup_target_column || null,
+        rollup_agg: body?.rollup_agg,
+      }
+      // Les agrégats sont numériques par défaut.
+      const resultType = requireResultType(body?.result_type, { fallback: 'number' })
+      validateRollup(rollup, erpTable)
+      return {
+        type: resultType === 'number' ? 'number' : 'text',
+        columns: { ...rollup, rollup_agg: String(rollup.rollup_agg).toUpperCase(), result_type: resultType },
+      }
+    },
+  },
+
+  button: {
+    virtual: true, regenerate: false,
+    build(erpTable, body) {
+      // Pas de colonne physique ni de contribution à la vue : c'est une action,
+      // pas une valeur (regenerateView ignore kind='button').
+      return { type: 'button', columns: { options: normalizeButtonOptions(body?.options).json } }
+    },
+  },
+}
+
+// Les quatre champs auto-remplis partagent toute leur mécanique : seul diffère
+// ce qu'exige la table (colonne created_at/updated_at, ou un mapping activity_log).
+for (const [autoType, spec] of Object.entries(AUTO_TYPES)) {
+  FIELD_KINDS[autoType] = {
+    virtual: true, regenerate: true,
+    build(erpTable) {
+      const cols = () => db.pragma(`table_info(${erpTable})`).map(c => c.name)
+      if (spec.needsCreatedAt && !cols().includes('created_at')) {
+        return { error: `Table ${erpTable} sans colonne created_at — type non supporté` }
+      }
+      if (spec.needsUpdatedAt && !cols().includes('updated_at')) {
+        return { error: `Table ${erpTable} sans colonne updated_at — type non supporté` }
+      }
+      if (spec.needsEntity && !ACTIVITY_ENTITY_MAP[erpTable]) {
+        return { error: `Attribution (activity_log) non disponible pour ${erpTable}` }
+      }
+      return { type: 'text', columns: { result_type: spec.result_type } }
+    },
+  }
+}
+
+const CF_INSERT_COLUMNS = [
+  'decimals', 'options', 'default_value', 'formula_expr', 'result_type',
+  'lookup_fk', 'lookup_target_table', 'lookup_target_column',
+  'rollup_target_table', 'rollup_target_fk', 'rollup_target_column', 'rollup_agg',
+  'link_target_table', 'link_group_id', 'link_role', 'link_single',
+  'source', 'airtable_mapping_id',
+]
+
+function nextSortOrder(erpTable) {
+  const row = db.prepare(
+    `SELECT MAX(sort_order) AS m FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL`
+  ).get(erpTable)
+  return (row?.m ?? -1) + 1
+}
+
+// Insère une ligne custom_fields à partir des colonnes propres au kind. Retourne
+// l'id créé. N'ouvre PAS de transaction : l'appelant décide de la portée.
+function insertFieldRow({ id, erpTable, name, columnName, type, kind, sortOrder, columns = {} }) {
+  const cols = ['id', 'erp_table', 'name', 'column_name', 'type', 'kind', 'sort_order']
+  const vals = [id, erpTable, name, columnName, type, kind, sortOrder]
+  for (const c of CF_INSERT_COLUMNS) {
+    if (columns[c] !== undefined) { cols.push(c); vals.push(columns[c]) }
+  }
+  db.prepare(
+    `INSERT INTO custom_fields (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(',')})`
+  ).run(...vals)
+  return id
+}
+
+const FIELD_SELECT = `
+  SELECT id, name, column_name, type, kind, decimals, sort_order, options, default_value,
+         formula_expr, result_type, lookup_fk, lookup_target_table, lookup_target_column,
+         rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg,
+         link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id
+  FROM custom_fields WHERE id=?`
+
+// Crée un champ de n'importe quel kind. Lève une FieldError (status + message)
+// en cas de refus. `adoptColumn` : colonne physique déjà existante à adopter
+// plutôt que d'en créer une (flux de mapping Airtable) — aucun ALTER TABLE.
+function createField(erpTable, body, { adoptColumn = null, extra = {} } = {}) {
+  if (!ALLOWED_TABLES.has(erpTable)) throw fieldError(400, 'Table non supportée')
+  const kind = body?.kind || 'data'
+  const spec = FIELD_KINDS[kind]
+  if (!spec) throw fieldError(400, `Type de champ inconnu : ${kind}`)
+
+  const name = String(body?.name || '').trim()
+  if (!name) throw fieldError(400, 'Nom requis')
+  // Unicité du libellé : deux champs homonymes rendent ambigu tout sélecteur de
+  // champ (filtres, formules, mapping). Le contrôle était jusqu'ici absent de
+  // plusieurs des anciennes routes de création.
+  const conflict = findLabelConflict(erpTable, name)
+  if (conflict) throw fieldError(409, labelConflictError(conflict))
+
+  let built
+  try { built = spec.build(erpTable, body) }
+  catch (e) { throw e instanceof FieldError ? e : fieldError(400, e.message) }
+  if (built?.error) throw fieldError(400, built.error)
+
+  const columnName = adoptColumn
+    || (spec.virtual
+      ? ensureUniqueVirtualColumnName(erpTable, slugify(name))
+      : ensureUniqueColumnName(erpTable, slugify(name)))
+
+  const id = uuid()
+  const sortOrder = nextSortOrder(erpTable)
+  const tx = db.transaction(() => {
+    if (!spec.virtual && !adoptColumn) {
+      db.exec(`ALTER TABLE ${erpTable} ADD COLUMN ${columnName} ${built.sqlType}`)
+    }
+    insertFieldRow({
+      id, erpTable, name, columnName, type: built.type, kind, sortOrder,
+      columns: { ...built.columns, ...extra },
+    })
+    if (spec.regenerate) {
+      // La régénération résout les dépendances entre champs et détecte les
+      // cycles. Si CE champ tombe en erreur, on annule la création : mieux vaut
+      // un message précis qu'un champ qui naît en #ERROR.
+      const { errors } = regenerateView(erpTable)
+      const mine = errors?.find(e => e.id === id)
+      if (mine) throw fieldError(400, mine.message)
+    }
+  })
+  tx()
+  return db.prepare(FIELD_SELECT).get(id)
+}
+
+// POST /api/custom-fields/:erpTable — crée un champ de n'importe quel kind.
+// Body : { kind?, name, … } (voir FIELD_KINDS). `kind` absent = 'data'.
+//
+// Cas particulier : `kind: 'link'` crée DEUX champs (le champ et son inverse sur
+// la table cible) partageant un link_group_id — la table de jonction
+// custom_field_links est la seule source de vérité, donc les deux côtés restent
+// synchronisés. Body : { name, link_target_table, relationship, create_inverse?, inverse_name? }
 router.post('/:erpTable', (req, res) => {
   const { erpTable } = req.params
+  try {
+    if ((req.body?.kind) === 'link') return res.status(201).json(createLinkPair(erpTable, req.body))
+    res.status(201).json(createField(erpTable, req.body))
+  } catch (e) {
+    res.status(e.status || 400).json({ error: e.message })
+  }
+})
+
+function createLinkPair(erpTable, body) {
+  if (!ALLOWED_TABLES.has(erpTable)) throw fieldError(400, 'Table non supportée')
+  const name = String(body?.name || '').trim()
+  const targetTable = String(body?.link_target_table || '').trim()
+  const relationship = body?.relationship || 'one_to_many'
+  const createInverse = body?.create_inverse !== false
+  if (!name) throw fieldError(400, 'Nom requis')
+  if (!LINK_RELATIONSHIPS[relationship]) {
+    throw fieldError(400, "relationship doit être 'one_to_one', 'one_to_many' ou 'many_to_many'")
+  }
+  if (!ALLOWED_TABLES.has(targetTable) || !LINK_TARGET_WHITELIST.has(targetTable)) {
+    throw fieldError(400, 'Table cible non autorisée pour une liaison')
+  }
+  if (targetTable === erpTable) throw fieldError(400, 'Auto-liaison (même table) non supportée')
+  const conflict = findLabelConflict(erpTable, name)
+  if (conflict) throw fieldError(409, labelConflictError(conflict))
+  try { validateLink({ link_target_table: targetTable }, erpTable) }
+  catch (e) { throw fieldError(400, e.message) }
+
+  const card = LINK_RELATIONSHIPS[relationship]
+  const groupId = uuid()
+  const sourceId = uuid()
+  const sourceCol = ensureUniqueVirtualColumnName(erpTable, slugify(name))
+  // Nom du champ inverse : par défaut, le nom de la table source.
+  const inverseName = String(body?.inverse_name || '').trim() || erpTable
+  const inverseCol = createInverse ? ensureUniqueVirtualColumnName(targetTable, slugify(inverseName)) : null
+
+  const tx = db.transaction(() => {
+    insertFieldRow({
+      id: sourceId, erpTable, name, columnName: sourceCol, type: 'link', kind: 'link',
+      sortOrder: nextSortOrder(erpTable),
+      columns: { result_type: 'text', link_target_table: targetTable, link_group_id: groupId, link_role: 'source', link_single: card.source_single },
+    })
+    if (createInverse) {
+      insertFieldRow({
+        id: uuid(), erpTable: targetTable, name: inverseName, columnName: inverseCol, type: 'link', kind: 'link',
+        sortOrder: nextSortOrder(targetTable),
+        columns: { result_type: 'text', link_target_table: erpTable, link_group_id: groupId, link_role: 'target', link_single: card.inverse_single },
+      })
+    }
+    regenerateView(erpTable)
+    if (createInverse) regenerateView(targetTable)
+  })
+  tx()
+  return db.prepare(FIELD_SELECT).get(sourceId)
+}
+
+
+
+// POST /api/custom-fields/:erpTable/duplicate — duplique un champ.
+// Body : { field_id, with_values? (défaut true) }
+//   • field_id = column_name du champ source (champ perso OU colonne native).
+//
+// Deux règles non négociables :
+//   1. la copie N'HÉRITE JAMAIS du lien vers une source externe (Airtable/Stripe).
+//      Deux colonnes branchées sur le même champ distant s'écraseraient l'une
+//      l'autre à chaque sync — la copie naît en saisie manuelle (source='native',
+//      aucun airtable_mapping_id).
+//   2. la copie a toujours sa PROPRE colonne physique (cf_*) : on ne partage
+//      jamais une colonne entre deux champs.
+router.post('/:erpTable/duplicate', (req, res) => {
+  const { erpTable } = req.params
   if (!ALLOWED_TABLES.has(erpTable)) return res.status(400).json({ error: 'Table non supportée' })
-  const name = String(req.body?.name || '').trim()
-  const type = req.body?.type
-  if (!name) return res.status(400).json({ error: 'Nom requis' })
-  if (!['text', 'long_text', 'number', 'currency', 'url', 'phone', 'duration', 'date', 'single_select', 'multi_select', 'checkbox'].includes(type)) {
-    return res.status(400).json({ error: 'Type doit être "text", "long_text", "number", "currency", "url", "phone", "duration", "date", "single_select", "multi_select" ou "checkbox"' })
+  const fieldId = String(req.body?.field_id || '').trim()
+  if (!fieldId || !NATIVE_FIELD_RE.test(fieldId)) return res.status(400).json({ error: 'field_id requis' })
+  const withValues = req.body?.with_values !== false
+
+  const src = db.prepare(
+    `SELECT * FROM custom_fields WHERE erp_table=? AND column_name=? AND deleted_at IS NULL`
+  ).get(erpTable, fieldId)
+
+  // Champs à définition (formule/lookup/rollup) : rien à copier côté données,
+  // seule l'expression est reproduite. Les liaisons sont exclues : dupliquer un
+  // champ link exigerait de créer un nouveau groupe ET son champ inverse sur la
+  // table cible — c'est une création à part entière, pas une copie.
+  if (src && src.kind === 'link') {
+    return res.status(400).json({ error: 'Un champ de liaison ne se duplique pas — créez-en un nouveau depuis la modale' })
   }
-  // Single/multi select : valide/normalise la config des choix (libellés,
-  // couleurs, défaut, alphabétisation) avant de créer la colonne. Le multi_select
-  // stocke un tableau JSON de labels ; le single_select un label scalaire.
-  // Duration : la config (format d'affichage) tient aussi dans `options`.
-  let optionsJson = null
-  if (type === 'single_select' || type === 'multi_select') {
-    try { optionsJson = normalizeSelectOptions(req.body?.options).json }
-    catch (e) { return res.status(400).json({ error: e.message }) }
-  } else if (type === 'duration') {
-    optionsJson = normalizeDurationOptions(req.body?.options).json
-  } else if (type === 'currency') {
-    // Devise : le code (ISO 4217) tient dans `options`, les décimales dans
-    // `decimals` (validées plus bas). Absent → CAD.
-    try { optionsJson = normalizeCurrencyOptions(req.body?.options).json }
-    catch (e) { return res.status(400).json({ error: e.message }) }
-  } else if (type === 'phone') {
-    // Téléphone : affichage de l'indicatif de pays (+1) dans `options`. Défaut 'hide'.
-    optionsJson = normalizePhoneOptions(req.body?.options).json
-  }
-  let decimals = null
-  if (type === 'number' || type === 'currency') {
-    // Currency : décimales facultatives, défaut 2 (format monétaire usuel).
-    // Number : décimales requises (comportement historique).
-    const raw = req.body?.decimals
-    if ((raw === undefined || raw === null || raw === '') && type === 'currency') {
-      decimals = 2
-    } else {
-      decimals = parseInt(raw)
-    }
-    if (!Number.isInteger(decimals) || decimals < 0 || decimals > 5) {
-      return res.status(400).json({ error: 'Décimales doit être entre 0 et 5' })
-    }
+  const isVirtual = !!src && src.kind !== 'data' && src.kind !== 'native'
+
+  const physical = new Set(db.pragma(`table_info(${erpTable})`).map(c => c.name))
+  if (!isVirtual && !physical.has(fieldId)) {
+    // Colonne calculée par la requête de la route (ex. company_name via JOIN,
+    // has_shipping_address via CASE) : aucune donnée à copier, et la copie
+    // n'aurait aucun moyen d'être alimentée.
+    return res.status(400).json({ error: 'Ce champ est calculé par le serveur — il n\'a pas de colonne à dupliquer' })
   }
 
-  // Valeur par défaut (text/number/currency/url/duration/checkbox uniquement — le
-  // single_select porte son défaut dans options.default_id). number/currency :
-  // doit être un nombre fini ; duration : une durée parseable ; checkbox : 1 si
-  // coché par défaut, sinon NULL. Vide → NULL.
-  let defaultValue = null
-  if (['text', 'number', 'currency', 'url', 'phone', 'duration', 'checkbox'].includes(type)) {
-    try { defaultValue = normalizeDefaultValue(req.body?.default_value, type) }
-    catch (e) { return res.status(400).json({ error: e.message }) }
+  // Nom : « X (copie) », puis « (copie 2) », … jusqu'à trouver un libellé libre.
+  // `label` vient du client : le libellé d'une colonne native vit dans
+  // tableDefs.js, côté client — sans lui, la copie s'appellerait « name (copie) »
+  // au lieu de « Projet (copie) ».
+  const baseName = String(req.body?.label || '').trim()
+    || (src && src.name) || fieldId
+  let name = `${baseName} (copie)`
+  for (let i = 2; findLabelConflict(erpTable, name); i++) {
+    name = `${baseName} (copie ${i})`
+    if (i > 50) return res.status(400).json({ error: 'Impossible de nommer la copie' })
   }
 
-  const slug = slugify(name)
-  const columnName = ensureUniqueColumnName(erpTable, slug)
-  // SQLite : pas de type strict. number/currency/duration → REAL (duration en
-  // secondes) ; checkbox → INTEGER (0/1) ; text/url/single_select → TEXT
-  // (single_select stocke le label).
-  const sqlType = (type === 'number' || type === 'currency' || type === 'duration')
-    ? 'REAL'
-    : (type === 'checkbox' ? 'INTEGER' : 'TEXT')
-
+  const type = (src && src.type) || 'text'
   const id = uuid()
   const lastSortRow = db.prepare(
     `SELECT MAX(sort_order) AS m FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL`
   ).get(erpTable)
   const sortOrder = (lastSortRow?.m ?? -1) + 1
 
-  const tx = db.transaction(() => {
-    db.exec(`ALTER TABLE ${erpTable} ADD COLUMN ${columnName} ${sqlType}`)
+  if (isVirtual) {
+    const columnName = ensureUniqueVirtualColumnName(erpTable, slugify(name))
     db.prepare(`
-      INSERT INTO custom_fields (id, erp_table, name, column_name, type, decimals, sort_order, options, default_value)
-      VALUES (?,?,?,?,?,?,?,?,?)
-    `).run(id, erpTable, name, columnName, type, decimals, sortOrder, optionsJson, defaultValue)
-  })
-  tx()
+      INSERT INTO custom_fields
+        (id, erp_table, name, column_name, type, decimals, sort_order, options, kind,
+         formula_expr, lookup_fk, lookup_target_table, lookup_target_column, result_type,
+         rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, source)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'native')
+    `).run(
+      id, erpTable, name, columnName, type, src.decimals, sortOrder, src.options, src.kind,
+      src.formula_expr, src.lookup_fk, src.lookup_target_table, src.lookup_target_column, src.result_type,
+      src.rollup_target_table, src.rollup_target_fk, src.rollup_target_column, src.rollup_agg,
+    )
+    regenerateView(erpTable)
+  } else {
+    const columnName = ensureUniqueColumnName(erpTable, slugify(name))
+    const sqlType = (type === 'number' || type === 'currency' || type === 'duration')
+      ? 'REAL'
+      : (type === 'checkbox' ? 'INTEGER' : 'TEXT')
+    const tx = db.transaction(() => {
+      db.exec(`ALTER TABLE ${erpTable} ADD COLUMN ${columnName} ${sqlType}`)
+      if (withValues) db.exec(`UPDATE ${erpTable} SET ${columnName} = ${fieldId}`)
+      db.prepare(`
+        INSERT INTO custom_fields
+          (id, erp_table, name, column_name, type, decimals, sort_order, options, default_value, kind, source)
+        VALUES (?,?,?,?,?,?,?,?,?,'data','native')
+      `).run(id, erpTable, name, columnName, type, src?.decimals ?? null, sortOrder,
+        src?.options ?? null, src?.default_value ?? null)
+    })
+    tx()
+  }
 
-  const created = db.prepare(`SELECT id, name, column_name, type, decimals, sort_order, options, default_value FROM custom_fields WHERE id=?`).get(id)
+  const created = db.prepare(
+    `SELECT id, name, column_name, type, decimals, sort_order, options, default_value, kind, source
+     FROM custom_fields WHERE id=?`
+  ).get(id)
   res.status(201).json(created)
 })
 
@@ -444,60 +965,6 @@ router.post('/:erpTable/adopt', (req, res) => {
   res.status(201).json(created)
 })
 
-// POST /api/custom-fields/:erpTable/formula — crée un champ calculé
-// (expression SQLite, exposée uniquement via la VUE <table>_v).
-// Body : { name, formula_expr, result_type ('text'|'number'|'date') }
-router.post('/:erpTable/formula', (req, res) => {
-  const { erpTable } = req.params
-  if (!ALLOWED_TABLES.has(erpTable)) return res.status(400).json({ error: 'Table non supportée' })
-  const name = String(req.body?.name || '').trim()
-  const formulaExpr = String(req.body?.formula_expr || '').trim()
-  const resultType = req.body?.result_type
-  if (!name) return res.status(400).json({ error: 'Nom requis' })
-  if (!['text', 'number', 'date'].includes(resultType)) {
-    return res.status(400).json({ error: "result_type doit être 'text', 'number' ou 'date'" })
-  }
-  try {
-    validateFormulaExpr(formulaExpr)
-    // Rejette dès la création une formule référençant une colonne inexistante,
-    // plutôt que de créer un champ qui afficherait #ERROR.
-    validateFormulaReferences(formulaExpr, erpTable)
-  } catch (e) { return res.status(400).json({ error: e.message }) }
-
-  const slug = slugify(name)
-  // Pour les champs virtuels (kind formula/lookup), pas de colonne physique :
-  // on doit juste éviter une collision avec les noms de colonnes de la table
-  // ou un autre custom_field actif.
-  const columnName = ensureUniqueVirtualColumnName(erpTable, slug)
-
-  const id = uuid()
-  const lastSortRow = db.prepare(
-    `SELECT MAX(sort_order) AS m FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL`
-  ).get(erpTable)
-  const sortOrder = (lastSortRow?.m ?? -1) + 1
-
-  const tx = db.transaction(() => {
-    db.prepare(`
-      INSERT INTO custom_fields (id, erp_table, name, column_name, type, kind, formula_expr, result_type, sort_order)
-      VALUES (?,?,?,?,?,?,?,?,?)
-    `).run(id, erpTable, name, columnName, resultType === 'number' ? 'number' : 'text', 'formula', formulaExpr, resultType, sortOrder)
-    // La régénération résout les dépendances entre champs custom et détecte les
-    // cycles. Si CE champ se retrouve en erreur (référence introuvable ou cycle),
-    // on annule la création — l'utilisateur reçoit le message précis plutôt qu'un
-    // champ qui afficherait #ERROR dès sa naissance.
-    const { errors } = regenerateView(erpTable)
-    const myErr = errors?.find(e => e.id === id)
-    if (myErr) throw new Error(myErr.message)
-  })
-  try { tx() } catch (e) { return res.status(400).json({ error: e.message }) }
-
-  const created = db.prepare(`
-    SELECT id, name, column_name, type, kind, formula_expr, result_type, sort_order
-    FROM custom_fields WHERE id=?
-  `).get(id)
-  res.status(201).json(created)
-})
-
 // POST /api/custom-fields/:erpTable/formula/preview — évalue une expression
 // formule sur N vrais records SANS rien persister (aperçu live « Tester »).
 // Body : { formula_expr, limit? }. Lecture seule.
@@ -514,105 +981,7 @@ router.post('/:erpTable/formula/preview', (req, res) => {
   }
 })
 
-// POST /api/custom-fields/:erpTable/lookup — crée un champ lookup
-// (LEFT JOIN dans la VUE).
-// Body : { name, lookup_fk, lookup_target_table, lookup_target_column, result_type }
-router.post('/:erpTable/lookup', (req, res) => {
-  const { erpTable } = req.params
-  if (!ALLOWED_TABLES.has(erpTable)) return res.status(400).json({ error: 'Table non supportée' })
-  const name = String(req.body?.name || '').trim()
-  const lookup = {
-    lookup_fk: req.body?.lookup_fk,
-    lookup_target_table: req.body?.lookup_target_table,
-    lookup_target_column: req.body?.lookup_target_column,
-  }
-  const resultType = req.body?.result_type
-  if (!name) return res.status(400).json({ error: 'Nom requis' })
-  if (!['text', 'number', 'date'].includes(resultType)) {
-    return res.status(400).json({ error: "result_type doit être 'text', 'number' ou 'date'" })
-  }
-  try { validateLookup(lookup, erpTable) } catch (e) { return res.status(400).json({ error: e.message }) }
 
-  const slug = slugify(name)
-  const columnName = ensureUniqueVirtualColumnName(erpTable, slug)
-
-  const id = uuid()
-  const lastSortRow = db.prepare(
-    `SELECT MAX(sort_order) AS m FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL`
-  ).get(erpTable)
-  const sortOrder = (lastSortRow?.m ?? -1) + 1
-
-  const tx = db.transaction(() => {
-    db.prepare(`
-      INSERT INTO custom_fields (id, erp_table, name, column_name, type, kind,
-        lookup_fk, lookup_target_table, lookup_target_column, result_type, sort_order)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?)
-    `).run(id, erpTable, name, columnName, resultType === 'number' ? 'number' : 'text', 'lookup',
-           lookup.lookup_fk, lookup.lookup_target_table, lookup.lookup_target_column, resultType, sortOrder)
-    regenerateView(erpTable)
-  })
-  try { tx() } catch (e) { return res.status(400).json({ error: e.message }) }
-
-  const created = db.prepare(`
-    SELECT id, name, column_name, type, kind, lookup_fk, lookup_target_table,
-           lookup_target_column, result_type, sort_order
-    FROM custom_fields WHERE id=?
-  `).get(id)
-  res.status(201).json(created)
-})
-
-// POST /api/custom-fields/:erpTable/rollup — crée un champ rollup : agrège une
-// colonne d'une table ENFANT qui référence la table source via une FK inverse
-// (ex: projects ← orders.project_id → SUM(orders.total)). Exposé via une
-// sous-requête corrélée dans la VUE <table>_v.
-// Body : { name, rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, result_type }
-router.post('/:erpTable/rollup', (req, res) => {
-  const { erpTable } = req.params
-  if (!ALLOWED_TABLES.has(erpTable)) return res.status(400).json({ error: 'Table non supportée' })
-  const name = String(req.body?.name || '').trim()
-  const rollup = {
-    rollup_target_table: req.body?.rollup_target_table,
-    rollup_target_fk: req.body?.rollup_target_fk,
-    // COUNT n'a pas besoin de colonne — on normalise '' → null.
-    rollup_target_column: req.body?.rollup_target_column || null,
-    rollup_agg: req.body?.rollup_agg,
-  }
-  // result_type pilote l'affichage. Défaut 'number' (les agrégats sont numériques).
-  const resultType = req.body?.result_type || 'number'
-  if (!name) return res.status(400).json({ error: 'Nom requis' })
-  if (!['text', 'number', 'date'].includes(resultType)) {
-    return res.status(400).json({ error: "result_type doit être 'text', 'number' ou 'date'" })
-  }
-  try { validateRollup(rollup, erpTable) } catch (e) { return res.status(400).json({ error: e.message }) }
-
-  const slug = slugify(name)
-  const columnName = ensureUniqueVirtualColumnName(erpTable, slug)
-
-  const id = uuid()
-  const lastSortRow = db.prepare(
-    `SELECT MAX(sort_order) AS m FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL`
-  ).get(erpTable)
-  const sortOrder = (lastSortRow?.m ?? -1) + 1
-
-  const tx = db.transaction(() => {
-    db.prepare(`
-      INSERT INTO custom_fields (id, erp_table, name, column_name, type, kind,
-        rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, result_type, sort_order)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-    `).run(id, erpTable, name, columnName, resultType === 'number' ? 'number' : 'text', 'rollup',
-           rollup.rollup_target_table, rollup.rollup_target_fk, rollup.rollup_target_column,
-           String(rollup.rollup_agg).toUpperCase(), resultType, sortOrder)
-    regenerateView(erpTable)
-  })
-  try { tx() } catch (e) { return res.status(400).json({ error: e.message }) }
-
-  const created = db.prepare(`
-    SELECT id, name, column_name, type, kind, rollup_target_table, rollup_target_fk,
-           rollup_target_column, rollup_agg, result_type, sort_order
-    FROM custom_fields WHERE id=?
-  `).get(id)
-  res.status(201).json(created)
-})
 
 // POST /api/custom-fields/:erpTable/auto — crée un champ auto-rempli (lecture
 // seule), exposé uniquement via la VUE <table>_v. Parité Airtable :
@@ -620,102 +989,7 @@ router.post('/:erpTable/rollup', (req, res) => {
 //   - last_modified_time : date de dernière modification (colonne updated_at)
 //   - created_by         : utilisateur ayant créé l'enregistrement (activity_log)
 //   - last_modified_by   : dernier utilisateur ayant modifié (activity_log)
-// Body : { name, auto_type }
-const AUTO_TYPES = {
-  created_time:       { result_type: 'date', needsCreatedAt: true },
-  last_modified_time: { result_type: 'date', needsUpdatedAt: true },
-  created_by:         { result_type: 'text', needsEntity: true },
-  last_modified_by:   { result_type: 'text', needsEntity: true },
-}
 
-router.post('/:erpTable/auto', (req, res) => {
-  const { erpTable } = req.params
-  if (!ALLOWED_TABLES.has(erpTable)) return res.status(400).json({ error: 'Table non supportée' })
-  const name = String(req.body?.name || '').trim()
-  const autoType = req.body?.auto_type
-  if (!name) return res.status(400).json({ error: 'Nom requis' })
-  const spec = AUTO_TYPES[autoType]
-  if (!spec) {
-    return res.status(400).json({ error: "auto_type doit être 'created_time', 'last_modified_time', 'created_by' ou 'last_modified_by'" })
-  }
-  // created_time : la table doit posséder une colonne created_at.
-  if (spec.needsCreatedAt) {
-    const cols = db.pragma(`table_info(${erpTable})`).map(c => c.name)
-    if (!cols.includes('created_at')) {
-      return res.status(400).json({ error: `Table ${erpTable} sans colonne created_at — type non supporté` })
-    }
-  }
-  // last_modified_time : la table doit posséder une colonne updated_at.
-  if (spec.needsUpdatedAt) {
-    const cols = db.pragma(`table_info(${erpTable})`).map(c => c.name)
-    if (!cols.includes('updated_at')) {
-      return res.status(400).json({ error: `Table ${erpTable} sans colonne updated_at — type non supporté` })
-    }
-  }
-  // created_by / last_modified_by : un mapping activity_log doit exister.
-  if (spec.needsEntity && !ACTIVITY_ENTITY_MAP[erpTable]) {
-    return res.status(400).json({ error: `Attribution (activity_log) non disponible pour ${erpTable}` })
-  }
-
-  const slug = slugify(name)
-  const columnName = ensureUniqueVirtualColumnName(erpTable, slug)
-
-  const id = uuid()
-  const lastSortRow = db.prepare(
-    `SELECT MAX(sort_order) AS m FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL`
-  ).get(erpTable)
-  const sortOrder = (lastSortRow?.m ?? -1) + 1
-
-  const tx = db.transaction(() => {
-    db.prepare(`
-      INSERT INTO custom_fields (id, erp_table, name, column_name, type, kind, result_type, sort_order)
-      VALUES (?,?,?,?,?,?,?,?)
-    `).run(id, erpTable, name, columnName, 'text', autoType, spec.result_type, sortOrder)
-    regenerateView(erpTable)
-  })
-  try { tx() } catch (e) { return res.status(400).json({ error: e.message }) }
-
-  const created = db.prepare(`
-    SELECT id, name, column_name, type, kind, result_type, sort_order
-    FROM custom_fields WHERE id=?
-  `).get(id)
-  res.status(201).json(created)
-})
-
-// POST /api/custom-fields/:erpTable/button — crée un champ « Bouton » (à la
-// Airtable) qui déclenche une automation (field_rule) sur le record de la ligne
-// au clic. Pas de colonne physique ni de contribution à la VUE : c'est une
-// action, pas une valeur (regenerateView ignore kind='button'). La config tient
-// dans options : { label, automation_id, style }.
-router.post('/:erpTable/button', (req, res) => {
-  const { erpTable } = req.params
-  if (!ALLOWED_TABLES.has(erpTable)) return res.status(400).json({ error: 'Table non supportée' })
-  const name = String(req.body?.name || '').trim()
-  if (!name) return res.status(400).json({ error: 'Nom requis' })
-  let optionsJson
-  try { optionsJson = normalizeButtonOptions(req.body?.options).json }
-  catch (e) { return res.status(400).json({ error: e.message }) }
-
-  // Identité virtuelle (pas de colonne physique) — réutilise le namespace des
-  // champs virtuels pour éviter toute collision de column_name.
-  const slug = slugify(name)
-  const columnName = ensureUniqueVirtualColumnName(erpTable, slug)
-  const id = uuid()
-  const lastSortRow = db.prepare(
-    `SELECT MAX(sort_order) AS m FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL`
-  ).get(erpTable)
-  const sortOrder = (lastSortRow?.m ?? -1) + 1
-
-  db.prepare(`
-    INSERT INTO custom_fields (id, erp_table, name, column_name, type, kind, options, sort_order)
-    VALUES (?,?,?,?,?,?,?,?)
-  `).run(id, erpTable, name, columnName, 'button', 'button', optionsJson, sortOrder)
-
-  const created = db.prepare(
-    `SELECT id, name, column_name, type, kind, options, sort_order FROM custom_fields WHERE id=?`
-  ).get(id)
-  res.status(201).json(created)
-})
 
 // POST /api/custom-fields/button/:fieldId/run — déclenche l'automation câblée sur
 // un champ Bouton, pour UN record précis (la ligne où l'utilisateur a cliqué).
@@ -747,71 +1021,6 @@ const LINK_RELATIONSHIPS = {
   many_to_many: { source_single: 0, inverse_single: 0 },
 }
 
-// POST /api/custom-fields/:erpTable/link — crée un champ de LIAISON bidirectionnel
-// (à la Airtable) entre erpTable et une table cible, et crée AUTOMATIQUEMENT le
-// champ inverse sur la cible (sauf create_inverse=false). Les deux champs
-// partagent un link_group_id : la table de jonction custom_field_links est la
-// seule source de vérité, donc les deux côtés restent synchronisés.
-// Body : { name, link_target_table, relationship, create_inverse?, inverse_name? }
-router.post('/:erpTable/link', (req, res) => {
-  const { erpTable } = req.params
-  if (!ALLOWED_TABLES.has(erpTable)) return res.status(400).json({ error: 'Table non supportée' })
-  const name = String(req.body?.name || '').trim()
-  const targetTable = String(req.body?.link_target_table || '').trim()
-  const relationship = req.body?.relationship || 'one_to_many'
-  const createInverse = req.body?.create_inverse !== false
-  if (!name) return res.status(400).json({ error: 'Nom requis' })
-  if (!LINK_RELATIONSHIPS[relationship]) {
-    return res.status(400).json({ error: "relationship doit être 'one_to_one', 'one_to_many' ou 'many_to_many'" })
-  }
-  if (!ALLOWED_TABLES.has(targetTable) || !LINK_TARGET_WHITELIST.has(targetTable)) {
-    return res.status(400).json({ error: 'Table cible non autorisée pour une liaison' })
-  }
-  if (targetTable === erpTable) {
-    return res.status(400).json({ error: 'Auto-liaison (même table) non supportée' })
-  }
-  try { validateLink({ link_target_table: targetTable }, erpTable) }
-  catch (e) { return res.status(400).json({ error: e.message }) }
-
-  const card = LINK_RELATIONSHIPS[relationship]
-  const groupId = uuid()
-  const sourceId = uuid()
-  const inverseId = createInverse ? uuid() : null
-  const sourceCol = ensureUniqueVirtualColumnName(erpTable, slugify(name))
-  // Nom du champ inverse : par défaut, le nom de la table source (capitalisé).
-  const inverseName = String(req.body?.inverse_name || '').trim() || erpTable
-  const inverseCol = createInverse ? ensureUniqueVirtualColumnName(targetTable, slugify(inverseName)) : null
-
-  const nextSort = (t) => (db.prepare(
-    `SELECT MAX(sort_order) AS m FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL`
-  ).get(t)?.m ?? -1) + 1
-
-  const insert = db.prepare(`
-    INSERT INTO custom_fields
-      (id, erp_table, name, column_name, type, kind, result_type, sort_order,
-       link_target_table, link_group_id, link_role, link_single)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-  `)
-
-  const tx = db.transaction(() => {
-    insert.run(sourceId, erpTable, name, sourceCol, 'link', 'link', 'text', nextSort(erpTable),
-               targetTable, groupId, 'source', card.source_single)
-    if (createInverse) {
-      insert.run(inverseId, targetTable, inverseName, inverseCol, 'link', 'link', 'text', nextSort(targetTable),
-                 erpTable, groupId, 'target', card.inverse_single)
-    }
-    regenerateView(erpTable)
-    if (createInverse) regenerateView(targetTable)
-  })
-  try { tx() } catch (e) { return res.status(400).json({ error: e.message }) }
-
-  const created = db.prepare(`
-    SELECT id, name, column_name, type, kind, result_type, sort_order,
-           link_target_table, link_group_id, link_role, link_single
-    FROM custom_fields WHERE id=?
-  `).get(sourceId)
-  res.status(201).json(created)
-})
 
 // GET /api/custom-fields/link/:fieldId/value?record_id=… — records liés à un
 // record pour un champ link : tableau [{id,label}].
@@ -870,12 +1079,64 @@ router.put('/:id', (req, res) => {
   const values = []
   let viewDirty = false
 
+  // ── Conversion de kind ────────────────────────────────────────────────────
+  // Changer la NATURE d'un champ : une colonne saisie à la main devient une
+  // formule, un lookup, un rollup — ou l'inverse. La validation est celle de la
+  // création (FIELD_KINDS), rejouée pour le kind visé : c'est ce que la route de
+  // création unique rend possible sans code neuf.
+  //
+  // Ce qui n'arrive JAMAIS : la destruction de la colonne physique. Elle survit
+  // intacte, simplement retirée de la vue (voir regenerateView) — donc la
+  // conversion inverse rend les valeurs telles quelles. En contrepartie, une
+  // colonne alimentée par Airtable voit son import coupé : sinon la sync
+  // continuerait d'écrire sous un champ devenu calculé.
+  const wantedKind = req.body?.kind
+  if (wantedKind && wantedKind !== existing.kind) {
+    if (existing.kind === 'link' || wantedKind === 'link') {
+      return res.status(400).json({ error: 'Un champ de liaison ne se convertit pas — créez le champ voulu et supprimez celui-ci' })
+    }
+    const spec = FIELD_KINDS[wantedKind]
+    if (!spec) return res.status(400).json({ error: `Type de champ inconnu : ${wantedKind}` })
+
+    let built
+    try { built = spec.build(existing.erp_table, { ...req.body, name: req.body?.name ?? existing.name }) }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }) }
+    if (built?.error) return res.status(400).json({ error: built.error })
+
+    const physical = new Set(db.pragma(`table_info(${existing.erp_table})`).map(c => c.name))
+    if (!spec.virtual && !physical.has(existing.column_name)) {
+      // Retour vers un champ saisissable dont la colonne n'a jamais existé
+      // (champ né virtuel) : il faut la créer.
+      db.exec(`ALTER TABLE ${existing.erp_table} ADD COLUMN ${existing.column_name} ${built.sqlType}`)
+    }
+    if (spec.virtual && existing.kind === 'data') {
+      db.prepare(
+        `UPDATE airtable_field_mappings SET import_disabled=1 WHERE erp_table=? AND column_name=?`
+      ).run(existing.erp_table, existing.column_name)
+    }
+
+    updates.push('kind=?'); values.push(wantedKind)
+    updates.push('type=?'); values.push(built.type)
+    // Les colonnes de l'ancien kind sont remises à NULL : un rollup devenu
+    // formule ne doit pas garder son agrégat fantôme en base.
+    for (const c of ['formula_expr', 'result_type', 'lookup_fk', 'lookup_target_table', 'lookup_target_column',
+      'rollup_target_table', 'rollup_target_fk', 'rollup_target_column', 'rollup_agg']) {
+      updates.push(`${c}=?`); values.push(built.columns?.[c] ?? null)
+    }
+    for (const c of ['decimals', 'options', 'default_value']) {
+      if (built.columns?.[c] !== undefined) { updates.push(`${c}=?`); values.push(built.columns[c]) }
+    }
+    viewDirty = true
+  }
+
   if ('name' in (req.body || {})) {
     const n = String(req.body.name || '').trim()
     if (!n) return res.status(400).json({ error: 'Nom requis' })
+    const conflict = findLabelConflict(existing.erp_table, n, { customFieldId: existing.id, fieldId: existing.column_name })
+    if (conflict) return res.status(409).json({ error: labelConflictError(conflict) })
     updates.push('name=?'); values.push(n)
   }
-  if ('type' in (req.body || {}) && req.body.type !== existing.type) {
+  if (!wantedKind && 'type' in (req.body || {}) && req.body.type !== existing.type) {
     if (existing.source !== 'airtable' || existing.kind !== 'data') {
       return res.status(400).json({ error: 'Le type ne peut pas être modifié après création' })
     }
@@ -889,7 +1150,7 @@ router.put('/:id', (req, res) => {
       updates.push('decimals=?'); values.push(2)
     }
   }
-  if ('decimals' in (req.body || {})) {
+  if (!wantedKind && 'decimals' in (req.body || {})) {
     // Prend en compte un changement de type dans la même requête (ex: number → currency).
     const effectiveType = ('type' in (req.body || {})) ? req.body.type : existing.type
     if (effectiveType !== 'number' && effectiveType !== 'currency') return res.status(400).json({ error: 'Décimales applicable seulement aux champs nombre ou devise' })
@@ -897,7 +1158,10 @@ router.put('/:id', (req, res) => {
     if (!Number.isInteger(d) || d < 0 || d > 5) return res.status(400).json({ error: 'Décimales doit être entre 0 et 5' })
     updates.push('decimals=?'); values.push(d)
   }
-  if ('formula_expr' in (req.body || {})) {
+  // Les blocs qui suivent éditent un champ DANS son kind actuel : pendant une
+  // conversion ils raisonneraient sur l'ancien kind (et refuseraient le corps de
+  // requête du nouveau). La conversion ci-dessus a déjà posé ces colonnes.
+  if (!wantedKind && 'formula_expr' in (req.body || {})) {
     if (existing.kind !== 'formula') return res.status(400).json({ error: 'formula_expr applicable seulement aux champs formule' })
     const expr = String(req.body.formula_expr || '').trim()
     try {
@@ -907,7 +1171,7 @@ router.put('/:id', (req, res) => {
     updates.push('formula_expr=?'); values.push(expr)
     viewDirty = true
   }
-  if ('lookup_target_column' in (req.body || {}) || 'lookup_target_table' in (req.body || {}) || 'lookup_fk' in (req.body || {})) {
+  if (!wantedKind && ('lookup_target_column' in (req.body || {}) || 'lookup_target_table' in (req.body || {}) || 'lookup_fk' in (req.body || {}))) {
     if (existing.kind !== 'lookup') return res.status(400).json({ error: 'Champs lookup uniquement' })
     const merged = {
       lookup_fk: req.body.lookup_fk ?? existing.lookup_fk,
@@ -919,8 +1183,8 @@ router.put('/:id', (req, res) => {
     values.push(merged.lookup_fk, merged.lookup_target_table, merged.lookup_target_column)
     viewDirty = true
   }
-  if ('rollup_target_table' in (req.body || {}) || 'rollup_target_fk' in (req.body || {}) ||
-      'rollup_target_column' in (req.body || {}) || 'rollup_agg' in (req.body || {})) {
+  if (!wantedKind && ('rollup_target_table' in (req.body || {}) || 'rollup_target_fk' in (req.body || {}) ||
+      'rollup_target_column' in (req.body || {}) || 'rollup_agg' in (req.body || {}))) {
     if (existing.kind !== 'rollup') return res.status(400).json({ error: 'Champs rollup uniquement' })
     const agg = ('rollup_agg' in req.body ? req.body.rollup_agg : existing.rollup_agg)
     const merged = {
@@ -941,7 +1205,7 @@ router.put('/:id', (req, res) => {
   // result_type pilote l'affichage / le type de colonne (texte, nombre, date).
   // Éditable sur les champs calculés ; notamment un rollup ARRAY/ARRAYUNIQUE
   // bascule en 'text' (liste de valeurs), un rollup numérique reste en 'number'.
-  if ('result_type' in (req.body || {})) {
+  if (!wantedKind && 'result_type' in (req.body || {})) {
     if (!['formula', 'lookup', 'rollup'].includes(existing.kind)) {
       return res.status(400).json({ error: 'result_type applicable seulement aux champs formule, lookup ou rollup' })
     }
@@ -975,8 +1239,12 @@ router.put('/:id', (req, res) => {
   } else if ('options' in (req.body || {}) && existing.type === 'phone') {
     // Téléphone : la seule option éditable est l'affichage de l'indicatif de pays.
     updates.push('options=?'); values.push(normalizePhoneOptions(req.body.options).json)
+  } else if ('options' in (req.body || {}) && (existing.type === 'date' || existing.result_type === 'date')) {
+    // Date (ou formula/lookup/rollup en result_type='date') : la seule option
+    // éditable est le format d'affichage (ISO/local, avec ou sans heure).
+    updates.push('options=?'); values.push(normalizeDateOptions(req.body.options).json)
   } else if ('options' in (req.body || {})) {
-    if (existing.type !== 'single_select' && existing.type !== 'multi_select') return res.status(400).json({ error: 'options applicable seulement aux champs Sélection, Durée, Devise, Téléphone ou Bouton' })
+    if (existing.type !== 'single_select' && existing.type !== 'multi_select') return res.status(400).json({ error: 'options applicable seulement aux champs Sélection, Durée, Devise, Téléphone, Date ou Bouton' })
     let prevIds = new Set()
     let prevById = new Map()
     try {
@@ -1048,11 +1316,22 @@ router.put('/:id', (req, res) => {
 
 // DELETE /api/custom-fields/:id — soft delete.
 router.delete('/:id', (req, res) => {
-  const existing = db.prepare(`SELECT id, erp_table, kind, link_group_id FROM custom_fields WHERE id=?`).get(req.params.id)
+  const existing = db.prepare(`SELECT id, erp_table, kind, link_group_id, column_name, source FROM custom_fields WHERE id=?`).get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Champ introuvable' })
   const stamp = `UPDATE custom_fields SET deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`
   const tx = db.transaction(() => {
     db.prepare(stamp).run(req.params.id)
+    // Champ issu d'Airtable : couper aussi l'import. Sans ça, la sync continuait
+    // d'écrire dans la colonne d'un champ supprimé, et la colonne réapparaissait
+    // dans la page de configuration comme colonne ERP non adoptée — donnant
+    // l'impression que la suppression n'avait rien fait. Les valeurs déjà
+    // importées sont conservées (la corbeille des champs peut tout restaurer,
+    // et le mapping se réactive en re-sélectionnant le champ Airtable).
+    if (existing.source === 'airtable' && existing.column_name) {
+      db.prepare(
+        `UPDATE airtable_field_mappings SET import_disabled=1 WHERE erp_table=? AND column_name=?`
+      ).run(existing.erp_table, existing.column_name)
+    }
     // Champ link : emporte aussi son champ inverse (même link_group_id) et purge
     // la jonction — sinon l'inverse pointerait vers une relation orpheline.
     if (existing.kind === 'link' && existing.link_group_id) {

@@ -34,7 +34,7 @@ describe('FieldOverrideModal — même modale d\'édition que les champs custom'
   async function apiListOverrides() {
     return page.evaluate(async (table) => {
       const token = localStorage.getItem('erp_token')
-      const r = await fetch(`/erp/api/field-overrides/${table}`, {
+      const r = await fetch(`/erp/api/custom-fields/${table}/native`, {
         headers: { Authorization: `Bearer ${token}` },
       })
       const body = await r.json()
@@ -51,13 +51,13 @@ describe('FieldOverrideModal — même modale d\'édition que les champs custom'
     return page.evaluate(async ({ table, fieldId, ov }) => {
       const token = localStorage.getItem('erp_token')
       if (ov && (ov.label != null || ov.type != null)) {
-        await fetch(`/erp/api/field-overrides/${table}/${fieldId}`, {
+        await fetch(`/erp/api/custom-fields/${table}/native/${fieldId}`, {
           method: 'PUT',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ label: ov.label, type: ov.type, decimals: ov.decimals }),
         })
       } else {
-        await fetch(`/erp/api/field-overrides/${table}/${fieldId}`, {
+        await fetch(`/erp/api/custom-fields/${table}/native/${fieldId}`, {
           method: 'DELETE',
           headers: { Authorization: `Bearer ${token}` },
         })

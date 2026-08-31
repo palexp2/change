@@ -1,79 +1,8 @@
 import { useState } from 'react'
-import { ChevronRight, CheckCircle, Download, AlertTriangle, RefreshCw, Stethoscope } from 'lucide-react'
+import { ChevronRight, CheckCircle, Download, AlertTriangle, RefreshCw, Stethoscope, Truck } from 'lucide-react'
 import api from '../lib/api.js'
 import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
-
-const BOX_PRESETS = {
-  enveloppe: { label: 'Enveloppe (documents légers)', length: '13', width: '10', depth: '1', packagingType: 'envelope' },
-  grande:    { label: 'Grande (20 × 20 × 16 po)',  length: '20', width: '20', depth: '16' },
-  moyenne:   { label: 'Moyenne (20 × 16 × 8 po)',  length: '20', width: '16', depth: '8'  },
-  petite:    { label: 'Petite (15 × 15 × 7 po)',   length: '15', width: '15', depth: '7'  },
-  sunshield: { label: 'Sunshield (8 × 6 × 5 po)',  length: '8',  width: '6',  depth: '5'  },
-  custom:    { label: 'Personnalisée…',             length: '',   width: '',   depth: ''   },
-}
-
-function fmtPrice(rate) {
-  const val = rate.total?.value ?? rate.total_charge ?? rate.total ?? null
-  if (val == null) return '—'
-  const currency = rate.total?.currency || 'CAD'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(parseFloat(val))
-}
-
-function getRateName(rate) {
-  return rate.service_name || rate.name || rate.service_id || 'Service inconnu'
-}
-
-function getRateCarrier(rate) {
-  return rate.carrier_name || rate.carrier || ''
-}
-
-function getRateDelivery(rate) {
-  const d = rate.expected_delivery_date
-  if (d) {
-    return new Date(d.year, d.month - 1, d.day).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' })
-  }
-  if (rate.total_transit_day != null) return `${rate.total_transit_day} jour(s)`
-  return null
-}
-
-function DebugDetails({ details }) {
-  if (!details) return null
-  const { sent, response, responseBody, novoxpressStatus } = details
-  const sections = []
-  if (sent) sections.push(['Payload envoyé à Novoxpress', sent])
-  if (responseBody) sections.push([`Réponse brute Novoxpress${novoxpressStatus ? ` (HTTP ${novoxpressStatus})` : ''}`, responseBody])
-  if (response && Object.keys(response).length > 0) sections.push(['Réponse Novoxpress (parsée, hors ratelist)', response])
-  if (!sections.length) return null
-  return (
-    <details className="bg-slate-50 border border-slate-200 rounded-xl text-xs">
-      <summary className="cursor-pointer px-3 py-2 font-medium text-slate-700 select-none">
-        🔍 Détails techniques (cliquer pour voir)
-      </summary>
-      <div className="px-3 pb-3 space-y-3">
-        {sections.map(([title, content]) => {
-          const text = typeof content === 'string' ? content : JSON.stringify(content, null, 2)
-          return (
-            <div key={title}>
-              <div className="flex items-center justify-between mb-1">
-                <span className="font-semibold text-slate-600">{title}</span>
-                <button
-                  onClick={() => navigator.clipboard.writeText(text).catch(() => {})}
-                  className="text-[10px] text-slate-500 hover:text-brand-600 underline"
-                  type="button"
-                >
-                  copier
-                </button>
-              </div>
-              <pre className="bg-white border border-slate-200 rounded-lg p-2 overflow-x-auto whitespace-pre-wrap break-all text-[11px] leading-snug text-slate-800 max-h-60 overflow-y-auto">
-                {text}
-              </pre>
-            </div>
-          )
-        })}
-      </div>
-    </details>
-  )
-}
+import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, DebugDetails } from './novoxpressShared.jsx'
 
 export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onClose, onDone }) {
   const [step, setStep] = useState('package') // 'package' | 'rates' | 'confirm' | 'done'
@@ -87,6 +16,10 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
   const [rates, setRates] = useState([])
   const [requestId, setRequestId] = useState(null)
   const [selectedRate, setSelectedRate] = useState(null)
+  // Transporteur du service sélectionné — détermine quel achat effectuer à la
+  // confirmation ('novoxpress' | 'purolator'). Les deux offrent le même achat
+  // réel (étiquette + suivi), affichés côte à côte dans l'étape 'rates'.
+  const [selectedCarrier, setSelectedCarrier] = useState('novoxpress')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [errorDetails, setErrorDetails] = useState(null) // { sent, responseBody, response } pour debug
@@ -97,6 +30,19 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
   // serveur (auto sur erreur opaque), soit par le bouton « Diagnostiquer en dev ».
   const [diagnostic, setDiagnostic] = useState(null)
   const [diagLoading, setDiagLoading] = useState(false)
+  // Comparaison avec les tarifs UPS directs (hors Novoxpress). Lecture seule :
+  // l'achat d'étiquette sortante passe toujours par Novoxpress ; UPS sert ici
+  // à savoir si le tarif Novoxpress est concurrentiel.
+  const [ups, setUps] = useState(null) // { rates, customs, environment }
+  const [upsLoading, setUpsLoading] = useState(false)
+  const [upsError, setUpsError] = useState('')
+
+  // Tarifs Purolator (ERP → Purolator) — contrairement à UPS ci-dessus, ces
+  // tarifs sont ACTIONABLES : sélectionner un service Purolator déclenche
+  // l'achat réel de l'étiquette (bouton « Tarifer » du CLAUDE.md).
+  const [purolator, setPurolator] = useState(null) // { rates, environment }
+  const [purolatorLoading, setPurolatorLoading] = useState(false)
+  const [purolatorError, setPurolatorError] = useState('')
 
   const isEnvelope = BOX_PRESETS[preset]?.packagingType === 'envelope'
   const effectiveQty = isEnvelope ? 1 : qty
@@ -188,6 +134,31 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
     setError('')
     setErrorDetails(null)
     setDiagnostic(null)
+
+    if (selectedCarrier === 'purolator') {
+      const sentPayload = {
+        service_id: selectedRate.service_id,
+        service_name: getRateName(selectedRate) || null,
+        packages: buildPackages(),
+      }
+      try {
+        const res = await api.purolator.createLabel(envoi.id, sentPayload)
+        setResult(res)
+        setStep('done')
+        onDone?.()
+      } catch (e) {
+        setError(e.message)
+        setErrorDetails({
+          sent: e.details?.sent || sentPayload,
+          responseBody: e.details?.responseBody || null,
+          novoxpressStatus: e.details?.purolatorStatus || null,
+        })
+      } finally {
+        setLoading(false)
+      }
+      return
+    }
+
     const sentPayload = {
       request_id: requestId,
       service_id: selectedRate.service_id,
@@ -228,6 +199,141 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
     } finally {
       setRetrying(false)
     }
+  }
+
+  async function handlePurolatorRates() {
+    setPurolatorLoading(true); setPurolatorError(''); setPurolator(null)
+    try {
+      const res = await api.purolator.shipmentRates(envoi.id, { packages: buildPackages() })
+      setPurolator(res)
+    } catch (e) {
+      // Message brut de l'API Purolator — jamais un échec silencieux (CLAUDE.md).
+      setPurolatorError(e.message)
+    } finally {
+      setPurolatorLoading(false)
+    }
+  }
+
+  // Sélection d'un service Purolator : va directement à la confirmation
+  // d'achat, comme pour un service Novoxpress.
+  function selectPurolatorRate(rate) {
+    setSelectedRate(rate)
+    setSelectedCarrier('purolator')
+    setStep('confirm')
+  }
+
+  async function handleCompareUps() {
+    setUpsLoading(true); setUpsError(''); setUps(null)
+    try {
+      const res = await api.ups.shipmentRates(envoi.id, { packages: buildPackages() })
+      setUps(res)
+    } catch (e) {
+      // Message brut de l'API UPS — jamais un échec silencieux.
+      setUpsError(e.message)
+    } finally {
+      setUpsLoading(false)
+    }
+  }
+
+  // Tarifs Purolator — côte à côte avec Novoxpress, mais SÉLECTIONNABLES :
+  // cliquer un service Purolator achète réellement l'étiquette (contrairement
+  // à la comparaison UPS ci-dessous, purement informative).
+  function renderPurolatorRates() {
+    return (
+      <div className="border-t border-slate-100 pt-3 space-y-2" data-testid="purolator-rate-comparison">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-medium text-slate-700 flex items-center gap-1.5"><Truck size={14} className="text-purple-700" /> Tarifs Purolator</p>
+          <button onClick={handlePurolatorRates} disabled={purolatorLoading} className="btn-secondary btn-sm text-xs" data-testid="purolator-get-rates">
+            {purolatorLoading ? 'Interrogation…' : purolator ? 'Rafraîchir' : 'Tarifer'}
+          </button>
+        </div>
+        {purolatorError && (
+          <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 whitespace-pre-wrap break-words" data-testid="purolator-rate-error">{purolatorError}</p>
+        )}
+        {purolator?.rates?.length > 0 && (
+          <>
+            {purolator.environment !== 'production' && (
+              <p className="text-[11px] text-amber-700">Environnement de développement Purolator — n'achetez que pour tester.</p>
+            )}
+            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              {purolator.rates.map(r => (
+                <button
+                  key={r.service_id}
+                  onClick={() => selectPurolatorRate(r)}
+                  className="w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-slate-200 hover:border-purple-400 hover:bg-purple-50 transition-colors text-left"
+                  data-testid="purolator-rate-option"
+                >
+                  <div>
+                    <p className="font-medium text-slate-800 text-sm">{r.service_name}</p>
+                    <p className="text-xs text-slate-400">
+                      Purolator{r.total_transit_day ? ` · ${r.total_transit_day} jour(s)` : ''}
+                    </p>
+                  </div>
+                  <span className="font-semibold text-slate-700 whitespace-nowrap">{fmtPrice(r)}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        {purolator && !purolator.rates?.length && !purolatorError && (
+          <p className="text-xs text-slate-400">Purolator n'a retourné aucun tarif pour cet envoi.</p>
+        )}
+      </div>
+    )
+  }
+
+  // Rendue par appel de fonction (pas <UpsComparison />) pour ne pas recréer un
+  // type de composant à chaque rendu du modal.
+  function renderUpsComparison() {
+    return (
+      <div className="border-t border-slate-100 pt-3 space-y-2" data-testid="ups-rate-comparison">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-medium text-slate-700 flex items-center gap-1.5"><Truck size={14} className="text-amber-700" /> Tarifs UPS (direct)</p>
+          <button onClick={handleCompareUps} disabled={upsLoading} className="btn-secondary btn-sm text-xs" data-testid="ups-compare-rates">
+            {upsLoading ? 'Interrogation…' : ups ? 'Rafraîchir' : 'Comparer avec UPS'}
+          </button>
+        </div>
+        {upsError && (
+          <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 whitespace-pre-wrap break-words" data-testid="ups-rate-error">{upsError}</p>
+        )}
+        {ups?.rates?.length > 0 && (
+          <>
+            {ups.environment !== 'production' && (
+              <p className="text-[11px] text-amber-700">Environnement CIE (test) — tarifs indicatifs.</p>
+            )}
+            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+              {ups.rates.map(r => (
+                <div key={r.service_id} className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-slate-200 text-sm">
+                  <div>
+                    <p className="font-medium text-slate-800">{r.service_name}</p>
+                    <p className="text-xs text-slate-400">
+                      UPS{r.negotiated ? ' · tarif négocié' : ''}{r.total_transit_day ? ` · ${r.total_transit_day} jour(s)` : ''}
+                    </p>
+                  </div>
+                  <span className="font-semibold text-slate-700 whitespace-nowrap">{fmtPrice(r)}</span>
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Comparaison seulement — l'achat d'étiquette sortante passe par Novoxpress.
+            </p>
+          </>
+        )}
+        {ups?.customs?.length > 0 && (
+          <details className="text-xs text-slate-500">
+            <summary className="cursor-pointer select-none">Déclaration douanière (envoi hors Canada)</summary>
+            <ul className="mt-1 space-y-0.5">
+              {ups.customs.map((c, i) => (
+                <li key={i}>{c.qty} × {c.description} — {Number(c.unit_value).toFixed(2)} $ · origine {c.origin_country} · SH {c.hs_code}</li>
+              ))}
+            </ul>
+          </details>
+        )}
+        {ups && !ups.rates?.length && !upsError && (
+          <p className="text-xs text-slate-400">UPS n'a retourné aucun tarif pour cet envoi.</p>
+        )}
+      </div>
+    )
   }
 
   // ── Step: package ──
@@ -315,6 +421,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
             </button>
           )}
           <DebugDetails details={errorDetails} />
+          {renderPurolatorRates()}
           <div className="flex justify-between">
             <button onClick={() => { setStep('package'); setError(''); setErrorDetails(null); setDiagnostic(null) }} className="btn-secondary">← Retour</button>
           </div>
@@ -323,6 +430,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
         <div className="space-y-4">
           <p className="text-sm text-slate-500 text-center py-4">Aucun tarif disponible pour cet envoi.</p>
           <DebugDetails details={errorDetails} />
+          {renderPurolatorRates()}
           <button onClick={() => { setStep('package'); setErrorDetails(null) }} className="btn-secondary">← Retour</button>
         </div>
       ) : (
@@ -332,7 +440,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
             {rates.map((rate, i) => (
               <button
                 key={rate.service_id || i}
-                onClick={() => { setSelectedRate(rate); setStep('confirm') }}
+                onClick={() => { setSelectedRate(rate); setSelectedCarrier('novoxpress'); setStep('confirm') }}
                 className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-brand-400 hover:bg-brand-50 transition-colors"
               >
                 <div className="flex items-center justify-between gap-3">
@@ -346,6 +454,8 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
               </button>
             ))}
           </div>
+          {renderPurolatorRates()}
+          {renderUpsComparison()}
           <button onClick={() => setStep('package')} className="btn-secondary text-sm">← Retour</button>
         </>
       )}
@@ -378,7 +488,9 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
       </div>
       {(() => {
         const isIntl = envoi.address_country && envoi.address_country !== 'CA'
-        if (!isIntl) return null
+        // Déclaration douanière internationale : implémentée pour Novoxpress
+        // seulement (Purolator vise le Canada domestique pour l'instant).
+        if (!isIntl || selectedCarrier !== 'novoxpress') return null
         const totalValue = (envoi.order_items || []).reduce((s, i) => s + (i.unit_cost || 0) * (i.qty || 0), 0)
         return (
           <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-800 space-y-1">
@@ -391,15 +503,17 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
         )
       })()}
       <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-        Cette action va facturer l'étiquette sur votre compte Novoxpress.
-        <br />Le ramassage du colis se commande séparément après l'achat de l'étiquette.
-        <br />En cas d'erreur inexpliquée, un diagnostic automatique (~20 s, environnement de test, aucun achat) tentera d'en isoler la cause.
+        Cette action va facturer l'étiquette sur votre compte {selectedCarrier === 'purolator' ? 'Purolator' : 'Novoxpress'}.
+        {selectedCarrier === 'novoxpress' && <>
+          <br />Le ramassage du colis se commande séparément après l'achat de l'étiquette.
+          <br />En cas d'erreur inexpliquée, un diagnostic automatique (~20 s, environnement de test, aucun achat) tentera d'en isoler la cause.
+        </>}
       </p>
       {error && (
         <>
           <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 whitespace-pre-wrap break-words">{error}</p>
-          <NovoxpressDiagnosticPanel diagnostic={diagnostic} />
-          {!diagnostic?.available && (
+          {selectedCarrier === 'novoxpress' && <NovoxpressDiagnosticPanel diagnostic={diagnostic} />}
+          {selectedCarrier === 'novoxpress' && !diagnostic?.available && (
             <button onClick={() => handleDiagnose('label')} disabled={diagLoading} className="btn-secondary text-sm flex items-center gap-1.5">
               {diagLoading
                 ? <><div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-slate-500" /> Diagnostic en cours… (~20 s)</>
@@ -445,7 +559,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
           )}
           {result?.shipment_id && (
             <p className="text-xs text-slate-400">
-              N° Novoxpress : <span className="font-mono">{result.shipment_id}</span>
+              N° {selectedCarrier === 'purolator' ? 'Purolator' : 'Novoxpress'} : <span className="font-mono">{result.shipment_id}</span>
             </p>
           )}
         </div>
@@ -457,33 +571,39 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
                 <CheckCircle size={15} className="text-green-600" /> L'achat de l'étiquette a bien été effectué.
               </p>
               <p>
-                Votre compte Novoxpress a été facturé et l'envoi est marqué « Envoyé ».
+                Votre compte {selectedCarrier === 'purolator' ? 'Purolator' : 'Novoxpress'} a été facturé et l'envoi est marqué « Envoyé ».
                 Seul le <span className="font-medium">téléchargement du PDF</span> a échoué — l'étiquette,
-                elle, existe bien chez Novoxpress.
+                elle, existe bien chez {selectedCarrier === 'purolator' ? 'Purolator' : 'Novoxpress'}.
               </p>
               {result?.label_error && (
                 <p className="text-xs text-amber-700">
                   Raison du blocage : <span className="font-mono break-all">{result.label_error}</span>
                 </p>
               )}
-              <p className="text-xs">
-                Aucune nouvelle facturation : « Réessayer » récupère le même PDF déjà acheté.
-              </p>
+              {selectedCarrier === 'novoxpress' && (
+                <p className="text-xs">
+                  Aucune nouvelle facturation : « Réessayer » récupère le même PDF déjà acheté.
+                </p>
+              )}
             </div>
-            {retryError && (
-              <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 whitespace-pre-wrap break-words">
-                {retryError}
-              </p>
+            {selectedCarrier === 'novoxpress' && (
+              <>
+                {retryError && (
+                  <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 whitespace-pre-wrap break-words">
+                    {retryError}
+                  </p>
+                )}
+                <button
+                  onClick={handleRetryPdf}
+                  disabled={retrying}
+                  className="btn-primary w-full flex items-center justify-center gap-2"
+                >
+                  {retrying
+                    ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Téléchargement…</>
+                    : <><RefreshCw size={15} /> Réessayer le téléchargement</>}
+                </button>
+              </>
             )}
-            <button
-              onClick={handleRetryPdf}
-              disabled={retrying}
-              className="btn-primary w-full flex items-center justify-center gap-2"
-            >
-              {retrying
-                ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Téléchargement…</>
-                : <><RefreshCw size={15} /> Réessayer le téléchargement</>}
-            </button>
             <button onClick={onClose} className="btn-secondary w-full">Fermer (récupérable plus tard depuis l'envoi)</button>
           </>
         ) : (

@@ -11,6 +11,8 @@ import { awaitExtraction, linkReceiptToTransaction } from './linkBank.js'
 import amazon from './amazon.js'
 import wix from './wix.js'
 import bell from './bell.js'
+import digikey from './digikey.js'
+import simplex from './simplex.js'
 
 // ── Collecteurs de portails fournisseurs ──────────────────────────────────────
 // Un collecteur = un module qui sait, pour UN fournisseur, se connecter à son
@@ -18,13 +20,16 @@ import bell from './bell.js'
 // (session, 2FA, dédup, ingestion, journalisation, artefacts de diagnostic) est
 // mutualisé ici : ajouter un fournisseur = écrire `login` + `collect`.
 
-export const SCRAPERS = { amazon, wix, bell }
+export const SCRAPERS = { amazon, wix, bell, digikey, simplex }
 export const VENDOR_LABELS = Object.fromEntries(
   Object.entries(SCRAPERS).map(([k, v]) => [k, v.label])
 )
 
 // Domaine dont un import de session doit porter les cookies, par collecteur.
-export const VENDOR_DOMAINS = { amazon: 'amazon.', wix: 'wix.com', bell: 'bell.ca' }
+export const VENDOR_DOMAINS = {
+  amazon: 'amazon.', wix: 'wix.com', bell: 'bell.ca', digikey: 'digikey.ca',
+  simplex: 'simplexwireless.com',
+}
 
 const artifactsRoot = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'scrapers')
 const OTP_TIMEOUT_MS = Number(process.env.SCRAPER_OTP_TIMEOUT_MS || 10 * 60 * 1000)

@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, Fragment } from 'react'
+import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, RefreshCw, Landmark, ShieldAlert, CheckCircle2, HeartHandshake, Receipt, ExternalLink, Paperclip, Wallet, ChevronRight, ChevronDown, AlertTriangle } from 'lucide-react'
+import { Plus, RefreshCw, Landmark, ShieldAlert, CheckCircle2, HeartHandshake, Receipt, ExternalLink, Paperclip, Wallet, List, CalendarDays, ChevronLeft, ChevronRight, ChevronDown, AlertTriangle } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -378,6 +378,17 @@ function SheetLine({ status, onSynced }) {
     }
   }
 
+  // Désactivée le 2026-08-29 (Charles : le fichier créait des paiements en
+  // double avec Pmt_Suivi/la cédule — voir project memory). Le bouton
+  // disparaît : le laisser cliquable aurait rouvert la même porte.
+  if (status && !status.active) {
+    return (
+      <div className="text-[11px] text-slate-400" data-testid="treasury-sheet-sync">
+        « Maintien du solde disponible BNC » · synchronisation désactivée (créait des paiements en double)
+      </div>
+    )
+  }
+
   return (
     <div className="flex items-center justify-between gap-3 text-[11px] text-slate-400" data-testid="treasury-sheet-sync">
       <span className="min-w-0 truncate">
@@ -625,6 +636,82 @@ function AttentionPanel({ proj, sheet, learning, recurring, onChanged, onSynced 
   )
 }
 
+// Vue calendrier mensuelle de la projection : chaque jour de l'horizon affiche
+// son solde projeté (coloré selon le seuil) et ses mouvements en pastilles
+// cliquables — mêmes cibles que la vue liste (facture, payout, récurrente).
+function ProjectionCalendar({ days, threshold, renderEvent }) {
+  const todayStr = localISODate()
+  const [month, setMonth] = useState(todayStr.slice(0, 7)) // 'YYYY-MM'
+  const byDate = useMemo(() => new Map(days.map(d => [d.date, d])), [days])
+
+  const [y, m] = month.split('-').map(Number)
+  const first = new Date(y, m - 1, 1)
+  // Grille alignée sur dimanche ; les semaines entièrement hors mois sont omises.
+  const start = new Date(y, m - 1, 1 - first.getDay())
+  const weeks = []
+  for (let w = 0; w < 6; w++) {
+    const week = []
+    for (let i = 0; i < 7; i++) {
+      const dt = new Date(start.getFullYear(), start.getMonth(), start.getDate() + w * 7 + i)
+      week.push({ date: localISODate(dt), inMonth: dt.getMonth() === m - 1, dayNum: dt.getDate() })
+    }
+    if (week.some(c => c.inMonth)) weeks.push(week)
+  }
+  const nav = delta => setMonth(localISODate(new Date(y, m - 1 + delta, 1)).slice(0, 7))
+  const monthLabel = first.toLocaleDateString('fr-CA', { month: 'long', year: 'numeric' })
+  const navBtn = 'h-6 w-6 rounded-md flex items-center justify-center text-slate-500 hover:bg-slate-100'
+
+  return (
+    <div className="rounded-lg border border-slate-100 overflow-hidden" data-testid="treasury-calendar">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100">
+        <span className="text-sm font-semibold text-slate-800 capitalize" data-testid="treasury-calendar-month">{monthLabel}</span>
+        <div className="flex items-center gap-1">
+          {month !== todayStr.slice(0, 7) && (
+            <button type="button" onClick={() => setMonth(todayStr.slice(0, 7))}
+              className="text-xs font-medium text-brand-600 hover:underline mr-1.5">
+              Aujourd&apos;hui
+            </button>
+          )}
+          <button type="button" onClick={() => nav(-1)} className={navBtn} title="Mois précédent" data-testid="treasury-calendar-prev"><ChevronLeft size={15} /></button>
+          <button type="button" onClick={() => nav(1)} className={navBtn} title="Mois suivant" data-testid="treasury-calendar-next"><ChevronRight size={15} /></button>
+        </div>
+      </div>
+      <div className="grid grid-cols-7 text-center text-[10px] font-medium uppercase tracking-wide text-slate-400 border-b border-slate-100">
+        {['dim', 'lun', 'mar', 'mer', 'jeu', 'ven', 'sam'].map(d => <div key={d} className="py-1">{d}</div>)}
+      </div>
+      {weeks.map((week, wi) => (
+        <div key={wi} className={`grid grid-cols-7 ${wi > 0 ? 'border-t border-slate-100' : ''}`}>
+          {week.map(cell => {
+            const day = byDate.get(cell.date)
+            const isToday = cell.date === todayStr
+            const balCls = day == null ? '' : day.balance < 0 ? 'text-rose-600' : day.balance < threshold ? 'text-amber-600' : 'text-slate-400'
+            return (
+              <div key={cell.date}
+                className={`min-h-[4.5rem] p-1 border-l border-slate-100 first:border-l-0 ${cell.inMonth ? '' : 'bg-slate-50/70'}`}>
+                <div className="flex items-center justify-between gap-1 mb-0.5">
+                  <span className={`text-[11px] tabular-nums leading-none ${isToday
+                    ? 'h-[1.125rem] min-w-[1.125rem] px-0.5 rounded-full bg-brand-600 text-white font-semibold flex items-center justify-center'
+                    : cell.inMonth ? 'text-slate-500' : 'text-slate-300'}`}>
+                    {cell.dayNum}
+                  </span>
+                  {day != null && (
+                    <span className={`text-[10px] tabular-nums font-medium truncate ${balCls}`} title={`Solde projeté : ${fmtCad(day.balance)}`}>
+                      {fmtCad(day.balance)}
+                    </span>
+                  )}
+                </div>
+                <div className="space-y-0.5">
+                  {(day?.events || []).map((e, i) => renderEvent(e, cell.date, i, true))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function TreasuryProjectionSection() {
   const [proj, setProj] = useState(null)
   const [recurring, setRecurring] = useState([])
@@ -635,6 +722,9 @@ export function TreasuryProjectionSection() {
   const [editing, setEditing] = useState(null) // {} = nouveau, {id...} = édition
   const [billPeek, setBillPeek] = useState(null) // {id, date} = facture fournisseur cliquée
   const [showBeyond, setShowBeyond] = useState(false)
+  // Vue des mouvements : liste chronologique ou calendrier mensuel (mémorisé).
+  const [projView, setProjView] = useState(() => localStorage.getItem('treasury_proj_view') || 'list')
+  const switchView = v => { setProjView(v); localStorage.setItem('treasury_proj_view', v) }
   const [recurringOpen, setRecurringOpen] = useState(() => localStorage.getItem('treasury_recurring_open') === '1')
   useEffect(() => { localStorage.setItem('treasury_recurring_open', recurringOpen ? '1' : '0') }, [recurringOpen])
   const { addToast } = useToast()
@@ -688,27 +778,42 @@ export function TreasuryProjectionSection() {
   // Point de tension : le premier passage sous le seuil, ou le négatif s'il y en a.
   const low = proj?.first_negative || proj?.first_below_threshold || null
 
-  // Pastille d'un mouvement : chaque mouvement mène à sa source (facture
-  // fournisseur en modale, payout Stripe en fiche, récurrente en modale ici).
-  const renderEvent = (e, date, i) => {
+  // Pastille d'un mouvement — partagée entre la vue liste et le calendrier
+  // (compact) : chaque mouvement mène à sa source (facture fournisseur en
+  // modale, payout Stripe en fiche, récurrente en modale ici).
+  const renderEvent = (e, date, i, compact = false) => {
     const tone = e.expected
       ? 'bg-white border border-dashed border-slate-300 text-slate-500'
       : e.amount >= 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'
-    const cls = `inline-block mr-1.5 mb-0.5 text-xs px-2 py-0.5 rounded-full ${tone}`
+    const cls = compact
+      ? `block w-full text-left truncate text-[10px] leading-4 px-1 py-px rounded ${tone}`
+      : `inline-block mr-1.5 mb-0.5 text-xs px-2 py-0.5 rounded-full ${tone}`
     const amountTxt = `${e.amount >= 0 ? '+' : '−'}${fmtCad(Math.abs(e.amount))}`
     const suffix = e.expected ? EXPECTED_SUFFIX[e.expected_status] || ' · attendu' : ''
-    const text = <>{e.label} {amountTxt}<span className="opacity-70">{suffix}</span></>
+    // En calendrier la cellule est étroite : le montant d'abord, le libellé
+    // tronqué ensuite, et tout le détail dans l'infobulle.
+    const text = compact
+      ? <>{amountTxt} {e.label}</>
+      : <>{e.label} {amountTxt}<span className="opacity-70">{suffix}</span></>
     // Montant appris du relevé : dit dans l'infobulle, pas à l'écran.
     const learnedTitle = e.learned
       ? `Montant observé au compte (${e.learned.n} occurrences) — saisi : ${fmtCad(e.learned.from, 2)}`
       : null
-    const title = learnedTitle || (e.expected
+    const expectedTitle = e.expected
       ? `${EXPECTED_TITLE[e.expected_status] || 'Attendu'} · ${e.label} ${amountTxt} le ${fmtDate(e.date)}`
-      : undefined)
+      : null
+    const compactTitle = `${e.label} · ${amountTxt}${suffix}`
+    const title = learnedTitle || expectedTitle || (compact ? compactTitle : undefined)
     if (e.kind === 'bill' && e.ref) {
+      const open = () => setBillPeek({ id: e.ref, date, qbUrl: e.qb_url })
+      if (compact) return (
+        <button key={i} type="button" onClick={open}
+          className={`${cls} hover:ring-1 hover:ring-slate-300`}
+          title={`${title || compactTitle} — voir la facture fournisseur`}>{text}</button>
+      )
       return (
         <span key={i} className="inline-flex items-center mr-1.5 mb-0.5">
-          <button type="button" onClick={() => setBillPeek({ id: e.ref, date, qbUrl: e.qb_url })}
+          <button type="button" onClick={open}
             className={`${cls} !mr-0 !mb-0 ${e.qb_url ? '!rounded-r-none' : ''} hover:ring-1 hover:ring-slate-300`}
             title="Voir la facture fournisseur">{text}</button>
           {e.qb_url && (
@@ -725,13 +830,13 @@ export function TreasuryProjectionSection() {
     )
     if (e.kind === 'payout' && e.ref) return (
       <Link key={i} to={`/stripe-payouts/${e.ref}`} className={`${cls} hover:ring-1 hover:ring-emerald-300`}
-        title="Voir le payout Stripe">{text}</Link>
+        title={compact ? `${title || compactTitle} — voir le payout Stripe` : 'Voir le payout Stripe'}>{text}</Link>
     )
     if (e.kind === 'recurring' && e.ref) {
       const rec = recurring.find(r => r.id === e.ref)
       if (rec) return (
         <button key={i} type="button" onClick={() => setEditing(rec)} className={`${cls} hover:ring-1 hover:ring-slate-300`}
-          title={learnedTitle || 'Voir la sortie récurrente'}>{text}</button>
+          title={learnedTitle || (compact ? `${compactTitle} — voir la sortie récurrente` : 'Voir la sortie récurrente')}>{text}</button>
       )
     }
     return <span key={i} className={cls} title={title}>{text}</span>
@@ -813,7 +918,22 @@ export function TreasuryProjectionSection() {
               onChanged={load} onSynced={load} />
 
             <div className="min-w-0">
-              <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400 mb-2">Mouvements à venir</h3>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Mouvements à venir</h3>
+                <div className="flex items-center rounded-lg border border-slate-200 p-0.5" role="tablist" aria-label="Vue des mouvements">
+                  {[{ v: 'list', icon: List, label: 'Liste' }, { v: 'calendar', icon: CalendarDays, label: 'Calendrier' }].map(({ v, icon: Icon, label }) => (
+                    <button key={v} type="button" onClick={() => switchView(v)} title={label}
+                      role="tab" aria-selected={projView === v} data-testid={`treasury-view-${v}`}
+                      className={`h-6 w-7 rounded-md flex items-center justify-center transition-colors ${projView === v ? 'bg-slate-100 text-slate-700' : 'text-slate-400 hover:text-slate-600'}`}>
+                      <Icon size={14} />
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {projView === 'calendar' ? (
+                <ProjectionCalendar days={proj.days || []} threshold={proj.threshold} renderEvent={renderEvent} />
+              ) : (
+              <>
               <div className="overflow-x-auto rounded-lg border border-slate-100">
                 <table className="w-full text-sm">
                   <tbody>
@@ -845,6 +965,8 @@ export function TreasuryProjectionSection() {
                     ? `Masquer au-delà de ${aw.days} jours`
                     : `+ ${beyondDays.length} jour${beyondDays.length > 1 ? 's' : ''} au-delà de ${aw.days} jours`}
                 </button>
+              )}
+              </>
               )}
             </div>
 
@@ -1517,6 +1639,162 @@ function AnomaliesCard() {
   )
 }
 
+// ── Plafond des cartes de crédit ─────────────────────────────────────────────
+// Question complémentaire du rappel « payer les cartes » : la carte a-t-elle
+// encore de la place ? Scan-first — trois chiffres, le reste replié.
+
+function CardCeilingRow({ card, onChanged }) {
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState(card)
+  const [saving, setSaving] = useState(false)
+  const { addToast } = useToast()
+
+  useEffect(() => { setForm(card) }, [card])
+
+  // Autosave au blur : pas de bouton « Enregistrer » (règle de design).
+  const save = async (k, v) => {
+    if (String(card[k] ?? '') === String(v ?? '')) return
+    setSaving(true)
+    try {
+      await api.treasury.cardCeilings.update(card.id, { [k]: v === '' ? null : v })
+      onChanged()
+    } catch (e) {
+      setForm(card)
+      addToast({ message: `Sauvegarde échouée : ${e.message}`, type: 'error' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const tone = card.over_limit ? 'rose' : card.over_ceiling ? 'amber' : 'emerald'
+  const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30'
+  const field = (k, label, props = {}) => (
+    <div>
+      <label className="block text-[11px] font-medium text-slate-500 mb-1">{label}</label>
+      <input
+        className={inputCls}
+        value={form[k] ?? ''}
+        onChange={e => setForm(f => ({ ...f, [k]: e.target.value }))}
+        onBlur={e => save(k, e.target.value)}
+        {...props}
+      />
+    </div>
+  )
+
+  return (
+    <div className="py-3 first:pt-0 last:pb-0" data-testid="card-ceiling-row">
+      <div className="flex items-baseline justify-between gap-3">
+        <p className="text-sm font-semibold text-slate-800 truncate" data-testid="card-ceiling-name">{card.name}</p>
+        <span className="text-[11px] text-slate-400 shrink-0">
+          {saving ? 'Enregistrement…' : card.draft_date ? `prélèvement le ${fmtDate(card.draft_date)}` : 'aucun prélèvement configuré'}
+        </span>
+      </div>
+
+      {card.qb_error && (
+        <p className="mt-1 text-xs text-rose-600 flex items-center gap-1.5" data-testid="card-ceiling-error">
+          <AlertTriangle size={12} /> QuickBooks : {card.qb_error}
+        </p>
+      )}
+
+      {/* Les trois chiffres qui décident : où on en est, ce qu'il reste, ce qu'il faut payer. */}
+      <div className="mt-2 grid grid-cols-3 divide-x divide-slate-100">
+        <Stat label="Solde projeté" value={fmtCad(card.projected)} tone={tone} testId="card-ceiling-projected"
+          sub={card.ceiling ? `plafond ${fmtCad(card.ceiling)}` : 'sans plafond'} />
+        <Stat label="Marge restante" value={card.room == null ? '—' : fmtCad(card.room)}
+          tone={card.room != null && card.room < 0 ? 'rose' : 'slate'} testId="card-ceiling-room"
+          sub={card.credit_limit ? `limite ${fmtCad(card.credit_limit)}` : null} />
+        <Stat label="Paiement recommandé" value={card.recommended > 0 ? fmtCad(card.recommended) : '—'}
+          tone={card.recommended > 0 ? 'amber' : 'slate'} testId="card-ceiling-recommended"
+          sub={card.recommended > 0 && card.pay_date ? `à payer le ${fmtDate(card.pay_date)}` : 'sous le plafond'} />
+      </div>
+
+      <button type="button" onClick={() => setOpen(o => !o)} data-testid="card-ceiling-toggle"
+        className="mt-2 flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-700">
+        <ChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
+        {fmtCad(card.posted, 2)} comptabilisé · {fmtCad(card.pending, 2)} en attente
+      </button>
+
+      {open && (
+        <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50/60 p-3 space-y-3" data-testid="card-ceiling-detail">
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs text-slate-600">
+            <span>Comptabilisé dans QuickBooks</span>
+            <span className="text-right tabular-nums" data-testid="card-ceiling-posted">{fmtCad(card.posted, 2)}</span>
+            <span>En attente de comptabilisation ({card.pending_count})</span>
+            <span className="text-right tabular-nums" data-testid="card-ceiling-pending">{fmtCad(card.pending, 2)}</span>
+            <span className="font-medium text-slate-800">Solde projeté</span>
+            <span className="text-right tabular-nums font-medium text-slate-800">{fmtCad(card.projected, 2)}</span>
+          </div>
+          {card.pending_stale_count > 0 && (
+            <p className="text-[11px] text-slate-400" data-testid="card-ceiling-stale">
+              {card.pending_stale_count} transaction(s) plus ancienne(s) que le {fmtDate(card.pending_since)}
+              {' '}({fmtCad(card.pending_stale_amount, 2)}) ne sont pas comptées : leur relevé est payé depuis longtemps.
+            </p>
+          )}
+          {card.pay_date && card.pay_date !== card.draft_date && (
+            <p className="text-[11px] text-amber-700">
+              Le prélèvement du {fmtDate(card.draft_date)} tombe {card.pay_reason === 'holiday' ? `un férié (${card.pay_holiday})` : 'une fin de semaine'} :
+              {' '}payer le {fmtDate(card.pay_date)}.
+            </p>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            {field('credit_limit', 'Limite de crédit ($)', { inputMode: 'decimal', 'data-testid': 'card-ceiling-limit-input' })}
+            {field('ceiling', 'Plafond cible ($)', { inputMode: 'decimal', 'data-testid': 'card-ceiling-ceiling-input' })}
+            {field('draft_day', 'Jour du prélèvement', { inputMode: 'numeric', 'data-testid': 'card-ceiling-draft-day-input' })}
+            {field('qb_acctnum', 'Compte QuickBooks (n°)', { 'data-testid': 'card-ceiling-acctnum-input' })}
+          </div>
+          <p className="text-[11px] text-slate-400">
+            {card.qb_account_name ? `QuickBooks : ${card.qb_account_name}` : 'Compte QuickBooks non résolu'}
+            {card.bank_account_name ? ` · relevé : ${card.bank_account_name}` : ''}
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function CardCeilingsCard() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const { addToast } = useToast()
+
+  const load = useCallback(async (refresh = false) => {
+    setLoading(true)
+    try {
+      setData(await api.treasury.cardCeilings.list({ refresh }))
+    } catch (e) {
+      addToast({ message: `Soldes de cartes : ${e.message}`, type: 'error' })
+      setData({ cards: [] })
+    } finally {
+      setLoading(false)
+    }
+  }, [addToast])
+
+  useEffect(() => { load() }, [load])
+
+  const cards = data?.cards || []
+  return (
+    <Card
+      title="Plafond des cartes"
+      description="Solde QuickBooks + achats pas encore comptabilisés, confrontés au plafond cible et au prélèvement pré-programmé."
+      icon={Wallet}
+      iconClass="bg-indigo-50 text-indigo-600"
+      testId="compta-card-ceilings"
+      actions={(
+        <button onClick={() => load(true)} disabled={loading} title="Relire les soldes dans QuickBooks"
+          className="px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-50 flex items-center gap-1.5">
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} /> Actualiser
+        </button>
+      )}
+    >
+      {data === null && <p className="text-xs text-slate-400">Chargement…</p>}
+      {data && cards.length === 0 && <p className="text-xs text-slate-400">Aucune carte suivie.</p>}
+      <div className="divide-y divide-slate-100">
+        {cards.map(c => <CardCeilingRow key={c.id} card={c} onChanged={() => load(true)} />)}
+      </div>
+    </Card>
+  )
+}
+
 export default function ComptaDashboard() {
   return (
     <Layout>
@@ -1531,6 +1809,7 @@ export default function ComptaDashboard() {
         <TreasuryProjectionSection />
 
         <div className="grid gap-6 lg:grid-cols-2 items-start">
+          <CardCeilingsCard />
           <AnomaliesCard />
           <PaieComptabilisationCard />
           <AgaRepartitionCard />

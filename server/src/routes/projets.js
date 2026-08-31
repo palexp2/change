@@ -15,6 +15,7 @@ import { requireAdmin } from '../middleware/auth.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { getCurrentItemsSnapshot, enrichItemsWithErpProductId } from '../services/subscriptionItemsSnapshot.js'
 import { buildExternalLinks } from '../services/externalLinks.js'
+import { checkAddress, runAddressCheck, getAddressCheckSummary } from '../services/addressCheck.js'
 
 // Calcule les taxes d'une facture (tableau {name, percentage, amount}).
 // Stratégie :
@@ -144,6 +145,24 @@ router.get('/adresses/lookup', (req, res) => {
   res.json(rows)
 })
 
+// ── Vérificateur d'adresses (services/addressCheck.js) ───────────────────────
+// Déclaré AVANT `/adresses/:id` : sinon « check » serait pris pour un id.
+
+// État courant : compteurs + adresses à corriger (verdicts déjà persistés).
+router.get('/adresses/check', (req, res) => {
+  res.json(getAddressCheckSummary())
+})
+
+// Relance une passe complète. `?dry=1` simule (ni écriture ni notification).
+router.post('/adresses/check', (req, res) => {
+  const dry = req.query.dry === '1' || req.body?.dryRun === true
+  // Une simulation est un aperçu, pas une exécution : elle ne pollue pas
+  // l'historique de l'automation.
+  const out = runAddressCheck({ trigger: 'manuel', apply: !dry, log: !dry })
+  if (dry) return res.json({ dryRun: true, summary: out.summary, counts: out.counts, problems: out.problems })
+  res.json({ summary: out.summary, ...getAddressCheckSummary() })
+})
+
 router.get('/adresses', (req, res) => {
   const { company_id, contact_id, address_type, page = 1, limit = 50 } = req.query
   const limitAll = limit === 'all'
@@ -184,23 +203,39 @@ router.get('/adresses/:id', (req, res) => {
   res.json(row)
 })
 
+// Colonnes qu'un client peut écrire sur une adresse.
+const ADRESSE_COLUMNS = ['line1', 'city', 'province', 'postal_code', 'country', 'address_type', 'contact_id', 'language']
+
 router.post('/adresses', (req, res) => {
   const { line1, city, province, postal_code, country, address_type, company_id, contact_id, language } = req.body
   const id = randomUUID()
   db.prepare(`INSERT INTO adresses (id, line1, city, province, postal_code, country, address_type, company_id, contact_id, language)
     VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(id, line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, company_id||null, contact_id||null, language||null)
+  checkAddress(id, { actorUserId: req.user?.id })
   const adr = db.prepare('SELECT * FROM adresses WHERE id = ?').get(id)
   emitEntity('adresse', 'created', id, adr, req.user?.id)
   res.json(adr)
 })
 
+// PATCH sémantique : seules les colonnes PRÉSENTES dans le body sont écrites.
+// L'autosave du panneau d'édition envoie un champ à la fois — remettre à NULL
+// les colonnes absentes viderait l'adresse à chaque frappe.
 router.put('/adresses/:id', (req, res) => {
-  const { line1, city, province, postal_code, country, address_type, contact_id } = req.body
-  db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, address_type=?, contact_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-    WHERE id = ?`)
-    .run(line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, contact_id||null, req.params.id)
+  const sets = []
+  const params = []
+  for (const col of ADRESSE_COLUMNS) {
+    if (!(col in req.body)) continue
+    sets.push(`${col}=?`)
+    params.push(req.body[col] === '' ? null : (req.body[col] ?? null))
+  }
+  if (sets.length) {
+    db.prepare(`UPDATE adresses SET ${sets.join(', ')}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+      .run(...params, req.params.id)
+  }
+  checkAddress(req.params.id, { actorUserId: req.user?.id })
   const adr = db.prepare('SELECT * FROM adresses WHERE id = ?').get(req.params.id)
+  if (!adr) return res.status(404).json({ error: 'Not found' })
   emitEntity('adresse', 'updated', req.params.id, adr, req.user?.id)
   res.json(adr)
 })

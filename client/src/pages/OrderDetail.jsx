@@ -18,6 +18,7 @@ import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { ImageValue } from '../lib/customFieldDisplay.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
@@ -192,7 +193,7 @@ function AddItemModal({ orderId, onSave, onClose }) {
 // ── Commercial mode — Add shipment modal ──────────────────────────────────────
 
 function AddShipmentModal({ orderId, onSave, onClose }) {
-  const [form, setForm] = useState({ tracking_number: '', carrier: '', status: 'À envoyer', shipped_at: '', notes: '' })
+  const [form, setForm] = useState({ tracking_number: '', carrier: '', shipped_at: '', notes: '' })
   const [saving, setSaving] = useState(false)
 
   async function handleSubmit(e) {
@@ -215,13 +216,6 @@ function AddShipmentModal({ orderId, onSave, onClose }) {
         <div>
           <label className="label">N° de suivi</label>
           <input value={form.tracking_number} onChange={e => setForm(f => ({ ...f, tracking_number: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Statut</label>
-          <select value={form.status} onChange={e => setForm(f => ({ ...f, status: e.target.value }))} className="select">
-            <option value="À envoyer">À envoyer</option>
-            <option value="Envoyé">Envoyé</option>
-          </select>
         </div>
         <div>
           <label className="label">Date d'envoi</label>
@@ -445,7 +439,7 @@ function UnshipConfirmModal({ item, shipment, onConfirm, onClose }) {
       <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm">
         <div className="font-semibold text-slate-700 mb-1.5">Cela va :</div>
         <ul className="list-disc pl-5 text-slate-600 space-y-1">
-          <li>retirer l'article de l'envoi <span className="font-medium text-slate-800">{shipmentLabel(shipment)}</span> (statut : {shipment?.status || '—'})</li>
+          <li>retirer l'article de l'envoi <span className="font-medium text-slate-800">{shipmentLabel(shipment)}</span></li>
           <li>remettre son statut à <span className="font-medium text-slate-800">« À prélever »</span></li>
         </ul>
         {shipmentSent && (
@@ -502,7 +496,6 @@ function AddToShipmentModal({ item, shipments, onConfirm, onClose }) {
                 />
                 <span className="flex-1 text-sm">
                   <span className="font-medium text-slate-800">{shipmentLabel(s)}</span>
-                  <span className="ml-2 text-xs text-slate-500">{s.status}</span>
                 </span>
               </label>
             ))}
@@ -513,7 +506,7 @@ function AddToShipmentModal({ item, shipments, onConfirm, onClose }) {
         <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm">
           <div className="font-semibold text-slate-700 mb-1.5">Cela va :</div>
           <ul className="list-disc pl-5 text-slate-600 space-y-1">
-            <li>rattacher l'article à l'envoi <span className="font-medium text-slate-800">{shipmentLabel(target)}</span> (statut : {target.status})</li>
+            <li>rattacher l'article à l'envoi <span className="font-medium text-slate-800">{shipmentLabel(target)}</span></li>
             <li>passer son statut à <span className="font-medium text-slate-800">« Dans l'envoi »</span></li>
             {targetSent && <li>figer le coût unitaire courant comme coût expédié</li>}
           </ul>
@@ -824,7 +817,6 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
               return (
                 <div key={s.id} className="px-5 py-3 border-b border-slate-100 last:border-0">
                   <div className="flex items-center gap-3 flex-wrap">
-                    <Badge color={s.status === 'Envoyé' ? 'green' : 'yellow'}>{s.status}</Badge>
                     {s.carrier && <span className="text-sm font-medium text-slate-700">{s.carrier}</span>}
                     {s.tracking_number && (
                       url
@@ -1174,6 +1166,16 @@ export default function OrderDetail() {
     // serial_numbers.airtable_id) — on les affiche en liens cliquables vers la
     // fiche série plutôt qu'en recXXX. Cette colonne override le champ custom
     // auto-géré de même id (voir columnsWithOwnCf dans DataTable).
+    // Champ Airtable « Image » : le champ custom stocke une URL de pièce jointe
+    // Airtable qui EXPIRE après quelques heures — la cellule finissait donc par
+    // afficher l'URL brute au lieu de l'image. On affiche en priorité l'image du
+    // produit lié, stockée localement (`/erp/api/product-images/…`, jamais
+    // périmée) et déjà servie par la route commande ; l'URL Airtable ne sert
+    // plus que de repli. Cette colonne override le champ custom auto-géré de
+    // même id (voir columnsWithOwnCf dans DataTable).
+    image: item => (item.product_image || item.image
+      ? <ImageValue value={item.product_image || item.image} />
+      : <span className="text-slate-300">—</span>),
     de_serie: item => (item.de_serie_serials?.length > 0
       ? (
         <div className="flex items-center gap-1 flex-wrap">
@@ -1221,6 +1223,16 @@ export default function OrderDetail() {
   // colonne fournie ici prend le pas sur le champ custom auto-géré (voir
   // columnsWithOwnCf dans DataTable) et affiche des liens vers les fiches série.
   itemColumns.push({
+    id: 'image',
+    label: 'Image',
+    field: 'image',
+    sortable: false,
+    filterable: false,
+    groupable: false,
+    editable: false,
+    render: ITEM_RENDERS.image,
+  })
+  itemColumns.push({
     id: 'de_serie',
     label: '# de série',
     field: 'de_serie',
@@ -1235,7 +1247,7 @@ export default function OrderDetail() {
   // ── Commercial mode ─────────────────────────────────────────────────────────
   return (
     <Layout>
-      <div className="p-6 max-w-5xl mx-auto">
+      <div className="p-6">
 
         {/* Header */}
         <div className="flex items-start gap-4 mb-6">
@@ -1353,7 +1365,6 @@ export default function OrderDetail() {
                 <tr className="border-b border-slate-100 bg-slate-50">
                   <th className="text-left px-5 py-3 text-xs font-semibold text-slate-500">Transporteur</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">N° suivi</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Statut</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Date envoi</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden lg:table-cell">Articles</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden lg:table-cell">N° de série</th>
@@ -1373,7 +1384,6 @@ export default function OrderDetail() {
                             : <span className="text-slate-500">{s.tracking_number || '—'}</span>
                         })()}
                       </td>
-                      <td className="px-4 py-3"><Badge color={s.status === 'Envoyé' ? 'green' : 'yellow'}>{s.status}</Badge></td>
                       <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{fmtDate(s.shipped_at)}</td>
                       <td className="px-4 py-3 hidden lg:table-cell">
                         <div className="flex flex-wrap gap-1">

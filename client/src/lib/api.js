@@ -287,6 +287,9 @@ export const api = {
     meta: () => get('/tickets/meta'),
     list: (params = {}) => get('/tickets?' + new URLSearchParams(params)),
     ids: () => get('/tickets/ids'),
+    // Options du champ « Mots clés » : valeurs distinctes déjà utilisées, les
+    // plus fréquentes en tête.
+    keywords: () => get('/tickets/keywords'),
     get: (id, signal) => signal ? getAbortable(`/tickets/${id}`, signal) : get(`/tickets/${id}`),
     create: (data) => post('/tickets', data),
     update: (id, data) => put(`/tickets/${id}`, data),
@@ -307,6 +310,7 @@ export const api = {
     topProducts: (params = {}) => get('/dashboard/top-products?' + new URLSearchParams(params)),
     balanceSheet: (params = {}) => get('/dashboard/balance-sheet?' + new URLSearchParams(params)),
     bankAccounts: (params = {}) => get('/dashboard/bank-accounts?' + new URLSearchParams(params)),
+    bankAccountsHistory: (params = {}) => get('/dashboard/bank-accounts/history?' + new URLSearchParams(params)),
     deferredRevenue: () => get('/dashboard/deferred-revenue'),
     agingReceivables: () => get('/dashboard/aging-receivables'),
   },
@@ -349,10 +353,15 @@ export const api = {
 
   // Overrides de champs natifs (renommage / type d'affichage) par table —
   // menu contextuel « Modifier le champ » des colonnes non-custom de DataTable.
+  // Personnalisation des champs NATIFS (ceux définis dans tableDefs.js).
+  // Depuis l'unification, ils vivent dans custom_fields (kind='native') et non
+  // plus dans une table à part : même stockage, même route que les champs perso.
   fieldOverrides: {
-    list: (table) => get(`/field-overrides/${encodeURIComponent(table)}`),
-    save: (table, fieldId, data) => put(`/field-overrides/${encodeURIComponent(table)}/${encodeURIComponent(fieldId)}`, data),
-    reset: (table, fieldId) => del(`/field-overrides/${encodeURIComponent(table)}/${encodeURIComponent(fieldId)}`),
+    list: (table) => get(`/custom-fields/${encodeURIComponent(table)}/native`),
+    save: (table, fieldId, data) => put(`/custom-fields/${encodeURIComponent(table)}/native/${encodeURIComponent(fieldId)}`, data),
+    reset: (table, fieldId) => del(`/custom-fields/${encodeURIComponent(table)}/native/${encodeURIComponent(fieldId)}`),
+    // Plus de saveOrder : le réordonnancement des champs a été retiré de la page
+    // de configuration. Le `sort_order` déjà enregistré reste lu (applyFieldOrder).
   },
 
   // Interactions
@@ -434,6 +443,37 @@ export const api = {
     cancelPickup: (shipmentId) => del(`/novoxpress/pickup/${shipmentId}`),
   },
 
+  // UPS — étiquettes de retour (client → atelier Orisha), tarifs et suivi.
+  ups: {
+    status: () => get('/ups/status'),
+    saveConfig: (data) => put('/ups/config', data),
+    deleteConfig: () => del('/ups/config'),
+    test: () => post('/ups/test'),
+    createReturnLabel: (returnId, data) => post(`/ups/returns/${returnId}/return-label`, data),
+    sendReturnLabel: (returnId, to) => post(`/ups/returns/${returnId}/return-label/send`, { to }),
+    shipmentRates: (shipmentId, data) => post(`/ups/shipments/${shipmentId}/rates`, data),
+    trackShipment: (shipmentId) => post(`/ups/shipments/${shipmentId}/track`),
+  },
+
+  // Purolator — étiquettes sortantes (ERP → Purolator uniquement), tarifs et suivi.
+  purolator: {
+    status: () => get('/purolator/status'),
+    saveConfig: (data) => put('/purolator/config', data),
+    deleteConfig: () => del('/purolator/config'),
+    shipmentRates: (shipmentId, data) => post(`/purolator/shipments/${shipmentId}/rates`, data),
+    createLabel: (shipmentId, data) => post(`/purolator/shipments/${shipmentId}/label`, data),
+    trackShipment: (shipmentId) => post(`/purolator/shipments/${shipmentId}/track`),
+  },
+
+  // DigiKey — commandes + factures rapatriées par l'API (sens unique DigiKey → ERP)
+  digikey: {
+    status: () => get('/digikey/status'),
+    saveConfig: (data) => put('/digikey/config', data),
+    deleteConfig: () => del('/digikey/config'),
+    orders: (limit = 50) => get(`/digikey/orders?limit=${limit}`),
+    sync: () => post('/connectors/sync/digikey'),
+  },
+
   // QuickBooks
   quickbooks: {
     accounts: (params = {}) => get('/connectors/quickbooks/accounts?' + new URLSearchParams(params)),
@@ -465,6 +505,9 @@ export const api = {
     // Contrôle des champs Airtable généralisé par module (cf. AIRTABLE_FIELD_MODULES
     // côté serveur). La page ModuleFields utilise ces routes pour tous les modules.
     fieldModules: () => get('/connectors/airtable/field-modules'),
+    // Modules à mapping « cœur » + table ERP alimentée (onglets Airtable de la
+    // modale de configuration des champs).
+    coreMapModules: () => get('/connectors/airtable/core-map-modules'),
     moduleMappingData: (module) => get(`/connectors/airtable/module-fields/${module}/mapping-data`),
     moduleAirtableFields: (module) => get(`/connectors/airtable/module-fields/${module}/airtable-fields`),
     setModuleFieldMapping: (module, data) =>
@@ -484,12 +527,17 @@ export const api = {
   customFields: {
     list: (erpTable) => get(`/custom-fields/${erpTable}`),
     create: (erpTable, data) => post(`/custom-fields/${erpTable}`, data),
-    createFormula: (erpTable, data) => post(`/custom-fields/${erpTable}/formula`, data),
+    // Une seule route de création côté serveur, discriminée par `kind` — ces
+    // helpers restent nommés pour la lisibilité des appelants.
+    createFormula: (erpTable, data) => post(`/custom-fields/${erpTable}`, { ...data, kind: 'formula' }),
     previewFormula: (erpTable, data) => post(`/custom-fields/${erpTable}/formula/preview`, data),
-    createLookup: (erpTable, data) => post(`/custom-fields/${erpTable}/lookup`, data),
-    createRollup: (erpTable, data) => post(`/custom-fields/${erpTable}/rollup`, data),
-    createAuto: (erpTable, data) => post(`/custom-fields/${erpTable}/auto`, data),
-    createButton: (erpTable, data) => post(`/custom-fields/${erpTable}/button`, data),
+    createLookup: (erpTable, data) => post(`/custom-fields/${erpTable}`, { ...data, kind: 'lookup' }),
+    createRollup: (erpTable, data) => post(`/custom-fields/${erpTable}`, { ...data, kind: 'rollup' }),
+    // Les champs auto-remplis n'ont pas de kind « auto » en base : le kind EST le
+    // type (created_time, last_modified_by…).
+    createAuto: (erpTable, { auto_type, ...data }) => post(`/custom-fields/${erpTable}`, { ...data, kind: auto_type }),
+    createButton: (erpTable, data) => post(`/custom-fields/${erpTable}`, { ...data, kind: 'button' }),
+    createLink: (erpTable, data) => post(`/custom-fields/${erpTable}`, { ...data, kind: 'link' }),
     runButton: (fieldId, recordId) => post(`/custom-fields/button/${fieldId}/run`, { record_id: recordId }),
     update: (id, data) => put(`/custom-fields/${id}`, data),
     delete: (id) => del(`/custom-fields/${id}`),
@@ -498,6 +546,13 @@ export const api = {
     // Adopte une colonne physique déjà existante (mapping Airtable, ou
     // orpheline) plutôt que d'en créer une nouvelle — pas d'ALTER TABLE.
     adopt: (erpTable, data) => post(`/custom-fields/${erpTable}/adopt`, data),
+    // Duplique un champ (structure + valeurs par défaut). La copie n'hérite
+    // jamais du lien vers une source externe — voir la route serveur.
+    duplicate: (erpTable, data) => post(`/custom-fields/${erpTable}/duplicate`, data),
+    // Masquage GLOBAL d'un champ natif — l'équivalent d'une suppression pour un
+    // champ dont la colonne SQL ne peut pas disparaître. Réversible.
+    setNativeHidden: (erpTable, fieldId, hidden) =>
+      patch(`/custom-fields/${encodeURIComponent(erpTable)}/native/${encodeURIComponent(fieldId)}/hidden`, { hidden }),
   },
 
   // Views (config + pills)
@@ -556,6 +611,9 @@ export const api = {
     create: (data) => post('/projets/adresses', data),
     update: (id, data) => put(`/projets/adresses/${id}`, data),
     delete: (id) => del(`/projets/adresses/${id}`),
+    // Vérificateur d'adresses postales : état courant / relance d'une passe.
+    check: () => get('/projets/adresses/check'),
+    runCheck: () => post('/projets/adresses/check', {}),
   },
 
   // BOM
@@ -613,6 +671,14 @@ export const api = {
   retours: {
     list: (params = {}) => get('/projets/retours?' + new URLSearchParams(params)),
     get: (id) => get(`/projets/retours/${id}`),
+    context: (id, addressId) => get(`/retours/${id}/return-context${addressId ? `?address_id=${addressId}` : ''}`),
+    getRates: (id, data) => post(`/retours/${id}/return-rates`, data),
+    createLabel: (id, data) => post(`/retours/${id}/return-label`, data),
+    retryLabelPdf: (id) => post(`/retours/${id}/return-label/retry-pdf`),
+    diagnostic: (id, data) => post(`/retours/${id}/diagnostic`, data),
+    generateMemo: (id) => post(`/retours/${id}/memo`),
+    sendInstructions: (id, to) => post(`/retours/${id}/send-instructions`, { to }),
+    bulkFromSerials: (data) => post('/retours/bulk-from-serials', data),
   },
 
   // Abonnements
@@ -882,6 +948,15 @@ export const api = {
       dismiss: (id) => post(`/treasury/card-dues/${id}/dismiss`, {}),
       restore: (id) => del(`/treasury/card-dues/${id}/dismiss`),
     },
+    // Plafond des cartes : question inverse de `cardDues` (« a-t-elle encore de
+    // la place ? »). Solde QuickBooks + achats du relevé pas encore
+    // comptabilisés, confrontés au plafond cible et au prélèvement du mois.
+    cardCeilings: {
+      list: ({ refresh = false } = {}) => get(`/treasury/card-ceilings${refresh ? '?refresh=1' : ''}`),
+      create: (data) => post('/treasury/card-ceilings', data),
+      update: (id, data) => patch(`/treasury/card-ceilings/${id}`, data),
+      delete: (id) => del(`/treasury/card-ceilings/${id}`),
+    },
     recurring: {
       list: () => get('/treasury/recurring'),
       create: (data) => post('/treasury/recurring', data),
@@ -1051,6 +1126,36 @@ export const api = {
     update: (id, data) => patch(`/drive-inventory/items/${id}`, data),
     updateTab: (id, data) => patch(`/drive-inventory/tabs/${id}`, data),
     remove: (id) => del(`/drive-inventory/items/${id}`),
+  },
+
+  // Import MAPAQ — exploitations agricoles en serre. `preview` ne fait que lire
+  // et classer ; `createProspects` est le seul appel qui écrit, après cochage.
+  mapaq: {
+    preview: (opts) => post('/mapaq/preview', opts || {}),
+    createProspects: (entries) => post('/mapaq/prospects', { entries }),
+  },
+
+  // Registre des entreprises du Québec — miroir local, en LECTURE SEULE côté
+  // registre. Les seuls appels qui écrivent touchent l'ERP : `link` (le NEQ
+  // porté par la fiche entreprise) et `createProspects`.
+  // `getFresh` partout en lecture : la correspondance et la liste de prospects
+  // changent dès qu'on lie un NEQ ou qu'on crée une entreprise, et le cache
+  // prefetch (TTL 30 s) rendait l'écran aveugle à sa propre action.
+  req: {
+    status: () => getFresh('/req/status'),
+    search: (q, limit) => getFresh(`/req/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ''}`),
+    entreprise: (neq) => get(`/req/entreprises/${encodeURIComponent(neq)}`),
+    match: (companyId) => getFresh(`/req/match/${companyId}`),
+    link: (companyId, neq) => put(`/req/link/${companyId}`, { neq }),
+    prospects: (params = {}) => {
+      const qs = new URLSearchParams(
+        Object.entries(params).filter(([, v]) => v !== '' && v != null),
+      ).toString()
+      return getFresh(`/req/prospects${qs ? `?${qs}` : ''}`)
+    },
+    createProspects: (neqs) => post('/req/prospects', { neqs }),
+    import: (opts) => post('/req/import', opts || {}),
+    removeEntreprise: (neq) => del(`/req/entreprises/${encodeURIComponent(neq)}`),
   },
 
   // Douanes — relevé CARM (GCRA) de l'ASFC + appariement aux reçus
@@ -1338,6 +1443,11 @@ export const api = {
   },
 
   // Anomalies transactionnelles (doublons, montants hors norme, devise incohérente)
+  // Journal des nouveautés — état de la garde « toute modif est documentée »
+  changelog: {
+    status: () => get('/changelog/status'),
+  },
+
   anomalies: {
     list: (params = {}) => get('/anomalies?' + new URLSearchParams(params)),
     dismiss: (id, reason) => post(`/anomalies/${id}/dismiss`, { reason }),

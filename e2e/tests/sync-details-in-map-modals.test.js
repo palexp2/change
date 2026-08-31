@@ -16,6 +16,14 @@ if (!PASS) throw new Error('ERP_PASS env var required')
 //     Airtable (la table factures est alimentée par les deux) ;
 //   - l'ancien badge « Sync : … » de la barre d'outils n'existe plus.
 // Lecture seule : aucune modale n'est enregistrée, aucun record créé/modifié.
+// Ouvre la modale « Configuration des champs » (bouton de la barre d'outils de
+// la DataTable, présent sur toutes les pages) puis l'onglet Airtable demandé.
+async function openFieldConfig(page, moduleKey) {
+  await page.click('button:has-text("Configurer les champs")')
+  await page.waitForSelector(`[data-testid="fieldcfg-tab-${moduleKey}"]`, { timeout: 15000 })
+  await page.click(`[data-testid="fieldcfg-tab-${moduleKey}"]`)
+}
+
 describe('Détails de sync dans les modales de mapping de champs', () => {
   let browser, ctx, page
 
@@ -51,7 +59,7 @@ describe('Détails de sync dans les modales de mapping de champs', () => {
 
   test('/factures — la modale Sync Airtable affiche uniquement le sync Airtable', async () => {
     await page.goto(URL + '/factures', { waitUntil: 'domcontentloaded' })
-    await page.click('[data-testid="factures-airtable-map-open"]')
+    await openFieldConfig(page, 'factures')
     const details = page.locator('[data-testid="sync-details-factures"]')
     await details.waitFor({ timeout: 15000 })
     const text = await details.innerText()
@@ -64,7 +72,7 @@ describe('Détails de sync dans les modales de mapping de champs', () => {
 
   test('/paies — la modale de mapping Airtable affiche « manuel » (sync bouton)', async () => {
     await page.goto(URL + '/paies', { waitUntil: 'domcontentloaded' })
-    await page.click('[data-testid="paies-airtable-map-open"]')
+    await openFieldConfig(page, 'paies')
     const details = page.locator('[data-testid="sync-details-paies"]')
     await details.waitFor({ timeout: 15000 })
     const text = await details.innerText()

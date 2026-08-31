@@ -64,7 +64,7 @@ describe('Dashboard — drill-down "Taux de remplacement"', () => {
     await table.waitFor({ timeout: 3000 })
 
     // Lis les dates d'envoi de toutes les lignes pour choisir un mois cible.
-    const dateCells = await table.locator('tbody tr td:last-child').allTextContents()
+    const dateCells = await table.locator('tbody tr td[data-col="shipped"]').allTextContents()
     // Format affiché : YYYY-MM-DD (toLocaleDateString fr-CA)
     const monthCounts = new Map()
     for (const t of dateCells) {
@@ -104,7 +104,7 @@ describe('Dashboard — drill-down "Taux de remplacement"', () => {
     // Vérifie que le nombre de lignes correspond
     const filteredRows = await table.locator('tbody tr').count()
     // Compter uniquement les rangées de données (exclure ligne "Aucun remplacement")
-    const filteredDates = await table.locator('tbody tr td:last-child').allTextContents()
+    const filteredDates = await table.locator('tbody tr td[data-col="shipped"]').allTextContents()
     const realRows = filteredDates.filter(t => /^\d{4}-\d{2}-\d{2}$/.test(t.trim())).length
     assert.equal(realRows, targetCount, `attendu ${targetCount} lignes pour ${targetMonth}, reçu ${realRows} (count brut: ${filteredRows})`)
 
@@ -121,7 +121,7 @@ describe('Dashboard — drill-down "Taux de remplacement"', () => {
       () => !document.querySelector('[data-testid="replacement-filter-clear"]'),
       { timeout: 3000 }
     )
-    const restoredDates = await table.locator('tbody tr td:last-child').allTextContents()
+    const restoredDates = await table.locator('tbody tr td[data-col="shipped"]').allTextContents()
     const restoredRealRows = restoredDates.filter(t => /^\d{4}-\d{2}-\d{2}$/.test(t.trim())).length
     assert.equal(restoredRealRows, totalRows, `après effacement, attendu ${totalRows} lignes, reçu ${restoredRealRows}`)
   })

@@ -37,11 +37,15 @@ describe('Commande — champ Image affiché comme image', () => {
     await page.goto(`${URL}/orders/${ORDER_ID}`, { waitUntil: 'networkidle' })
     await page.waitForSelector('text=/Articles/', { timeout: 10000 })
 
-    // Une balise <img> pointant vers l'attachment Airtable doit être rendue.
-    const img = page.locator('img[src*="airtableusercontent.com"]').first()
+    // Une balise <img> doit être rendue. Sa source est la copie locale de la
+    // pièce jointe posée par la sync Airtable (les URL d'attachment expirent en
+    // quelques heures) — d'où le test sur le testid plutôt que sur le domaine.
+    const img = page.locator('[data-testid="cf-image-thumb"]').first()
     await img.waitFor({ state: 'visible', timeout: 10000 })
     const src = await img.getAttribute('src')
-    assert.ok(src && src.startsWith('http'), `src d'image attendu, reçu : ${src}`)
+    assert.ok(src && (src.startsWith('/') || src.startsWith('http')), `src d'image attendu, reçu : ${src}`)
+    assert.ok(await img.evaluate(el => el.complete && el.naturalWidth > 0),
+      `l'image ${src} ne s'est pas chargée`)
 
     // La cellule ne doit PAS afficher l'URL brute en texte (ancien comportement).
     const rawUrlText = page.locator('td:has-text("airtableusercontent.com")')

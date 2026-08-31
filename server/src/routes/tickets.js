@@ -8,6 +8,7 @@ import { checkForeignKeys } from '../utils/fkExists.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
 import { notifyAssignment } from '../services/notifications.js';
 import { surveyEligibility, getSurveyByTicket, sendTicketSurvey, surveyUrl } from '../services/ticketSurveys.js';
+import { writeBackRecord } from '../services/airtableWriteback.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -99,6 +100,30 @@ router.get('/ids', (req, res) => {
   res.json(rows.map(r => r.id))
 })
 
+// GET /api/tickets/keywords — options du champ « Mots clés » (multi-sélection).
+// Les mots-clés viennent d'Airtable, dont la liste de choix n'est pas répliquée
+// dans la config du champ : on dérive donc les options de l'usage réel, les plus
+// utilisées en tête (comme le menu d'un champ multi-select Airtable).
+router.get('/keywords', (req, res) => {
+  const rows = db.prepare(`SELECT mots_cles FROM tickets WHERE mots_cles IS NOT NULL AND mots_cles != ''`).all()
+  const counts = new Map()
+  for (const r of rows) {
+    let items
+    // Valeurs historiques : tableau JSON (sync Airtable) ou texte libre séparé
+    // par des virgules (ancien champ texte de la fiche billet).
+    try { items = JSON.parse(r.mots_cles) } catch { items = String(r.mots_cles).split(',') }
+    if (!Array.isArray(items)) items = [items]
+    for (const raw of items) {
+      const k = String(raw ?? '').trim()
+      if (k) counts.set(k, (counts.get(k) || 0) + 1)
+    }
+  }
+  const keywords = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'fr'))
+    .map(([label]) => label)
+  res.json(keywords)
+})
+
 // GET /api/tickets/:id/survey — état du sondage + éligibilité à l'envoi.
 // L'éligibilité vient du serveur (jamais recalculée côté front) pour que le
 // bouton désactivé et le refus d'envoi appliquent exactement la même règle.
@@ -188,6 +213,9 @@ router.put('/:id', (req, res) => {
   if (setClause) {
     db.prepare(`UPDATE tickets SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(...values, req.params.id);
+    // Write-back ERP → Airtable (fire-and-forget) : ne pousse que les colonnes
+    // modifiées dont le sens n'est pas 'pull' — échecs tracés dans sync_log.
+    writeBackRecord('billets', req.params.id, Object.keys(req.body));
   }
 
   const updated = buildTicketRow(req.params.id);
@@ -214,6 +242,7 @@ router.patch('/:id/status', (req, res) => {
   if (!status) return res.status(400).json({ error: 'Status is required' });
   db.prepare(`UPDATE tickets SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
     .run(status, req.params.id);
+  writeBackRecord('billets', req.params.id, ['status']);
   emitEntity('ticket', 'updated', req.params.id, buildTicketRow(req.params.id), req.user?.id);
   res.json({ message: 'Status updated' });
 });

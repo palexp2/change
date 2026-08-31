@@ -167,15 +167,7 @@ describe('Travaux — file distincte de la section Agent', () => {
     assert.equal(created.status, 'paused', 'l\'item promu doit être de côté (jamais lancé d\'office)')
   })
 
-  test('le sous-menu de la sidebar Agent liste les travaux de l\'agent', async () => {
-    await page.goto(URL + '/dashboard', { waitUntil: 'domcontentloaded' })
-    const entry = page.locator('a[href="/erp/agent"]').first()
-    await entry.waitFor({ timeout: 10000 })
-    await entry.hover()
-    const panel = page.locator('[data-testid="nav-subsection-panel"][data-route="/agent"]')
-    await panel.waitFor({ timeout: 5000 })
-    for (const label of ['Agent autonome', "File de prompts de l'agent", 'Suggestions de Claude', 'Idées']) {
-      assert.ok(await panel.locator(`text=${label}`).count() > 0, `sous-entrée manquante : ${label}`)
-    }
-  })
+  // L'entrée « Agent » de la sidebar n'a plus de sous-menu (voir
+  // sidebar-agent-direct-link.test.js) : le chemin vers les travaux de l'agent
+  // passe par la page Agent elle-même, couvert plus haut.
 })

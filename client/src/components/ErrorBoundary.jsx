@@ -19,11 +19,22 @@ import { AlertTriangle, RefreshCw, Home } from 'lucide-react'
 export default class ErrorBoundary extends Component {
   constructor(props) {
     super(props)
-    this.state = { error: null }
+    this.state = { error: null, resetKey: props.resetKey }
   }
 
   static getDerivedStateFromError(error) {
     return { error }
+  }
+
+  // `resetKey` (le chemin courant) efface l'état d'erreur quand l'utilisateur
+  // navigue ailleurs — sans remonter les enfants. Avant, on obtenait le même
+  // effet avec un `key` sur le boundary, mais ça détruisait tout l'arbre à
+  // chaque changement d'URL (scroll remis à zéro, données refetchées).
+  static getDerivedStateFromProps(props, state) {
+    if (props.resetKey !== state.resetKey) {
+      return { error: null, resetKey: props.resetKey }
+    }
+    return null
   }
 
   componentDidCatch(error, info) {

@@ -1,0 +1,528 @@
+<title>Identité Boréal</title>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+  :root {
+    --ground:   #F7F0E4;
+    --surface:  #FFFFFF;
+    --sunk:     #F1E8D8;
+    --ink:      #2B2621;
+    --ink-soft: #6E655A;
+    --ink-faint:#9A8F80;
+    --hair:     #E6DAC5;
+    --brand:    #21B14B;
+    --brand-deep:#167030;
+    --second:   #2F6E9E;
+
+    --display: 'Bricolage Grotesque', 'Segoe UI', sans-serif;
+    --body:    'Newsreader', Georgia, serif;
+    --mono:    'IBM Plex Mono', ui-monospace, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:   #16130E;
+      --surface:  #1F1B15;
+      --sunk:     #14110C;
+      --ink:      #F3EDE1;
+      --ink-soft: #B3A895;
+      --ink-faint:#7C7364;
+      --hair:     #352E23;
+      --brand:    #4FC978;
+      --brand-deep:#8FE0AC;
+      --second:   #69AEDD;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:   #16130E;
+    --surface:  #1F1B15;
+    --sunk:     #14110C;
+    --ink:      #F3EDE1;
+    --ink-soft: #B3A895;
+    --ink-faint:#7C7364;
+    --hair:     #352E23;
+    --brand:    #4FC978;
+    --brand-deep:#8FE0AC;
+    --second:   #69AEDD;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--body);
+    font-size: 17px;
+    line-height: 1.6;
+    margin: 0;
+    padding: 0 24px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .page { max-width: 960px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+
+  /* ── Typographie ────────────────────────────────────────────── */
+
+  h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(38px, 6vw, 62px); letter-spacing: -0.03em; line-height: 1.02; }
+  h2 { font-size: 25px; letter-spacing: -0.02em; line-height: 1.15; }
+  h3 { font-size: 17px; letter-spacing: -0.01em; }
+  p  { margin: 0; }
+  p + p { margin-top: 0.85em; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; font-weight: 500;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-faint);
+  }
+  .lede { font-size: 19px; color: var(--ink-soft); max-width: 60ch; }
+  .note { font-size: 15px; color: var(--ink-soft); max-width: 64ch; }
+  .note strong { font-weight: 500; color: var(--ink); }
+  .mono { font-family: var(--mono); font-size: 12.5px; letter-spacing: 0.01em; }
+
+  /* ── Plates ─────────────────────────────────────────────────── */
+
+  .plate {
+    background: var(--surface); border: 1px solid var(--hair); border-radius: 4px;
+    padding: 34px 36px 38px; display: flex; flex-direction: column; gap: 26px;
+  }
+  .plate > header { display: flex; flex-direction: column; gap: 8px; }
+
+  .masthead { padding: 74px 0 20px; display: flex; flex-direction: column; gap: 18px; }
+  .masthead h1 span { color: var(--brand); }
+
+  /* ── Duo clair / sombre ─────────────────────────────────────── */
+
+  .duo {
+    display: grid; grid-template-columns: 1fr 1fr;
+    border: 1px solid var(--hair); border-radius: 4px; overflow: hidden;
+  }
+  .duo > div {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 22px; padding: 56px 24px;
+  }
+  .duo .on-cream { background: #F7F0E4; color: #2B2621; }
+  .duo .on-night { background: #16130E; color: #F3EDE1; }
+  .duo .on-cream .glyph { color: #21B14B; }
+  .duo .on-night .glyph { color: #4FC978; }
+  .duo .tag { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; opacity: 0.5; }
+
+  /* ── Lockup ─────────────────────────────────────────────────── */
+
+  .lockup { display: flex; align-items: center; gap: 14px; }
+  .lockup .glyph { flex: none; }
+  .wordmark { font-family: var(--display); font-weight: 800; letter-spacing: -0.02em; line-height: 1; font-size: 38px; }
+  .wordmark small {
+    display: block; font-weight: 400; font-size: 10.5px; letter-spacing: 0.22em;
+    text-transform: uppercase; margin-top: 7px; opacity: 0.55; font-family: var(--mono);
+  }
+
+  /* ── Choix de marque ────────────────────────────────────────── */
+
+  .options { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .option {
+    border: 1px solid var(--hair); border-radius: 4px; padding: 26px 22px 22px;
+    display: flex; flex-direction: column; gap: 16px; background: var(--sunk);
+  }
+  .option.pick { border-color: var(--brand); background: var(--surface); box-shadow: inset 0 0 0 1px var(--brand); }
+  .option .frame { display: flex; align-items: center; justify-content: center; padding: 12px 0 4px; color: var(--brand); }
+  .option .letter {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em; color: var(--ink-faint);
+    display: flex; justify-content: space-between; align-items: baseline;
+  }
+  .option .letter em {
+    font-style: normal; font-family: var(--mono); font-size: 9.5px;
+    letter-spacing: 0.14em; color: var(--brand-deep); text-transform: uppercase;
+  }
+  .option h3 { font-size: 16px; }
+  .option p { font-size: 14.5px; color: var(--ink-soft); line-height: 1.5; }
+
+  /* ── Tailles réelles ────────────────────────────────────────── */
+
+  .sizes { display: flex; align-items: flex-end; gap: 34px; flex-wrap: wrap; }
+  .size { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+  .size .glyph { color: var(--brand); }
+  .size .cap { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); letter-spacing: 0.08em; }
+  .chip { display: flex; align-items: center; justify-content: center; background: var(--brand); border-radius: 5px; }
+  .chip .glyph { color: #FFFFFF; }
+
+  /* ── Palette ────────────────────────────────────────────────── */
+
+  .swatches { display: grid; grid-template-columns: repeat(auto-fit, minmax(132px, 1fr)); gap: 14px; }
+  .swatch { display: flex; flex-direction: column; gap: 9px; }
+  .swatch .fill { height: 62px; border-radius: 3px; border: 1px solid var(--hair); }
+  .swatch .name { font-family: var(--display); font-weight: 600; font-size: 13.5px; }
+  .swatch .hex { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
+  .swatch .use { font-size: 13px; color: var(--ink-soft); line-height: 1.45; }
+
+  /* ── Spécimen typo ──────────────────────────────────────────── */
+
+  .specimen { display: flex; flex-direction: column; gap: 22px; }
+  .row-type { display: grid; grid-template-columns: 118px 1fr; gap: 22px; align-items: baseline; }
+  .row-type .k { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ink-faint); }
+  .sp-display { font-family: var(--display); font-weight: 600; font-size: 34px; letter-spacing: -0.025em; line-height: 1.1; }
+  .sp-body { font-family: var(--body); font-size: 17px; max-width: 62ch; }
+  .sp-mono { font-family: var(--mono); font-size: 14px; font-variant-numeric: tabular-nums; }
+
+  /* ── Mises en situation ─────────────────────────────────────── */
+
+  .situ { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+
+  .tabbar { background: var(--sunk); border: 1px solid var(--hair); border-radius: 4px; padding: 12px; display: flex; flex-direction: column; }
+  .tab {
+    background: var(--surface); border: 1px solid var(--hair); border-bottom: none;
+    border-radius: 6px 6px 0 0; padding: 9px 13px; display: flex; align-items: center; gap: 9px;
+    font-family: var(--display); font-size: 13px; width: fit-content; max-width: 100%;
+  }
+  .tab .glyph { color: var(--brand); flex: none; }
+  .urlbar {
+    background: var(--surface); border: 1px solid var(--hair); border-radius: 0 4px 4px 4px;
+    padding: 10px 13px; font-family: var(--mono); font-size: 11.5px; color: var(--ink-soft);
+  }
+
+  .sidebar { background: var(--surface); border: 1px solid var(--hair); border-radius: 4px; padding: 16px 14px; display: flex; flex-direction: column; gap: 3px; }
+  .sidebar .brandrow {
+    display: flex; align-items: center; gap: 10px;
+    padding: 4px 8px 16px; border-bottom: 1px solid var(--hair); margin-bottom: 10px;
+  }
+  .sidebar .brandrow .glyph { color: var(--brand); flex: none; }
+  .sidebar .brandrow strong { font-family: var(--display); font-weight: 800; font-size: 16px; letter-spacing: -0.02em; }
+  .navitem { display: flex; align-items: center; gap: 10px; padding: 7px 9px; border-radius: 4px; font-family: var(--display); font-size: 13.5px; color: var(--ink-soft); }
+  .navitem.active { background: var(--brand); color: #fff; font-weight: 600; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .navitem.active { background: rgb(79 201 120 / 0.18); color: var(--brand); }
+  }
+  :root[data-theme="dark"] .navitem.active { background: rgb(79 201 120 / 0.18); color: var(--brand); }
+  .navitem .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.45; flex: none; }
+  .navitem.active .dot { opacity: 1; }
+
+  /* ── Divers ─────────────────────────────────────────────────── */
+
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+  .rule { height: 1px; background: var(--hair); border: none; margin: 0; }
+  ul.tight { margin: 0; padding-left: 1.1em; font-size: 15px; color: var(--ink-soft); }
+  ul.tight li + li { margin-top: 6px; }
+  ul.tight strong { color: var(--ink); font-weight: 500; }
+  footer { padding-top: 12px; }
+
+  @media (max-width: 760px) {
+    .options, .situ, .split, .duo { grid-template-columns: 1fr; }
+    .row-type { grid-template-columns: 1fr; gap: 8px; }
+    .plate { padding: 26px 22px 30px; }
+  }
+</style>
+
+<div class="page">
+
+  <div class="masthead">
+    <span class="eyebrow">Identité de marque · ERP Orisha · 27 août 2026</span>
+    <h1>Boréal<span>.</span></h1>
+    <p class="lede">Du nord. La forêt boréale, la nuit boréale, l'aurore boréale — et l'aiguille qui s'y oriente. Un mot d'ici, qui dit le climat et la direction sans jamais prétendre être un logiciel.</p>
+  </div>
+
+  <div class="duo">
+    <div class="on-cream">
+      <div class="lockup">
+        <svg class="glyph" width="64" height="64" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="currentColor"/>
+          <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/>
+        </svg>
+        <div class="wordmark">Boréal<small>Orisha</small></div>
+      </div>
+      <span class="tag">Fond crème · mode jour</span>
+    </div>
+    <div class="on-night">
+      <div class="lockup">
+        <svg class="glyph" width="64" height="64" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="currentColor"/>
+          <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/>
+        </svg>
+        <div class="wordmark">Boréal<small>Orisha</small></div>
+      </div>
+      <span class="tag">Fond nuit · mode sombre</span>
+    </div>
+  </div>
+
+  <!-- ── Trois marques ──────────────────────────────────────────── -->
+  <section class="plate">
+    <header>
+      <span class="eyebrow">À trancher</span>
+      <h2>Trois marques possibles</h2>
+      <p class="note">Le nom a changé, donc la marche aussi : l'arche de serre et le soleil au zénith ne racontaient plus rien. Boréal appelle le nord — l'instrument qui l'indique, la lumière qui s'y produit, ou la forêt qui porte le nom.</p>
+    </header>
+
+    <div class="options">
+
+      <article class="option pick">
+        <div class="letter"><span>A</span><em>Recommandé</em></div>
+        <div class="frame">
+          <svg width="86" height="86" viewBox="0 0 48 48" fill="none" aria-label="Marque A : l'aiguille">
+            <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="currentColor"/>
+            <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <h3>L'aiguille</h3>
+        <p>La pointe de la rose des vents : moitié pleine vers le nord, moitié évidée vers le sud. Un instrument, pas un décor — et rien d'autre dans le logiciel ne ressemble à ça.</p>
+      </article>
+
+      <article class="option">
+        <div class="letter"><span>B</span></div>
+        <div class="frame">
+          <svg width="86" height="86" viewBox="0 0 48 48" fill="none" aria-label="Marque B : l'aurore">
+            <path d="M5 40 A 19 19 0 0 1 43 40" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/>
+            <path d="M11 40 A 13 13 0 0 1 37 40" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity="0.62"/>
+            <path d="M17 40 A 7 7 0 0 1 31 40" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" opacity="0.32"/>
+          </svg>
+        </div>
+        <h3>L'aurore</h3>
+        <p>Trois bandes concentriques qui s'estompent, comme une aurore au-dessus de l'horizon. Belle, mais elle lit aussi comme une icône de wifi — ce qui n'est pas faux pour de l'IoT, seulement banal.</p>
+      </article>
+
+      <article class="option">
+        <div class="letter"><span>C</span></div>
+        <div class="frame">
+          <svg width="86" height="86" viewBox="0 0 48 48" fill="none" aria-label="Marque C : l'étoile polaire">
+            <path d="M24 2 L27 21 L46 24 L27 27 L24 46 L21 27 L2 24 L21 21 Z" fill="currentColor"/>
+          </svg>
+        </div>
+        <h3>L'étoile polaire</h3>
+        <p>Le point fixe du ciel du nord. Impeccable en favicon — mais en 2026 une étoile à quatre branches signifie « fonction d'IA » dans à peu près toutes les interfaces. C'est le seul vrai reproche.</p>
+      </article>
+
+    </div>
+
+    <hr class="rule">
+
+    <p class="note"><strong>Pourquoi A.</strong> C'est la seule des trois qui ne ressemble à rien d'autre dans l'écran. B se confond avec un indicateur de signal, C avec les boutons d'IA qui poussent partout depuis deux ans — et une marque qu'on confond avec un contrôle d'interface est une marque perdue. L'aiguille, elle, a un air d'instrument de mesure, ce qui est exactement le registre d'Orisha : des sondes, des consignes, des relevés. Le contraste plein/évidé lui donne aussi ce que les deux autres n'ont pas : une orientation. Elle pointe.</p>
+  </section>
+
+  <!-- ── Tailles réelles ───────────────────────────────────────── -->
+  <section class="plate">
+    <header>
+      <span class="eyebrow">Déclinaisons de la marque A</span>
+      <h2>Tailles réelles</h2>
+      <p class="note">Rendu aux dimensions exactes d'usage, sans agrandissement. Sous 20 px la moitié évidée se referme en trait plein — c'est voulu, la silhouette reste la même.</p>
+    </header>
+
+    <div class="sizes">
+      <div class="size">
+        <svg class="glyph" width="16" height="16" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="currentColor"/>
+          <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="currentColor" stroke-width="3.4" stroke-linejoin="round"/>
+        </svg>
+        <span class="cap">16 px</span>
+      </div>
+      <div class="size">
+        <svg class="glyph" width="24" height="24" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="currentColor"/>
+          <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/>
+        </svg>
+        <span class="cap">24 px</span>
+      </div>
+      <div class="size">
+        <svg class="glyph" width="32" height="32" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="currentColor"/>
+          <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/>
+        </svg>
+        <span class="cap">32 px</span>
+      </div>
+      <div class="size">
+        <div class="chip" style="width:56px;height:56px;">
+          <svg class="glyph" width="34" height="34" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+            <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="currentColor"/>
+            <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <span class="cap">Pastille 56 px</span>
+      </div>
+      <div class="size">
+        <div class="lockup">
+          <svg class="glyph" width="28" height="28" viewBox="0 0 48 48" fill="none" style="color:var(--brand)" aria-hidden="true">
+            <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="currentColor"/>
+            <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round"/>
+          </svg>
+          <span class="wordmark" style="font-size:22px;">Boréal</span>
+        </div>
+        <span class="cap">Lockup compact</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── En place ──────────────────────────────────────────────── -->
+  <section class="plate">
+    <header>
+      <span class="eyebrow">En place</span>
+      <h2>Dans l'ERP</h2>
+      <p class="note">Les deux endroits où la marque va vivre tous les jours : l'onglet du navigateur, et l'en-tête de la barre latérale au-dessus des sections.</p>
+    </header>
+
+    <div class="situ">
+      <div class="tabbar">
+        <div class="tab">
+          <svg class="glyph" width="16" height="16" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+            <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="currentColor"/>
+            <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="currentColor" stroke-width="3.4" stroke-linejoin="round"/>
+          </svg>
+          <span>Boréal — Commandes</span>
+        </div>
+        <div class="urlbar">customer.orisha.io/erp/orders</div>
+      </div>
+
+      <div class="sidebar">
+        <div class="brandrow">
+          <svg class="glyph" width="24" height="24" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+            <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="currentColor"/>
+            <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="currentColor" stroke-width="2.6" stroke-linejoin="round"/>
+          </svg>
+          <strong>Boréal</strong>
+        </div>
+        <div class="navitem active"><span class="dot"></span>Commandes</div>
+        <div class="navitem"><span class="dot"></span>Soumissions</div>
+        <div class="navitem"><span class="dot"></span>Envois</div>
+        <div class="navitem"><span class="dot"></span>Comptabilité</div>
+        <div class="navitem"><span class="dot"></span>Assemblages</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Couleur ───────────────────────────────────────────────── -->
+  <section class="plate">
+    <header>
+      <span class="eyebrow">Couleur</span>
+      <h2>Rien de neuf, et c'est voulu</h2>
+      <p class="note">L'ERP a déjà sa palette : vert de marque, neutres crème à 40° de teinte, bordures plutôt qu'ombres. Boréal s'y installe sans rien déplacer — et le vert tombe juste, la forêt boréale est verte. Aucune couleur froide à ajouter pour « faire nordique ».</p>
+    </header>
+
+    <div class="swatches">
+      <div class="swatch">
+        <div class="fill" style="background:#21B14B"></div>
+        <span class="name">Vert Orisha</span>
+        <span class="hex">#21B14B</span>
+        <span class="use">La marque. Déjà <code class="mono">brand-600</code> dans Tailwind.</span>
+      </div>
+      <div class="swatch">
+        <div class="fill" style="background:#4FC978"></div>
+        <span class="name">Vert nuit</span>
+        <span class="hex">#4FC978</span>
+        <span class="use">Le même vert, éclairci pour le mode sombre.</span>
+      </div>
+      <div class="swatch">
+        <div class="fill" style="background:#F7F0E4"></div>
+        <span class="name">Crème</span>
+        <span class="hex">#F7F0E4</span>
+        <span class="use">Fond de page. Jamais du blanc pur.</span>
+      </div>
+      <div class="swatch">
+        <div class="fill" style="background:#2B2621"></div>
+        <span class="name">Encre</span>
+        <span class="hex">#2B2621</span>
+        <span class="use">Texte principal, brun-noir tiède.</span>
+      </div>
+      <div class="swatch">
+        <div class="fill" style="background:#E6DAC5"></div>
+        <span class="name">Filet</span>
+        <span class="hex">#E6DAC5</span>
+        <span class="use">Bordures. C'est elles qui séparent les surfaces.</span>
+      </div>
+      <div class="swatch">
+        <div class="fill" style="background:#2F6E9E"></div>
+        <span class="name">Bleu ardoise <em style="font-style:normal;color:var(--ink-faint);font-family:var(--mono);font-size:10px;">option</em></span>
+        <span class="hex">#2F6E9E</span>
+        <span class="use">Pour la moitié sud de l'aiguille. Déjà la teinte de section Clients — donc pas une couleur de plus.</span>
+      </div>
+    </div>
+
+    <hr class="rule">
+
+    <div class="split">
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <span class="eyebrow">Monochrome — retenu</span>
+        <div class="lockup">
+          <svg class="glyph" width="42" height="42" viewBox="0 0 48 48" fill="none" style="color:var(--brand)" aria-hidden="true">
+            <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="currentColor"/>
+            <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"/>
+          </svg>
+          <span class="wordmark" style="font-size:30px;">Boréal</span>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:14px;">
+        <span class="eyebrow">Bichromie — à considérer</span>
+        <div class="lockup">
+          <svg class="glyph" width="42" height="42" viewBox="0 0 48 48" fill="none" style="color:var(--brand)" aria-hidden="true">
+            <path d="M24 3 L32 26 L24 21.5 L16 26 Z" fill="currentColor"/>
+            <path d="M24 45 L32 26 L24 30.5 L16 26 Z" stroke="var(--second)" stroke-width="2.2" stroke-linejoin="round"/>
+          </svg>
+          <span class="wordmark" style="font-size:30px;">Boréal</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Typographie ───────────────────────────────────────────── -->
+  <section class="plate">
+    <header>
+      <span class="eyebrow">Typographie</span>
+      <h2>Trois rôles</h2>
+      <p class="note">L'ERP tourne aujourd'hui sur la pile système, ce qui est le bon choix pour des tableaux de mille lignes. La proposition ne touche donc qu'aux surfaces de marque : écran de connexion, en-têtes, documents sortants.</p>
+    </header>
+
+    <div class="specimen">
+      <div class="row-type">
+        <span class="k">Titrage</span>
+        <div>
+          <div class="sp-display">Soumission SO‑2041 · Serres du Haut‑Richelieu</div>
+          <span class="mono" style="color:var(--ink-faint);">Bricolage Grotesque 600 · interlettrage −0,025 em</span>
+        </div>
+      </div>
+      <div class="row-type">
+        <span class="k">Texte courant</span>
+        <div>
+          <p class="sp-body">Le contrôleur climatique maintient l'écart de température sous 0,4 °C sur l'ensemble de la travée, ventilation et chauffage compris. La régulation s'ajuste d'elle-même aux relevés des sondes, sans intervention.</p>
+          <span class="mono" style="color:var(--ink-faint);">Newsreader 400 · 17 px / 1,6</span>
+        </div>
+      </div>
+      <div class="row-type">
+        <span class="k">Données</span>
+        <div>
+          <div class="sp-mono">14 302,55 $ &nbsp;·&nbsp; 2026‑08‑27T18:47:10Z &nbsp;·&nbsp; #21B14B</div>
+          <span class="mono" style="color:var(--ink-faint);">IBM Plex Mono 400 · chiffres tabulaires</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Vérification du nom ───────────────────────────────────── -->
+  <section class="plate">
+    <header>
+      <span class="eyebrow">Vérification</span>
+      <h2>Ce que « Boréal » croise déjà</h2>
+    </header>
+    <ul class="tight">
+      <li><strong>Boreal Software Company</strong> — dev logiciel canadien, fondé en 2015. C'est la raison de laisser tomber « Boréal Software » et de garder le mot seul.</li>
+      <li><strong>Borealis</strong> — SaaS de relations avec les parties prenantes, depuis 2004. Autre mot, autre métier.</li>
+      <li><strong>Boreal Technologies</strong> — services TI à Buenos Aires. Aucun produit ERP.</li>
+      <li><strong>Boréale</strong> — la bière des Brasseurs du Nord. Féminin avec un E : proche à l'oreille, distinct à l'écrit. Sans conséquence pour un outil interne.</li>
+      <li>Aucun ERP nommé Boréal trouvé — contrairement à Zénith et à Rhizome.</li>
+    </ul>
+  </section>
+
+  <!-- ── Suite ─────────────────────────────────────────────────── -->
+  <section class="plate">
+    <header>
+      <span class="eyebrow">Si tu valides A</span>
+      <h2>Ce qu'il reste à poser</h2>
+    </header>
+    <ul class="tight">
+      <li><strong>Composant <code class="mono">Logo.jsx</code></strong> — un seul SVG en <code class="mono">currentColor</code>, prop <code class="mono">size</code>, trait épaissi sous 20 px. Réutilisé partout plutôt que copié.</li>
+      <li><strong>Favicon et titre d'onglet</strong> — SVG dans <code class="mono">client/public/</code>, le <code class="mono">&lt;title&gt;</code> d'<code class="mono">index.html</code> passe à « Boréal ».</li>
+      <li><strong>En-tête de la barre latérale</strong> — lockup compact dans <code class="mono">Layout.jsx</code>.</li>
+      <li><strong>Écran de connexion</strong> — la seule surface qui mérite le lockup en grand.</li>
+      <li><strong>Documents sortants</strong> — soumissions et bons de livraison portent le nom d'Orisha ; à décider si Boréal y apparaît ou reste interne.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p class="mono" style="color:var(--ink-faint);">Planche d'identité · marque à trancher : A, B ou C</p>
+  </footer>
+
+</div>

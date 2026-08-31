@@ -814,6 +814,57 @@ export function initSchema() {
     'ALTER TABLE returns ADD COLUMN tracking_number TEXT',
     'ALTER TABLE returns ADD COLUMN processing_status TEXT',
     'ALTER TABLE returns ADD COLUMN billed_at TEXT',
+    // return label automation (étiquette de retour générée depuis l'ERP) —
+    // return_label_tracking_number est distinct de tracking_number (écrasé à
+    // chaque sync Airtable, cf. airtable.js) pour ne pas perdre le suivi acheté.
+    'ALTER TABLE returns ADD COLUMN return_label_pdf_path TEXT',
+    'ALTER TABLE returns ADD COLUMN return_label_tracking_number TEXT',
+    'ALTER TABLE returns ADD COLUMN return_novoxpress_shipment_id TEXT',
+    'ALTER TABLE returns ADD COLUMN return_carrier TEXT',
+    'ALTER TABLE returns ADD COLUMN return_service_name TEXT',
+    'ALTER TABLE returns ADD COLUMN return_carrier_reason TEXT',
+    'ALTER TABLE returns ADD COLUMN return_label_cost REAL',
+    'ALTER TABLE returns ADD COLUMN return_label_created_at TEXT',
+    'ALTER TABLE returns ADD COLUMN return_address_id TEXT REFERENCES adresses(id)',
+    'ALTER TABLE returns ADD COLUMN memo_pdf_path TEXT',
+    'ALTER TABLE returns ADD COLUMN memo_generated_at TEXT',
+    'ALTER TABLE returns ADD COLUMN instructions_sent_at TEXT',
+    'ALTER TABLE returns ADD COLUMN instructions_interaction_id TEXT',
+    // Étiquette de retour UPS (Shipping API, ReturnService 9). Le transporteur,
+    // le suivi, le coût et le PDF réutilisent les colonnes return_label_*
+    // ci-dessus (partagées avec Novoxpress) ; seuls l'identifiant d'expédition
+    // UPS, la devise du coût et la trace d'envoi au client sont propres à UPS.
+    'ALTER TABLE returns ADD COLUMN return_ups_shipment_id TEXT',
+    'ALTER TABLE returns ADD COLUMN return_label_currency TEXT',
+    'ALTER TABLE returns ADD COLUMN return_label_sent_at TEXT',
+    'ALTER TABLE returns ADD COLUMN return_label_email_interaction_id TEXT',
+    // Suivi UPS d'un envoi sortant (Tracking API), rafraîchi à la demande
+    // depuis la fiche envoi.
+    'ALTER TABLE shipments ADD COLUMN ups_tracking_status TEXT',
+    'ALTER TABLE shipments ADD COLUMN ups_tracking_last_activity TEXT',
+    'ALTER TABLE shipments ADD COLUMN ups_tracking_checked_at TEXT',
+    // Étiquette + suivi Purolator (Shipping/Tracking E-Ship). tracking_number,
+    // carrier et label_pdf_path partagés (colonnes génériques déjà utilisées
+    // par Novoxpress/UPS) ; seul le PIN d'expédition Purolator et le suivi
+    // horaire (cf. services/purolator.js → refreshPurolatorTracking) sont propres.
+    'ALTER TABLE shipments ADD COLUMN purolator_shipment_id TEXT',
+    'ALTER TABLE shipments ADD COLUMN purolator_tracking_status TEXT',
+    'ALTER TABLE shipments ADD COLUMN purolator_tracking_last_activity TEXT',
+    'ALTER TABLE shipments ADD COLUMN purolator_tracking_checked_at TEXT',
+    // Import des automatisations Airtable « Retours » (Phase 2) — ligne de
+    // remplacement créée automatiquement pour un échange de garantie immédiat.
+    // `order_items.item_type` a déjà les valeurs 'Facturable'|'Remplacement'|
+    // 'Non facturable' (CHECK, schema.js:139) et `orders.priority` existe déjà
+    // nativement (schema.js:124) — les deux couvrent respectivement « Type » et
+    // « Priorité » d'Airtable, aucune nouvelle colonne nécessaire pour ces deux.
+    'ALTER TABLE order_items ADD COLUMN document_type TEXT',
+    'ALTER TABLE order_items ADD COLUMN return_id TEXT REFERENCES returns(id)',
+    // Marqueurs d'idempotence des watchers de retour (Phase 2) — change_log ne
+    // distingue pas INSERT/UPDATE (les deux sont loggés 'upsert'), ces claims
+    // évitent qu'une mise à jour ultérieure (ex. réception) ne redéclenche la
+    // logique de création, et vice-versa.
+    'ALTER TABLE return_items ADD COLUMN rma_processed_at TEXT',
+    'ALTER TABLE return_items ADD COLUMN reception_processed_at TEXT',
     // return_items enhancements
     'ALTER TABLE return_items ADD COLUMN airtable_id TEXT',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_return_items_airtable ON return_items(airtable_id) WHERE airtable_id IS NOT NULL',
@@ -998,6 +1049,13 @@ export function initSchema() {
     // delivery address on orders and shipments
     'ALTER TABLE orders ADD COLUMN address_id TEXT REFERENCES adresses(id)',
     'ALTER TABLE shipments ADD COLUMN address_id TEXT REFERENCES adresses(id)',
+
+    // Vérificateur d'adresses postales (services/addressCheck.js) : verdict de
+    // la dernière passe. check_status = 'ok' | 'warning' | 'error' (NULL = pas
+    // encore vérifiée), check_issues = tableau JSON des problèmes trouvés.
+    'ALTER TABLE adresses ADD COLUMN check_status TEXT',
+    'ALTER TABLE adresses ADD COLUMN check_issues TEXT',
+    'ALTER TABLE adresses ADD COLUMN checked_at TEXT',
 
     'DROP TABLE IF EXISTS webhooks',
     'ALTER TABLE notifications ADD COLUMN read_at TEXT',
@@ -1314,6 +1372,23 @@ export function initSchema() {
     'ALTER TABLE employees ADD COLUMN vacation_days_per_year REAL DEFAULT 0',
     // Clear stale field_map so the next sync re-derives the complete mapping
     "UPDATE airtable_module_config SET field_map=NULL WHERE module='employees'",
+    // Réparation : la suppression d'un champ issu d'Airtable ne coupait pas son
+    // import (corrigé dans routes/custom-fields.js). Les colonnes concernées
+    // restaient alimentées par la sync et réapparaissaient dans la page de
+    // configuration des champs comme colonnes ERP non adoptées — la suppression
+    // semblait sans effet. On coupe l'import des mappings dont le champ a été
+    // supprimé et qui n'ont plus aucun champ actif sur la même colonne. Les
+    // valeurs déjà importées sont conservées.
+    `UPDATE airtable_field_mappings SET import_disabled=1
+       WHERE import_disabled=0
+         AND EXISTS (SELECT 1 FROM custom_fields cf
+                     WHERE cf.erp_table = airtable_field_mappings.erp_table
+                       AND cf.column_name = airtable_field_mappings.column_name
+                       AND cf.deleted_at IS NOT NULL)
+         AND NOT EXISTS (SELECT 1 FROM custom_fields cf
+                         WHERE cf.erp_table = airtable_field_mappings.erp_table
+                           AND cf.column_name = airtable_field_mappings.column_name
+                           AND cf.deleted_at IS NULL)`,
     // Seed Airtable module config for paies + paie_items (same base as employees)
     "INSERT OR IGNORE INTO airtable_module_config (module, base_id, table_id) VALUES ('paies', 'appqavqAf83Td3exW', 'tblrno7j8yt2M0RaK')",
     "INSERT OR IGNORE INTO airtable_module_config (module, base_id, table_id) VALUES ('paie_items', 'appqavqAf83Td3exW', 'tblv8wtCpVThzQ306')",
@@ -1721,6 +1796,32 @@ export function initSchema() {
   for (const sql of migrations) {
     try { db.exec(sql) } catch { /* column already exists */ }
   }
+
+  // Colonnes de l'automation « étiquette de retour » — jamais écrasées par la
+  // sync Airtable entrante (returns est synchronisée depuis Airtable). Seed
+  // idempotent (INSERT OR IGNORE, clé composite erp_table+column_name) : ne
+  // touche pas un gel/dégel fait à la main depuis l'UI ensuite.
+  try {
+    const freezeReturnColumn = db.prepare(
+      `INSERT OR IGNORE INTO airtable_frozen_columns (erp_table, column_name) VALUES ('returns', ?)`
+    )
+    for (const col of [
+      'return_label_pdf_path', 'return_label_tracking_number', 'return_novoxpress_shipment_id',
+      'return_carrier', 'return_service_name', 'return_carrier_reason', 'return_label_cost',
+      'return_label_created_at', 'return_address_id', 'memo_pdf_path', 'memo_generated_at',
+      'instructions_sent_at', 'instructions_interaction_id',
+      'return_ups_shipment_id', 'return_label_currency', 'return_label_sent_at',
+      'return_label_email_interaction_id',
+    ]) freezeReturnColumn.run(col)
+
+    // `instructions_pour_le_receptionniste` est un champ dynamique synced
+    // depuis Airtable sur return_items — dès que les watchers de retour (Phase
+    // 2) y écrivent, il faut le geler pour ne pas se faire écraser au sync
+    // suivant, exactement comme les colonnes returns ci-dessus.
+    db.prepare(
+      `INSERT OR IGNORE INTO airtable_frozen_columns (erp_table, column_name) VALUES ('return_items', 'instructions_pour_le_receptionniste')`
+    ).run()
+  } catch { /* table not created yet on very first boot ordering edge case */ }
 
   // Rename soumissions price columns to reflect customer currency (not CAD)
   try { db.exec('ALTER TABLE soumissions RENAME COLUMN purchase_price_cad TO purchase_price') } catch {}
@@ -2273,6 +2374,82 @@ export function initSchema() {
   try { db.exec("ALTER TABLE custom_fields ADD COLUMN source TEXT NOT NULL DEFAULT 'native'") } catch {}
   try { db.exec('ALTER TABLE custom_fields ADD COLUMN airtable_mapping_id TEXT') } catch {}
 
+  // ── Palier 1 de l'unification des champs : custom_fields absorbe field_overrides ──
+  //
+  // Jusqu'ici deux systèmes coexistaient : `custom_fields` pour les champs créés
+  // par l'utilisateur, `field_overrides` pour les retouches d'affichage des
+  // champs NATIFS (ceux définis en dur dans client/src/lib/tableDefs.js). Deux
+  // tables, deux routes, deux modales, deux listes de types — pour un même objet
+  // « champ ». Les natifs deviennent donc des lignes de custom_fields avec
+  // kind='native'.
+  //
+  // Conventions propres à kind='native', qui n'a PAS de colonne cf_* à lui :
+  //   • column_name    = l'`id` de la colonne dans tableDefs.js. Ce n'est pas
+  //                      forcément un nom de colonne SQL (ex. 'full_name',
+  //                      'company_name' sont calculés par la requête ou le JSX) —
+  //                      d'où l'exclusion de ces lignes partout où une colonne
+  //                      physique est supposée (getActiveCustomColumns, la vue
+  //                      <table>_v, les défauts à la création).
+  //   • erp_table      = clé de vue DataTable, pas forcément une table SQL
+  //                      (ex. 'company_orders', 'project_factures').
+  //   • name = ''      = pas de renommage ; le libellé de tableDefs fait foi.
+  //   • type = ''      = pas de re-typage ; le type de tableDefs fait foi.
+  //     Le vide plutôt que NULL parce que les deux colonnes sont NOT NULL, et
+  //     plutôt qu'une copie du défaut pour que le code reste la source de vérité :
+  //     si tableDefs change un libellé, les champs non personnalisés suivent.
+  //   • Revenir à l'original = supprimer la ligne (pas de soft delete) : la
+  //     contrainte UNIQUE(erp_table, column_name) ne distingue pas les lignes
+  //     supprimées, une ligne fantôme bloquerait toute repersonnalisation.
+  //
+  // `boolean` (vocabulaire des overrides) devient `checkbox` (vocabulaire des
+  // champs perso) : même chose sous deux noms, on n'en garde qu'un.
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN country_code TEXT') } catch {}
+
+  // Masquage GLOBAL d'un champ (palier 2 de l'unification). « Supprimer » un
+  // champ natif ne peut pas détruire sa colonne — des routes, des syncs et des
+  // fiches en dépendent — mais l'utilisateur doit voir le champ disparaître
+  // partout, et pouvoir le récupérer. hidden=1 le retire des tableaux, panneaux,
+  // filtres, tris et sélecteurs, sans toucher ni à la colonne ni aux données.
+  // À distinguer de la visibilité PAR VUE (table_view_pills.visible_columns),
+  // qui est un choix d'affichage local et non une suppression.
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0') } catch {}
+
+  const hasFieldOverrides = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='field_overrides'"
+  ).get()
+  if (hasFieldOverrides) {
+    const pending = db.prepare(`
+      SELECT o.erp_table, o.field_id, o.label, o.type, o.decimals, o.country_code, o.sort_order,
+             o.created_at, o.updated_at
+      FROM field_overrides o
+      WHERE o.deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM custom_fields cf
+          WHERE cf.erp_table = o.erp_table AND cf.column_name = o.field_id
+        )
+    `).all()
+    if (pending.length) {
+      const ins = db.prepare(`
+        INSERT INTO custom_fields
+          (id, erp_table, name, column_name, type, decimals, country_code, sort_order,
+           created_at, updated_at, kind, source)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'native', 'native')
+      `)
+      const migrate = db.transaction(rows => {
+        for (const r of rows) {
+          ins.run(
+            randomUUID(), r.erp_table, r.label || '', r.field_id,
+            r.type === 'boolean' ? 'checkbox' : (r.type || ''),
+            r.decimals, r.country_code, r.sort_order,
+            r.created_at || null, r.updated_at || null,
+          )
+        }
+      })
+      migrate(pending)
+      console.log(`✅ custom_fields: ${pending.length} override(s) de champ natif migré(s) depuis field_overrides`)
+    }
+  }
+
   // Table de mapping Airtable ↔ colonne ERP — remplace airtable_field_defs
   // pour tout ce qui concerne le mapping (module/airtable_field_id/import_disabled).
   // Le type/rendu (field_type/display_label) migre vers custom_fields. `options`
@@ -2768,6 +2945,57 @@ export function initSchema() {
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_companies_qb_customer ON companies(quickbooks_customer_id) WHERE quickbooks_customer_id IS NOT NULL") } catch {}
   try { db.exec("CREATE INDEX IF NOT EXISTS idx_companies_qb_customer_usd ON companies(quickbooks_customer_id_usd) WHERE quickbooks_customer_id_usd IS NOT NULL") } catch {}
 
+  // Provenance d'une entreprise créée par un import externe (ex. 'MAPAQ' pour
+  // les prospects du registre des exploitations en serre). Distinct de
+  // `type_de_source` (Inbound / Outbound / Referral…), qui qualifie l'origine
+  // commerciale et reste saisi par l'équipe.
+  try { db.exec('ALTER TABLE companies ADD COLUMN source TEXT') } catch {}
+
+  // NEQ — numéro d'entreprise du Québec, clé du Registre des entreprises (REQ).
+  // Rempli par la liaison manuelle ou confirmée depuis la fiche entreprise
+  // (bloc « Registre des entreprises »), jamais par l'import : le registre est
+  // en lecture seule et ne décide pas tout seul qu'une fiche ERP lui correspond.
+  try { db.exec('ALTER TABLE companies ADD COLUMN neq TEXT') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_companies_neq ON companies(neq) WHERE neq IS NOT NULL') } catch {}
+
+  // Registre des entreprises du Québec (données ouvertes du Registraire, via
+  // Données Québec). Miroir LOCAL et EN LECTURE SEULE : rien ne repart jamais
+  // vers le REQ. L'import est purement additif — voir services/reqImport.js,
+  // qui fait un upsert par NEQ et ne supprime jamais une ligne (une entreprise
+  // disparue d'une livraison garde sa dernière version connue).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS req_entreprises (
+      neq TEXT PRIMARY KEY,
+      nom_legal TEXT,
+      nom_normalise TEXT,
+      noms_usage TEXT,                 -- JSON: autres noms sous lesquels l'entreprise fait affaire
+      statut_immat TEXT,
+      date_immat TEXT,                 -- date métier YYYY-MM-DD (pas de composante horaire)
+      date_statut_immat TEXT,
+      forme_juridique TEXT,
+      adresse TEXT,
+      ville TEXT,
+      province TEXT,
+      code_postal TEXT,
+      code_activite TEXT,
+      desc_activite TEXT,
+      code_activite2 TEXT,
+      desc_activite2 TEXT,
+      source_version TEXT,             -- livraison d'où vient la ligne (nom de fichier / date)
+      imported_at TEXT,
+      deleted_at TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+  `)
+  // Nom normalisé : c'est la clé de rapprochement avec companies.name (la
+  // recherche par nom exact sur `nom_legal` ne trouve rien, les formes
+  // juridiques et les accents diffèrent d'une source à l'autre).
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_req_nom_normalise ON req_entreprises(nom_normalise)') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_req_code_activite ON req_entreprises(code_activite)') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_req_ville ON req_entreprises(ville)') } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_req_statut ON req_entreprises(statut_immat)') } catch {}
+
   // Type de facture pour router les écritures comptables :
   //   'order'        → vente de pièces, constat à l'expédition (rail principal)
   //   'subscription' → abonnement Stripe, constat immédiat à invoice.paid (rail séparé)
@@ -2852,6 +3080,10 @@ export function initSchema() {
   // Préférence d'affichage de l'indicatif de pays pour les champs téléphone
   // ('show' | 'hide' | null). Cosmétique : appliquée par PhoneValue côté client.
   try { db.exec('ALTER TABLE field_overrides ADD COLUMN country_code TEXT') } catch {}
+  // Ordre d'affichage des champs d'une table (panneau « Champs », modale de
+  // configuration des champs). NULL = pas d'ordre explicite → position d'origine
+  // dans tableDefs.js / après les champs ordonnés.
+  try { db.exec('ALTER TABLE field_overrides ADD COLUMN sort_order INTEGER') } catch {}
 
   // QB Invoice ID séparé : on crée une Invoice QB + un Receive Payment qui la solde.
   // qb_payment_id porte le Payment, qb_invoice_id porte l'Invoice. Permet le LinkedTxn
@@ -3144,6 +3376,31 @@ export function initSchema() {
     )
   `)
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_attachments_entity ON attachments(entity_type, entity_id, deleted_at)`) } catch {}
+
+  // Commandes DigiKey ramenées par l'API (sens unique DigiKey → ERP). Une ligne
+  // par commande suivie : `track_key` = numéro de facture DigiKey quand il existe,
+  // sinon numéro de commande — c'est la clé de déduplication de la sync.
+  // `raw` conserve la réponse de l'API pour pouvoir calibrer un mapping sans
+  // relancer un appel réseau. `pdf_path` est relatif à uploads/ (factures/digikey/…).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS digikey_orders (
+      id TEXT PRIMARY KEY,
+      track_key TEXT NOT NULL UNIQUE,
+      sales_order_id TEXT,
+      invoice_id TEXT,
+      achat_id TEXT REFERENCES achats_fournisseurs(id) ON DELETE SET NULL,
+      pdf_path TEXT,
+      order_date TEXT,
+      total REAL,
+      currency TEXT,
+      raw TEXT,
+      synced_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_digikey_orders_achat ON digikey_orders(achat_id)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_digikey_orders_date ON digikey_orders(order_date DESC)`) } catch {}
 
   // Abonnements fournisseurs (SaaS et charges récurrentes) — registre des
   // charges attendues (miroir de l'onglet Abonnements du fichier CTB - Suivi).
@@ -3472,6 +3729,10 @@ export function initSchema() {
   //     Les Jardins d'Inverness).
   try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN counterparty_account TEXT`) } catch {}
   try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN recipient TEXT`) } catch {}
+  // Date de la facture réglée — colonne « Date de la facture » de l'onglet
+  // Pmt_Suivi, saisie à la main pour chaque ligne (indépendante de l'échéance
+  // de la facture liée, quand il y en a une).
+  try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN invoice_date TEXT`) } catch {}
   // Détection automatique du « passé à la banque » via le fichier « Maintien du
   // solde disponible BNC » (Charles retire la ligne quand le mouvement passe) :
   //   - sheet_seen_at : dernière sync où une ligne du fichier couvrait ce
@@ -4761,6 +5022,13 @@ export function initSchema() {
   try { db.exec(`ALTER TABLE scraper_accounts ADD COLUMN vendor_profile_id TEXT REFERENCES vendor_profiles(id)`) } catch {}
   try { db.exec(`ALTER TABLE scraper_accounts ADD COLUMN collect_mode TEXT DEFAULT 'ciblee'`) } catch {}
 
+  // Date de la commande IMPRIMÉE sur la facture (« Date de la commande / Order Date »),
+  // distincte de receipt_date (date de LA FACTURE). Fournisseurs qui la subdivisent en
+  // plusieurs livraisons partielles (Digikey…) : cette date se compare directement à
+  // purchases.order_date pour départager deux commandes de la même pièce — signal bien
+  // plus net que la proximité approximative avec la date de facture (cf. purchaseLiaMatch.js).
+  try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN order_date TEXT`) } catch {}
+
   // Une ligne = « cette transaction bancaire attend sa facture ». Sert à trois
   // choses : ne pas re-balayer chaque nuit les mêmes centaines de lignes, rendre
   // l'échec visible (pourquoi rien n'a été trouvé), et espacer les nouvelles
@@ -4849,6 +5117,52 @@ export function initSchema() {
   `)
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_card_dues_period ON card_payment_dues(period, card_account) WHERE deleted_at IS NULL`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_card_dues_open ON card_payment_dues(due_date) WHERE treasury_payment_id IS NULL AND deleted_at IS NULL`) } catch {}
+
+  // Suivi de PLAFOND d'une carte de crédit — complémentaire à `card_payment_dues`
+  // (« as-tu payé la carte ce mois-ci ? »). La question ici est l'inverse :
+  // « la carte a-t-elle encore de la place ? ». La Mastercard BNC sert à payer
+  // une partie des fournisseurs et son paiement est PRÉ-PROGRAMMÉ le 4 : si le
+  // solde dépasse le plafond de confort avant cette date, la carte devient
+  // inutilisable et il faut payer un extra à la main.
+  //
+  // Une ligne = une carte suivie. `qb_acctnum` est le NUMÉRO de compte QB (pas
+  // son Id, qui change d'un realm à l'autre) — résolu par resolveAccountByAcctNum.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS card_ceilings (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      qb_acctnum TEXT,
+      bank_account_id TEXT REFERENCES bank_accounts(id),
+      credit_limit REAL,
+      ceiling REAL,
+      draft_day INTEGER,
+      currency TEXT NOT NULL DEFAULT 'CAD',
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_card_ceilings_name ON card_ceilings(name) WHERE deleted_at IS NULL`) } catch {}
+
+  // Anti-doublon des alertes de plafond : une seule alerte par carte, par mois
+  // et par type ('lead' = J-N avant le prélèvement, 'breach' = plafond franchi
+  // hors fenêtre). L'index UNIQUE porte l'idempotence — pas la relecture des
+  // journaux d'automation, illisible dès qu'il y a plus d'une carte.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS card_ceiling_alerts (
+      id TEXT PRIMARY KEY,
+      card_id TEXT NOT NULL REFERENCES card_ceilings(id),
+      period TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('lead','breach')),
+      projected REAL,
+      recommended REAL,
+      sent_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_card_ceiling_alerts ON card_ceiling_alerts(card_id, period, kind) WHERE deleted_at IS NULL`) } catch {}
 
   // Sondages de satisfaction envoyés par SMS (Telnyx) depuis la fiche d'un
   // billet. Une ligne = un billet : le renvoi réutilise le MÊME jeton, sinon le

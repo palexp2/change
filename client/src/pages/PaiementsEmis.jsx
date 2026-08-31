@@ -44,6 +44,10 @@ const fmtCad = (n, currency = 'CAD') =>
 // sans symbole — parseAmount sait relire cette forme au blur.
 const fmtNum = n => new Intl.NumberFormat('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0)
 const fmtDay = d => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short', year: 'numeric' }) : '—')
+// Date compacte AAAA-MM-JJ : le format d'une cellule de tableur, et celui que
+// rendent nativement les <input type="date"> — les colonnes de dates de la
+// liste s'alignent donc toutes sur la même largeur.
+const fmtIso = d => (d ? String(d).slice(0, 10) : '—')
 // Avec le jour de la semaine : c'est lui qui explique une date de paiement
 // avancée (« l'échéance tombe un samedi »).
 const fmtDayLong = d => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString('fr-CA', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) : '—')
@@ -76,6 +80,67 @@ const inputXs = 'px-1.5 py-1 text-xs border border-slate-200 rounded-md w-full f
 // afficher 300 rectangles).
 const cellCls = 'px-1.5 py-1 text-sm bg-transparent border border-transparent rounded-md hover:border-slate-200 focus:bg-white focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20'
 const stepCls = 'text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-2'
+
+// ── Colonnes ajustables, largeur mémorisée ──────────────────────────────────
+// Comme dans un vrai tableur : on tire le bord d'une colonne, et la largeur
+// choisie reste d'une visite à l'autre (localStorage — pas besoin de mémoriser
+// ça côté serveur, c'est une préférence d'affichage par personne/poste).
+const PAYMENT_COLUMNS = [
+  { key: 'created', label: 'Date du jour', default: 84 },
+  { key: 'invoiceDate', label: 'Date de la facture', default: 116 },
+  { key: 'paymentDate', label: 'Date du Pmt', default: 116 },
+  { key: 'reference', label: '# Paiement', default: 104 },
+  { key: 'vendor', label: 'Fournisseur', default: 220 },
+  { key: 'invoiceNumber', label: '# Facture', default: 144 },
+  { key: 'amount', label: 'Montant', default: 112 },
+  { key: 'notes', label: 'Commentaire', default: 176 },
+]
+const COL_WIDTHS_STORAGE_KEY = 'paymentsEmis.colWidths.v1'
+const MIN_COL_WIDTH = 56
+
+function useColumnWidths(columns, storageKey) {
+  const [widths, setWidths] = useState(() => {
+    const defaults = Object.fromEntries(columns.map(c => [c.key, c.default]))
+    try {
+      const saved = JSON.parse(localStorage.getItem(storageKey) || '{}')
+      return { ...defaults, ...saved }
+    } catch { return defaults }
+  })
+  // Poignée de redimensionnement : suit la souris pendant le drag (état local,
+  // pas d'écriture disque à chaque pixel) et ne persiste qu'au relâchement.
+  const startResize = useCallback((key) => (e) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = widths[key]
+    const onMove = (ev) => {
+      const w = Math.max(MIN_COL_WIDTH, Math.round(startW + (ev.clientX - startX)))
+      setWidths(prev => ({ ...prev, [key]: w }))
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      setWidths(prev => {
+        try { localStorage.setItem(storageKey, JSON.stringify(prev)) } catch {}
+        return prev
+      })
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [widths, storageKey])
+  return [widths, startResize]
+}
+
+// En-tête de colonne avec poignée de redimensionnement sur son bord droit.
+function ResizableTh({ label, width, onResizeStart }) {
+  return (
+    <span className="relative shrink-0 pr-2 select-none" style={{ width }}>
+      {label}
+      <span onMouseDown={onResizeStart}
+        title="Glisser pour ajuster la largeur de la colonne"
+        className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-4 cursor-col-resize rounded hover:bg-brand-200/70 active:bg-brand-300" />
+    </span>
+  )
+}
 
 // Clé de rapprochement des noms de fournisseurs (même normalisation que côté
 // serveur) : « Les Jardins d'Inverness » et « les jardins d inverness » = pareil.
@@ -113,12 +178,15 @@ function Field({ label, hint, className = '', as = 'label', children }) {
 // Ligne éditable en autosave : chaque champ se sauvegarde au blur (règle de
 // design ERP — aucun bouton « Enregistrer »).
 //
-// UNE ligne = une phrase lisible : statut · date · bénéficiaire · moyen · compte
-// · montant. Tout le reste (sens, contrepartie, n° de confirmation, facture,
-// note) est de la donnée de SAISIE, pas de LECTURE : elle vit derrière le
-// chevron. Le bouton « passé à la banque » — l'action de la page — reste en tête
-// de ligne, toujours au même endroit.
-function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
+// Une ligne = une rangée de tableur, dans le même ordre que l'onglet Pmt_Suivi
+// du fichier CTB - Suivi qui a inspiré la page : Date du jour · Date de la
+// facture · Date du Pmt · # Paiement · Fournisseur · # Facture · Montant ·
+// Commentaire. Le Montant se colore en vert une fois passé à la banque — le
+// même signal que le fichier, où c'était la seule marque d'état. Le reste
+// (sens du mouvement, comptes, bénéficiaire réel) n'a pas d'équivalent dans le
+// fichier : ça reste de la donnée de SAISIE derrière le chevron, pas une
+// colonne de plus.
+function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths }) {
   const { addToast } = useToast()
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
@@ -150,19 +218,19 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
   // L'autre compte n'a de sens que pour un mouvement interne — on le montre aussi
   // dès qu'il est renseigné, pour ne jamais cacher une donnée existante.
   const showCounterparty = sp.transfer || !!p.counterparty_account
-  const MethodIcon = sp.icon
-  const sides = transferSides(p)
   return (
     <div className={`group border-t border-slate-100 ${busy ? 'opacity-60' : ''} ${cleared ? 'bg-emerald-50/30' : ''}`}
       data-testid={`payment-row-${p.id}`}>
       <div className="flex items-center gap-1.5 px-3 py-1">
         {/* Le bouton porte tout le sens de la page : coché = l'argent est sorti
-            du compte, plus rien à projeter. Re-cliquer le remet dans la projection. */}
+            du compte, plus rien à projeter. Re-cliquer le remet dans la projection.
+            Pas de libellé — c'est l'icône et la couleur qui portent l'état, comme
+            le vert du fichier Pmt_Suivi ; le titre détaille l'état et la source. */}
         <button type="button" onClick={toggleCleared} aria-pressed={cleared}
           data-testid={`payment-cleared-${p.id}`}
-          className={`shrink-0 inline-flex items-center gap-1.5 w-24 justify-center px-2 py-1 text-xs font-medium rounded-full border transition-colors ${cleared
+          className={`shrink-0 inline-flex items-center justify-center w-6 h-6 rounded-md border transition-colors ${cleared
             ? 'border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-200/70'
-            : 'border-slate-200 bg-white text-slate-500 hover:border-emerald-300 hover:text-emerald-700'}`}
+            : 'border-slate-200 bg-white text-slate-400 hover:border-emerald-300 hover:text-emerald-700'}`}
           title={cleared
             ? `Passé à la banque${p.cleared_source === 'qb'
               ? ' · détecté dans QuickBooks (écriture compensée au compte bancaire)'
@@ -172,18 +240,39 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
                   ? ` · apparié au relevé${p.bank_txn_date ? ` du ${fmtDay(p.bank_txn_date)}` : ''}`
                   : ''} — cliquer pour le remettre dans la projection`
             : 'Pas encore passé à la banque — compté dans la projection. Coché automatiquement dès que QuickBooks montre le mouvement au compte (ou que la ligne quitte le fichier de suivi) ; cliquer pour le faire à la main.'}>
-          {cleared ? <CheckCircle2 size={13} className="shrink-0" /> : <Circle size={13} className="shrink-0" />}
-          {/* Libellé unique « A passé », comme une case à cocher : c'est l'icône
-              (cercle vide / crochet vert) et la couleur qui portent l'état, pas le
-              texte. Le titre détaille l'état et la source du cochage. */}
-          A passé
+          {cleared ? <CheckCircle2 size={14} /> : <Circle size={14} />}
         </button>
 
+        {/* Date du jour : lecture seule, c'est la date de saisie du paiement dans
+            l'ERP — l'équivalent de la colonne du même nom dans Pmt_Suivi. */}
+        <span className="shrink-0 text-xs text-slate-400 tabular-nums" style={{ width: widths.created }} title="Date du jour (saisie)">
+          {fmtIso(p.created_at)}
+        </span>
+
+        {/* Date de la facture : dès qu'une facture est liée, sa vraie date
+            (TxnDate QuickBooks) s'affiche en lecture seule — plus la peine de
+            la retaper, et rien à désynchroniser. Sans lien (virement, import
+            historique), elle reste saisissable ; le serveur tente d'abord de
+            la retrouver chez QuickBooks par n° de facture. */}
+        {p.achat_id
+          ? <span className="shrink-0 text-xs text-slate-400 tabular-nums" style={{ width: widths.invoiceDate }}
+              title="Date de la facture liée — synchronisée depuis QuickBooks, non modifiable ici">
+              {fmtIso(p.invoice_date)}
+            </span>
+          : <input type="date" defaultValue={p.invoice_date ? String(p.invoice_date).slice(0, 10) : ''}
+              className={`${cellCls} shrink-0 text-slate-500 tabular-nums`} style={{ width: widths.invoiceDate }}
+              title="Date de la facture — remplie automatiquement depuis QuickBooks quand un n° de facture concorde, sinon à saisir"
+              onBlur={e => save('invoice_date', e.target.value || null)} />}
+
         <input type="date" defaultValue={String(p.payment_date).slice(0, 10)}
-          className={`${cellCls} w-32 shrink-0 text-slate-500 tabular-nums`}
+          className={`${cellCls} shrink-0 text-slate-500 tabular-nums`} style={{ width: widths.paymentDate }}
           title={sp.dateLabel} onBlur={e => save('payment_date', e.target.value)} />
 
-        <span className="flex-1 min-w-0 flex items-center gap-1.5">
+        <input defaultValue={p.reference || ''} className={`${cellCls} shrink-0`} style={{ width: widths.reference }}
+          placeholder="# Paiement" title={sp.refLabel} data-testid={`payment-reference-${p.id}`}
+          onBlur={e => save('reference', e.target.value)} />
+
+        <span className="shrink-0 flex items-center gap-1.5" style={{ width: widths.vendor }}>
           <input defaultValue={p.label || ''} className={`${cellCls} flex-1 min-w-0 font-medium text-slate-800`}
             placeholder="Fournisseur / libellé" onBlur={e => save('label', e.target.value)} />
           {/* Particularité du fournisseur : signalée tant que le paiement n'est pas
@@ -208,22 +297,49 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
           )}
         </span>
 
-        {/* Moyen et compte : en lecture seule ici, éditables dans le détail — ce
-            sont des repères, pas des champs qu'on retouche à chaque ligne. */}
-        <span className="hidden lg:flex w-36 shrink-0 items-center gap-1.5 text-xs text-slate-400" title={sp.label}>
-          <MethodIcon size={13} className="shrink-0" /><span className="truncate">{sp.label}</span>
-        </span>
-        <span className="hidden xl:block w-40 shrink-0 truncate text-xs text-slate-400"
-          title={showCounterparty ? `${sides.from} → ${sides.to}` : `Compte : ${p.account || PROJECTED_ACCOUNT}`}>
-          {showCounterparty ? `${sides.from} → ${sides.to}` : (p.account || PROJECTED_ACCOUNT)}
+        {/* # Facture : le lien vers la fiche ERP + QuickBooks quand le paiement
+            règle une facture connue, sinon une simple case à saisir. */}
+        <span className="shrink-0 text-xs" style={{ width: widths.invoiceNumber }}>
+          {p.achat_id
+            ? <span className="inline-flex items-center gap-1 min-w-0">
+              <Link to={`/fournisseurs/achats?id=${p.achat_id}`} className="shrink-0 p-0.5 -ml-0.5 rounded-md text-slate-300 hover:text-brand-600 hover:bg-brand-50"
+                data-testid={`payment-bill-link-${p.id}`}
+                title={`Facture ${p.achat_vendor || ''} ${p.achat_total ? fmtCad(p.achat_total, p.currency) : ''} · ${p.achat_status || ''} — ouvrir la fiche dans l'ERP`}>
+                <ReceiptText size={12} />
+              </Link>
+              {p.bill_qb_url
+                ? <a href={p.bill_qb_url} target="_blank" rel="noreferrer"
+                  className="min-w-0 inline-flex items-center gap-1 text-brand-600 hover:underline"
+                  data-testid={`payment-bill-qb-${p.id}`}
+                  title="Ouvrir la facture dans QuickBooks">
+                  <span className="truncate">{p.invoice_number || p.achat_vendor || 'facture liée'}</span>
+                  <ExternalLink size={11} className="shrink-0 opacity-60" />
+                </a>
+                : <span className="min-w-0 truncate text-slate-500"
+                  data-testid={`payment-bill-qb-${p.id}`}
+                  title="Pas encore publiée dans QuickBooks — rien à ouvrir">
+                  {p.invoice_number || p.achat_vendor || 'facture liée'}
+                </span>}
+            </span>
+            : <input defaultValue={p.invoice_number || ''} className={`${cellCls} w-full`} placeholder="# facture"
+              data-testid={`payment-invoice-${p.id}`}
+              onBlur={e => save('invoice_number', e.target.value.trim() || null)} />}
         </span>
 
+        {/* Montant : coloré en vert une fois passé à la banque, comme la cellule
+            du fichier Pmt_Suivi — la seule marque d'état de l'onglet d'origine. */}
         <span className="flex items-center gap-1 shrink-0">
           <input inputMode="decimal" defaultValue={fmtNum(p.amount)}
-            className={`${cellCls} w-28 text-right tabular-nums font-medium ${p.direction === 'in' ? 'text-emerald-700' : 'text-slate-800'}`}
+            className={`${cellCls} text-right tabular-nums font-medium ${cleared ? 'bg-emerald-50 text-emerald-700' : (p.direction === 'in' ? 'text-emerald-700' : 'text-slate-800')}`}
+            style={{ width: widths.amount }}
             title="Montant" onBlur={e => save('amount', parseAmount(e.target.value))} />
           <span className="w-8 text-[11px] text-slate-400">{(p.currency || 'CAD') !== 'CAD' ? p.currency : ''}</span>
         </span>
+
+        <input defaultValue={p.notes || ''} className={`${cellCls} shrink-0`} style={{ width: widths.notes }}
+          placeholder="Commentaire" data-testid={`payment-notes-${p.id}`}
+          title="Mémorisé sur le profil du fournisseur et re-proposé au prochain paiement"
+          onBlur={e => save('notes', e.target.value.trim() || null)} />
 
         <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
           data-testid={`payment-expand-${p.id}`}
@@ -286,51 +402,9 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
                   onBlur={e => save('recipient', e.target.value.trim() || null)} />
               </Field>
             )}
-            <Field label={sp.refLabel}>
-              <input defaultValue={p.reference || ''} className={inputXs}
-                title={sp.refLabel} data-testid={`payment-reference-${p.id}`}
-                onBlur={e => save('reference', e.target.value)} />
-            </Field>
-            {/* Facture réglée — deux destinations, comme dans la cédule :
-                l'icône ouvre la fiche DANS l'ERP (les factures fournisseurs n'ont
-                pas de page dédiée : `?id=` ouvre la fiche depuis la liste des
-                achats), le NUMÉRO ouvre la facture dans QuickBooks. Pas encore
-                publiée à QB : le numéro reste du texte, avec la raison. */}
-            <Field as="div" label="Facture réglée">
-              {p.achat_id
-                ? <span className="inline-flex items-center gap-1 min-w-0">
-                  <Link to={`/fournisseurs/achats?id=${p.achat_id}`} className="shrink-0 p-0.5 rounded-md text-slate-300 hover:text-brand-600 hover:bg-brand-50"
-                    data-testid={`payment-bill-link-${p.id}`}
-                    title={`Facture ${p.achat_vendor || ''} ${p.achat_total ? fmtCad(p.achat_total, p.currency) : ''} · ${p.achat_status || ''} — ouvrir la fiche dans l'ERP`}>
-                    <ReceiptText size={12} />
-                  </Link>
-                  {p.bill_qb_url
-                    ? <a href={p.bill_qb_url} target="_blank" rel="noreferrer"
-                      className="min-w-0 inline-flex items-center gap-1 text-xs text-brand-600 hover:underline"
-                      data-testid={`payment-bill-qb-${p.id}`}
-                      title="Ouvrir la facture dans QuickBooks">
-                      <span className="truncate">{p.invoice_number || p.achat_vendor || 'facture liée'}</span>
-                      <ExternalLink size={11} className="shrink-0 opacity-60" />
-                    </a>
-                    : <span className="min-w-0 truncate text-xs text-slate-500"
-                      data-testid={`payment-bill-qb-${p.id}`}
-                      title="Pas encore publiée dans QuickBooks — rien à ouvrir">
-                      {p.invoice_number || p.achat_vendor || 'facture liée'}
-                    </span>}
-                </span>
-                : <input defaultValue={p.invoice_number || ''} className={inputXs} placeholder="N° facture"
-                  data-testid={`payment-invoice-${p.id}`}
-                  onBlur={e => save('invoice_number', e.target.value.trim() || null)} />}
-            </Field>
-            {/* Note libre mémorisée sur le profil du fournisseur : elle sera
-                re-proposée au prochain paiement à son nom. */}
-            <Field label="Note" className="col-span-2">
-              <input defaultValue={p.notes || ''} className={inputXs}
-                data-testid={`payment-notes-${p.id}`}
-                title="Mémorisée sur le profil du fournisseur et re-proposée au prochain paiement"
-                onBlur={e => save('notes', e.target.value.trim() || null)} />
-            </Field>
           </div>
+          {/* Référence, # facture et commentaire vivent maintenant dans la ligne
+              elle-même — colonnes de Pmt_Suivi, pas de la donnée de détail. */}
           {(!cleared && particularites) && (
             <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-snug text-amber-700">
               <AlertTriangle size={12} className="shrink-0 mt-px" /> {particularites}
@@ -1149,6 +1223,8 @@ export default function PaiementsEmis() {
   const tab = TAB_KEYS.includes(params.get('onglet')) ? params.get('onglet') : 'pending'
   const setTab = (v) => setParams({ onglet: v }, { replace: true })
   const [rows, setRows] = useState([])
+  // Largeur des colonnes de la liste, ajustable et mémorisée (localStorage).
+  const [colWidths, startColResize] = useColumnWidths(PAYMENT_COLUMNS, COL_WIDTHS_STORAGE_KEY)
   // Mémoire par fournisseur (dernière note / moyen / compte) : chargée une fois,
   // rafraîchie après chaque ajout puisqu'un nouveau paiement l'enrichit.
   const [hints, setHints] = useState([])
@@ -1406,28 +1482,36 @@ export default function PaiementsEmis() {
         {/* Cédule de la semaine : les factures à payer, pas encore des paiements. */}
         {tab === 'cedule' && <PaymentSchedule />}
 
-        {/* Une ligne par paiement, lisible d'un coup d'œil ; le détail de saisie
+        {/* Une ligne par paiement, dans le même ordre de colonnes que l'onglet
+            Pmt_Suivi du fichier CTB - Suivi : Date du jour · Date de la facture ·
+            Date du Pmt · # Paiement · Fournisseur · # Facture · Montant ·
+            Commentaire. Chaque colonne se redimensionne (bord droit de l'en-tête)
+            et la largeur choisie est mémorisée (localStorage, par poste) — pas
+            besoin de la réajuster à chaque visite. Défilement horizontal plutôt
+            que colonnes cachées sur petit écran — c'est ainsi qu'un tableur se
+            comporte. Le détail de saisie (sens, comptes, bénéficiaire réel…)
             s'ouvre à la demande sous la ligne. */}
         {tab !== 'cedule' && (
-        <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+        <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
+          <div className="w-max min-w-full">
           {!!rows.length && (
             <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50/70 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-              <span className="w-24 shrink-0 text-center">Statut</span>
-              <span className="w-32 shrink-0 pl-1.5">Date</span>
-              <span className="flex-1 min-w-0 pl-1.5">Bénéficiaire</span>
-              <span className="hidden lg:block w-36 shrink-0">Moyen</span>
-              <span className="hidden xl:block w-40 shrink-0">Compte</span>
+              <span className="w-6 shrink-0" />
+              {PAYMENT_COLUMNS.filter(c => c.key !== 'amount' && c.key !== 'notes').map(c => (
+                <ResizableTh key={c.key} label={c.label} width={colWidths[c.key]} onResizeStart={startColResize(c.key)} />
+              ))}
               <span className="flex items-center gap-1 shrink-0">
-                <span className="w-28 text-right pr-1.5">Montant</span>
+                <ResizableTh label="Montant" width={colWidths.amount} onResizeStart={startColResize('amount')} />
                 <span className="w-8" />
               </span>
+              <ResizableTh label="Commentaire" width={colWidths.notes} onResizeStart={startColResize('notes')} />
               <span className="w-[22px] shrink-0" />
               <span className="w-[52px] shrink-0" />
             </div>
           )}
           {rows.map(p => (
             <PaymentRow key={p.id} p={p} accounts={accounts} onChanged={load} onReuse={reuse}
-              particularites={particByKey.get(vendorKey(p.label))} />
+              particularites={particByKey.get(vendorKey(p.label))} widths={colWidths} />
           ))}
           {!loading && !rows.length && (
             <p className="py-6 px-3 text-center text-sm text-slate-400">
@@ -1435,6 +1519,7 @@ export default function PaiementsEmis() {
             </p>
           )}
           {loading && <p className="py-6 px-3 text-center text-sm text-slate-400">Chargement…</p>}
+          </div>
         </div>
         )}
       </div>

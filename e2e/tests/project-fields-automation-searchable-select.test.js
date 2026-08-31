@@ -40,8 +40,10 @@ describe('SearchableSelect — ProjectFields & AutomationDetail', () => {
     await browser?.close()
   })
 
-  test('ProjectFields : Base et Table projets sont des SearchableSelect filtrables', async () => {
+  test('Config des champs projets : Base et Table sont des SearchableSelect filtrables', async () => {
+    // /projects/fields redirige vers /champs/projects (interface fusionnée).
     await page.goto(`${URL}/projects/fields`, { waitUntil: 'networkidle' })
+    await page.waitForURL(/\/champs\/projects/, { timeout: 15000 })
 
     // 1. Le picker base existe et c'est un <button> (pas un <select> natif).
     const baseTrigger = page.locator('[data-testid="projets-base-select"]')
@@ -75,10 +77,12 @@ describe('SearchableSelect — ProjectFields & AutomationDetail', () => {
     await menu.locator('text=Aucun résultat').waitFor({ state: 'visible', timeout: 3000 })
   })
 
-  test('ProjectFields : le picker « Champ Airtable » du MappingPicker est un SearchableSelect', async () => {
+  test('Config des champs projets : le picker « Champ Airtable » du MappingPicker est un SearchableSelect', async () => {
     await page.goto(`${URL}/projects/fields`, { waitUntil: 'networkidle' })
-    // Attendre le chargement du tableau des champs.
-    await page.locator('h1:has-text("Champs")').waitFor({ state: 'visible', timeout: 10000 })
+    await page.waitForURL(/\/champs\/projects/, { timeout: 15000 })
+    // Attendre le chargement du tableau des champs (colonnes + mappings).
+    await page.locator('h1:has-text("Configuration des champs")').waitFor({ state: 'visible', timeout: 15000 })
+    await page.waitForSelector('[data-testid^="fieldcfg-airtable-"]', { timeout: 30000 })
 
     // Cherche un bouton « Mapper » actif (colonne avec champs Airtable compatibles).
     // Si aucun n'est disponible dans l'état courant de la config, on n'échoue pas :

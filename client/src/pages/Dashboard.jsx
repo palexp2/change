@@ -9,7 +9,14 @@ import { GeoClientsMap } from '../components/GeoClientsMap.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { Modal } from '../components/Modal.jsx'
 import { AbonnementEventsTable } from '../components/AbonnementEventsTable.jsx'
+import { ResizeHandle } from '../components/ResizeHandle.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { DashboardOverview } from '../components/DashboardOverview.jsx'
+
+// Onglet « Vue globale » — la planche dense façon Power BI. Ce n'est pas une
+// section du dashboard (pas dans WIDGET_DEFS) : c'est une seconde lecture des
+// mêmes données, adressée par /dashboard/vue-globale.
+const OVERVIEW_SLUG = 'vue-globale'
 
 const WIDGET_DEFS = [
   { id: 'section_project_goal',     label: 'Objectif de projets',      group: 'Objectifs',     slug: 'objectif-de-projets' },
@@ -27,7 +34,7 @@ const WIDGET_DEFS = [
   { id: 'section_deferred_revenue', label: 'Revenus perçus d\'avance', group: 'Comptabilité', slug: 'revenus-percus-avance' },
   { id: 'section_balance_sheet', label: 'Bilan QuickBooks',         group: 'Comptabilité', slug: 'bilan' },
   { id: 'section_tickets_monthly', label: 'Billets par mois',       group: 'Support',       slug: 'billets-par-mois' },
-  { id: 'section_support_weekly', label: 'Amélioration du support', group: 'Support',       slug: 'amelioration-support' },
+  { id: 'section_support_weekly', label: 'Billets par semaine',    group: 'Support',       slug: 'billets-par-semaine' },
 ]
 
 // Normalise un slug pour un matching tolérant : minuscules + suppression de
@@ -708,7 +715,7 @@ function ClosingRateChart({ data, onMonthClick }) {
   if (!data || data.length === 0) {
     return (
       <div className="flex items-center justify-center h-40 text-slate-300 text-sm">
-        Pas encore de données (projets gagnés/perdus)
+        Pas encore de données (champ « Vendu » non renseigné)
       </div>
     )
   }
@@ -1517,11 +1524,58 @@ function ProfitabilityChart({ data, recentOrders }) {
   )
 }
 
+// Colonnes du tableau détaillé des remplacements : largeur par défaut (px) et
+// alignement. Les largeurs sont redimensionnables et mémorisées par utilisateur.
+const REPLACEMENT_COLS = [
+  { key: 'order',   label: 'Commande',     width: 110, align: 'text-left',
+    cellClass: 'text-slate-700 font-mono text-xs', render: it => `#${it.order_number}` },
+  { key: 'company', label: 'Client',       width: 200, align: 'text-left',
+    cellClass: 'text-slate-700', render: it => it.company_name || '—' },
+  { key: 'product', label: 'Produit',      width: 260, align: 'text-left',
+    cellClass: 'text-slate-700', render: it => it.product_name || '—' },
+  { key: 'qty',     label: 'Qté',          width: 60,  align: 'text-center',
+    cellClass: 'text-slate-600', render: it => it.qty },
+  { key: 'unit',    label: 'Coût unit.',   width: 100, align: 'text-right',
+    cellClass: 'text-slate-600', render: it => fmtCad(it.unit_cost) },
+  { key: 'total',   label: 'Total',        width: 100, align: 'text-right',
+    cellClass: 'font-medium text-amber-700', render: it => fmtCad(it.total_cost) },
+  { key: 'shipped', label: "Date d'envoi", width: 120, align: 'text-right',
+    cellClass: 'text-slate-500', render: it => (it.shipped_at ? fmtDate(it.shipped_at) : '—') },
+]
+const REPLACEMENT_COL_DEFAULTS = Object.fromEntries(REPLACEMENT_COLS.map(c => [c.key, c.width]))
+
+function loadReplacementColWidths(userId) {
+  try {
+    const raw = localStorage.getItem(`dashboard_replacement_cols_${userId}`)
+    if (raw) return { ...REPLACEMENT_COL_DEFAULTS, ...JSON.parse(raw) }
+  } catch {}
+  return { ...REPLACEMENT_COL_DEFAULTS }
+}
+
 function ReplacementRateChart({ replacementRate }) {
   const [tooltip, setTooltip] = useState(null)
   const [showItems, setShowItems] = useState(false)
   const [selectedMonth, setSelectedMonth] = useState(null)
+  const { user } = useAuth()
+  const [colWidths, setColWidths] = useState(() => loadReplacementColWidths(user?.id))
   const { parkValue = 0, last28 = 0, byMonth = [], items = [] } = replacementRate || {}
+
+  // Autosave des largeurs (localStorage, par utilisateur) — pas de bouton.
+  function resizeCol(key, w) {
+    setColWidths(prev => {
+      const next = { ...prev, [key]: Math.round(w) }
+      try { localStorage.setItem(`dashboard_replacement_cols_${user?.id}`, JSON.stringify(next)) } catch {}
+      return next
+    })
+  }
+
+  function resetColWidths() {
+    setColWidths({ ...REPLACEMENT_COL_DEFAULTS })
+    try { localStorage.removeItem(`dashboard_replacement_cols_${user?.id}`) } catch {}
+  }
+
+  const colsTotalWidth = REPLACEMENT_COLS.reduce((s, c) => s + (colWidths[c.key] || c.width), 0)
+  const colWidthsCustomized = REPLACEMENT_COLS.some(c => (colWidths[c.key] || c.width) !== c.width)
 
   const filteredItems = selectedMonth
     ? items.filter(it => {
@@ -1716,42 +1770,77 @@ function ReplacementRateChart({ replacementRate }) {
                 Effacer le filtre
               </button>
             )}
+            {showItems && colWidthsCustomized && (
+              <button
+                data-testid="replacement-cols-reset"
+                onClick={resetColWidths}
+                className="text-xs text-slate-500 hover:text-slate-700 underline"
+              >
+                Réinitialiser les largeurs
+              </button>
+            )}
           </div>
           {showItems && (
             <div className="mt-2 border border-slate-200 rounded-lg overflow-hidden">
-              <table className="w-full text-sm" data-testid="replacement-items-table">
-                <thead>
-                  <tr className="bg-slate-50 text-left text-xs text-slate-500">
-                    <th className="px-3 py-2 font-medium">Commande</th>
-                    <th className="px-3 py-2 font-medium">Client</th>
-                    <th className="px-3 py-2 font-medium">Produit</th>
-                    <th className="px-3 py-2 font-medium text-center">Qté</th>
-                    <th className="px-3 py-2 font-medium text-right">Coût unit.</th>
-                    <th className="px-3 py-2 font-medium text-right">Total</th>
-                    <th className="px-3 py-2 font-medium text-right">Date d'envoi</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredItems.map((it, idx) => (
-                    <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
-                      <td className="px-3 py-1.5 text-slate-700 font-mono text-xs">#{it.order_number}</td>
-                      <td className="px-3 py-1.5 text-slate-700">{it.company_name || '—'}</td>
-                      <td className="px-3 py-1.5 text-slate-700">{it.product_name || '—'}</td>
-                      <td className="px-3 py-1.5 text-center text-slate-600">{it.qty}</td>
-                      <td className="px-3 py-1.5 text-right text-slate-600">{fmtCad(it.unit_cost)}</td>
-                      <td className="px-3 py-1.5 text-right font-medium text-amber-700">{fmtCad(it.total_cost)}</td>
-                      <td className="px-3 py-1.5 text-right text-slate-500">{it.shipped_at ? fmtDate(it.shipped_at) : '—'}</td>
+              <div className="overflow-x-auto">
+                <table
+                  className="text-sm"
+                  style={{ tableLayout: 'fixed', width: '100%', minWidth: colsTotalWidth }}
+                  data-testid="replacement-items-table"
+                >
+                  <colgroup>
+                    {REPLACEMENT_COLS.map(c => (
+                      <col key={c.key} style={{ width: colWidths[c.key] || c.width }} />
+                    ))}
+                    {/* Colonne tampon : absorbe l'espace restant quand la carte
+                        est plus large que la somme des colonnes. */}
+                    <col />
+                  </colgroup>
+                  <thead>
+                    <tr className="bg-slate-50 text-left text-xs text-slate-500">
+                      {REPLACEMENT_COLS.map(c => (
+                        <th
+                          key={c.key}
+                          data-testid={`replacement-col-${c.key}`}
+                          className={`relative group/header px-3 py-2 font-medium truncate ${c.align}`}
+                        >
+                          {c.label}
+                          <ResizeHandle onResize={w => resizeCol(c.key, w)} />
+                        </th>
+                      ))}
+                      <th className="p-0" />
                     </tr>
-                  ))}
-                  {filteredItems.length === 0 && (
-                    <tr>
-                      <td colSpan={7} className="px-3 py-4 text-center text-slate-400 text-sm">
-                        Aucun remplacement pour {selectedMonthLabel}
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {filteredItems.map((it, idx) => (
+                      <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
+                        {REPLACEMENT_COLS.map(c => {
+                          const v = c.render(it)
+                          return (
+                            <td
+                              key={c.key}
+                              data-col={c.key}
+                              // Colonne rétrécie : l'infobulle native rend la valeur complète lisible.
+                              title={typeof v === 'string' ? v : undefined}
+                              className={`px-3 py-1.5 truncate ${c.align} ${c.cellClass}`}
+                            >
+                              {v}
+                            </td>
+                          )
+                        })}
+                        <td className="p-0" />
+                      </tr>
+                    ))}
+                    {filteredItems.length === 0 && (
+                      <tr>
+                        <td colSpan={REPLACEMENT_COLS.length + 1} className="px-3 py-4 text-center text-slate-400 text-sm">
+                          Aucun remplacement pour {selectedMonthLabel}
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
@@ -1951,6 +2040,9 @@ export function BankAccountsPanel() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  // Le détail compte par compte est replié par défaut : la trésorerie et le
+  // coussin de marge suffisent au coup d'œil quotidien.
+  const [detailOpen, setDetailOpen] = useState(false)
 
   const load = (opts = {}) => {
     setLoading(true)
@@ -1996,11 +2088,11 @@ export function BankAccountsPanel() {
       {rows.map(a => (
         <tr key={a.id} className="border-b border-slate-100 text-slate-600">
           <td className="py-1.5 px-3">{a.name}</td>
+          {/* Tout est affiché en CAD : les soldes en devise étrangère sont
+              convertis côté serveur (balance_cad) pour éviter d'afficher deux
+              montants par ligne. */}
           <td className="py-1.5 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
-            {fmtMoney(a.balance, a.currency || data.currency)}
-            {a.currency && a.currency !== data.currency && a.balance !== 0 && (
-              <span className="text-xs text-slate-400 ml-1.5">≈ {fmtMoney(a.balance_cad, data.currency)}</span>
-            )}
+            {fmtMoney(a.balance_cad ?? a.balance, data.currency)}
           </td>
         </tr>
       ))}
@@ -2045,28 +2137,42 @@ export function BankAccountsPanel() {
         )}
       </div>
       <div className="flex items-center justify-between mb-3 text-xs text-slate-500">
-        <span>
-          Soldes du jour · totaux en {data.currency}
-          {Object.entries(data.exchange_rates || {}).map(([cur, rate]) => (
-            <span key={cur}> · 1 {cur} = {Number(rate).toFixed(4)} {data.currency}</span>
-          ))}
-        </span>
+        <button
+          type="button"
+          onClick={() => setDetailOpen(o => !o)}
+          aria-expanded={detailOpen}
+          data-testid="bank-accounts-detail-toggle"
+          className="flex items-center gap-1 -ml-1 rounded px-1 py-0.5 hover:bg-slate-50 hover:text-slate-800 transition-colors"
+        >
+          <ChevronDown size={14} className={`transition-transform ${detailOpen ? '' : '-rotate-90'}`} />
+          Détail des comptes ({data.accounts.length})
+        </button>
         <button onClick={() => load({ refresh: true })} className="text-brand-600 hover:underline">Rafraîchir</button>
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <tbody>
-            {renderGroup('Comptes bancaires', banks, data.totals?.bank ?? 0)}
-            {renderGroup('Cartes de crédit', cards, data.totals?.credit_card ?? 0)}
-            <tr className="font-semibold text-slate-900">
-              <td className="py-2 px-3">Trésorerie nette</td>
-              <td className="py-2 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
-                {fmtMoney(treasury, data.currency)}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      {detailOpen && (
+        <div data-testid="bank-accounts-detail">
+          <p className="mb-2 text-xs text-slate-400">
+            Soldes du jour · montants en {data.currency}
+            {Object.entries(data.exchange_rates || {}).map(([cur, rate]) => (
+              <span key={cur}> · 1 {cur} = {Number(rate).toFixed(4)} {data.currency}</span>
+            ))}
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <tbody>
+                {renderGroup('Comptes bancaires', banks, data.totals?.bank ?? 0)}
+                {renderGroup('Cartes de crédit', cards, data.totals?.credit_card ?? 0)}
+                <tr className="font-semibold text-slate-900">
+                  <td className="py-2 px-3">Trésorerie nette</td>
+                  <td className="py-2 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
+                    {fmtMoney(treasury, data.currency)}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -2455,6 +2561,7 @@ export default function Dashboard() {
   const [collapsed, setCollapsed] = useState(() => loadCollapsed(user?.id || 'default'))
   const [highlightId, setHighlightId] = useState(null)
   const [activeId, setActiveId] = useState(null)
+  const isOverview = normalizeSlug(sectionParam) === normalizeSlug(OVERVIEW_SLUG)
 
   const refresh = () => {
     setLoading(true)
@@ -2476,7 +2583,12 @@ export default function Dashboard() {
     setTimeout(() => {
       const el = document.querySelector(`[data-section-id="${targetId}"]`)
       if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        // Animation seulement quand la cible est proche : un défilement doux de
+        // plusieurs milliers de pixels donne un long survol de tout le
+        // dashboard. Au-delà de ~1,5 écran, on saute directement.
+        const distance = Math.abs(el.getBoundingClientRect().top)
+        const near = distance < window.innerHeight * 1.5
+        el.scrollIntoView({ behavior: near ? 'smooth' : 'auto', block: 'start' })
         setHighlightId(targetId)
         setTimeout(() => setHighlightId(null), 2000)
       }
@@ -2640,7 +2752,7 @@ export default function Dashboard() {
       <CollapsibleCard
         {...cardProps('section_closing')}
         title="Taux de closing"
-        description="Projets gagnés / (gagnés + perdus) par mois — 12 derniers mois · Cliquer sur un mois pour voir les projets"
+        description="Projets vendus / (vendus + non vendus) par mois — 12 derniers mois · Cliquer sur un mois pour voir les projets"
       >
         <ClosingRateChart data={data?.closingByMonth} onMonthClick={month => navigate(`/pipeline?month=${month}`)} />
       </CollapsibleCard>
@@ -2721,8 +2833,8 @@ export default function Dashboard() {
     section_support_weekly: (
       <CollapsibleCard
         {...cardProps('section_support_weekly')}
-        title="Amélioration du support"
-        description="Indicateurs par semaine — 16 dernières semaines"
+        title="Billets par semaine"
+        description="Indicateurs de support — 16 dernières semaines"
         action={
           <Link to="/tickets" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
             Voir tickets <ArrowRight size={14} />
@@ -2744,20 +2856,52 @@ export default function Dashboard() {
 
   return (
     <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
-        <div className="mb-6 flex items-center justify-between">
+      <div className={`p-6 mx-auto ${isOverview ? 'max-w-[1700px]' : 'max-w-7xl'}`}>
+        <div className="mb-4 flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-slate-900">Tableau de bord</h1>
-            <p className="text-slate-500 text-sm mt-1">Vue d'ensemble de votre activité</p>
+            <p className="text-slate-500 text-sm mt-1">
+              {isOverview ? 'Toute l\'activité sur une seule planche' : 'Vue d\'ensemble de votre activité'}
+            </p>
           </div>
-          <button
-            onClick={() => setShowEditor(v => !v)}
-            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors ${showEditor ? 'bg-brand-50 text-brand-700 border border-brand-200' : 'border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
-          >
-            <SlidersHorizontal size={14} /> Personnaliser
-          </button>
+          {!isOverview && (
+            <button
+              onClick={() => setShowEditor(v => !v)}
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors ${showEditor ? 'bg-brand-50 text-brand-700 border border-brand-200' : 'border border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+            >
+              <SlidersHorizontal size={14} /> Personnaliser
+            </button>
+          )}
         </div>
 
+        {/* Deux lectures des mêmes données : les sections dépliables (par
+            défaut) et la planche dense « Vue globale ». */}
+        <div className="mb-5 flex items-center gap-1 border-b border-slate-200" role="tablist" data-testid="dashboard-tabs">
+          {[
+            { to: '/dashboard', label: 'Sections', active: !isOverview, testId: 'dashboard-tab-sections' },
+            { to: `/dashboard/${OVERVIEW_SLUG}`, label: 'Vue globale', active: isOverview, testId: 'dashboard-tab-overview' },
+          ].map(t => (
+            <Link
+              key={t.to}
+              to={t.to}
+              role="tab"
+              aria-selected={t.active}
+              data-testid={t.testId}
+              className={`-mb-px border-b-2 px-3 py-2 text-sm transition-colors ${
+                t.active
+                  ? 'border-brand-500 font-medium text-brand-700'
+                  : 'border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-800'
+              }`}
+            >
+              {t.label}
+            </Link>
+          ))}
+        </div>
+
+        {isOverview ? (
+          <DashboardOverview data={data} subscriptionEvents={subscriptionEvents} />
+        ) : (
+        <>
         {showEditor && (
           <DashboardEditor prefs={prefs} onChange={updatePrefs} onClose={() => setShowEditor(false)} />
         )}
@@ -2802,6 +2946,8 @@ export default function Dashboard() {
             ))}
           </div>
         </div>
+        </>
+        )}
 
         <GoalEditorModal
           isOpen={showGoalEditor}

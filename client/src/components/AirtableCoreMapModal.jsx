@@ -55,7 +55,7 @@ export function AirtableCoreMapModal({ isOpen, onClose, modules, title = 'Mappin
 // Sens du mapping (à la Airtable) entre la colonne ERP (gauche) et la colonne
 // Airtable (droite). `direction` vient du serveur (fieldMapDirection) :
 // 'both' = import + write-back, 'pull' = Airtable → ERP, 'push' = ERP → Airtable.
-const DIRECTIONS = {
+export const DIRECTIONS = {
   both: { Icon: ArrowLeftRight, title: 'Bidirectionnel — importé depuis Airtable et réécrit vers Airtable à la modification dans l’ERP' },
   pull: { Icon: ArrowLeft, title: 'Airtable → ERP — import seulement, jamais réécrit vers Airtable' },
   push: { Icon: ArrowRight, title: 'ERP → Airtable — export seulement' },
@@ -69,7 +69,9 @@ const DIR_OPTIONS = [
 // Contrôle de sens. Pour un champ non configurable (linked record / champ dérivé),
 // icône statique en lecture seule. Pour un champ configurable, bouton ouvrant un
 // petit menu où l'utilisateur choisit pull / push / both (autosave immédiat).
-function DirectionControl({ module, fieldKey, direction, configurable, mapped, onChange }) {
+// `compact` : sans padding vertical, pour une rangée déjà centrée (tableau des
+// champs de /champs/:table) plutôt que la grille alignée en haut du CoreMapPane.
+export function DirectionControl({ module, fieldKey, direction, configurable, mapped, onChange, compact }) {
   const [open, setOpen] = useState(false)
   const current = DIRECTIONS[direction] || DIRECTIONS.pull
   const CurIcon = current.Icon
@@ -80,7 +82,7 @@ function DirectionControl({ module, fieldKey, direction, configurable, mapped, o
         title={current.title}
         data-testid={`coremap-${module}-${fieldKey}-direction`}
         data-direction={direction || 'pull'}
-        className={`inline-flex pt-2 cursor-help ${mapped ? 'text-slate-400' : 'text-slate-300'}`}
+        className={`inline-flex ${compact ? '' : 'pt-2'} cursor-help ${mapped ? 'text-slate-600' : 'text-slate-400'}`}
       >
         <CurIcon size={13} />
       </span>
@@ -88,14 +90,14 @@ function DirectionControl({ module, fieldKey, direction, configurable, mapped, o
   }
 
   return (
-    <span className="relative inline-flex pt-1">
+    <span className={`relative inline-flex ${compact ? '' : 'pt-1'}`}>
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
         title={`${current.title} — cliquer pour changer le sens`}
         data-testid={`coremap-${module}-${fieldKey}-direction`}
         data-direction={direction || 'both'}
-        className={`inline-flex items-center justify-center w-6 h-6 rounded transition-colors hover:bg-slate-100 ${mapped ? 'text-slate-500' : 'text-slate-300'}`}
+        className={`inline-flex items-center justify-center w-6 h-6 rounded transition-colors hover:bg-slate-100 ${mapped ? 'text-slate-700' : 'text-slate-400'}`}
       >
         <CurIcon size={13} />
       </button>
@@ -133,7 +135,12 @@ function DirectionControl({ module, fieldKey, direction, configurable, mapped, o
   )
 }
 
-function CoreMapPane({ module, onSaved }) {
+// État complet du mapping cœur d'un module : chargement, brouillon, sens de
+// sync, enregistrement. Partagé entre le panneau ci-dessous et la page
+// /champs/:table, qui fusionne ces mêmes champs dans son tableau unique.
+// `module` peut être null (table sans mapping cœur fusionnable) : rien n'est
+// chargé et `data` reste null.
+export function useCoreMap(module, onSaved) {
   const [data, setData] = useState(null)
   const [loadError, setLoadError] = useState('')
   const [draft, setDraft] = useState({})
@@ -144,13 +151,17 @@ function CoreMapPane({ module, onSaved }) {
   const [savedMsg, setSavedMsg] = useState('')
 
   useEffect(() => {
+    if (!module) { setData(null); return }
+    let alive = true
     api.airtable.moduleCoreMap(module)
       .then(d => {
+        if (!alive) return
         setData(d)
         setDraft({ ...d.field_map })
         setDirs(Object.fromEntries(d.fields.map(f => [f.key, f.direction])))
       })
-      .catch(e => setLoadError(e.message))
+      .catch(e => alive && setLoadError(e.message))
+    return () => { alive = false }
   }, [module])
 
   // Choix du sens de sync d'un champ — autosave immédiat (revert visuel si échec).
@@ -202,6 +213,95 @@ function CoreMapPane({ module, onSaved }) {
       setSaving(false)
     }
   }
+
+  return {
+    data, loadError, draft, setDraft, dirs, changeDirection, dirty, options,
+    save, saving, saveError, savedMsg, setSavedMsg, resyncAfter, setResyncAfter,
+  }
+}
+
+// Cellule « champ Airtable » d'une clé cœur : picker recherchable + alerte si le
+// champ mappé n'existe plus côté Airtable + suggestion par nom. Partagée entre
+// le panneau ci-dessous et le tableau des champs de /champs/:table.
+export function CoreFieldPicker({ module, field, value, onChange, options, suggestion }) {
+  const current = options.find(o => o.name === value)
+  return (
+    <>
+      <SearchableSelect
+        className="input"
+        size="sm"
+        value={value || ''}
+        onChange={onChange}
+        options={options}
+        getOptionValue={o => o.name}
+        getOptionLabel={o => o.missing ? `${o.name} (introuvable dans Airtable)` : o.name}
+        getOptionKey={o => o.name}
+        emptyOption={field.required ? undefined : '— Non mappé —'}
+        placeholder="— Choisir un champ Airtable —"
+        searchPlaceholder="Rechercher un champ…"
+        testId={`coremap-${module}-${field.key}`}
+      />
+      {current?.missing && (
+        <p className="text-[11px] text-red-600 mt-0.5 flex items-center gap-1">
+          <AlertCircle size={11} /> Champ absent de la table Airtable — le sync ne remplira rien.
+        </p>
+      )}
+      {!value && suggestion && (
+        <button
+          type="button"
+          onClick={() => onChange(suggestion)}
+          className="max-w-full text-[11px] text-brand-600 hover:text-brand-800 mt-0.5 inline-flex items-center gap-1"
+          title={`Champ Airtable détecté automatiquement par nom : ${suggestion}`}
+        >
+          <Sparkles size={11} className="flex-shrink-0" />
+          {/* truncate : un nom de champ Airtable long ne doit pas élargir la modale */}
+          <span className="truncate">Suggestion : {suggestion}</span>
+        </button>
+      )}
+    </>
+  )
+}
+
+// Barre d'enregistrement du mapping cœur : messages + case « resynchroniser »
+// + bouton. Pas d'autosave — changer le mapping est transactionnel (peut
+// déclencher une resynchronisation complète du module).
+export function CoreMapSaveBar({ module, core }) {
+  const { dirty, save, saving, saveError, savedMsg, resyncAfter, setResyncAfter } = core
+  return (
+    <>
+      {saveError && <p className="text-sm text-red-600">{saveError}</p>}
+      {savedMsg && (
+        <p className="text-sm text-green-700 flex items-center gap-1.5" data-testid={`coremap-${module}-saved`}>
+          <CheckCircle2 size={14} /> {savedMsg}
+        </p>
+      )}
+      <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+        <label className="flex items-center gap-2 text-xs text-slate-600">
+          <input
+            type="checkbox"
+            checked={resyncAfter}
+            onChange={e => setResyncAfter(e.target.checked)}
+            data-testid={`coremap-${module}-resync`}
+          />
+          Resynchroniser le module après enregistrement
+        </label>
+        <button
+          onClick={save}
+          disabled={saving || !dirty}
+          className="btn-primary btn-sm"
+          data-testid={`coremap-${module}-save`}
+        >
+          {saving ? <RefreshCw size={13} className="animate-spin" /> : null}
+          {saving ? 'Enregistrement…' : 'Enregistrer le mapping'}
+        </button>
+      </div>
+    </>
+  )
+}
+
+export function CoreMapPane({ module, onSaved }) {
+  const core = useCoreMap(module, onSaved)
+  const { data, loadError, draft, setDraft, dirs, changeDirection, options, setSavedMsg } = core
 
   // Détails de sync de la table ERP alimentée par ce module — affichés en
   // tête du panneau, y compris pendant le chargement et en cas d'erreur.
@@ -261,8 +361,6 @@ function CoreMapPane({ module, onSaved }) {
           <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Champ Airtable</div>
         </div>
         {data.fields.map(f => {
-          const suggestion = !draft[f.key] && data.suggested[f.key]
-          const current = options.find(o => o.name === draft[f.key])
           // min-w-0 sur les cellules : sans lui, un nom de champ Airtable long
           // (whitespace-nowrap dans le picker/suggestion) gonfle la piste 1fr
           // et brise la mise en page de la modale.
@@ -283,72 +381,21 @@ function CoreMapPane({ module, onSaved }) {
                 onChange={dir => changeDirection(f.key, dir)}
               />
               <div className="min-w-0">
-                <SearchableSelect
-                  className="input"
-                  size="sm"
+                <CoreFieldPicker
+                  module={module}
+                  field={f}
                   value={draft[f.key] || ''}
                   onChange={v => { setDraft(d => ({ ...d, [f.key]: v })); setSavedMsg('') }}
                   options={options}
-                  getOptionValue={o => o.name}
-                  getOptionLabel={o => o.missing ? `${o.name} (introuvable dans Airtable)` : o.name}
-                  getOptionKey={o => o.name}
-                  emptyOption={f.required ? undefined : '— Non mappé —'}
-                  placeholder="— Choisir un champ Airtable —"
-                  searchPlaceholder="Rechercher un champ…"
-                  testId={`coremap-${module}-${f.key}`}
+                  suggestion={data.suggested[f.key]}
                 />
-                {current?.missing && (
-                  <p className="text-[11px] text-red-600 mt-0.5 flex items-center gap-1">
-                    <AlertCircle size={11} /> Champ absent de la table Airtable — le sync ne remplira rien.
-                  </p>
-                )}
-                {suggestion && (
-                  <button
-                    type="button"
-                    onClick={() => setDraft(d => ({ ...d, [f.key]: suggestion }))}
-                    className="max-w-full text-[11px] text-brand-600 hover:text-brand-800 mt-0.5 inline-flex items-center gap-1"
-                    title={`Champ Airtable détecté automatiquement par nom : ${suggestion}`}
-                  >
-                    <Sparkles size={11} className="flex-shrink-0" />
-                    {/* truncate : un nom de champ Airtable long ne doit pas élargir la modale */}
-                    <span className="truncate">Suggestion : {suggestion}</span>
-                  </button>
-                )}
               </div>
             </div>
           )
         })}
       </div>
 
-      {saveError && <p className="text-sm text-red-600">{saveError}</p>}
-      {savedMsg && (
-        <p className="text-sm text-green-700 flex items-center gap-1.5" data-testid={`coremap-${module}-saved`}>
-          <CheckCircle2 size={14} /> {savedMsg}
-        </p>
-      )}
-
-      <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-        <label className="flex items-center gap-2 text-xs text-slate-600">
-          <input
-            type="checkbox"
-            checked={resyncAfter}
-            onChange={e => setResyncAfter(e.target.checked)}
-            data-testid={`coremap-${module}-resync`}
-          />
-          Resynchroniser le module après enregistrement
-        </label>
-        {/* Pas d'autosave : changer le mapping est transactionnel (peut déclencher
-            une resynchronisation complète) — enregistrement explicite. */}
-        <button
-          onClick={save}
-          disabled={saving || !dirty}
-          className="btn-primary btn-sm"
-          data-testid={`coremap-${module}-save`}
-        >
-          {saving ? <RefreshCw size={13} className="animate-spin" /> : null}
-          {saving ? 'Enregistrement…' : 'Enregistrer le mapping'}
-        </button>
-      </div>
+      <CoreMapSaveBar module={module} core={core} />
     </div>
   )
 }

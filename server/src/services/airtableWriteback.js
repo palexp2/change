@@ -124,6 +124,40 @@ const WRITEBACK_MODULES = {
   },
 }
 
+// Table ERP → module write-back (réciproque de WRITEBACK_MODULES.erpTable).
+// Sert aux chemins qui ne connaissent que la table ERP (sync dynamique,
+// mapping-data) pour retrouver la clé sous laquelle les sens sont stockés.
+const ERP_TABLE_TO_MODULE = Object.fromEntries(
+  Object.entries(WRITEBACK_MODULES).map(([m, cfg]) => [cfg.erpTable, m])
+)
+export function writebackModuleForTable(erpTable) {
+  return ERP_TABLE_TO_MODULE[erpTable] || null
+}
+
+// ── Champs dynamiques (airtable_field_mappings) ──────────────────────────────
+//
+// En plus des clés du field_map « cœur », l'utilisateur peut régler le sens de
+// sync des champs mappés dynamiquement (page /champs/:table). Leur sens est
+// stocké dans airtable_field_directions sous la clé `dyn:<colonne ERP>` — le
+// préfixe évite toute collision avec une clé cœur homonyme. Défaut : 'pull'
+// (comportement historique — un champ dynamique n'est jamais poussé tant que
+// l'utilisateur n'a pas choisi l'inverse).
+const DYN_PREFIX = 'dyn:'
+export function dynamicDirectionKey(column) { return `${DYN_PREFIX}${column}` }
+export function isDynamicDirectionKey(key) { return typeof key === 'string' && key.startsWith(DYN_PREFIX) }
+
+export function dynamicFieldDirection(module, column) {
+  if (!module || !WRITEBACK_MODULES[module]) return 'pull'
+  const override = readDirectionOverride(module, dynamicDirectionKey(column))
+  return (override === 'pull' || override === 'push' || override === 'both') ? override : 'pull'
+}
+
+// Vrai si le module supporte le write-back → le sens des champs dynamiques y
+// est configurable (sauf champs lien, filtrés à la route et au push).
+export function isDynamicDirectionConfigurable(module) {
+  return !!WRITEBACK_MODULES[module]
+}
+
 // Sens de synchronisation d'une clé du field_map d'un module, pour affichage
 // (modale de mapping) ET pour piloter le write-back : 'both' = importé depuis
 // Airtable ET réécrit vers Airtable, 'pull' = Airtable → ERP seulement, 'push' =
@@ -159,7 +193,10 @@ function readDirectionOverride(module, key) {
 // write-back — on ne peut pas y activer un write-back fiable).
 export function setFieldDirection(module, key, direction) {
   if (!['pull', 'push', 'both'].includes(direction)) throw new Error('Sens invalide (pull, push ou both)')
-  if (!isDirectionConfigurable(module, key)) throw new Error('Ce champ ne supporte pas le choix du sens de synchronisation')
+  const configurable = isDynamicDirectionKey(key)
+    ? isDynamicDirectionConfigurable(module)
+    : isDirectionConfigurable(module, key)
+  if (!configurable) throw new Error('Ce champ ne supporte pas le choix du sens de synchronisation')
   db.prepare(`
     INSERT INTO airtable_field_directions (module, field_key, direction)
     VALUES (?,?,?)
@@ -248,7 +285,9 @@ export function consumeWritebackEcho(airtableId, airtableFields) {
 }
 
 // Construit la correspondance colonne ERP → nom de champ Airtable à partir du
-// field_map du module, en excluant les clés non scalaires.
+// field_map du module, en excluant les clés non scalaires, puis y ajoute les
+// champs dynamiques (airtable_field_mappings) dont l'utilisateur a réglé le
+// sens sur push/both.
 function buildColumnMap(module, fieldMap) {
   const cfg = WRITEBACK_MODULES[module]
   const out = {}
@@ -259,6 +298,23 @@ function buildColumnMap(module, fieldMap) {
     const col = cfg.keyToColumn?.[key] || key
     out[col] = atField
   }
+  // Champs dynamiques : défaut 'pull' (jamais poussés) — seuls ceux passés en
+  // push/both par l'utilisateur rejoignent le write-back. Les champs lien sont
+  // exclus (la colonne ERP porte un id local, pas une valeur Airtable).
+  try {
+    const defs = db.prepare(`
+      SELECT airtable_field_name, column_name, options FROM airtable_field_mappings
+      WHERE erp_table=? AND import_disabled IS NOT 1 AND column_name != '__pending__'
+    `).all(cfg.erpTable)
+    for (const d of defs) {
+      if (!d.column_name || out[d.column_name]) continue  // colonne déjà couverte par le mapping cœur
+      if (dynamicFieldDirection(module, d.column_name) === 'pull') continue
+      let opts = {}
+      try { opts = JSON.parse(d.options || '{}') } catch {}
+      if (opts.link_target_table) continue
+      out[d.column_name] = d.airtable_field_name
+    }
+  } catch { /* table de mappings absente (tests) : champs cœur seulement */ }
   return out
 }
 
@@ -297,6 +353,7 @@ export async function writeBackRecord(module, recordId, changedColumns = null) {
     for (const [col, atField] of Object.entries(columnMap)) {
       if (changedSet && !changedSet.has(col)) continue   // ne pousser que ce qui a changé
       if (frozen.has(col)) continue                       // colonne gelée : jamais écrite
+      if (!(col in row)) continue                         // colonne supprimée de la table : ne pas pousser null
       fields[atField] = row[col] ?? null                  // null = effacer le champ Airtable
     }
 

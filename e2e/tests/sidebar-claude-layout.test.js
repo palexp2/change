@@ -16,7 +16,7 @@ const EMAIL = process.env.ERP_EMAIL || 'claude@orisha.io'
 const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
-const GROUPS = ['Clients', 'Envois', 'Comptabilité', 'Inventaire', 'RH', 'Autres outils']
+const GROUPS = ['Clients', 'Transport', 'Comptabilité', 'Inventaire', 'RH', 'Autres outils']
 
 describe('Sidebar façon Claude — barre claire, repliable, recherche unifiée', () => {
   let browser, ctx, page

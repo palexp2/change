@@ -11,6 +11,7 @@ import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import Attachments from '../components/Attachments.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { useDetailFields } from '../lib/useDetailFields.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
@@ -430,7 +431,11 @@ export default function ContactDetail({ recordId, embedded = false }) {
     }
   }
 
-  const visibleFields = useMemo(() => CONTACT_FIELDS.filter(f => f.defaultVisible !== false), [])
+  // Les libellés, les masquages et les champs perso viennent du registre commun
+  // (custom_fields) : renommer ou supprimer un champ depuis un tableau se voit
+  // ici aussi. La mise en page, elle, reste celle de la fiche.
+  const baseFields = useMemo(() => CONTACT_FIELDS.filter(f => f.defaultVisible !== false), [])
+  const { fields: visibleFields, customFields: extraFields } = useDetailFields('contacts', baseFields)
 
   // Colonnes DataTable des tâches du contact. Dérivées de la meta contact_tasks,
   // enrichies des render() (setters useState stables → deps vides).
@@ -570,6 +575,20 @@ export default function ContactDetail({ recordId, embedded = false }) {
               allCompanies={companies}
               onChange={updated => setContact(c => ({ ...c, ...updated }))}
             />
+            {/* Champs personnalisés de la table : ils apparaissent ici sans que
+                personne n'ait à toucher au code de la fiche. Lecture seule —
+                l'édition inline d'une colonne cf_ suppose une route PATCH qui
+                la liste explicitement, ce qui n'est pas branché sur contacts. */}
+            {extraFields.map(field => (
+              <div key={field.key} data-testid={`detail-cf-${field.key}`}>
+                <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">
+                  {field.label}
+                </div>
+                <div className="text-sm text-slate-700">
+                  {field.render(contact[field.key])}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
 

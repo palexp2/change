@@ -41,6 +41,7 @@ CONTEXTE CRITIQUE — qui est qui sur le document :
 Extrait toutes les informations disponibles et retourne un JSON valide avec exactement cette structure:
 {
   "receipt_date": "YYYY-MM-DD ou null",
+  "order_date": "YYYY-MM-DD — date de la COMMANDE imprimée sur le document (« Date de la commande », « Order Date », « PO Date »), distincte de la date de facture, ou null si absente",
   "company": "nom du fournisseur/marchand qui a émis le document — jamais Orisha — ou null",
   "address": "adresse du fournisseur/marchand (l'émetteur) ou null",
   "receipt_number": "numéro de reçu/facture ou null",
@@ -62,6 +63,10 @@ Extrait toutes les informations disponibles et retourne un JSON valide avec exac
   "transaction_type": "clé de classification fiscale TPS/TVQ (voir la règle dédiée) ou null",
   "notes": "autres informations pertinentes ou null"
 }
+
+RÈGLE — "order_date" (date de la commande) :
+- Certains fournisseurs (Digikey notamment) impriment une « Date de la commande / Order Date » DISTINCTE de la « Date de facturation / Invoice Date » — la commande a pu être passée plusieurs jours ou semaines avant que cette expédition partielle soit facturée. Capture cette date exacte : elle sert à rapprocher automatiquement la ligne du bon de commande interne correspondant (cf. règle quantité/prix unitaire ci-dessous), en particulier quand plusieurs commandes de la même pièce sont en cours.
+- Si le document n'imprime qu'une seule date (pas de distinction commande/facture), laisse "order_date" à null.
 
 RÈGLE — TERMES DE PAIEMENT ET ÉCHÉANCE :
 - "due_date" : la date d'échéance de paiement IMPRIMÉE sur le document (« Due date », « Date d'échéance », « Payable avant le… »). null si aucune date d'échéance explicite.
@@ -600,6 +605,7 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
         company,
         vendorProfileId: profile?.id || null,
         receiptDate: extracted.receipt_date || null,
+        orderDate: extracted.order_date || null,
         excludeReceiptId: saleReceiptId,
       })
       items = linked.items
@@ -729,7 +735,7 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     db.prepare(`
       UPDATE sale_receipts SET
         status='done',
-        receipt_date=?, company=?, address=?, receipt_number=?, general_description=?, service_period=?,
+        receipt_date=?, order_date=?, company=?, address=?, receipt_number=?, general_description=?, service_period=?,
         subtotal=?, tps=?, tvq=?, other_taxes=?, total=?,
         payment_method=?, currency=?, items=?, raw_data=?,
         due_date=?, payment_terms_days=?, vendor_profile_id=?, extracted_transaction_type=?,
@@ -737,6 +743,7 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
       WHERE id=? AND deleted_at IS NULL
     `).run(
       extracted.receipt_date || null,
+      extracted.order_date || null,
       company,
       extracted.address || null,
       extracted.receipt_number || null,

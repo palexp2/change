@@ -118,17 +118,23 @@ router.get('/', (req, res) => {
     ORDER BY month ASC
   `).all(), []);
 
-  // Closing rate by month × type (last 12 months) — use close_date, fall back to updated_at
+  // Closing rate by month × type (last 12 months).
+  // Statut du projet : le champ « Vendu » (`cf_vendu`, single select Oui/Non) fait foi —
+  // et non la colonne `status`, qui est restée à 'Ouvert' sur la totalité des projets
+  // importés d'Airtable et ne distingue donc jamais gagné/perdu.
+  // Date de bucketing : `close_date` quand elle est renseignée, sinon `creation` (champ
+  // canonique rempli pour tous les projets). L'ancien repli sur `updated_at` datait de la
+  // dernière synchro, ce qui empilait tous les projets dans le mois courant.
   const closingByMonth = safe('closingByMonth', () => db.prepare(`
     SELECT
-      strftime('%Y-%m', COALESCE(close_date, updated_at)) as month,
+      strftime('%Y-%m', COALESCE(NULLIF(close_date, ''), creation)) as month,
       COALESCE(type, '') as type,
-      SUM(CASE WHEN status = 'Gagné' THEN 1 ELSE 0 END) as won,
-      SUM(CASE WHEN status = 'Perdu' THEN 1 ELSE 0 END) as lost
+      SUM(CASE WHEN cf_vendu = 'Oui' THEN 1 ELSE 0 END) as won,
+      SUM(CASE WHEN cf_vendu = 'Non' THEN 1 ELSE 0 END) as lost
     FROM projects
     WHERE deleted_at IS NULL
-      AND status IN ('Gagné', 'Perdu')
-      AND COALESCE(close_date, updated_at) >= date('now', '-12 months')
+      AND cf_vendu IN ('Oui', 'Non')
+      AND COALESCE(NULLIF(close_date, ''), creation) >= date('now', '-12 months')
     GROUP BY month, type
     ORDER BY month, type
   `).all(), []);

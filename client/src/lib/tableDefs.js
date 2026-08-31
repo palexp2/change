@@ -94,6 +94,23 @@ const CC_PERMISSION_COLUMNS = [
   ].map(c => ({ ...c, field: c.id, type: 'number', defaultVisible: false, description: 'Somme des permissions dérivée des contrôleurs centraux de l\'entreprise dont le statut est « Opérationnel - Vendu/Loué ». Source : ccPermissions.js.' })),
 ]
 
+// Nom du TYPE d'une colonne dont le rendu sur-mesure est un lien vers la fiche
+// d'un autre record. Dans Airtable, « enregistrement lié » est un type, pas un
+// rendu caché : nommer ainsi le type d'origine rend le re-typage lisible (on
+// voit ce qu'on perd) et réversible (on peut le re-sélectionner).
+//
+// N'est appliqué que si la colonne porte réellement un `render` — la même clé
+// existe sur des tables où elle n'est que du texte, et promettre un lien
+// inexistant serait pire que de ne rien dire.
+export const LINKED_RECORD_TYPE_LABELS = {
+  company_name: 'Lien vers Entreprise',
+  contact_name: 'Lien vers Contact',
+  product_name: 'Lien vers Produit',
+  order_number: 'Lien vers Commande',
+  ticket_title: 'Lien vers Billet',
+  project_name: 'Lien vers Projet',
+}
+
 export const TABLE_COLUMN_META = {
   // Feed des opérations — journal d'activité (qui / quoi / quand). Lecture seule.
   // Les options single_select reflètent les valeurs brutes émises par
@@ -125,15 +142,16 @@ export const TABLE_COLUMN_META = {
     { id: 'status',        label: 'Statut',       field: 'status',        type: 'single_select', options: ['À faire', 'En cours', 'Terminé', 'Annulé'] },
     { id: 'priority',      label: 'Priorité',     field: 'priority',      type: 'single_select', options: ['Basse', 'Normal', 'Haute', 'Urgente'] },
     { id: 'due_date',      label: 'Échéance',     field: 'due_date',      type: 'date' },
-    { id: 'company_name',  label: 'Entreprise',   field: 'company_name',  defaultVisible: true },
-    { id: 'contact_name',  label: 'Contact',      field: 'contact_name',  defaultVisible: true },
-    { id: 'ticket_title',  label: 'Billet',       field: 'ticket_title',  defaultVisible: false },
+    { id: 'company_name',  label: 'Entreprise',   field: 'company_name',  defaultVisible: true  },
+    { id: 'contact_name',  label: 'Contact',      field: 'contact_name',  defaultVisible: true  },
+    { id: 'ticket_title',  label: 'Billet',       field: 'ticket_title',  defaultVisible: false  },
     { id: 'assigned_name', label: 'Responsable',  field: 'assigned_name', type: 'user', defaultVisible: false },
     { id: 'created_at',    label: 'Créée le',     field: 'created_at',    type: 'date', defaultVisible: false },
   ],
 
   companies: [
     { id: 'name',            label: 'Entreprise',   field: 'name' },
+    { id: 'city',            label: 'Ville',        field: 'city' },
     { id: 'type',            label: 'Type',         field: 'type',            type: 'single_select', options: ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin', 'Agriculture urbaine', 'Cannabis', 'Particulier', 'Distributeur', 'Partenaire', 'Compétiteur', 'Consultant', 'Autre'] },
     { id: 'phone',           label: 'Téléphone',    field: 'phone', type: 'phone' },
     { id: 'lifecycle_phase', label: 'Phase',        field: 'lifecycle_phase', type: 'single_select', options: ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore'] },
@@ -143,7 +161,7 @@ export const TABLE_COLUMN_META = {
 
   contacts: [
     { id: 'full_name',    label: 'Nom',         field: 'first_name' },
-    { id: 'company_name', label: 'Entreprise',  field: 'company_name' },
+    { id: 'company_name', label: 'Entreprise',  field: 'company_name'  },
     { id: 'email',        label: 'Courriel',    field: 'email' },
     { id: 'phone',        label: 'Téléphone',   field: 'phone',  type: 'phone' },
     { id: 'mobile',       label: 'Cellulaire',  field: 'mobile', type: 'phone', defaultVisible: false },
@@ -154,9 +172,11 @@ export const TABLE_COLUMN_META = {
 
   projects: [
     { id: 'name',           label: 'Projet',            field: 'name' },
-    { id: 'company_name',   label: 'Entreprise',        field: 'company_name' },
+    { id: 'company_name',   label: 'Entreprise',        field: 'company_name'  },
     { id: 'type',           label: 'Type',              field: 'type',        type: 'single_select', options: ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange'] },
-    { id: 'status',         label: 'Statut',            field: 'status',      type: 'single_select', options: ['Ouvert', 'Gagné', 'Perdu'] },
+    // Le champ « Statut » a été retiré (signalement depuis /champs/projects) :
+    // la colonne SQL `projects.status` et les routes qui la lisent restent en
+    // place, mais elle ne s'affiche plus nulle part dans l'interface.
     { id: 'probability',    label: 'Probabilité',       field: 'probability', type: 'number', defaultVisible: false, description: 'Probabilité de conclusion du projet, en pourcentage (0 à 100).' },
     { id: 'value_cad',      label: 'Valeur (CAD)',      field: 'value_cad',   type: 'number', description: 'Valeur ponctuelle (achat) du projet en dollars canadiens. Exclut le mensuel récurrent.' },
     { id: 'monthly_cad',    label: 'Mensuel (CAD)',     field: 'monthly_cad', type: 'number', defaultVisible: false, description: 'Revenu mensuel récurrent (abonnement) associé au projet, en CAD.' },
@@ -196,8 +216,8 @@ export const TABLE_COLUMN_META = {
   ],
 
   orders: [
-    { id: 'order_number',   label: '# Commande',       field: 'order_number' },
-    { id: 'company_name',   label: 'Entreprise',        field: 'company_name' },
+    { id: 'order_number',   label: '# Commande',       field: 'order_number'  },
+    { id: 'company_name',   label: 'Entreprise',        field: 'company_name'  },
     { id: 'date_commande',  label: 'Date de commande',  field: 'date_commande', type: 'date' },
     { id: 'status',         label: 'Statut',            field: 'status',   type: 'single_select', options: ['Commande vide', "Gel d'envois", 'En attente', 'Items à fabriquer ou à acheter', 'Tous les items sont disponibles', 'Tout est dans la boite', 'Partiellement envoyé', 'Drop ship seulement', 'JWT-config', "Envoyé aujourd'hui", 'Envoyé', 'ERREUR SYSTÈME'] },
     { id: 'priority',       label: 'Priorité',          field: 'priority', type: 'single_select', options: ['low', 'normal', 'high', 'urgent'] },
@@ -208,7 +228,7 @@ export const TABLE_COLUMN_META = {
   // Lignes d'articles d'une commande — tableau embarqué dans OrderDetail.jsx
   // (les render() custom — produit, badges, actions — vivent dans la page).
   order_items: [
-    { id: 'product_name',       label: 'Produit',         field: 'product_name' },
+    { id: 'product_name',       label: 'Produit',         field: 'product_name'  },
     { id: 'qty',                label: 'Qté',             field: 'qty', type: 'number' },
     { id: 'item_type',          label: 'Type',            field: 'item_type', type: 'single_select', options: ['Facturable', 'Remplacement', 'Non facturable'] },
     { id: 'product_location',   label: 'Emplacement',     field: 'product_location' },
@@ -222,7 +242,8 @@ export const TABLE_COLUMN_META = {
 
   tickets: [
     { id: 'title',         label: 'Titre',      field: 'title' },
-    { id: 'company_name',  label: 'Entreprise', field: 'company_name' },
+    { id: 'contact_name',  label: 'Contact',    field: 'contact_name'  },
+    { id: 'company_name',  label: 'Entreprise', field: 'company_name'  },
     { id: 'status',        label: 'Statut',     field: 'status', type: 'single_select', options: ['open', 'in_progress', 'resolved', 'closed'] },
     { id: 'type',          label: 'Type',       field: 'type',   type: 'single_select', options: ['question', 'bug', 'feature', 'installation', 'maintenance', 'autre'] },
     { id: 'assigned_name', label: 'Assigné à',  field: 'assigned_name', type: 'user' },
@@ -233,7 +254,8 @@ export const TABLE_COLUMN_META = {
 
   purchases: [
     { id: 'image',         label: 'Image',       field: 'product_image', sortable: false, filterable: false, groupable: false, defaultVisible: false },
-    { id: 'product_name',  label: 'Produit',     field: 'product_name' },
+    { id: 'product_name',  label: 'Produit',     field: 'product_name'  },
+    { id: 'sku',           label: 'SKU',         field: 'sku' },
     { id: 'supplier',      label: 'Fournisseur', field: 'supplier' },
     { id: 'status',        label: 'Statut',      field: 'status', type: 'single_select', options: ['pending', 'ordered', 'partial', 'received', 'cancelled'] },
     { id: 'qty_ordered',   label: 'Qté commandée', field: 'qty_ordered', type: 'number' },
@@ -245,8 +267,8 @@ export const TABLE_COLUMN_META = {
 
   serial_numbers: [
     { id: 'serial',        label: 'Numéro de série', field: 'serial' },
-    { id: 'product_name',  label: 'Produit',         field: 'product_name' },
-    { id: 'company_name',  label: 'Entreprise',      field: 'company_name' },
+    { id: 'product_name',  label: 'Produit',         field: 'product_name'  },
+    { id: 'company_name',  label: 'Entreprise',      field: 'company_name'  },
     { id: 'status',        label: 'Statut',          field: 'status', type: 'single_select', options: ['active', 'inactive', 'returned', 'lost'] },
     { id: 'address',       label: 'Adresse',         field: 'address', defaultVisible: false },
     { id: 'permissions',   label: 'Permissions',     field: 'permissions', sortable: false, filterable: false, groupable: false, defaultVisible: false },
@@ -256,8 +278,8 @@ export const TABLE_COLUMN_META = {
   interactions: [
     { id: 'type',         label: 'Type',        field: 'type',      type: 'single_select', options: ['call', 'email', 'meeting', 'note', 'sms'] },
     { id: 'direction',    label: 'Direction',   field: 'direction', type: 'single_select', options: ['inbound', 'outbound'] },
-    { id: 'contact_name', label: 'Contact',     field: 'contact_name' },
-    { id: 'company_name', label: 'Entreprise',  field: 'company_name' },
+    { id: 'contact_name', label: 'Contact',     field: 'contact_name'  },
+    { id: 'company_name', label: 'Entreprise',  field: 'company_name'  },
     { id: 'phone_number', label: 'Téléphone',   field: 'phone_number',     defaultVisible: false },
     { id: 'summary',      label: 'Résumé',      field: null,               sortable: false, filterable: false, groupable: false },
     { id: 'timestamp',    label: 'Date',        field: 'timestamp',        type: 'date' },
@@ -267,7 +289,7 @@ export const TABLE_COLUMN_META = {
 
   retours: [
     { id: 'return_number',     label: 'N° de retour',         field: 'return_number' },
-    { id: 'company_name',      label: 'Entreprise',           field: 'company_name' },
+    { id: 'company_name',      label: 'Entreprise',           field: 'company_name'  },
     { id: 'tracking_number',   label: 'Suivi',                field: 'tracking_number' },
     { id: 'processing_status', label: 'Statut de traitement', field: 'processing_status', type: 'single_select', options: ['Reçu', 'En attente', 'En traitement', 'Refusé'] },
     { id: 'created_at',        label: 'Date',                 field: 'created_at', type: 'date' },
@@ -276,10 +298,10 @@ export const TABLE_COLUMN_META = {
   factures: [
     { id: 'document_number',       label: 'N° document',       field: 'document_number' },
     { id: 'invoice_id',            label: 'ID Stripe/source',  field: 'invoice_id',            defaultVisible: false },
-    { id: 'company_name',          label: 'Entreprise',        field: 'company_name' },
+    { id: 'company_name',          label: 'Entreprise',        field: 'company_name'  },
     { id: 'customer_email',        label: 'Courriel client',   field: 'customer_email',        defaultVisible: false, description: 'Courriel du client Stripe (mapping configurable via « Sync Stripe »). Utile pour les clients Stripe sans entreprise dans l\'ERP.' },
-    { id: 'project_name',          label: 'Projet',            field: 'project_name',          defaultVisible: false },
-    { id: 'order_number',          label: 'Commande',          field: 'order_number',          defaultVisible: false },
+    { id: 'project_name',          label: 'Projet',            field: 'project_name',          defaultVisible: false  },
+    { id: 'order_number',          label: 'Commande',          field: 'order_number',          defaultVisible: false  },
     { id: 'status',                label: 'Statut',            field: 'status',                type: 'single_select', options: ['Payée', 'Partielle', 'En retard', 'Envoyée', 'Brouillon', 'Annulée'] },
     { id: 'document_date',         label: 'Date document',     field: 'document_date',         type: 'date' },
     { id: 'payment_date',          label: 'Date de paiement',  field: 'payment_date',          type: 'date', defaultVisible: false, description: 'Date à laquelle la facture a été payée : encaissement Stripe (paid_at) ou, à défaut, dernier paiement manuel enregistré (chèque, virement…). Couvre les paiements Stripe qu\'un rollup sur la table Paiements ne voit pas.' },
@@ -299,7 +321,7 @@ export const TABLE_COLUMN_META = {
     { id: 'received_at',    label: 'Date',        field: 'received_at',   type: 'date' },
     { id: 'direction',      label: 'Type',        field: 'direction',     type: 'single_select', options: ['in', 'out'] },
     { id: 'method',         label: 'Méthode',     field: 'method',        type: 'single_select', options: ['stripe', 'cheque', 'virement_bancaire', 'interac', 'comptant', 'autre'] },
-    { id: 'company_name',   label: 'Entreprise',  field: 'company_name' },
+    { id: 'company_name',   label: 'Entreprise',  field: 'company_name'  },
     { id: 'document_number',label: 'Facture',     field: 'document_number' },
     { id: 'amount',         label: 'Montant',     field: 'amount',        type: 'number', description: 'Montant du paiement dans sa devise d\'origine.' },
     { id: 'currency',       label: 'Devise',      field: 'currency',      type: 'single_select', options: ['CAD', 'USD', 'EUR'], defaultVisible: false },
@@ -309,7 +331,7 @@ export const TABLE_COLUMN_META = {
   ],
 
   abonnements: [
-    { id: 'company_name', label: 'Entreprise', field: 'company_name' },
+    { id: 'company_name', label: 'Entreprise', field: 'company_name'  },
     { id: 'status',       label: 'Statut',     field: 'status', type: 'single_select', options: ['active', 'trialing', 'past_due', 'canceled', 'Actif', 'Inactif', 'Suspendu', 'Annulé', 'Expiré'] },
     { id: 'rachat',       label: 'Rachat',     field: 'rachat', defaultVisible: false },
     { id: 'amount_cad',   label: 'Montant (CAD)', field: 'amount_cad', type: 'number' },
@@ -323,7 +345,7 @@ export const TABLE_COLUMN_META = {
     { id: 'event_date',          label: 'Date',           field: 'event_date',     type: 'date' },
     { id: 'month',               label: 'Mois',           field: 'month',          defaultVisible: false },
     { id: 'category',            label: 'Mouvement',      field: 'category',       type: 'single_select', options: ['creation', 'upgrade', 'downgrade', 'churn', 'reactivation'] },
-    { id: 'company_name',        label: 'Entreprise',     field: 'company_name' },
+    { id: 'company_name',        label: 'Entreprise',     field: 'company_name'  },
     { id: 'subscription_link',   label: 'Abonnement',     field: 'stripe_subscription_id', sortable: false, filterable: false, groupable: false },
     { id: 'amount_cad_delta',    label: 'Δ MRR (CAD)',    field: 'amount_cad_delta', type: 'number', description: 'Variation du revenu mensuel récurrent (MRR) en CAD : positive pour un upgrade/création, négative pour un downgrade/churn.' },
     { id: 'rachat',              label: 'Rachat',         field: 'rachat_status', type: 'single_select', options: ['probable', 'confirmed', 'merged', 'none'], sortable: false, description: 'Statut de détection d\'un rachat (churn suivi d\'une recréation rapprochée) : probable, confirmé, fusionné ou aucun.' },
@@ -333,7 +355,8 @@ export const TABLE_COLUMN_META = {
   ],
 
   assemblages: [
-    { id: 'product_name', label: 'Produit',         field: 'product_name' },
+    { id: 'product_name', label: 'Produit',         field: 'product_name'  },
+    { id: 'sku',          label: 'SKU',             field: 'sku' },
     { id: 'qty_produced', label: 'Qté produite',    field: 'qty_produced', type: 'number' },
     { id: 'assembled_at', label: 'Date assemblage', field: 'assembled_at', type: 'date' },
   ],
@@ -346,7 +369,7 @@ export const TABLE_COLUMN_META = {
     { id: 'component_stock_qty', label: 'Stock composant', field: 'component_stock_qty', type: 'number', description: 'Stock courant du composant en inventaire. Croisé avec « Qté requise » pour calculer le nombre d\'unités assemblables.' },
     { id: 'buildable',       label: 'Assemblables',  field: 'buildable', type: 'number', sortable: false, filterable: false, groupable: false, description: 'Unités du produit que ce composant seul permet d\'assembler = plancher(Stock composant ÷ Qté requise).' },
     { id: 'ref_des',         label: 'Ref. des.',     field: 'ref_des' },
-    { id: 'product_name',    label: 'Produit parent', field: 'product_name', defaultVisible: false },
+    { id: 'product_name',    label: 'Produit parent', field: 'product_name', defaultVisible: false  },
     { id: 'product_sku',     label: 'SKU parent',     field: 'product_sku',  defaultVisible: false },
   ],
 
@@ -484,12 +507,11 @@ export const TABLE_COLUMN_META = {
   ],
 
   shipments: [
-    { id: 'order_number',    label: '# Commande',   field: 'order_number' },
-    { id: 'company_name',    label: 'Entreprise',   field: 'company_name' },
+    { id: 'order_number',    label: '# Commande',   field: 'order_number'  },
+    { id: 'company_name',    label: 'Entreprise',   field: 'company_name'  },
     { id: 'tracking_number', label: 'N° de suivi',  field: 'tracking_number' },
     { id: 'carrier',         label: 'Transporteur', field: 'carrier' },
     { id: 'pays',            label: 'Pays',         field: 'pays' },
-    { id: 'status',          label: 'Statut',       field: 'status', type: 'single_select', options: ['À envoyer', 'Envoyé'] },
     { id: 'shipped_at',      label: 'Envoyé le',    field: 'shipped_at',  type: 'date' },
     { id: 'created_at',      label: 'Créé le',      field: 'created_at',  type: 'date' },
   ],
@@ -511,7 +533,7 @@ export const TABLE_COLUMN_META = {
   stock_movements: [
     { id: 'created_at',     label: 'Date',           field: 'created_at',     type: 'date' },
     { id: 'product_sku',    label: 'SKU',            field: 'product_sku' },
-    { id: 'product_name',   label: 'Produit',        field: 'product_name' },
+    { id: 'product_name',   label: 'Produit',        field: 'product_name'  },
     { id: 'type',           label: 'Type',           field: 'type',           type: 'single_select', options: ['in', 'out', 'adjustment'] },
     { id: 'qty',            label: 'Quantité',       field: 'qty',            type: 'number' },
     { id: 'reason',         label: 'Raison',         field: 'reason',         type: 'single_select', options: ['Fabrication', 'Utilisation pour le reconditionnement', 'Ajustement (augmentation)', 'Ajustement (diminution)', 'Utilisation de pièces usagés', 'Prélèvement pour R&D'] },
@@ -583,8 +605,8 @@ export const TABLE_COLUMN_META = {
   serial_state_changes: [
     { id: 'changed_at',      label: 'Date',           field: 'changed_at',      type: 'date' },
     { id: 'serial',          label: 'Serial',         field: 'serial' },
-    { id: 'product_name',    label: 'Produit',        field: 'product_name' },
-    { id: 'company_name',    label: 'Client',         field: 'company_name' },
+    { id: 'product_name',    label: 'Produit',        field: 'product_name'  },
+    { id: 'company_name',    label: 'Client',         field: 'company_name'  },
     { id: 'previous_status', label: 'État précédent', field: 'previous_status' },
     { id: 'new_status',      label: 'Nouvel état',    field: 'new_status' },
   ],
@@ -603,6 +625,10 @@ export const TABLE_COLUMN_META = {
     { id: 'email',  label: 'Courriel',    field: 'email' },
     { id: 'role',   label: 'Rôle',        field: 'role',   type: 'single_select', options: ['admin', 'rh', 'sales', 'support', 'ops'] },
     { id: 'active', label: 'Statut',      field: 'active', type: 'boolean' },
+    // Owner HubSpot : colonne masquée tant que le connecteur HubSpot n'est pas
+    // configuré (filtrée dans Admin.jsx). `hubspot_owner_name` est calculé côté
+    // client à partir du mapping (override manuel ou correspondance par email).
+    { id: 'hubspot_owner', label: 'Owner HubSpot', field: 'hubspot_owner_name' },
     { id: 'reset',  label: '',            field: '',       sortable: false, filterable: false, groupable: false },
   ],
 
@@ -618,8 +644,8 @@ export const TABLE_COLUMN_META = {
 
   soumissions: [
     { id: 'title',           label: 'Titre',       field: 'title' },
-    { id: 'company_name',    label: 'Entreprise',  field: 'company_name' },
-    { id: 'contact_name',    label: 'Contact',     field: 'contact_name', defaultVisible: false },
+    { id: 'company_name',    label: 'Entreprise',  field: 'company_name'  },
+    { id: 'contact_name',    label: 'Contact',     field: 'contact_name'  },
     { id: 'status',          label: 'Statut',      field: 'status', type: 'single_select', options: ['Brouillon', 'Envoyée', 'Acceptée', 'Refusée', 'Expirée'] },
     { id: 'language',        label: 'Langue',      field: 'language', type: 'single_select', options: ['French', 'English'], defaultVisible: false },
     { id: 'currency',        label: 'Devise',      field: 'currency', type: 'single_select', options: ['CAD', 'USD'], defaultVisible: false },
@@ -666,7 +692,7 @@ export const TABLE_COLUMN_META = {
   ],
 
   company_orders: [
-    { id: 'order_number', label: '# Commande', field: 'order_number' },
+    { id: 'order_number', label: '# Commande', field: 'order_number'  },
     { id: 'status',       label: 'Statut',     field: 'status', type: 'single_select', options: ['Commande vide', "Gel d'envois", 'En attente', 'Items à fabriquer ou à acheter', 'Tous les items sont disponibles', 'Tout est dans la boite', 'Partiellement envoyé', 'Drop ship seulement', 'JWT-config', "Envoyé aujourd'hui", 'Envoyé', 'ERREUR SYSTÈME'] },
     { id: 'items_count',  label: 'Articles',   field: 'items_count', type: 'number', groupable: false, sortable: false },
     { id: 'created_at',   label: 'Date',       field: 'created_at', type: 'date' },
@@ -688,7 +714,7 @@ export const TABLE_COLUMN_META = {
   ],
 
   company_abonnements: [
-    { id: 'product_name', label: 'Produit', field: 'product_name' },
+    { id: 'product_name', label: 'Produit', field: 'product_name'  },
     { id: 'type',         label: 'Type',    field: 'type' },
     { id: 'status',       label: 'Statut',  field: 'status', type: 'single_select', options: ['active', 'trialing', 'past_due', 'canceled', 'Actif', 'Inactif', 'Suspendu', 'Annulé', 'Expiré'] },
     { id: 'amount_cad',   label: 'Montant', field: 'amount_cad', type: 'number' },
@@ -698,9 +724,8 @@ export const TABLE_COLUMN_META = {
 
   company_envois: [
     { id: 'tracking_number', label: 'N° de suivi',  field: 'tracking_number' },
-    { id: 'status',          label: 'Statut',       field: 'status', type: 'single_select', options: ['À envoyer', 'Envoyé'] },
     { id: 'carrier',         label: 'Transporteur', field: 'carrier' },
-    { id: 'order_number',    label: 'Commande',     field: 'order_number' },
+    { id: 'order_number',    label: 'Commande',     field: 'order_number'  },
     { id: 'shipped_at',      label: 'Envoyé le',    field: 'shipped_at', type: 'date' },
   ],
 
@@ -725,8 +750,8 @@ export const TABLE_COLUMN_META = {
     { id: 'return_number',     label: 'N° RMA',      field: 'return_number' },
     { id: 'status',            label: 'Statut',      field: 'status', type: 'single_select', options: ['Ouvert', 'En cours', 'Fermé'] },
     { id: 'processing_status', label: 'Traitement',  field: 'processing_status', type: 'single_select', options: ['Reçu', 'En attente', 'En traitement', 'Refusé'] },
-    { id: 'contact_name',      label: 'Contact',     field: 'contact_first_name' },
-    { id: 'order_number',      label: 'Commande',    field: 'order_number' },
+    { id: 'contact_name',      label: 'Contact',     field: 'contact_first_name'  },
+    { id: 'order_number',      label: 'Commande',    field: 'order_number'  },
     { id: 'items_count',       label: 'Articles',    field: 'items_count', type: 'number' },
     { id: 'created_at',        label: 'Date',        field: 'created_at', type: 'date' },
   ],
@@ -785,7 +810,7 @@ export const TABLE_COLUMN_META = {
 
   qualification_calls: [
     { id: 'call_date',         label: 'Date',          field: 'call_date',         type: 'date' },
-    { id: 'company_name',      label: 'Entreprise',    field: 'company_name' },
+    { id: 'company_name',      label: 'Entreprise',    field: 'company_name'  },
     { id: 'assignee',          label: 'Vendeur',       field: 'assignee' },
     { id: 'status',            label: 'Statut',        field: 'status',            type: 'single_select', options: ['En cours', 'Terminé', 'Abandonné'] },
     { id: 'contact_full_name', label: 'Contact',       field: 'contact_full_name', defaultVisible: false },
@@ -801,7 +826,7 @@ export const TABLE_COLUMN_META = {
   ],
 
   discovery_forms: [
-    { id: 'company_name',         label: 'Entreprise',       field: 'company_name' },
+    { id: 'company_name',         label: 'Entreprise',       field: 'company_name'  },
     { id: 'status',               label: 'Statut',           field: 'status', type: 'single_select', options: ['in_progress', 'submitted'] },
     { id: 'num_greenhouses',      label: 'Nb serres',        field: 'num_greenhouses', type: 'number' },
     { id: 'chief_grower_count',   label: 'Chief',            field: 'chief_grower_count', type: 'number' },

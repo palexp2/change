@@ -22,6 +22,8 @@ import api from '../lib/api.js'
 //  - subtitle    : string | undefined — sous-titre discret (entreprise, courriel…).
 //  - to          : string | undefined — route de la fiche complète ; affiche le
 //                  bouton « ouvrir en grand » qui navigue et ferme le drawer.
+//                  Sert aussi d'URL affichée dans la barre d'adresse pendant
+//                  que le drawer est ouvert (voir « URL partageable » plus bas).
 //  - width       : number — largeur par défaut en px (défaut 560), utilisée tant
 //                  que l'utilisateur n'a pas défini de préférence.
 //  - children    : contenu du corps (scrollable).
@@ -45,6 +47,13 @@ function clampWidth(w) {
 
 export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, width = 560, children }) {
   const navigate = useNavigate()
+  // Garde une référence stable sur onClose : l'effet d'URL ne doit pas se
+  // rejouer (et re-pousser une entrée d'historique) à chaque rendu du parent.
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+  // Marqueur : « ouvrir en grand » remplace lui-même l'entrée d'historique,
+  // le nettoyage ne doit pas faire de history.back().
+  const skipRestoreRef = useRef(false)
   const panelRef = useRef(null)
   const [panelWidth, setPanelWidth] = useState(() => clampWidth(prefCache.width ?? width))
   const [resizing, setResizing] = useState(false)
@@ -76,6 +85,31 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, w
     if (!open) return
     setPanelWidth(clampWidth(prefCache.width ?? width))
   }, [open, width])
+
+  // ── URL partageable ───────────────────────────────────────────────────────
+  // Pendant que le drawer est ouvert, la barre d'adresse affiche l'URL de la
+  // fiche (`to`) pour qu'on puisse copier/partager le chemin exact. On pousse
+  // l'entrée directement via window.history (sans passer par le router) : le
+  // routeur reste sur la liste, donc la page sous-jacente n'est pas démontée.
+  // À la fermeture on revient en arrière ; un « précédent » du navigateur
+  // ferme le drawer.
+  useEffect(() => {
+    if (!open || !to) return
+    const here = () => window.location.pathname + window.location.search + window.location.hash
+    if (here() === to) return
+    window.history.pushState({ ...(window.history.state || {}), peekDrawer: true }, '', to)
+    let popped = false
+    const onPop = () => { popped = true; onCloseRef.current?.() }
+    window.addEventListener('popstate', onPop)
+    return () => {
+      window.removeEventListener('popstate', onPop)
+      // Ne revenir en arrière que si notre entrée est toujours la courante :
+      // une navigation faite depuis le drawer (lien vers une autre fiche,
+      // « ouvrir en grand ») ne doit pas être annulée.
+      if (!popped && !skipRestoreRef.current && here() === to) window.history.back()
+      skipRestoreRef.current = false
+    }
+  }, [open, to])
 
   // Verrou du scroll du body tant que le drawer est ouvert.
   useEffect(() => {
@@ -138,8 +172,12 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, w
 
   function openFull() {
     if (!to) return
+    // L'URL est déjà celle de la fiche : on remplace l'entrée poussée par le
+    // drawer plutôt que d'en empiler une seconde (« précédent » ramène à la
+    // liste, pas au panneau).
+    skipRestoreRef.current = true
     onClose?.()
-    navigate(to)
+    navigate(to, { replace: true })
   }
 
   return createPortal(

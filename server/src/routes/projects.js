@@ -7,6 +7,7 @@ import { validateNumericFields } from '../utils/validateNumbers.js';
 import { checkForeignKeys } from '../utils/fkExists.js';
 import { getActiveCustomColumns, applyCustomFieldDefaults } from './custom-fields.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
+import { writeBackRecord } from '../services/airtableWriteback.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -68,7 +69,10 @@ router.get('/', (req, res) => {
     params.push(company_id);
   }
   if (req.query.month) {
-    where += " AND strftime('%Y-%m', COALESCE(p.close_date, p.updated_at)) = ?";
+    // Même bucketing que le graphique « Taux de closing » du dashboard :
+    // close_date si renseignée, sinon `creation` (et non `updated_at`, qui date
+    // de la dernière synchro).
+    where += " AND strftime('%Y-%m', COALESCE(NULLIF(p.close_date, ''), p.creation)) = ?";
     params.push(req.query.month);
   }
 
@@ -226,6 +230,9 @@ router.put('/:id', (req, res) => {
   if (setClause) {
     db.prepare(`UPDATE projects SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(...values, req.params.id);
+    // Write-back ERP → Airtable (fire-and-forget) : ne pousse que les colonnes
+    // modifiées dont le sens n'est pas 'pull' — échecs tracés dans sync_log.
+    writeBackRecord('projets', req.params.id, Object.keys(req.body));
   }
 
   const updated = db.prepare('SELECT p.*, c.name as company_name FROM projects p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?').get(req.params.id)
@@ -244,6 +251,7 @@ router.patch('/:id/status', (req, res) => {
   }
   db.prepare(`UPDATE projects SET status=?, refusal_reason=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
     .run(status, refusal_reason || null, req.params.id);
+  writeBackRecord('projets', req.params.id, ['status', 'refusal_reason']);
   const updated = db.prepare('SELECT p.*, c.name as company_name FROM projects p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?').get(req.params.id)
   emitEntity('project', 'updated', req.params.id, updated, req.user?.id);
   res.json({ message: 'Status updated' });

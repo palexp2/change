@@ -4,9 +4,10 @@ import { Modal } from './Modal.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import api from '../lib/api.js'
-import { OVERRIDE_TYPES, typeLabel, syncSourceForTable } from '../lib/fieldOverrides.jsx'
+import { OVERRIDE_TYPES, typeLabel, syncSourceForTable, normalizeFieldType } from '../lib/fieldOverrides.jsx'
 import { formatDurationSeconds, normalizeDurationFormat } from '../lib/duration.js'
-import { currencyCodeOf, phoneCountryCodeOf } from '../lib/customFieldDisplay.jsx'
+import { currencyCodeOf, phoneCountryCodeOf, dateFormatOf } from '../lib/customFieldDisplay.jsx'
+import { DATE_DISPLAY_FORMATS, normalizeDateFormat } from '../lib/formatDate.js'
 import { TABLE_LABELS, TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { groupDependents, DEPENDENT_CATEGORY_LABELS } from '../lib/customFieldDeps.js'
 
@@ -168,7 +169,11 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved }) {
   const lastSaved = useRef({ label: '', type: 'text', decimals: 2, countryCode: 'hide' })
 
   // Type/label d'origine de la colonne, tels que définis dans tableDefs.js.
-  const originalType = column?.type || 'text'
+  // Vocabulaire unifié : tableDefs.js dit encore 'boolean' là où les champs
+  // perso disent 'checkbox'. On normalise ici pour que le type d'origine et le
+  // type proposé dans la liste soient la même valeur — sinon « Case à cocher »
+  // apparaîtrait deux fois, dont une comme un changement de type fictif.
+  const originalType = normalizeFieldType(column?.type)
   const originalLabel = column?.label || column?.id || ''
 
   useEffect(() => {
@@ -196,8 +201,14 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved }) {
   const syncSource = syncSourceForTable(table)
   // Types proposés : le type d'origine d'abord (= pas d'override), puis les
   // types d'affichage supportés.
+  //
+  // Une colonne dotée d'un rendu sur-mesure (lien cliquable vers une fiche,
+  // badge…) annonce ce rendu comme un TYPE À PART ENTIÈRE — « Lien vers
+  // Entreprise » plutôt que « Texte ». Sans ce nom, choisir « Texte » faisait
+  // perdre le lien sans que rien ne l'annonce, et rien n'indiquait comment le
+  // retrouver ; le re-sélectionner rétablit le rendu d'origine.
   const typeOptions = [
-    { value: originalType, label: typeLabel(originalType), origin: true },
+    { value: originalType, label: column?.renderTypeLabel || typeLabel(originalType), origin: true },
     ...OVERRIDE_TYPES.filter(t => t.value !== originalType),
   ]
 
@@ -374,7 +385,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved }) {
               <p className="font-medium">Ce champ est alimenté par {syncSource}.</p>
               <p className="mt-0.5 text-amber-700">
                 Changer son type risque de casser cette sync côté affichage : la sync continuera
-                d'écrire des valeurs de type « {typeLabel(originalType)} », qui peuvent devenir
+                d'écrire des valeurs de type « {column?.renderTypeLabel || typeLabel(originalType)} », qui peuvent devenir
                 illisibles ou mal triées/filtrées en « {typeLabel(type)} ».
               </p>
             </div>
@@ -425,6 +436,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
   const [decimals, setDecimals] = useState(2)
   const [currencyCode, setCurrencyCode] = useState('CAD') // pour kind='data' type currency (ISO 4217)
   const [durationFormat, setDurationFormat] = useState('h:mm') // pour kind='data' type duration
+  const [dateFormat, setDateFormat] = useState('iso_date') // pour kind='data' type date (et formula/lookup/rollup result_type='date')
   const [phoneCountryCode, setPhoneCountryCode] = useState('hide') // pour kind='data' type phone ('show'|'hide')
   const [defaultValue, setDefaultValue] = useState('') // pour kind='data' text/number/currency/url/duration
   // pour kind='data' type single_select/multi_select
@@ -513,6 +525,9 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       } else {
         setDurationFormat('h:mm')
       }
+      // Date : format d'affichage lu depuis options (défaut 'iso_date' — voir
+      // dateFormatOf, s'applique aussi aux formula/lookup/rollup en result_type='date').
+      setDateFormat(editing.type === 'date' || editing.result_type === 'date' ? dateFormatOf(editing) : 'iso_date')
       // Téléphone : affichage de l'indicatif de pays lu depuis options (défaut 'hide').
       setPhoneCountryCode(editing.type === 'phone' ? phoneCountryCodeOf(editing) : 'hide')
       {
@@ -560,6 +575,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       setDecimals(2)
       setCurrencyCode('CAD')
       setDurationFormat('h:mm')
+      setDateFormat('iso_date')
       setPhoneCountryCode('hide')
       setDefaultValue('')
       setChoices([])
@@ -785,6 +801,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
             ...((type === 'number' || type === 'currency') ? { decimals } : {}),
             ...(type === 'currency' ? { options: { currency: currencyCode } } : {}),
             ...(type === 'duration' ? { options: { format: durationFormat } } : {}),
+            ...(type === 'date' ? { options: { format: dateFormat } } : {}),
             ...(type === 'phone' ? { options: { country_code: phoneCountryCode } } : {}),
             ...(defaultValue.trim() !== '' ? { default_value: defaultValue.trim() } : {}),
           })
@@ -1049,6 +1066,34 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
                       />
                       <span className="font-medium">{o.label}</span>
                       <span className="text-[11px] text-slate-400">{o.hint}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* Date : format d'affichage — ISO (date seule, ou + heure 12h/24h)
+                ou locale (date seule, ou + heure). Aucune saisie n'est affectée,
+                seul le rendu change. */}
+            {type === 'date' && (
+              <div>
+                <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Format d'affichage</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {DATE_DISPLAY_FORMATS.map(o => (
+                    <label key={o.value} data-testid={`cf-date-format-${o.value}`} className={`flex flex-col items-start gap-0.5 px-3 py-2 text-sm rounded-lg border cursor-pointer transition-colors ${dateFormat === o.value ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 hover:bg-slate-50 text-slate-700'}`}>
+                      <input
+                        type="radio" name="cf-date-format" value={o.value}
+                        checked={dateFormat === o.value}
+                        onChange={() => {
+                          setDateFormat(o.value)
+                          // En édition : autosave immédiat (seul réglage de la date).
+                          if (editing && o.value !== normalizeDateFormat(dateFormat)) {
+                            autosave({ options: { format: o.value } })
+                          }
+                        }}
+                        className="sr-only"
+                      />
+                      <span className="font-medium">{o.label}</span>
+                      <span className="text-[11px] text-slate-400 tabular-nums">{o.hint}</span>
                     </label>
                   ))}
                 </div>

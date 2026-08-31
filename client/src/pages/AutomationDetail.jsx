@@ -10,7 +10,7 @@ import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { WebhookEditor } from '../components/WebhookEditor.jsx'
 
 // Mirrors MANUAL_RUNNERS in server/src/services/systemAutomations.js. Keep in sync.
-const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup', 'sys_ctb_programmation_paiement', 'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder', 'sys_stripe_weekly_payout_push'])
+const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup', 'sys_ctb_programmation_paiement', 'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder', 'sys_card_ceiling_alert', 'sys_stripe_weekly_payout_push'])
 
 // Connexion Google Sheets « CTB - Suivi » — config d'action éditable, trigger
 // en lecture seule, bouton unique de diagnostic (aucune écriture).
@@ -29,7 +29,7 @@ const WEBHOOK_RETRY_AUTOMATION_ID = 'sys_airtable_webhook_router'
 const CONFIGURABLE_SYSTEM_AUTOMATIONS = new Set([
   'sys_revenue_recognition', CTB_AUTOMATION_ID,
   'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder',
-  'sys_stripe_weekly_payout_push', 'sys_ticket_survey_slack',
+  'sys_card_ceiling_alert', 'sys_stripe_weekly_payout_push', 'sys_ticket_survey_slack',
 ])
 
 // Champs de config des automations à éditeur générique clé-valeur.
@@ -67,6 +67,20 @@ const GENERIC_CONFIG_FIELDS = {
       { key: 'due_day', label: 'Date cible de paiement (jour du mois)', def: '24', hint: 'L\'échéance réelle des cartes est vers le 26-27 ; la cible du 24 garde une marge.' },
       { key: 'work_days', label: 'Jours travaillés', def: '2,6', hint: '0 = dimanche, 1 = lundi … 6 = samedi. Défaut « 2,6 » = mardi et samedi.' },
       { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_PERSO', hint: 'Message privé Slack (DM Antoine Lambert), distinct du canal de l\'alerte trésorerie. Si la variable est absente de server/.env, repli sur SLACK_WEBHOOK_TREASURY (signalé dans le journal).' },
+    ],
+  },
+  sys_card_ceiling_alert: {
+    title: 'Plafond des cartes de crédit',
+    intro: 'Périmètre et canal de l\'alerte. La limite, le plafond cible et le jour de prélèvement de CHAQUE carte se règlent sur la carte « Plafond des cartes » du dashboard comptabilité — un seul endroit. Vider un champ revient au défaut.',
+    fields: [
+      { key: 'acctnums', label: 'Comptes QuickBooks suivis (numéros)', def: '22000', hint: 'Séparés par des virgules. Une carte hors de cette liste reste affichée dans l\'ERP mais n\'alerte pas. 22000 = Mastercard Banque Nationale.' },
+      { key: 'lead_days', label: 'Alerter combien de jours avant le prélèvement', def: '5' },
+      { key: 'min_alert_amount', label: 'Dépassement minimal pour alerter ($)', def: '100', hint: 'Un franchissement de quelques dollars n\'est pas une information.' },
+      { key: 'pending_lookback_days', label: 'Ancienneté maximale d\'une transaction « en attente » (jours)', def: '90', hint: 'Au-delà, une transaction du relevé encore non comptabilisée est un retard de tenue de livres, pas un achat qui manque au solde — son relevé est payé depuis longtemps. Elle est affichée à part, sans être comptée.' },
+      { key: 'lead_always', label: 'Rappel systématique à J-N (0 / 1)', def: '0', hint: '0 = l\'alerte J-N ne part que s\'il y a réellement un paiement à faire. 1 = elle part chaque mois, même quand la carte est loin du plafond.' },
+      { key: 'slack_channel', label: 'Canal ou personne Slack', def: '#comptabilite', hint: 'Passe par le bot Slack de l\'ERP et prime sur les deux champs webhook ci-dessous. Pour un canal privé, inviter le bot dans le canal.' },
+      { key: 'slack_webhook_url', label: 'Webhook Slack — URL collée directement', def: '(aucune)', hint: 'Voie de secours si le bot n\'est pas utilisé.' },
+      { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_TREASURY', hint: 'Dernier recours : même canal que l\'alerte trésorerie.' },
     ],
   },
   sys_stripe_weekly_payout_push: {

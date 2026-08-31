@@ -42,14 +42,16 @@ describe('OrderDetail — colonne Image = vignette, pas URL', () => {
 
   after(async () => { await browser?.close() })
 
-  test('la cellule Image rend une <img> Airtable', async () => {
+  test('la cellule Image rend une <img>', async () => {
     await page.goto(`${BASE}/orders/${ORDER_ID}`, { waitUntil: 'networkidle' })
     // Attendre que la section Articles soit montée.
     await page.waitForSelector('h2:has-text("Articles")', { timeout: 10000 })
 
-    // La vignette est un <img> dont la source pointe vers l'hôte d'attachements
-    // Airtable — c'est ce que produit ImageValue pour le champ « Image ».
-    const thumb = page.locator('img[src*="airtableusercontent.com"]').first()
+    // La vignette est le <img> produit par ImageValue pour le champ « Image ».
+    // Sa source n'est plus l'hôte d'attachements Airtable (URL qui expire en
+    // quelques heures) mais la copie locale posée par la sync — d'où le test
+    // sur le testid plutôt que sur le domaine.
+    const thumb = page.locator('[data-testid="cf-image-thumb"]').first()
     await thumb.waitFor({ state: 'visible', timeout: 8000 })
     assert.ok(await thumb.count() >= 1, 'au moins une vignette image doit être rendue')
 

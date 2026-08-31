@@ -1,6 +1,382 @@
 {
-  "_comment": "Journal des nouveautés affiché dans l'app (/changelog). Fichier versionné : ajouter une entrée en TÊTE du tableau `entries` à chaque livraison notable de fonctionnalité. Format d'une entrée — date: 'YYYY-MM-DD' (date métier, sans heure), title: titre court, category: étiquette de domaine (ex. Comptabilité, Envois, Ventes…), changes: liste de { type, text }. type ∈ 'new' (nouveauté), 'improved' (amélioration), 'fixed' (correction). Les entrées sont triées par date décroissante à l'affichage, pas besoin de les ranger ici.",
+  "_comment": "Journal des nouveautés affiché dans l'app (/changelog). Fichier versionné. OBLIGATOIRE : toute modification de client/src/** ou server/src/** doit être accompagnée d'une nouvelle entrée en TÊTE du tableau `entries` — deploy.sh refuse de livrer sinon (garde : server/src/services/changelogGuard.js, échappatoire ./deploy.sh --skip-changelog). Format d'une entrée — date: 'YYYY-MM-DD' (date métier, sans heure), title: titre court, category: étiquette de domaine (ex. Comptabilité, Envois, Ventes…), changes: liste de { type, text }. type ∈ 'new' (nouveauté), 'improved' (amélioration), 'fixed' (correction). Les entrées sont triées par date décroissante à l'affichage, pas besoin de les ranger ici.",
   "entries": [
+    {
+      "date": "2026-08-31",
+      "title": "Mots-cl\u00e9s des billets en s\u00e9lection multiple",
+      "category": "Support",
+      "changes": [
+        { "type": "improved", "text": "Sur une fiche billet, les mots-cl\u00e9s ne sont plus une zone de texte libre : ils s'affichent en pastilles et se choisissent dans un menu de s\u00e9lection multiple avec recherche, aliment\u00e9 par les mots-cl\u00e9s d\u00e9j\u00e0 utilis\u00e9s (les plus fr\u00e9quents en t\u00eate)." },
+        { "type": "new", "text": "Un mot-cl\u00e9 absent de la liste peut \u00eatre cr\u00e9\u00e9 directement depuis la recherche, et chaque pastille se retire d'un clic \u2014 l'enregistrement est automatique." }
+      ]
+    },
+    {
+      "date": "2026-08-31",
+      "title": "Sens de synchronisation Airtable r\u00e9glable sur tous les champs mapp\u00e9s",
+      "category": "Connecteurs",
+      "changes": [
+        { "type": "new", "text": "Dans \u00ab Configuration des champs \u00bb d'une table synchronis\u00e9e avec Airtable, la colonne \u00ab Sens \u00bb devient cliquable sur tous les champs mapp\u00e9s (plus seulement les champs \u00ab c\u0153ur \u00bb) : chaque champ peut \u00eatre import\u00e9 (Airtable \u2192 ERP), export\u00e9 (ERP \u2192 Airtable) ou synchronis\u00e9 dans les deux directions." },
+        { "type": "new", "text": "Un champ pass\u00e9 en bidirectionnel est r\u00e9\u00e9crit vers Airtable d\u00e8s qu'il est modifi\u00e9 dans l'ERP (achats, envois, commandes, paies, billets, projets, num\u00e9ros de s\u00e9rie) \u2014 avec la garde anti-boucle existante pour que l'\u00e9cho du webhook ne soit pas r\u00e9-import\u00e9." },
+        { "type": "improved", "text": "Un champ r\u00e9gl\u00e9 \u00ab ERP \u2192 Airtable \u00bb n'est plus \u00e9cras\u00e9 par la synchronisation entrante : la valeur saisie dans l'ERP fait foi." }
+      ]
+    },
+    {
+      "date": "2026-08-30",
+      "title": "Connecteur Purolator : tarification et \u00e9tiquettes sortantes",
+      "category": "Envois",
+      "changes": [
+        { "type": "new", "text": "Purolator appara\u00eet dans la page Connecteurs : on y saisit la cl\u00e9, le mot de passe et le num\u00e9ro de compte Purolator, et on choisit l'environnement de d\u00e9veloppement ou de production." },
+        { "type": "new", "text": "Sur une fiche envoi, la modale de cr\u00e9ation d'\u00e9tiquette interroge Purolator et affiche ses services (prix, d\u00e9lai) juste \u00e0 c\u00f4t\u00e9 des tarifs Novoxpress. S\u00e9lectionner un service Purolator ach\u00e8te l'\u00e9tiquette, t\u00e9l\u00e9charge le PDF et enregistre le num\u00e9ro de suivi sur l'envoi." },
+        { "type": "new", "text": "Le statut de suivi Purolator des envois non livr\u00e9s se rafra\u00eechit automatiquement toutes les heures (visible et activable/d\u00e9sactivable dans la page Automations, comme les autres tourn\u00e9es syst\u00e8me)." },
+        { "type": "improved", "text": "Chaque appel \u00e0 Purolator est trac\u00e9 dans le journal des synchronisations, et un \u00e9chec de tarification n'emp\u00eache jamais l'enregistrement de l'envoi \u2014 l'erreur brute du transporteur s'affiche telle quelle." }
+      ]
+    },
+    {
+      "date": "2026-08-30",
+      "title": "Connecteur UPS : \u00e9tiquettes de retour, tarifs et suivi",
+      "category": "Envois",
+      "changes": [
+        { "type": "new", "text": "UPS appara\u00eet dans la page Connecteurs : on y saisit les identifiants et le num\u00e9ro de compte UPS, on choisit l'environnement de test ou de production, et un bouton « Tester la connexion » confirme tout de suite que \u00e7a marche." },
+        { "type": "new", "text": "Sur une fiche retour, le bouton « Cr\u00e9er l'\u00e9tiquette de retour UPS » ach\u00e8te une \u00e9tiquette prépay\u00e9e — le client exp\u00e9die, l'atelier d'Orisha re\u00e7oit. Le num\u00e9ro de suivi, le co\u00fbt et le service sont enregistr\u00e9s sur le retour, et le PDF part au client par courriel avec 10 secondes pour annuler." },
+        { "type": "new", "text": "Pour un retour venant des \u00c9tats-Unis, la facture commerciale (description, valeur, pays d'origine, code SH) est remplie automatiquement \u00e0 partir des articles du retour." },
+        { "type": "new", "text": "Sur une fiche envoi, « Comparer avec UPS » affiche les tarifs UPS \u00e0 c\u00f4t\u00e9 de ceux de Novoxpress, et « Rafra\u00eechir le suivi UPS » va chercher le statut du colis chez UPS et l'affiche sur l'envoi." },
+        { "type": "improved", "text": "Chaque appel \u00e0 UPS est trac\u00e9 dans le journal des synchronisations, et toute erreur d'UPS est affich\u00e9e telle quelle plut\u00f4t que d'\u00e9chouer en silence." }
+      ]
+    },
+    {
+      "date": "2026-08-30",
+      "title": "Retours : le lien de l'aide-mémoire fonctionne, courriel client pré-rempli",
+      "category": "Envois",
+      "changes": [
+        { "type": "fixed", "text": "Ouvrir l'aide-mémoire PDF depuis le panneau d'actions d'un retour renvoyait « Authentication required » — le lien n'emportait pas la connexion. Corrigé." },
+        { "type": "improved", "text": "Le champ courriel du panneau « Envoyer les instructions » se pré-remplit automatiquement avec le courriel du contact lié au retour (ou de l'entreprise à défaut) — plus besoin de le retaper à chaque fois." }
+      ]
+    },
+    {
+      "date": "2026-08-30",
+      "title": "Registre des entreprises du Québec dans l'ERP",
+      "category": "Ventes",
+      "changes": [
+        { "type": "new", "text": "La fiche d'une entreprise affiche un bloc « Registre des entreprises » : l'ERP y retrouve tout seul l'entreprise au registre du Québec à partir de son nom et de sa municipalité, et montre son numéro d'entreprise (NEQ), son nom légal, sa forme juridique, son adresse et son activité déclarée." },
+        { "type": "new", "text": "Un bandeau orange prévient quand l'entreprise est radiée au registre — à vérifier avant de contracter ou de facturer." },
+        { "type": "new", "text": "La correspondance est proposée, jamais imposée : « Lier » confirme, « Corriger la correspondance » ouvre une recherche dans tout le registre (par nom, NEQ ou municipalité) et « Délier » retire le lien." },
+        { "type": "new", "text": "Nouvelle page « Prospects REQ » : les serres et entreprises horticoles du registre, encore immatriculées, qui ne sont pas encore dans l'ERP. Recherche libre, filtre par région, et un bouton par ligne qui crée l'entreprise et son projet de prospection d'un coup." },
+        { "type": "new", "text": "On y accède depuis la page Projets (bouton « Prospects REQ ») ou par le menu Espace finance → Tests – Antoine." },
+        { "type": "improved", "text": "Le registre est rechargé automatiquement une fois par mois depuis les données ouvertes du Québec, et peut être relancé à la main. Le chargement ne supprime jamais rien : une entreprise absente d'une livraison garde sa dernière version connue." },
+        { "type": "improved", "text": "Le site du Registraire refuse pour l'instant le téléchargement automatique depuis notre serveur : en attendant, le fichier récupéré à la main sur Données Québec peut être déposé sur le serveur, son chemin se règle dans l'automatisation « Registre des entreprises du Québec »." },
+        { "type": "improved", "text": "La provenance des données est affichée sous le bloc de la fiche entreprise et sous la liste des prospects, avec le lien vers la source officielle. La page Prospects rappelle en plus que la licence du registre exclut l'utilisation commerciale et qu'une autorisation du Registraire est à obtenir avant d'exploiter ces listes pour la vente." }
+      ]
+    },
+    {
+      "date": "2026-08-30",
+      "title": "Prospects de serres du MAPAQ : aperçu avant création",
+      "category": "Ventes",
+      "changes": [
+        { "type": "new", "text": "Nouvelle page « Tests – Antoine », dans le menu déroulant de l'Espace finance : elle prend le registre des exploitations agricoles en serre du MAPAQ et le compare aux entreprises déjà dans l'ERP." },
+        { "type": "new", "text": "Chaque exploitation est classée « nouvelle », « doublon probable » ou « déjà existante », avec le nom de l'entreprise correspondante et un pourcentage de ressemblance. Un filtre par région est disponible." },
+        { "type": "new", "text": "Cocher des lignes puis « Créer les prospects sélectionnés » crée l'entreprise et un projet au premier stade de prospection. Rien n'est écrit tant qu'on n'a pas coché : une entreprise déjà présente n'est jamais modifiée ni écrasée." },
+        { "type": "improved", "text": "Le registre nominatif du MAPAQ n'étant pas publié sur le portail Données Québec, la page permet de déposer ou coller le fichier reçu du MAPAQ ; elle l'indique clairement quand la source publique ne répond pas." }
+      ]
+    },
+    {
+      "date": "2026-08-30",
+      "title": "Retours (RMA) : cycle de vie complet importé depuis Airtable",
+      "category": "Envois",
+      "changes": [
+        { "type": "improved", "text": "L'aide-mémoire de retour reprend maintenant exactement le contenu de l'original : photo du produit, numéro sur l'appareil, photo du transformateur à retourner (ou « Aucun »)." },
+        { "type": "improved", "text": "Le courriel « Envoyer les instructions » envoie désormais le bon des 6 vrais textes (selon le pays du client, sa langue, et si le retour est un échange de garantie immédiat ou non) plutôt qu'un texte générique." },
+        { "type": "new", "text": "Dès qu'un item de retour est créé, son numéro de série passe automatiquement « En retour », et pour un échange de garantie immédiat une commande de remplacement est créée toute seule." },
+        { "type": "new", "text": "Bouton « Retourner tous les numéros de série » sur la fiche entreprise : sélectionner des numéros de série et une raison crée un dossier de retour complet en un clic." },
+        { "type": "new", "text": "Rappel automatique par courriel pour les échanges de garantie immédiats pas encore retournés, avec avertissement après 21 jours — désactivé par défaut, à activer dans Automations une fois vérifié." },
+        { "type": "new", "text": "À la réception d'un retour, les instructions au réceptionniste et le statut du numéro de série se mettent à jour tout seuls selon la raison du retour ; les cas particuliers (client qui change d'idée, retour sans raison) partent en alerte Slack." }
+      ]
+    },
+    {
+      "date": "2026-08-30",
+      "title": "MasterCard BNC : savoir combien il reste de place sur la carte",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "new", "text": "Une carte « Plafond des cartes » apparaît sur le Dashboard comptabilité : solde projeté de la MasterCard BNC, marge qu'il reste avant le plafond de 10 000 $, et montant à payer pour repasser dessous. Le détail replié montre séparément ce qui est déjà comptabilisé dans QuickBooks et ce qui est encore en attente, pour ne jamais sous-estimer le solde." },
+        { "type": "new", "text": "La limite de crédit, le plafond cible, le jour du prélèvement et le compte QuickBooks de la carte s'éditent directement sur la carte — chaque champ se sauvegarde tout seul. Quand le prélèvement du 4 tombe une fin de semaine ou un jour férié, la date de paiement proposée recule au jour ouvrable précédent." },
+        { "type": "new", "text": "Une alerte part dans le canal comptabilité 5 jours avant le prélèvement avec le montant recommandé, et tout de suite si le plafond est franchi en dehors de cette fenêtre — au plus une fois par carte et par mois pour chaque type. Le rappel mensuel « payer les cartes » existant n'est pas remplacé : les deux fonctionnent en parallèle et se règlent séparément dans Automations." }
+      ]
+    },
+    {
+      "date": "2026-08-30",
+      "title": "Simplex Wireless : les factures du portail se ramassent toutes seules",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "new", "text": "Simplex Wireless s'ajoute aux fournisseurs de la Collecte de factures (Comptabilité → Collecte de factures) : créer un compte avec le courriel et le mot de passe du portail, et la collecte va chercher les factures PDF derrière la connexion pour les déposer dans l'extraction de données comme n'importe quel reçu." },
+        { "type": "new", "text": "Le code de vérification que Simplex envoie par courriel se saisit directement dans l'ERP : la tournée se met en attente, un encadré « attend un code de vérification » apparaît sur la page, et la collecte reprend dès que le code est entré. Le compte a sa propre ligne d'état, avec la date de sa dernière tournée, ce qu'elle a rapporté et son historique." }
+      ]
+    },
+    {
+      "date": "2026-08-30",
+      "title": "DigiKey : les commandes et leurs factures arrivent toutes seules",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "new", "text": "Un connecteur DigiKey (Connecteurs → DigiKey) va chercher chaque nuit les commandes DigiKey récentes et leur facture PDF. Chaque commande facturée devient une facture fournisseur en brouillon dans Fournisseurs → Achats, avec ses lignes d'articles, ses taxes et son PDF en pièce jointe — plus besoin d'aller la chercher sur le portail ni d'attendre le courriel." },
+        { "type": "new", "text": "Rien n'est publié dans QuickBooks automatiquement : le brouillon attend une relecture et le clic « Publier vers QuickBooks ». Une facture déjà saisie autrement (courriel, collecte de portail, import QuickBooks) est reconnue au lieu d'être dupliquée, et un achat déjà publié n'est jamais réécrit." },
+        { "type": "new", "text": "La fenêtre d'historique balayée se règle dans l'automation « DigiKey : commandes et factures rapatriées par l'API », avec un bouton « Simuler » qui montre ce qui serait importé sans rien écrire. Pour démarrer : coller le Client ID et le Client Secret de l'application DigiKey dans Connecteurs → DigiKey." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Suggestions de Claude : filtre par domaine",
+      "category": "Travaux",
+      "changes": [
+        { "type": "new", "text": "Une rangée de pastilles (Ventes, Logistique, Comptabilité, RH, Marketing, Technique, Support) permet de n'afficher que les suggestions d'un domaine, avec le nombre de suggestions sur chaque pastille." },
+        { "type": "new", "text": "Cliquer le titre d'une sous-section (ex. « Ventes ») isole ce domaine ; recliquer dessus, ou choisir « Tous les domaines », revient à la vue complète." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Trésorerie : la vue calendrier est de retour",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "new", "text": "La projection du solde BNC retrouve son bouton Liste / Calendrier, en haut à droite des « Mouvements à venir ». Le calendrier affiche un mois complet : chaque journée montre son solde projeté (rouge s'il est négatif, orange sous le seuil) et ses mouvements en pastilles cliquables, qui mènent à la facture, au payout ou à la sortie récurrente comme dans la liste. Flèches pour changer de mois, lien « Aujourd'hui » pour revenir. Le choix de vue est mémorisé d'une visite à l'autre." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Anomalies transactions : messages beaucoup plus courts",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "improved", "text": "Les textes des anomalies détectées (dashboard comptabilité et bandeaux d'une fiche de reçu) vont droit au but : plus de répétition du type d'anomalie déjà affiché dans l'étiquette de couleur, plus de phrases explicatives. Les faits utiles restent tous là — fournisseur, montant, dates, numéros d'écriture QuickBooks, mise en garde « déjà payée » — mais tiennent maintenant sur une ligne ou deux." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Retours (RMA) : étiquette de retour, aide-mémoire et instructions client depuis l'ERP",
+      "category": "Envois",
+      "changes": [
+        { "type": "new", "text": "Depuis une fiche Retour, un panneau « Actions » permet d'acheter l'étiquette de retour (le client expédie, Orisha reçoit) directement via Novoxpress. Le transporteur est proposé automatiquement — Purolator si le client est au Canada, UPS s'il est aux États-Unis — sauf si un autre tarif de la liste est moins cher (seuil configurable dans la page Automations), auquel cas le moins cher est proposé à la place avec la raison affichée. Le tarif reste modifiable manuellement avant achat." },
+        { "type": "new", "text": "Génération en un clic de l'aide-mémoire PDF du retour (n° de retour, client, et par article : n° de série, produit, raison, action, instructions au réceptionniste)." },
+        { "type": "new", "text": "Envoi en un clic d'un courriel d'instructions de retour au client, avec l'étiquette et l'aide-mémoire en pièces jointes." },
+        { "type": "improved", "text": "La liste des retours et la fiche d'un article de retour s'ouvrent maintenant dans un panneau latéral (fenêtre coulissante façon Airtable) plutôt que de changer de page." },
+        { "type": "improved", "text": "La police de l'interface se rapproche de celle d'Airtable (Inter) sur l'ensemble de l'app." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Menu : collecte de factures à un seul endroit",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "improved", "text": "« Collecte de factures » n'apparaît plus qu'une fois dans le menu : sous « Extraction de données », comme sous-section. Les doublons dans le groupe Comptabilité et dans l'Espace finance sont retirés." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Appariement facture ↔ achat : la date de commande imprimée sur la facture est maintenant lue",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "new", "text": "Quand une facture fournisseur imprime une « Date de la commande » distincte de la date de facturation (Digikey, notamment, quand une même commande est expédiée et facturée en plusieurs fois), l'extraction la capture maintenant et la compare directement à la date de commande de l'achat en attente correspondant — un signal beaucoup plus net que la simple proximité avec la date de facture pour départager deux commandes de la même pièce." },
+        { "type": "fixed", "text": "Facture DigiKey de 85,94 $ (1 Raspberry Pi 4) : la ligne pointait vers un achat d'une commande différente. Corrigée vers le bon code (LIA-1998), identifié grâce à sa date de commande (17 août) identique à celle imprimée sur la facture." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Appariement facture ↔ achat : quantité commandée et date de commande pèsent davantage",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "improved", "text": "Le calcul qui propose un code d'achat (LIA) sur une ligne de facture donne maintenant plus de poids à la quantité commandée et à la date de commande — les deux signaux les plus fiables quand le prix unitaire n'est pas encore connu (achat encore « à recevoir »), à égalité avec le nom de la pièce." },
+        { "type": "fixed", "text": "Facture DigiKey de 171,89 $ (2 Raspberry Pi 4 livrés) : la ligne pointait vers un achat déjà reçu d'une autre commande. Corrigée vers le bon code, une commande de 2 unités encore à recevoir." },
+        { "type": "fixed", "text": "Ce bon code était jusque-là écarté par une facture DigiKey antérieure (#131306995) qui lui avait été rattaché par erreur pour un tout autre composant (pont redresseur). Cette facture — déjà comptabilisée dans QuickBooks — a été corrigée (description de la ligne et rattachement) pour libérer le code." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Collecte de factures : DigiKey bloqué par Cloudflare, diagnostic clair",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "fixed", "text": "Le premier essai du collecteur DigiKey échouait avec un message trompeur (« aucun lien de facture ») alors que MyDigiKey affichait en fait un contrôle de sécurité Cloudflare. La tournée le détecte maintenant et le dit clairement : il faut importer une session ouverte à la main (comme pour Wix), un navigateur automatisé ne peut pas cocher la case de vérification." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Nouveau fournisseur créé automatiquement : bonne devise",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "fixed", "text": "Quand la publication d'un achat/facture fournisseur vers QuickBooks crée automatiquement un nouveau fournisseur (aucun fournisseur existant ne correspond), il est maintenant créé dans la devise de la facture (ex. USD) au lieu d'être toujours créé en CAD par défaut." },
+        { "type": "improved", "text": "Un fournisseur créé automatiquement dans une devise étrangère porte maintenant son suffixe (ex. « Nom - USD ») dans son nom, pour le repérer d'un coup d'œil dans les listes." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Reçus extraits : vérification des taxes par type",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "new", "text": "Sur une facture extraite avec plusieurs expéditions (ex. Novoxpress), un lien « Voir le détail des taxes extraites » apparaît sous « Autres taxes » et regroupe, par type de taxe (TPS, TVQ, autres), la somme extraite sur toutes les expéditions avec un repère ✓/⚠️ indiquant si elle correspond au montant du document — comme le sommaire imprimé en page 1 de la facture, sans avoir à rouvrir le PDF." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Sous-menu d'Extraction de données : les onglets plutôt que les vues",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "improved", "text": "Au survol d'« Extraction de données » dans le menu de gauche, le sous-menu propose maintenant « Reçus » et « Collecte de factures » (les deux onglets de la page) au lieu des anciennes vues (à publier, publié, archivé, tous les documents)." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Collecte de factures : intégrée à Extraction de données",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "improved", "text": "La collecte de factures sur portails fournisseurs devient un onglet d'Extraction de données, juste à côté des reçus qu'elle alimente. Elle reste aussi accessible directement depuis le menu de gauche (Comptabilité → Collecte de factures)." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Collecte de factures : demander un collecteur, erreurs simplifiées",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "new", "text": "Sur la page Collecte de factures, chaque fournisseur détecté sans portail branché a maintenant un bouton (baguette) qui envoie directement une demande à la file de travaux pour écrire son collecteur — plus besoin de le demander soi-même." },
+        { "type": "improved", "text": "Les messages d'erreur d'une tournée de collecte s'affichent en résumé d'une ligne ; le détail complet reste accessible en cliquant dessus." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Collecte de factures : DigiKey ajouté",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "new", "text": "DigiKey s'ajoute à la collecte automatique de factures sur portail (Espace finance → Fournisseurs & engagements → Collecte de factures), en attendant que DigiKey accepte de router ses factures par courriel. Premier passage à calibrer une fois un compte configuré — le portail n'avait pas encore pu être exploré avec des identifiants réels." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Dettes long terme : mémo QuickBooks simplifié",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "improved", "text": "Le mémo publié sur QuickBooks pour un versement de dette à long terme est maintenant court et lisible (ex. « Versement — Prêt BDC 173280-03 ») au lieu de répéter la date et la provenance ERP." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Paiements émis : fin des doublons du fichier de solde",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "fixed", "text": "8 paiements en double, créés par la synchronisation du fichier « Maintien du solde disponible BNC » sur des paiements déjà connus (Pmt_Suivi ou déjà émis depuis l'ERP), ont été retirés de la liste des paiements émis." },
+        { "type": "improved", "text": "Cette synchronisation est désactivée — c'était la source des doublons. La page Comptabilité l'indique clairement et n'offre plus de bouton pour la relancer." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Paiements émis : date de facture automatique, colonnes ajustables",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "improved", "text": "La colonne « Date de la facture » se remplit toute seule : elle vient directement de la facture liée (synchronisée depuis QuickBooks) quand il y en a une, sinon l'ERP la recherche dans QuickBooks par n° de facture." },
+        { "type": "new", "text": "Chaque colonne de la liste des paiements émis se redimensionne en tirant son bord droit, et la largeur choisie est mémorisée — plus besoin de la réajuster à la prochaine visite." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Paiements émis : liste façon feuille de calcul",
+      "category": "Comptabilité",
+      "changes": [
+        { "type": "improved", "text": "La liste de « Paiements et virements émis » reprend les colonnes de l'onglet Pmt_Suivi qui l'a inspirée, dans le même ordre : Date du jour, Date de la facture, Date du Pmt, # Paiement, Fournisseur, # Facture, Montant, Commentaire. Le montant se colore en vert une fois passé à la banque, comme dans le fichier." },
+        { "type": "new", "text": "Nouveau champ « Date de la facture » sur un paiement émis, éditable directement dans la liste." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Configuration des champs : en-têtes de colonnes",
+      "category": "Configuration",
+      "changes": [
+        { "type": "improved", "text": "Le tableau de configuration des champs affiche maintenant une ligne d'en-tête (Nom, Type, Origine, Sens, Champ Airtable, Actions) : on sait à quoi correspond chaque colonne." },
+        { "type": "fixed", "text": "Les boutons d'action et les colonnes de synchronisation restent alignés d'une ligne à l'autre, même quand une ligne n'a pas de bouton de réinitialisation ou pas de champ Airtable." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Nouveau billet : assigné à soi par défaut",
+      "category": "Support",
+      "changes": [
+        { "type": "improved", "text": "À l'ouverture du formulaire « Nouveau billet », le champ « Assigné à » est déjà rempli avec la personne connectée. Il reste modifiable — on peut choisir quelqu'un d'autre ou retirer l'assignation." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Owner HubSpot directement dans le tableau des utilisateurs",
+      "category": "Admin",
+      "changes": [
+        { "type": "new", "text": "Le tableau des utilisateurs affiche une colonne « Owner HubSpot » : on choisit l'owner directement dans la ligne, avec sauvegarde automatique et l'indication de la source (auto par courriel ou manuel)." },
+        { "type": "improved", "text": "La colonne se trie, se filtre et se groupe comme les autres, et les comptes inactifs sont désormais visibles dans le mapping." },
+        { "type": "improved", "text": "La page Connecteurs ne duplique plus la liste : elle affiche la couverture du mapping, les utilisateurs sans owner, et un raccourci vers le tableau des utilisateurs." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Connecteurs : la page parle de Boréal",
+      "category": "Admin",
+      "changes": [
+        { "type": "improved", "text": "Le sous-titre de la page Connecteurs dit désormais « Intégrez vos outils externes à Boréal » — le nom de l'application, au lieu de « l'ERP »." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Onglet « Affichage » retiré de l'Admin",
+      "category": "Admin",
+      "changes": [
+        { "type": "improved", "text": "L'onglet « Affichage » (nombre de décimales par colonne) a disparu de la page Admin : le nombre de décimales se règle désormais directement sur le champ concerné. L'ancienne adresse ouvre l'onglet « Système »." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "« Paramètres » devient « Admin »",
+      "category": "Navigation",
+      "changes": [
+        { "type": "improved", "text": "L'entrée « Paramètres » du bas du menu de gauche (réservée aux administrateurs) s'appelle maintenant « Admin » — plus de confusion avec les paramètres personnels du menu de compte." },
+        { "type": "improved", "text": "L'onglet « Agent » a été retiré de la page Admin : l'agent se consulte à son entrée « Agent » dans le menu de gauche. L'ancienne adresse y redirige automatiquement." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Tableau de bord : nouvel onglet « Vue globale »",
+      "category": "Tableau de bord",
+      "changes": [
+        { "type": "new", "text": "Le tableau de bord a maintenant deux onglets. « Sections » reste la vue habituelle ; « Vue globale » affiche toute l'activité sur une seule planche, façon Power BI : la trésorerie en grand avec son évolution sur 12 mois, une douzaine d'indicateurs (revenus expédiés, marge, objectif de projets, comptes clients en retard, inventaire, billets…), sept graphiques compacts, les soldes par compte et l'âge des comptes clients." },
+        { "type": "new", "text": "Chaque graphique de la vue globale se lit aussi en tableau : le petit bouton en haut à droite de la carte bascule entre le graphique et ses chiffres." },
+        { "type": "improved", "text": "Chaque tuile et chaque titre de graphique est cliquable et mène à la section ou à la page détaillée correspondante." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Soldes bancaires : le détail des comptes est replié par défaut",
+      "category": "Tableau de bord",
+      "changes": [
+        { "type": "improved", "text": "Dans « Trésorerie & soldes bancaires », la liste compte par compte est maintenant repliée à l'ouverture : on voit d'abord la trésorerie et le coussin de marge. Un clic sur « Détail des comptes » affiche le tableau complet." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Colonnes ajustables dans le détail des remplacements",
+      "category": "Tableau de bord",
+      "changes": [
+        { "type": "new", "text": "Dans la section « Taux de remplacement » du tableau de bord, la largeur de chaque colonne du tableau détaillé se règle en glissant le bord droit de son en-tête. Les largeurs choisies sont conservées d'une visite à l'autre." },
+        { "type": "new", "text": "Un lien « Réinitialiser les largeurs » apparaît dès qu'une colonne a été ajustée, pour revenir d'un clic à la présentation d'origine." }
+      ]
+    },
+    {
+      "date": "2026-08-29",
+      "title": "Les adresses erronées se signalent d'elles-mêmes",
+      "category": "Ventes",
+      "changes": [
+        { "type": "new", "text": "Toute adresse postale ajoutée ou modifiée dans l'app est maintenant vérifiée automatiquement, peu importe d'où elle vient (fiche entreprise, appel de qualification, formulaire du client, synchronisation Airtable) : champ manquant, valeur bouche-trou (« à venir », « n/a »), code postal mal formé, province inexistante, et surtout code postal qui ne correspond pas à la province déclarée." },
+        { "type": "new", "text": "Une adresse fautive déclenche une notification dans la cloche, avec le détail de ce qui cloche et le lien vers l'entreprise. Une adresse déjà signalée ne re-sonne pas tant que le problème n'a pas changé." },
+        { "type": "new", "text": "Nouvelle section Paramètres → Adresses : compteurs (conformes / à surveiller / à corriger), liste des adresses à corriger avec l'explication de chaque problème, et bouton pour relancer une vérification complète. Les réglages et l'historique des passes sont dans l'automation « Vérification des adresses postales »." },
+        { "type": "improved", "text": "Sur la fiche entreprise, une adresse fautive porte une pastille « À corriger » et affiche ses problèmes ; ils disparaissent au fur et à mesure de la correction, sans quitter le panneau." },
+        { "type": "fixed", "text": "Modifier un seul champ d'une adresse existante (ville, code postal…) vidait en silence tous les autres champs de cette adresse. Corrigé : seuls les champs réellement modifiés sont enregistrés." }
+      ]
+    },
+    {
+      "date": "2026-08-28",
+      "title": "Toute modification de l'app doit être racontée ici",
+      "category": "Application",
+      "changes": [
+        { "type": "new", "text": "Le journal des nouveautés devient obligatoire : une livraison qui touche à l'application est refusée tant qu'elle n'est pas décrite sur cette page. Plus de changement silencieux." },
+        { "type": "new", "text": "Cette page indique désormais son propre état : un bandeau vert quand tout est documenté, un bandeau orange listant les modifications encore non décrites (et donc en attente de livraison)." }
+      ]
+    },
     {
       "date": "2026-08-27",
       "title": "Stabilité : l'app ne se fige plus pendant que l'agent travaille",

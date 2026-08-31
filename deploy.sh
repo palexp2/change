@@ -41,13 +41,13 @@ else
   done
 fi
 
-# ─── Politique changelog : bloquer ou avertir ? ──────────────────────────────
-# Par défaut on AVERTIT (le deploy continue). Pour BLOQUER un deploy qui touche
-# du code sans entrée changelog : `./deploy.sh --strict-changelog` ou
-# `STRICT_CHANGELOG=1 ./deploy.sh`.
-CHANGELOG_BLOCK=0
-[ "$STRICT_CHANGELOG" = "1" ] && CHANGELOG_BLOCK=1
-for a in "$@"; do [ "$a" = "--strict-changelog" ] && CHANGELOG_BLOCK=1; done
+# ─── Politique changelog : le journal des nouveautés est OBLIGATOIRE ─────────
+# Un déploiement qui touche client/src ou server/src sans nouvelle entrée dans
+# client/src/data/changelog.json est BLOQUÉ. Échappatoire explicite et tracée :
+# `./deploy.sh --skip-changelog` ou `SKIP_CHANGELOG=1 ./deploy.sh`.
+CHANGELOG_BLOCK=1
+[ "$SKIP_CHANGELOG" = "1" ] && CHANGELOG_BLOCK=0
+for a in "$@"; do [ "$a" = "--skip-changelog" ] && CHANGELOG_BLOCK=0; done
 
 # Pull latest code from GitHub
 git pull origin main
@@ -57,11 +57,12 @@ git pull origin main
 # server/src depuis le dernier commit déployé (enregistré dans .last-deploy-commit).
 if ! node server/src/scripts/check-changelog.js; then
   if [ "$CHANGELOG_BLOCK" = "1" ]; then
-    echo "❌ Déploiement bloqué : changelog non mis à jour. Ajoutez une entrée dans client/src/data/changelog.json,"
-    echo "   ou relancez sans --strict-changelog (STRICT_CHANGELOG unset) pour avertir seulement."
+    echo "❌ Déploiement bloqué : le journal des nouveautés n'a pas été mis à jour."
+    echo "   Ajoutez une entrée en tête de \"entries\" dans client/src/data/changelog.json (date, titre, changements),"
+    echo "   ou relancez avec --skip-changelog (SKIP_CHANGELOG=1) pour passer outre en connaissance de cause."
     exit 1
   fi
-  echo "⚠️  Avertissement : du code a changé sans entrée changelog — déploiement poursuivi (mode non strict)."
+  echo "⚠️  --skip-changelog : du code a changé sans entrée dans le journal — déploiement poursuivi malgré tout."
 fi
 
 # Rebuild frontend

@@ -51,26 +51,31 @@ export const NAV_SUBSECTIONS = {
     ],
   },
   '/rapprochement': { kind: 'accounts', param: 'compte' },
-
-  // ── Agent (entrée du bas de la sidebar) ───────────────────────────────────
-  // La section Agent a ses propres travaux : une file de prompts DISTINCTE de
-  // celle de l'Espace finance (même page, space='agent'), plus les suggestions
-  // et les idées — partagées entre les deux sections.
-  '/agent': {
+  // Bac à sable « Tests – Antoine » : l'import MAPAQ (la page elle-même) et la
+  // prospection tirée du Registre des entreprises du Québec, chacune sur sa
+  // propre route.
+  '/tests-antoine': {
     kind: 'routes', items: [
-      { to: '/agent', label: 'Agent autonome' },
-      { to: '/agent/travaux?onglet=file', label: "File de prompts de l'agent" },
-      { to: '/agent/travaux?onglet=suggestions', label: 'Suggestions de Claude' },
-      { to: '/agent/travaux?onglet=idees', label: 'De côté & idées' },
+      { to: '/tests-antoine', label: 'Import MAPAQ (serres)' },
+      { to: '/tests-antoine/prospects-req', label: 'Prospects REQ' },
     ],
   },
+
+  // L'entrée « Agent » (bas de la sidebar) est volontairement sans sous-menu :
+  // un clic ouvre directement la page Agent, qui porte elle-même le lien vers
+  // ses travaux (/agent/travaux).
 
   // ── Groupe Comptabilité ───────────────────────────────────────────────────
   '/factures':        { kind: 'views', param: 'vue', table: 'factures' },
   '/paiements':       { kind: 'views', param: 'vue', table: 'payments' },
   '/items-vendus':    { kind: 'views', param: 'vue', table: 'stripe_invoice_items' },
   '/abonnements':     { kind: 'views', param: 'vue', table: 'abonnements' },
-  '/sale-receipts':   { kind: 'views', param: 'vue', table: 'sale_receipts' },
+  '/sale-receipts': {
+    kind: 'tabs', param: 'onglet', items: [
+      { value: 'recus', label: 'Reçus' },
+      { value: 'collecte', label: 'Collecte de factures' },
+    ],
+  },
   '/journal-entries': { kind: 'views', param: 'vue', table: 'journal_entries' },
   '/stock-movement':  { kind: 'views', param: 'vue', table: 'stock_movements' },
   '/comptabilite/regles-serials': { kind: 'views', param: 'vue', table: 'serial_missing_valuations' },

@@ -431,7 +431,10 @@ export async function getOwnerMappingStatus() {
       name: [o.firstName, o.lastName].filter(Boolean).join(' ') || o.email || String(o.id),
     })).sort((a, b) => a.name.localeCompare(b.name))
 
-    const users = db.prepare("SELECT id, name, email, hubspot_owner_id FROM users WHERE active=1 ORDER BY name").all()
+    // Tous les utilisateurs non supprimés (actifs ou non) : le mapping s'édite
+    // désormais dans le tableau des utilisateurs (/admin/utilisateurs), qui
+    // affiche aussi les comptes inactifs.
+    const users = db.prepare("SELECT id, name, email, active, hubspot_owner_id FROM users WHERE deleted_at IS NULL ORDER BY name").all()
     return {
       configured: true,
       owners,
@@ -443,6 +446,7 @@ export async function getOwnerMappingStatus() {
           id: u.id,
           name: u.name,
           email: u.email,
+          active: u.active,
           auto_owner_id: autoId,
           override_owner_id: overrideId,
           effective_owner_id: overrideId || autoId,

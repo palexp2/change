@@ -66,6 +66,15 @@ const NO_TAX = '__none__'
 // Repéré par NUMÉRO de compte (stable, lisible) et non par Id QB.
 const PARTS_ACCT_NUM = '14000'
 
+// Comptes QB proposés comme compte de DÉPENSE — au niveau du document (formulaire de
+// publication) comme au niveau d'une LIGNE d'article (section Articles), d'où le
+// partage. « Other Current Asset » couvre le stock de pièces (14000).
+const EXPENSE_ACCOUNT_TYPES = ['Expense', 'Other Expense', 'Cost of Goods Sold', 'Other Current Asset']
+const accountLabel = a => (a.AcctNum ? `${a.AcctNum} — ${a.Name}` : a.Name)
+const expenseAccountOptions = accounts => (accounts || [])
+  .filter(a => EXPENSE_ACCOUNT_TYPES.includes(a.AccountType))
+  .map(a => ({ value: a.Id, label: accountLabel(a) }))
+
 // Une ligne « pièce » = rattachée à un achat LIA (lien explicite) ou décrite par un
 // code LIA (saisie manuelle, extraction).
 const hasLiaLines = items => (items || []).some(it => it?.purchase_id || /^\s*lia-\d+/i.test(it?.description || ''))
@@ -467,11 +476,11 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, liaLines, accounts])
 
-  const expenseAccounts = accounts.filter(a => ['Expense', 'Other Expense', 'Cost of Goods Sold', 'Other Current Asset'].includes(a.AccountType))
   const paymentAccounts = accounts.filter(a => ['Bank', 'Credit Card'].includes(a.AccountType))
-  const accountLabel = a => (a.AcctNum ? `${a.AcctNum} — ${a.Name}` : a.Name)
+  // Lignes qui portent leur propre compte de dépense (ventilation multi-comptes).
+  const lineAccountCount = (receipt.items || []).filter(it => it?.expense_account_id).length
   const vendorOptions  = vendors.map(v => ({ value: v.Id, label: v.DisplayName }))
-  const expenseOptions = expenseAccounts.map(a => ({ value: a.Id, label: accountLabel(a) }))
+  const expenseOptions = expenseAccountOptions(accounts)
   // La devise est affichée pour les comptes non-CAD : QB refuse un Purchase dont le
   // compte de paiement n'est pas dans la devise de la transaction (fournisseur USD →
   // compte USD obligatoire) — le badge évite de choisir un compte incompatible.
@@ -694,6 +703,15 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
           {partsApplied && !userTouchedRef.current && (
             <p data-testid="qb-parts-account-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 mt-1.5 leading-snug">
               Compte de <strong>pièces</strong> appliqué automatiquement : des lignes sont rattachées à des achats LIA (entrée au stock).
+            </p>
+          )}
+          {/* Exceptions par ligne (section Articles) : ce compte ne s'applique alors
+              qu'aux lignes sans compte propre — visible ici pour éviter la surprise
+              au moment de publier. */}
+          {lineAccountCount > 0 && (
+            <p data-testid="qb-line-accounts-note" className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded px-2 py-1 mt-1.5 leading-snug">
+              {lineAccountCount === 1 ? '1 ligne d’article a' : `${lineAccountCount} lignes d’articles ont`} leur
+              <strong> propre compte de dépense</strong> (section Articles) — ce compte-ci s’applique aux autres lignes.
             </p>
           )}
         </div>
@@ -1389,7 +1407,7 @@ function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, 
   )
 }
 
-function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
+function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
   const { addToast } = useToast()
   const [items, setItems] = useState(receipt.items || [])
   const [saving, setSaving] = useState(false)
@@ -1433,6 +1451,8 @@ function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
       description: it.description || '',
       total:       parseNum(it.total),
       tax_code_id: it.tax_code_id || null,
+      // Compte de dépense QB de la ligne — null = suit le compte du document.
+      expense_account_id: it.expense_account_id || null,
       // Achat LIA rattaché (purchases.id) + son code, dupliqué pour l'affichage.
       purchase_id: it.purchase_id || null,
       lia_ref:     it.lia_ref || null,
@@ -1450,7 +1470,7 @@ function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
   }
 
   function addItem() {
-    setItems(prev => [...prev, { description: '', total: null, tax_code_id: null }])
+    setItems(prev => [...prev, { description: '', total: null, tax_code_id: null, expense_account_id: null }])
   }
 
   // Rattachement d'une ligne à un achat LIA : la description devient « LIA-1991⇥Nom de
@@ -1483,6 +1503,14 @@ function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
   // n'émet pas de blur). On commit la liste calculée pour ne pas dépendre du setState async.
   function setTaxCode(i, val) {
     const next = items.map((it, idx) => idx === i ? { ...it, tax_code_id: val || null } : it)
+    setItems(next)
+    commit(next)
+  }
+
+  // Compte de dépense par ligne : même mécanique que le code de taxe (persistance
+  // immédiate). Vide = la ligne suit le compte de dépense du document.
+  function setLineExpenseAccount(i, val) {
+    const next = items.map((it, idx) => idx === i ? { ...it, expense_account_id: val || null } : it)
     setItems(next)
     commit(next)
   }
@@ -1530,6 +1558,11 @@ function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
     { value: NO_TAX, label: '— Aucune taxe (sans code) —' },
     ...taxCodes.map(c => ({ value: c.Id, label: c.Name })),
   ]
+
+  // Comptes de dépense proposés par ligne — mêmes types que le sélecteur du document.
+  // Vide (emptyOption) = la ligne suit le compte de dépense choisi à la publication ;
+  // un choix ici l'emporte, pour les achats qui touchent plus d'un compte.
+  const lineAccountOptions = expenseAccountOptions(accounts)
 
   // Achats LIA proposés dans le sélecteur. Par défaut, la liste est celle de la section
   // « À recevoir » d'Airtable : les commandes sans date de réception complète, c'est-à-dire
@@ -1657,6 +1690,21 @@ function EditableItems({ receipt, onUpdate, taxCodes = [] }) {
                   placeholder="— Code du document —"
                 />
               </div>
+            </div>
+            {/* Compte de dépense de la ligne : sur sa propre rangée (les libellés de
+                comptes — « 14000 — Stock de Pièces » — sont trop longs pour partager
+                la rangée du code de taxe dans une demi-largeur d'écran). Facture qui
+                touche plusieurs comptes → on ventile ici, ligne par ligne. */}
+            <div className="mt-1 pl-2 pr-[2.375rem]">
+              <span className="block text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">Compte de dépense</span>
+              <SearchableSelect
+                testId={`receipt-item-account-${i}`}
+                value={item.expense_account_id || ''}
+                options={lineAccountOptions}
+                emptyOption="— Compte du document —"
+                onChange={val => setLineExpenseAccount(i, val)}
+                placeholder="— Compte du document —"
+              />
             </div>
           </div>
         ))}
@@ -1842,6 +1890,103 @@ function splitTaxTotal(newTotal, { tps = 0, tvq = 0, other_taxes = 0 }) {
     rounded[k] = r(rounded[k] + diff)
   }
   return rounded
+}
+
+// À quel champ du document (tps / tvq / other_taxes) rattacher un label de taxe
+// tel qu'imprimé sur la facture (« TPS », « T.P.S. (5%) », « GST », « TVQ »,
+// « QST », « HST ON », « PST BC »…). Miroir simplifié de la règle d'extraction
+// (saleReceiptExtraction.js) : TPS/GST → tps, TVQ/QST → tvq, tout le reste
+// (TVH/HST d'une autre province, PST, etc.) → other_taxes.
+function taxFieldForLabel(label) {
+  const l = (label || '').toUpperCase()
+  if (l.includes('TPS') || l.includes('GST')) return 'tps'
+  if (l.includes('TVQ') || l.includes('QST')) return 'tvq'
+  return 'other_taxes'
+}
+
+const TAX_FIELD_LABEL = { tps: 'TPS / GST', tvq: 'TVQ / QST', other_taxes: 'Autres taxes' }
+
+// Sommaire des taxes telles qu'extraites par l'IA, REGROUPÉES par type (comme le
+// « Sommaire des frais d'expédition » imprimé en page 1 des factures de transport
+// multi-régions — Novoxpress, etc.) : un montant par type de taxe rencontré dans
+// les expéditions, avec un repère ✓/⚠️ indiquant si la somme extraite pour ce type
+// correspond bien au montant du document (tps/tvq/other_taxes) — sans avoir à
+// rouvrir le PDF pour vérifier l'extraction ligne par ligne. Replié par défaut ;
+// n'existe et ne s'affiche que si `raw_data` contient des `shipments`.
+function ExtractedTaxDetail({ receipt }) {
+  const [open, setOpen] = useState(false)
+  const shipments = (() => {
+    if (!receipt.raw_data) return null
+    try {
+      const parsed = JSON.parse(receipt.raw_data)
+      return Array.isArray(parsed.shipments) && parsed.shipments.length ? parsed.shipments : null
+    } catch { return null }
+  })()
+  if (!shipments) return null
+
+  // Regroupe TOUTES les taxes de TOUTES les expéditions par label exact imprimé
+  // (« TPS », « HST ON »…), puis par champ document (tps/tvq/other_taxes).
+  const byLabel = new Map()
+  for (const sh of shipments) {
+    for (const t of (sh.taxes || [])) {
+      if (!t || !t.label) continue
+      byLabel.set(t.label, round2((byLabel.get(t.label) || 0) + (Number(t.amount) || 0)))
+    }
+  }
+  const byField = { tps: 0, tvq: 0, other_taxes: 0 }
+  const labelsByField = { tps: [], tvq: [], other_taxes: [] }
+  for (const [label, amount] of byLabel) {
+    const field = taxFieldForLabel(label)
+    byField[field] = round2(byField[field] + amount)
+    labelsByField[field].push([label, amount])
+  }
+
+  return (
+    <div className="text-[11px]">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        data-testid="receipt-extracted-tax-detail-toggle"
+        className="text-brand-600 hover:underline"
+      >
+        {open ? 'Masquer' : 'Voir'} le détail des taxes extraites (par type)
+      </button>
+      {open && (
+        <div className="mt-1 space-y-2 border border-slate-200 rounded-md p-2 bg-white">
+          {['tps', 'tvq', 'other_taxes'].filter(f => labelsByField[f].length).map(field => {
+            const documented = round2(receipt[field] || 0)
+            const ok = Math.abs(documented - byField[field]) < 0.02
+            return (
+              <div key={field}>
+                <div className="flex justify-between gap-2 text-slate-700 font-medium">
+                  <span className="inline-flex items-center gap-1">
+                    {ok
+                      ? <CheckCircle size={11} className="text-green-600" />
+                      : <AlertCircle size={11} className="text-amber-500" />}
+                    {TAX_FIELD_LABEL[field]}
+                  </span>
+                  <span className="tabular-nums shrink-0" title="Somme extraite pour ce type, sur toutes les expéditions">
+                    {fmtCad(byField[field])}
+                  </span>
+                </div>
+                {labelsByField[field].map(([label, amount], i) => (
+                  <div key={i} className="flex justify-between gap-2 pl-4 text-slate-400">
+                    <span className="truncate">{label}</span>
+                    <span className="tabular-nums shrink-0">{fmtCad(amount)}</span>
+                  </div>
+                ))}
+                {!ok && (
+                  <p className="pl-4 text-amber-600">
+                    Écart avec le document ({fmtCad(documented)}) — vérifier l'extraction.
+                  </p>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function EditableTotalTaxesRow({ receipt, onUpdate }) {
@@ -2287,12 +2432,18 @@ export default function SaleReceiptDetail() {
   // Codes de taxe QB partagés par le sélecteur de ligne (Articles) et l'indicateur de
   // réconciliation (Montants). Une seule requête ; échec (QB non connecté) → liste vide.
   const [taxCodes, setTaxCodes] = useState([])
+  // Comptes QB — le sélecteur de compte de dépense PAR LIGNE (Articles) en a besoin
+  // même quand le formulaire de publication n'est pas affiché (reçu déjà publié).
+  const [accounts, setAccounts] = useState([])
 
   useEffect(() => {
     let cancelled = false
     api.quickbooks.taxCodes()
       .then(codes => { if (!cancelled) setTaxCodes(codes || []) })
       .catch(() => { if (!cancelled) setTaxCodes([]) })
+    api.quickbooks.accounts()
+      .then(accs => { if (!cancelled) setAccounts(accs || []) })
+      .catch(() => { if (!cancelled) setAccounts([]) })
     return () => { cancelled = true }
   }, [])
 
@@ -2673,7 +2824,7 @@ export default function SaleReceiptDetail() {
                 <InfoField label="Fichier" value={receipt.original_name} />
               </div>
 
-              <EditableItems receipt={receipt} onUpdate={setReceipt} taxCodes={taxCodes} />
+              <EditableItems receipt={receipt} onUpdate={setReceipt} taxCodes={taxCodes} accounts={accounts} />
 
               {(() => {
                 // Mode « piloté par les codes » : un code de taxe par défaut est défini
@@ -2709,6 +2860,7 @@ export default function SaleReceiptDetail() {
                   <EditableAmountRow receipt={receipt} field="tps"         label="TPS / GST"                onUpdate={setReceipt} readOnly={codeDriven} hint={codeHint} />
                   <EditableAmountRow receipt={receipt} field="tvq"         label="TVQ / QST / PST"          onUpdate={setReceipt} readOnly={codeDriven} hint={codeHint} />
                   <EditableAmountRow receipt={receipt} field="other_taxes" label="Autres taxes"             onUpdate={setReceipt} readOnly={codeDriven} hint={codeHint} />
+                  <ExtractedTaxDetail receipt={receipt} />
                   {!codeDriven && <EditableTotalTaxesRow receipt={receipt} onUpdate={setReceipt} />}
                   {!codeDriven && <TaxReconciliationRow receipt={receipt} taxCodes={taxCodes} />}
                   <div className="border-t border-slate-200 pt-2 mt-2">

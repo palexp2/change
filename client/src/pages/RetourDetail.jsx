@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, ExternalLink } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Sparkles, PanelRight, Truck } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
+import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
+import RetourActionsDrawer from '../components/RetourActionsDrawer.jsx'
+import UpsReturnLabelModal from '../components/UpsReturnLabelModal.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
@@ -28,12 +31,11 @@ function Field({ label, children, mono = false, full = false }) {
   )
 }
 
-function ItemDetailModal({ item, onClose }) {
-  if (!item) return null
-  const title = item.serial_number ? `${item.serial_number} — ${item.product_name || 'Article'}` : (item.product_name || 'Article')
+function ItemDetailDrawer({ item, onClose }) {
+  const title = item?.serial_number ? `${item.serial_number} — ${item.product_name || 'Article'}` : (item?.product_name || 'Article')
   return (
-    <Modal isOpen={!!item} onClose={onClose} title={title} size="xl">
-      <div className="space-y-5">
+    <RecordPeekDrawer open={!!item} onClose={onClose} title={title} width={520}>
+      {item && <div className="p-6 space-y-5">
 
         <section>
           <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Identification</h3>
@@ -131,14 +133,20 @@ function ItemDetailModal({ item, onClose }) {
           </section>
         )}
 
-      </div>
-    </Modal>
+      </div>}
+    </RecordPeekDrawer>
   )
 }
 
-export default function RetourDetail() {
-  const { id } = useParams()
+export default function RetourDetail({ recordId, embedded = false }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
+  const [actionsOpen, setActionsOpen] = useState(false)
+  const [upsLabelOpen, setUpsLabelOpen] = useState(false)
+  // shell() : évite de dupliquer <Layout> pour les retours (loading/error/main)
+  // quand la fiche est rendue à l'intérieur d'un RecordPeekDrawer (embedded).
+  const shell = (content) => (embedded ? content : <Layout>{content}</Layout>)
   const [retour, setRetour] = useState(null)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
@@ -155,24 +163,20 @@ export default function RetourDetail() {
 
   useEffect(() => { load() }, [load])
 
-  if (loading) {
-    return (
-      <Layout>
-        <Spinner center />
-      </Layout>
-    )
-  }
-  if (loadError && !retour) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
-  if (!retour) return <Layout><div className="p-6 text-slate-500">Retour introuvable.</div></Layout>
+  if (loading) return shell(<Spinner center />)
+  if (loadError && !retour) return shell(<DetailLoadError message={loadError} onRetry={load} />)
+  if (!retour) return shell(<div className="p-6 text-slate-500">Retour introuvable.</div>)
 
-  return (
-    <Layout>
-      <div className="p-6 max-w-5xl mx-auto">
+  return shell(
+    <>
+    <div className={embedded ? 'p-6' : 'p-6 max-w-5xl mx-auto'}>
         {/* Header */}
         <div className="flex items-start gap-4 mb-6">
-          <button onClick={() => navigate('/retours')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-            <ArrowLeft size={18} />
-          </button>
+          {!embedded && (
+            <button onClick={() => navigate('/retours')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div className="flex-1">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-2xl font-bold text-slate-900">{retour.return_number || `Retour #${id}`}</h1>
@@ -189,6 +193,27 @@ export default function RetourDetail() {
                 </Link>
               )}
             </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setUpsLabelOpen(true)}
+              className="btn-secondary text-sm flex items-center gap-1.5"
+              data-testid="ups-return-label-button"
+            >
+              <Truck size={14} /> Créer l'étiquette de retour UPS
+            </button>
+            <button onClick={() => setActionsOpen(true)} className="btn-primary text-sm flex items-center gap-1.5">
+              <Sparkles size={14} /> Actions
+            </button>
+            {!embedded && (
+              <button
+                onClick={() => navigate('/retours', { state: { peekId: id } })}
+                title="Revenir au panneau"
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg"
+              >
+                <PanelRight size={18} />
+              </button>
+            )}
           </div>
         </div>
 
@@ -272,7 +297,33 @@ export default function RetourDetail() {
         </div>
       </div>
 
-      <ItemDetailModal item={selectedItem} onClose={() => setSelectedItem(null)} />
-    </Layout>
+      <ItemDetailDrawer item={selectedItem} onClose={() => setSelectedItem(null)} />
+
+      <Modal
+        isOpen={upsLabelOpen}
+        onClose={() => setUpsLabelOpen(false)}
+        title="Étiquette de retour UPS"
+      >
+        {upsLabelOpen && (
+          <UpsReturnLabelModal
+            retour={retour}
+            onClose={() => setUpsLabelOpen(false)}
+            onDone={load}
+          />
+        )}
+      </Modal>
+
+      <RecordPeekDrawer
+        open={actionsOpen}
+        onClose={() => setActionsOpen(false)}
+        title="Actions"
+        subtitle={retour.return_number || `Retour #${id}`}
+        width={480}
+      >
+        <div className="p-6">
+          {actionsOpen && <RetourActionsDrawer retour={retour} onClose={() => setActionsOpen(false)} onDone={load} />}
+        </div>
+      </RecordPeekDrawer>
+    </>,
   )
 }

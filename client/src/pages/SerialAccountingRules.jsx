@@ -4,7 +4,6 @@ import { Plus, Trash2, AlertCircle, CheckCircle2, Ban, SlidersHorizontal } from 
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
-import { AirtableCoreMapModal } from '../components/AirtableCoreMapModal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -231,7 +230,6 @@ export default function SerialAccountingRules() {
   const [loading, setLoading] = useState(true)
   const [accountsError, setAccountsError] = useState('')
   const [modal, setModal] = useState(null) // { rule, transition }
-  const [showFieldMap, setShowFieldMap] = useState(false)
   const [windowDays, setWindowDays] = useState(90)
   const confirm = useConfirm()
 
@@ -446,19 +444,12 @@ export default function SerialAccountingRules() {
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             <Link
-              to="/airtable/fields/serial_changes"
+              to="/champs/serial_transitions?tab=serial_changes"
               className="btn-secondary btn-sm py-1 flex items-center gap-1.5"
               title="Ajouter et mapper des champs Airtable supplémentaires sur les changements d'état"
             >
               <SlidersHorizontal size={13} /> Gérer les champs
             </Link>
-            <button
-              onClick={() => setShowFieldMap(true)}
-              className="btn-secondary btn-sm py-1 flex items-center gap-1.5"
-              title="Choisir quels champs Airtable alimentent les changements d'état et les numéros de série"
-            >
-              <SlidersHorizontal size={13} /> Sync Airtable
-            </button>
           </div>
         </div>
 
@@ -581,15 +572,6 @@ export default function SerialAccountingRules() {
         )}
       </Modal>
 
-      <AirtableCoreMapModal
-        isOpen={showFieldMap}
-        onClose={() => setShowFieldMap(false)}
-        modules={[
-          { module: 'serial_changes', title: "Changements d'état" },
-          { module: 'serials', title: 'Numéros de série' },
-        ]}
-        onSaved={reload}
-      />
     </Layout>
   )
 }

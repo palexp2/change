@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, FileText, ExternalLink, Download, RefreshCw, Hammer, AlertTriangle, CheckCircle2 } from 'lucide-react'
+import { ArrowLeft, FileText, ExternalLink, Download, RefreshCw, Hammer, AlertTriangle, CheckCircle2, PanelRight } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
@@ -8,6 +8,7 @@ import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.j
 import { VendorSelect } from '../components/VendorSelect.jsx'
 import { PurchaseOrderModal } from '../components/PurchaseOrderModal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import TableThumb from '../components/TableThumb.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useAuth } from '../lib/auth.jsx'
@@ -50,10 +51,10 @@ const movTypeLabel = { in: 'Entrée', out: 'Sortie', adjustment: 'Ajustement' }
 const BOM_RENDERS = {
   component_image: row => (
     row.component_image_url ? (
-      <img src={row.component_image_url} alt={row.component_name || ''}
-        className="h-10 w-10 object-cover rounded border border-slate-200" loading="lazy" />
+      <TableThumb src={row.component_image_url} alt={row.component_name || ''}
+        className="border border-slate-200" />
     ) : (
-      <div className="h-10 w-10 rounded border border-dashed border-slate-200" />
+      <div className="h-7 w-7 rounded border border-dashed border-slate-200" />
     )
   ),
   component_name: row => (
@@ -190,8 +191,13 @@ function Field({ label, children, span2 = false }) {
   )
 }
 
-export default function ProductDetail() {
-  const { id } = useParams()
+// `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
+// (RecordPeekDrawer) d'une liste : pas de Layout, pas de bouton retour ni de
+// titre (le drawer fournit le sien). `onClose` ferme le drawer (utilisé quand
+// le produit est supprimé pendant que le drawer est ouvert).
+export default function ProductDetail({ recordId, embedded = false, onClose }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
   const { user: _user } = useAuth()
   const [product, setProduct] = useState(null)
@@ -252,7 +258,7 @@ export default function ProductDetail() {
 
   useRealtimeChannel(id ? `product:${id}` : null, (msg) => {
     if (msg.type === 'product:updated') setProduct(p => p ? { ...p, ...msg.payload } : p)
-    else if (msg.type === 'product:deleted') navigate('/products')
+    else if (msg.type === 'product:deleted') { if (embedded) onClose?.(); else navigate('/products') }
   })
 
   useEffect(() => {
@@ -286,44 +292,66 @@ export default function ProductDetail() {
 
   const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
-  if (loading) return <Layout><Spinner center /></Layout>
-  if (loadError && !product) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
-  if (!product) return <Layout><div className="p-6 text-slate-500">Produit introuvable.</div></Layout>
+  // En mode embedded (side-peek), pas de Layout : le drawer fournit le cadre.
+  const shell = (content) => (embedded ? content : <Layout>{content}</Layout>)
 
-  return (
-    <Layout>
-      <div className="p-6 max-w-4xl mx-auto">
+  if (loading) return shell(<Spinner center />)
+  if (loadError && !product) return shell(<DetailLoadError message={loadError} onRetry={load} />)
+  if (!product) return shell(<div className="p-6 text-slate-500">Produit introuvable.</div>)
+
+  return shell(
+    <>
+      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-4xl mx-auto'}>
 
         {/* Header */}
         <div className="flex items-start gap-4 mb-6">
-          <button onClick={() => navigate('/products')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-            <ArrowLeft size={18} />
-          </button>
-          {product.image_url && (
-            <img src={product.image_url} alt={form.name_fr} className="w-20 h-20 object-cover rounded-lg border border-slate-200 flex-shrink-0" />
+          {!embedded && (
+            <button onClick={() => navigate('/products')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+              <ArrowLeft size={18} />
+            </button>
           )}
-          <div className="flex-1">
+          {product.image_url && (
+            <img src={product.image_url} alt={form.name_fr} className={`object-cover rounded-lg border border-slate-200 flex-shrink-0 ${embedded ? 'w-14 h-14' : 'w-20 h-20'}`} />
+          )}
+          <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-bold text-slate-900">{form.name_fr || <span className="text-slate-400 italic font-normal">Sans nom</span>}</h1>
+              {!embedded && <h1 className="text-2xl font-bold text-slate-900">{form.name_fr || <span className="text-slate-400 italic font-normal">Sans nom</span>}</h1>}
               <Badge color={stockStatusColor(product)} size="md">{stockStatusLabel(product)}</Badge>
               {!form.active && <Badge color="red">Inactif</Badge>}
               {form.is_sellable && <Badge color="indigo">Vendable</Badge>}
               <SaveStatus status={saveState} />
             </div>
-            <div className="text-sm text-slate-500 mt-1 flex gap-3">
-              {form.sku && <span className="font-mono bg-slate-100 px-2 py-0.5 rounded">{form.sku}</span>}
-              {form.type && <span>{form.type}</span>}
+            <div className="text-sm text-slate-500 mt-1 flex gap-3 flex-wrap items-center">
+              {/* SKU et type sont déjà dans le sous-titre du drawer : on ne les
+                  répète pas en mode embarqué. */}
+              {!embedded && form.sku && <span className="font-mono bg-slate-100 px-2 py-0.5 rounded">{form.sku}</span>}
+              {!embedded && form.type && <span>{form.type}</span>}
               <span>Stock: <strong>{product.stock_qty}</strong> / min: {form.min_stock || 0}</span>
             </div>
           </div>
-          {form.buy_via_po && form.supplier_company_id && (
-            <button
-              onClick={() => setShowPoModal(true)}
-              className="btn-primary flex items-center gap-1.5 text-sm"
-            >
-              <FileText size={14} /> Générer un PO
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {!embedded && (
+              /* Miroir du bouton « ouvrir en grand » du drawer : retourne à la
+                 liste avec ce produit ouvert en panneau latéral. */
+              <button
+                onClick={() => navigate('/products', { state: { peekId: id } })}
+                className="p-1.5 text-slate-400 hover:text-brand-600 hover:bg-slate-100 rounded-lg"
+                title="Revenir à la liste avec ce produit en panneau latéral"
+                aria-label="Ouvrir en panneau latéral"
+                data-testid="product-open-as-peek"
+              >
+                <PanelRight size={16} />
+              </button>
+            )}
+            {form.buy_via_po && form.supplier_company_id && (
+              <button
+                onClick={() => setShowPoModal(true)}
+                className="btn-primary flex items-center gap-1.5 text-sm"
+              >
+                <FileText size={14} /> Générer un PO
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Tabs */}
@@ -453,7 +481,7 @@ export default function ProductDetail() {
             columns={MOVEMENT_COLUMNS}
             data={product.movements || []}
             searchFields={['type', 'reason', 'user_name', 'reference_id']}
-            height="calc(100vh - 360px)"
+            height={embedded ? 'calc(100vh - 420px)' : 'calc(100vh - 360px)'}
           />
         )}
 
@@ -465,7 +493,7 @@ export default function ProductDetail() {
               columns={BOM_COLUMNS}
               data={bomSummary.rows}
               searchFields={['component_name', 'component_sku', 'ref_des']}
-              height="calc(100vh - 420px)"
+              height={embedded ? 'calc(100vh - 480px)' : 'calc(100vh - 420px)'}
             />
           </div>
         )}
@@ -629,6 +657,6 @@ export default function ProductDetail() {
           </div>
         )
       })()}
-    </Layout>
+    </>
   )
 }

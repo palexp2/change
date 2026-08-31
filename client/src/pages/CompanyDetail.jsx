@@ -8,13 +8,16 @@ import api from '../lib/api.js'
 import { invalidate } from '../lib/prefetch.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { Badge, phaseBadgeColor, orderStatusColor, ticketStatusColor, projectStatusColor } from '../components/Badge.jsx'
+import { Badge, phaseBadgeColor, orderStatusColor, ticketStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import TableThumb from '../components/TableThumb.jsx'
 import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
+import { FurnaceV1Alert } from '../components/FurnaceV1Alert.jsx'
 import Attachments from '../components/Attachments.jsx'
+import ReqRegistryCard from '../components/ReqRegistryCard.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -26,6 +29,7 @@ import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
+import { AddressCheckBadge, AddressCheckIssues, parseCheckIssues } from '../components/AddressCheckIssues.jsx'
 
 const PHASES = ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore']
 const TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin', 'Agriculture urbaine', 'Cannabis', 'Particulier', 'Distributeur', 'Partenaire', 'Compétiteur', 'Consultant', 'Autre']
@@ -84,8 +88,8 @@ const SERIAL_RENDERS = {
   product_name: row => row.product_id
     ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-2 text-brand-600 hover:underline">
         {row.product_image
-          ? <img src={row.product_image} alt="" className="w-8 h-8 object-cover rounded border border-slate-200 shrink-0" />
-          : <div className="w-8 h-8 rounded border border-slate-200 bg-slate-100 shrink-0" />}
+          ? <TableThumb src={row.product_image} className="border border-slate-200 shrink-0" />
+          : <div className="h-7 w-7 rounded border border-slate-200 bg-slate-100 shrink-0" />}
         <span>{row.product_name || row.sku || '—'}</span>
       </Link>
     : <span className="text-slate-400">—</span>,
@@ -186,14 +190,24 @@ function AdresseModalContent({ companyId, company, editingAdresse, adresseForm, 
   const { addToast } = useToast()
   const [fieldSaving, setFieldSaving] = useState({})
   const [saving, setSaving] = useState(false)
+  // Verdict du vérificateur d'adresses, rafraîchi à chaque autosave : l'erreur
+  // apparaît sous les yeux de l'utilisateur pendant qu'il corrige.
+  const [check, setCheck] = useState(() => ({
+    status: editingAdresse?.check_status || null,
+    issues: parseCheckIssues(editingAdresse?.check_issues),
+  }))
+
+  const applySaved = (updated) => {
+    setAdresses(prev => prev.map(a => a.id === updated.id ? updated : a))
+    setCheck({ status: updated.check_status || null, issues: parseCheckIssues(updated.check_issues) })
+  }
 
   const saveField = async (key, value) => {
     setAdresseForm(f => ({ ...f, [key]: value }))
     if (!isEdit) return
     setFieldSaving(s => ({ ...s, [key]: true }))
     try {
-      const updated = await api.adresses.update(editingAdresse.id, { [key]: value })
-      setAdresses(prev => prev.map(a => a.id === editingAdresse.id ? updated : a))
+      applySaved(await api.adresses.update(editingAdresse.id, { [key]: value }))
     } catch (err) {
       addToast({ message: err.message, type: 'error' })
     } finally {
@@ -206,8 +220,7 @@ function AdresseModalContent({ companyId, company, editingAdresse, adresseForm, 
     if (!isEdit) return
     setFieldSaving(s => ({ ...s, country: true }))
     try {
-      const updated = await api.adresses.update(editingAdresse.id, { country: value, province: '' })
-      setAdresses(prev => prev.map(a => a.id === editingAdresse.id ? updated : a))
+      applySaved(await api.adresses.update(editingAdresse.id, { country: value, province: '' }))
     } catch (err) {
       addToast({ message: err.message, type: 'error' })
     } finally {
@@ -229,6 +242,18 @@ function AdresseModalContent({ companyId, company, editingAdresse, adresseForm, 
 
   const fields = (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      {check.issues.length > 0 && (
+        <div
+          className={`col-span-2 rounded-lg border px-3 py-2.5 ${check.status === 'error' ? 'border-red-200 bg-red-50' : 'border-orange-200 bg-orange-50'}`}
+          data-testid="adresse-check-panel"
+        >
+          <div className="flex items-center gap-2 mb-1">
+            <AddressCheckBadge status={check.status} />
+            <span className="text-xs text-slate-600">Cette adresse ne passe pas la vérification</span>
+          </div>
+          <AddressCheckIssues issues={check.issues} />
+        </div>
+      )}
       <div className="col-span-2">
         <label className="label">Rue / Ligne 1</label>
         <input
@@ -752,6 +777,50 @@ function QualificationCallsPanel({ calls }) {
   )
 }
 
+const SECTION_LABELS = {
+  info: 'Informations',
+  contacts: 'Contacts',
+  interactions: 'Interactions',
+  projets: 'Projets',
+  commandes: 'Commandes',
+  envois: 'Envois',
+  retours: 'Retours (RMA)',
+  support: 'Support',
+  'numéros de série': 'N° de série',
+  factures: 'Factures',
+  abonnements: 'Abonnements',
+  tâches: 'Tâches',
+  achats: 'Achats fourn.',
+  onboarding: 'Onboarding',
+  qualification: 'Qualification call',
+}
+
+// Les sous-tableaux étant désormais empilés, chacun est borné en hauteur selon
+// son nombre de lignes (32 px/ligne + l'en-tête collant) pour éviter les grands
+// vides sous une table de deux lignes.
+function stackedTableHeight(rows) {
+  if (!rows) return '190px'
+  return `${Math.min(520, Math.max(160, 44 + rows * 32))}px`
+}
+
+// Bloc de section : ancre pour le scroll-spy + titre et action optionnelle.
+function Section({ id, label, count, action, registerRef, children }) {
+  return (
+    <section ref={registerRef} data-section={id} className="pt-1 pb-8 scroll-mt-2">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <h2 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wide text-slate-400">
+          {label}
+          {count > 0 && (
+            <span className="bg-slate-100 text-slate-500 text-[11px] font-medium px-1.5 py-0.5 rounded-full leading-none normal-case tracking-normal">{count}</span>
+          )}
+        </h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  )
+}
+
 // `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
 // (RecordPeekDrawer) d'une liste : pas de Layout, pas de bouton retour ni de
 // titre (le drawer fournit le sien). `onClose` ferme le drawer (utilisé quand
@@ -762,10 +831,18 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
   const navigate = useNavigate()
   const { user: _user } = useAuth()
   const confirm = useConfirm()
+  const { addToast } = useToast()
   const [company, setCompany] = useState(null)
+  // Bulk « Retourner tous les numéros de série » (import automatisation Airtable #3)
+  const [bulkReturnSerialIds, setBulkReturnSerialIds] = useState(null)
+  const [bulkReturnReason, setBulkReturnReason] = useState('')
+  const [bulkReturnSubmitting, setBulkReturnSubmitting] = useState(false)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
-  const [tab, setTab] = useState('info')
+  // Toutes les sections sont affichées d'un coup (empilées) : `activeSection`
+  // sert uniquement à surligner l'entrée du sélecteur latéral en fonction de la
+  // position de défilement (scroll-spy), cf. useEffect plus bas.
+  const [activeSection, setActiveSection] = useState('info')
   const [fieldSaving, setFieldSaving] = useState(null)
   const { status: saveState, save } = useSaveStatus()
   const [showContactModal, setShowContactModal] = useState(false)
@@ -843,14 +920,96 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
     api.qualificationCalls.byCompany(id).then(r => setQualificationCalls(r.data || [])).catch(() => {})
   }, [id])
 
-  useEffect(() => {
-    api.interactions.list({ company_id: id, limit: 1, offset: 0 }).then(d => setInteractionsTotal(d.total || 0)).catch(() => {})
-    api.shipments.list({ company_id: id, limit: 1 }).then(r => setEnvoisTotal(r.total || 0)).catch(() => {})
-    api.factures.list({ company_id: id, limit: 1 }).then(r => setFacturesTotal(r.total || 0)).catch(() => {})
-    api.abonnements.list({ company_id: id, limit: 1 }).then(r => setAbonnementsTotal(r.total || r.data?.length || 0)).catch(() => {})
-  }, [id])
 
   const visibleFields = useMemo(() => COMPANY_FIELDS.filter(f => f.defaultVisible !== false), [])
+
+  // ── Sections empilées + scroll-spy ──────────────────────────────────────────
+  // Le sélecteur latéral n'affiche plus/ne masque plus les sections : tout est
+  // rendu à la suite et l'entrée surlignée suit le défilement.
+  const sections = useMemo(() => [
+    'info', 'contacts', 'interactions', 'projets', 'commandes', 'envois', 'retours', 'support',
+    'numéros de série', 'factures', 'abonnements', 'tâches',
+    ...(company?.quickbooks_vendor_id ? ['achats'] : []),
+    ...(onboardingResponses.length > 0 ? ['onboarding'] : []),
+    ...(qualificationCalls.length > 0 ? ['qualification'] : []),
+  ], [company?.quickbooks_vendor_id, onboardingResponses.length, qualificationCalls.length])
+
+  const sectionEls = useRef(new Map())
+  const sectionsRef = useRef(sections)
+  sectionsRef.current = sections
+  const spyMutedUntil = useRef(0)
+  // Callbacks de ref mémoïsés par section : sinon React les rejouerait
+  // (null puis el) à chaque rendu.
+  const sectionRefCbs = useRef(new Map())
+  const registerSection = (key) => {
+    if (!sectionRefCbs.current.has(key)) {
+      sectionRefCbs.current.set(key, (el) => {
+        if (el) sectionEls.current.set(key, el)
+        else sectionEls.current.delete(key)
+      })
+    }
+    return sectionRefCbs.current.get(key)
+  }
+
+  // Le conteneur de défilement diffère selon le contexte : <main> en pleine page,
+  // le panneau du side-peek en mode embedded. On le retrouve en remontant le DOM.
+  function scrollParentOf(el) {
+    let p = el?.parentElement
+    while (p) {
+      if (/(auto|scroll|overlay)/.test(getComputedStyle(p).overflowY)) return p
+      p = p.parentElement
+    }
+    return document.scrollingElement
+  }
+
+  useEffect(() => {
+    if (loading || !company) return
+    const first = sectionEls.current.get(sectionsRef.current[0])
+    const root = scrollParentOf(first)
+    if (!root) return
+    const target = root === document.scrollingElement ? window : root
+    let raf = 0
+    const compute = () => {
+      raf = 0
+      if (Date.now() < spyMutedUntil.current) return
+      const rootTop = root === document.scrollingElement ? 0 : root.getBoundingClientRect().top
+      const probe = rootTop + 96
+      const keys = sectionsRef.current
+      let current = keys[0]
+      for (const key of keys) {
+        const el = sectionEls.current.get(key)
+        if (!el) continue
+        if (el.getBoundingClientRect().top <= probe) current = key
+      }
+      // Bas de page : la dernière section est forcément « celle où on est rendu »,
+      // même si son haut n'a pas franchi la ligne de sonde.
+      if (root.scrollHeight - root.scrollTop - root.clientHeight < 6) current = keys[keys.length - 1]
+      setActiveSection(prev => (prev === current ? prev : current))
+    }
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(compute) }
+    target.addEventListener('scroll', onScroll, { passive: true })
+    compute()
+    return () => {
+      target.removeEventListener('scroll', onScroll)
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [loading, company, sections])
+
+  function goToSection(key) {
+    setActiveSection(key)
+    const el = sectionEls.current.get(key)
+    if (!el) return
+    // On coupe le scroll-spy pendant l'animation, sinon les sections traversées
+    // feraient sauter le surlignage.
+    spyMutedUntil.current = Date.now() + 900
+    const root = scrollParentOf(el)
+    if (!root || root === document.scrollingElement) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
+    }
+    const delta = el.getBoundingClientRect().top - root.getBoundingClientRect().top
+    root.scrollTo({ top: Math.max(0, root.scrollTop + delta - 8), behavior: 'smooth' })
+  }
 
   // ── Colonnes DataTable des sous-tableaux liés ────────────────────────────
   // Dérivées des metas company_* de tableDefs.js, enrichies ici des render()
@@ -929,7 +1088,6 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
       tracking_number: row => row.tracking_number
         ? <span className="font-mono text-slate-900">{row.tracking_number}</span>
         : <span className="text-slate-400">—</span>,
-      status: row => <Badge color={row.status === 'Envoyé' ? 'green' : 'yellow'}>{row.status}</Badge>,
       carrier: row => <span className="text-slate-500">{row.carrier || '—'}</span>,
       order_number: row => <span className="text-slate-500">{row.order_number ? `#${row.order_number}` : '—'}</span>,
       shipped_at: row => <span className="text-slate-500">{fmtDate(row.shipped_at)}</span>,
@@ -996,42 +1154,37 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
     return TABLE_COLUMN_META.company_retours.map(m => ({ ...m, render: RENDERS[m.id] }))
   }, [])
 
+  // Toutes les sections étant visibles simultanément, tout est chargé au montage
+  // (plus de chargement paresseux à la sélection d'un onglet).
   useEffect(() => {
-    if (tab === 'interactions') {
-      setLoadingInteractions(true)
-      setInteractions([])
-      setInteractionsOffset(0)
-      api.interactions.list({ company_id: id, limit: INTER_LIMIT, offset: 0, include: 'heavy' })
-        .then(d => {
-          setInteractions(d.interactions || [])
-          setInteractionsTotal(d.total || 0)
-          setInteractionsOffset(INTER_LIMIT)
-        })
-        .finally(() => setLoadingInteractions(false))
-    }
-  }, [tab, id])
+    setLoadingInteractions(true)
+    setInteractions([])
+    setInteractionsOffset(0)
+    api.interactions.list({ company_id: id, limit: INTER_LIMIT, offset: 0, include: 'heavy' })
+      .then(d => {
+        setInteractions(d.interactions || [])
+        setInteractionsTotal(d.total || 0)
+        setInteractionsOffset(INTER_LIMIT)
+      })
+      .catch(() => {})
+      .finally(() => setLoadingInteractions(false))
+  }, [id])
 
   useEffect(() => {
-    if (tab === 'factures') {
-      api.factures.list({ company_id: id, limit: 'all' }).then(r => { setFactures(r.data); setFacturesTotal(r.total || r.data?.length || 0) }).catch(() => {})
-    }
-    if (tab === 'abonnements') {
-      api.abonnements.list({ company_id: id, limit: 'all' }).then(r => setAbonnements(r.data)).catch(() => {})
-    }
-    if (tab === 'tâches') {
-      api.tasks.list({ company_id: id, limit: 'all' }).then(r => setTasks(r.data || [])).catch(() => {})
-      api.auth.users().then(setUsers).catch(() => {})
-    }
-    if (tab === 'envois') {
-      api.shipments.list({ company_id: id, limit: 'all' }).then(r => { setEnvois(r.data || []); setEnvoisTotal(r.total || r.data?.length || 0) }).catch(() => {})
-    }
-    if (tab === 'achats') {
-      api.achatsFournisseurs.list({ vendor_id: id, limit: 'all' }).then(r => { setAchats(r.data || []); setAchatsTotal(r.total || r.data?.length || 0) }).catch(() => {})
-    }
-    if (tab === 'retours') {
-      api.returns.listByCompany(id).then(r => setRetours(r.data || [])).catch(() => {})
-    }
-  }, [tab, id])
+    api.factures.list({ company_id: id, limit: 'all' }).then(r => { setFactures(r.data || []); setFacturesTotal(r.total || r.data?.length || 0) }).catch(() => {})
+    api.abonnements.list({ company_id: id, limit: 'all' }).then(r => { setAbonnements(r.data || []); setAbonnementsTotal(r.total || r.data?.length || 0) }).catch(() => {})
+    api.tasks.list({ company_id: id, limit: 'all' }).then(r => setTasks(r.data || [])).catch(() => {})
+    api.auth.users().then(setUsers).catch(() => {})
+    api.shipments.list({ company_id: id, limit: 'all' }).then(r => { setEnvois(r.data || []); setEnvoisTotal(r.total || r.data?.length || 0) }).catch(() => {})
+    api.returns.listByCompany(id).then(r => setRetours(r.data || [])).catch(() => {})
+  }, [id])
+
+  // Achats fournisseurs : seulement si l'entreprise est aussi un fournisseur QB.
+  const isVendor = !!company?.quickbooks_vendor_id
+  useEffect(() => {
+    if (!isVendor) { setAchats([]); setAchatsTotal(0); return }
+    api.achatsFournisseurs.list({ vendor_id: id, limit: 'all' }).then(r => { setAchats(r.data || []); setAchatsTotal(r.total || r.data?.length || 0) }).catch(() => {})
+  }, [id, isVendor])
 
   async function loadMoreInteractions() {
     setLoadingMoreInteractions(true)
@@ -1105,7 +1258,22 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
     return shell(<div className="p-6 text-slate-500">Entreprise introuvable.</div>)
   }
 
-  const tabs = ['info', 'contacts', 'interactions', 'projets', 'commandes', 'envois', 'retours', 'support', 'numéros de série', 'factures', 'abonnements', 'tâches', ...(company.quickbooks_vendor_id ? ['achats'] : []), ...(onboardingResponses.length > 0 ? ['onboarding'] : []), ...(qualificationCalls.length > 0 ? ['qualification'] : [])]
+  const sectionCounts = {
+    contacts: company.contacts?.length,
+    projets: company.projects?.length,
+    interactions: interactionsTotal || undefined,
+    commandes: company.orders?.length,
+    envois: envoisTotal || undefined,
+    support: company.tickets?.length,
+    'numéros de série': company.serials?.length,
+    factures: facturesTotal || undefined,
+    abonnements: abonnementsTotal || undefined,
+    tâches: tasks.length || undefined,
+    achats: achatsTotal || undefined,
+    retours: retours.length || company.returns_count || undefined,
+    onboarding: onboardingResponses.length || undefined,
+    qualification: qualificationCalls.length || undefined,
+  }
 
   return shell(
     <>
@@ -1194,6 +1362,11 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
           onClose={() => setInvoiceModalOpen(false)}
         />
 
+        <FurnaceV1Alert
+          centralControllers={company.central_controllers}
+          serials={company.serials}
+        />
+
         {company.central_controllers?.some(cc => cc.permissions && Object.keys(cc.permissions).length > 0) && (
           <div className="card p-4 mb-4">
             <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-3">
@@ -1217,41 +1390,27 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
           </div>
         )}
 
-        {/* Tabs + Content */}
+        {/* Sélecteur de section (collant, suit le défilement) + sections empilées */}
         <div className="flex gap-6 items-start">
-          {/* Sidebar tabs */}
-          <div className="w-44 flex-shrink-0">
-            <nav className="flex flex-col gap-0.5">
-              {tabs.map(t => {
-                const tabLabel = t === 'info' ? 'Informations' : t === 'interactions' ? 'Interactions' : t === 'numéros de série' ? 'N° de série' : t === 'achats' ? 'Achats fourn.' : t === 'retours' ? 'Retours (RMA)' : t === 'onboarding' ? 'Onboarding' : t === 'qualification' ? 'Qualification call' : t.charAt(0).toUpperCase() + t.slice(1)
-                const counts = {
-                  contacts: company.contacts?.length,
-                  projets: company.projects?.length,
-                  interactions: interactionsTotal || undefined,
-                  commandes: company.orders?.length,
-                  envois: envoisTotal || undefined,
-                  support: company.tickets?.length,
-                  'numéros de série': company.serials?.length,
-                  factures: facturesTotal || undefined,
-                  abonnements: abonnementsTotal || undefined,
-                  tâches: tasks.length || undefined,
-                  achats: achatsTotal || undefined,
-                  retours: (tab === 'retours' ? retours.length : company.returns_count) || undefined,
-                  onboarding: onboardingResponses.length || undefined,
-                  qualification: qualificationCalls.length || undefined,
-                }
-                const count = counts[t]
+          <div className="w-44 flex-shrink-0 sticky top-2 self-start max-h-[calc(100vh-120px)] overflow-y-auto">
+            <nav className="flex flex-col gap-0.5" data-testid="company-section-nav">
+              {sections.map(t => {
+                const count = sectionCounts[t]
+                const isActive = activeSection === t
                 return (
                   <button
                     key={t}
-                    onClick={() => setTab(t)}
+                    onClick={() => goToSection(t)}
+                    aria-current={isActive ? 'true' : undefined}
+                    data-section-link={t}
+                    data-active={isActive ? 'true' : 'false'}
                     className={`flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors text-left w-full ${
-                      tab === t
+                      isActive
                         ? 'bg-brand-50 text-brand-700'
                         : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100'
                     }`}
                   >
-                    <span>{tabLabel}</span>
+                    <span>{SECTION_LABELS[t] || t}</span>
                     {count > 0 && (
                       <span className="bg-slate-200 text-slate-600 text-xs px-1.5 py-0.5 rounded-full leading-none flex-shrink-0">{count}</span>
                     )}
@@ -1261,11 +1420,11 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
             </nav>
           </div>
 
-          {/* Tab content */}
+          {/* Sections */}
           <div className="flex-1 min-w-0">
 
-        {/* Info Tab */}
-        {tab === 'info' && (
+        {/* Section Informations (fiche + adresses + pièces jointes) */}
+        <Section id="info" label={SECTION_LABELS.info} registerRef={registerSection('info')}>
           <div className="card p-6">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {visibleFields.map(field => {
@@ -1284,10 +1443,7 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
               })}
             </div>
           </div>
-        )}
 
-        {/* Adresses section (always shown below info) */}
-        {tab === 'info' && (
           <div className="card p-6 mt-4">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-sm font-semibold text-slate-700">Adresses</h3>
@@ -1304,13 +1460,18 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
             ) : (
               <div className="divide-y divide-slate-100">
                 {adresses.map(a => (
-                  <div key={a.id} className="flex items-start justify-between py-3 gap-4">
+                  <div key={a.id} className="flex items-start justify-between py-3 gap-4" data-testid={`adresse-row-${a.id}`}>
                     <div>
-                      <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 mb-1">{a.address_type || '—'}</span>
+                      <div className="flex items-center gap-1.5 mb-1">
+                        <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{a.address_type || '—'}</span>
+                        {/* Verdict du vérificateur d'adresses (services/addressCheck.js). */}
+                        <AddressCheckBadge status={a.check_status} />
+                      </div>
                       <div className="text-sm text-slate-800">{a.line1}</div>
                       <div className="text-xs text-slate-500 mt-0.5">
                         {[a.city, a.province, a.postal_code, a.country].filter(Boolean).join(', ')}
                       </div>
+                      <AddressCheckIssues issues={parseCheckIssues(a.check_issues)} className="mt-1" />
                       {a.contact_name?.trim() && (
                         <Link to={`/contacts/${a.contact_id}`} className="text-xs text-brand-500 hover:underline mt-0.5 block">{a.contact_name.trim()}</Link>
                       )}
@@ -1325,35 +1486,35 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
               </div>
             )}
           </div>
-        )}
 
-        {/* Pièces jointes (toujours sous Adresses dans l'onglet info) */}
-        {tab === 'info' && (
+          {/* Registre des entreprises du Québec — correspondance proposée par le
+              nom + la ville, liaison explicite. Lecture seule côté registre. */}
+          <ReqRegistryCard companyId={company.id} />
+
           <div className="mt-4">
             <Attachments entityType="companies" entityId={company.id} />
           </div>
-        )}
+        </Section>
 
-        {/* Contacts Tab */}
-        {tab === 'contacts' && (
-          <div>
-            <div className="flex justify-end mb-3">
-              <button onClick={() => setShowContactModal(true)} className="btn-primary btn-sm"><Plus size={14} /> Ajouter</button>
-            </div>
-            <DataTable
-              table="company_contacts"
-              columns={contactColumns}
-              data={company.contacts || []}
-              searchFields={['first_name', 'last_name', 'email', 'phone', 'mobile']}
-              onRowClick={row => navigate(`/contacts/${row.id}`)}
-              height="calc(100vh - 360px)"
-              emptyState={{ icon: Users, title: 'Aucun contact', description: "Aucune personne n'est encore rattachée à cette entreprise.", cta: { label: 'Ajouter', icon: Plus, onClick: () => setShowContactModal(true) } }}
-            />
-          </div>
-        )}
+        <Section
+          id="contacts"
+          label={SECTION_LABELS.contacts}
+          count={sectionCounts.contacts}
+          registerRef={registerSection('contacts')}
+          action={<button onClick={() => setShowContactModal(true)} className="btn-primary btn-sm"><Plus size={14} /> Ajouter</button>}
+        >
+          <DataTable
+            table="company_contacts"
+            columns={contactColumns}
+            data={company.contacts || []}
+            searchFields={['first_name', 'last_name', 'email', 'phone', 'mobile']}
+            onRowClick={row => navigate(`/contacts/${row.id}`)}
+            height={stackedTableHeight(company.contacts?.length)}
+            emptyState={{ icon: Users, title: 'Aucun contact', description: "Aucune personne n'est encore rattachée à cette entreprise.", cta: { label: 'Ajouter', icon: Plus, onClick: () => setShowContactModal(true) } }}
+          />
+        </Section>
 
-        {/* Interactions Tab */}
-        {tab === 'interactions' && (
+        <Section id="interactions" label={SECTION_LABELS.interactions} count={sectionCounts.interactions} registerRef={registerSection('interactions')}>
           <InteractionTimeline
             interactions={interactions}
             loading={loadingInteractions}
@@ -1361,16 +1522,18 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
             onLoadMore={loadMoreInteractions}
             loadingMore={loadingMoreInteractions}
           />
-        )}
+        </Section>
 
         {/* Projects Tab */}
-        {tab === 'projets' && (
-          <div>
-            <div className="flex justify-end mb-3">
-              <Link to={`/pipeline?company_id=${id}`} className="btn-secondary btn-sm"><Plus size={14} /> Nouveau projet</Link>
-            </div>
+        <Section
+          id="projets"
+          label={SECTION_LABELS.projets}
+          count={sectionCounts.projets}
+          registerRef={registerSection('projets')}
+          action={<Link to={`/pipeline?company_id=${id}`} className="btn-secondary btn-sm"><Plus size={14} /> Nouveau projet</Link>}
+        >
             <div className="space-y-3">
-              {company.projects?.length === 0 ? (
+              {!company.projects?.length ? (
                 <div className="card">
                   <EmptyState
                     compact
@@ -1387,7 +1550,6 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
                       <div className="font-medium text-slate-900">{p.name}</div>
                       <div className="text-xs text-slate-500 mt-0.5">{p.type || '—'}</div>
                     </div>
-                    <Badge color={projectStatusColor(p.status)}>{p.status}</Badge>
                   </div>
                   <div className="flex gap-4 mt-3 text-sm">
                     <div><span className="text-slate-400">Valeur: </span><span className="font-medium">{fmtCad(p.value_cad)}</span></div>
@@ -1397,148 +1559,149 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
                 </div>
               ))}
             </div>
-          </div>
-        )}
+        </Section>
 
-        {/* Orders Tab */}
-        {tab === 'commandes' && (
+        <Section id="commandes" label={SECTION_LABELS.commandes} count={sectionCounts.commandes} registerRef={registerSection('commandes')}>
           <DataTable
             table="company_orders"
             columns={orderColumns}
             data={company.orders || []}
             searchFields={['order_number', 'status']}
             onRowClick={row => navigate(`/orders/${row.id}`)}
-            height="calc(100vh - 360px)"
+            height={stackedTableHeight(company.orders?.length)}
             emptyState={{ icon: Package, title: 'Aucune commande', description: "Aucune commande n'est encore associée à cette entreprise." }}
           />
-        )}
+        </Section>
 
-        {/* Support Tab */}
-        {tab === 'support' && (
-          <DataTable
-            table="company_tickets"
-            columns={ticketColumns}
-            data={company.tickets || []}
-            searchFields={['title', 'type', 'status']}
-            onRowClick={row => navigate(`/tickets/${row.id}`)}
-            height="calc(100vh - 360px)"
-            emptyState={{ icon: LifeBuoy, title: 'Aucun ticket', description: "Aucune demande de support n'a été ouverte pour cette entreprise." }}
-          />
-        )}
-
-        {/* Numéros de série Tab */}
-        {tab === 'numéros de série' && (
-          <DataTable
-            table="company_serials"
-            columns={SERIAL_COLUMNS}
-            data={company.serials || []}
-            searchFields={['serial', 'product_name', 'status']}
-            onRowClick={row => navigate(`/serials/${row.id}`)}
-            height="calc(100vh - 360px)"
-          />
-        )}
-
-        {/* Factures Tab */}
-        {tab === 'factures' && (
-          <DataTable
-            table="company_factures"
-            columns={factureColumns}
-            data={factures}
-            searchFields={['document_number', 'status', 'currency']}
-            onRowClick={row => navigate(`/factures/${row.id}`)}
-            height="calc(100vh - 360px)"
-            emptyState={{ icon: FileText, title: 'Aucune facture', description: "Aucune facture n'a encore été émise pour cette entreprise." }}
-          />
-        )}
-
-        {/* Abonnements Tab */}
-        {tab === 'abonnements' && (
-          <div>
-            <DataTable
-              table="company_abonnements"
-              columns={abonnementColumns}
-              data={abonnements}
-              searchFields={['product_name', 'type', 'status']}
-              onRowClick={row => setSelectedAbonnement(row)}
-              height="calc(100vh - 360px)"
-              emptyState={{ icon: RefreshCw, title: 'Aucun abonnement', description: "Cette entreprise n'a aucun abonnement Stripe actif ou passé." }}
-            />
-
-            <AbonnementDetailModal
-              abonnement={selectedAbonnement}
-              onClose={() => setSelectedAbonnement(null)}
-              onChange={() => api.abonnements.list({ company_id: id, limit: 'all' }).then(r => setAbonnements(r.data)).catch(() => {})}
-            />
-
-          </div>
-        )}
-
-        {/* Envois Tab */}
-        {tab === 'envois' && (
+        <Section id="envois" label={SECTION_LABELS.envois} count={sectionCounts.envois} registerRef={registerSection('envois')}>
           <DataTable
             table="company_envois"
             columns={envoiColumns}
             data={envois}
             searchFields={['tracking_number', 'carrier', 'order_number', 'status']}
             onRowClick={row => navigate(`/envois/${row.id}`)}
-            height="calc(100vh - 360px)"
+            height={stackedTableHeight(envois.length)}
             emptyState={{ icon: Truck, title: 'Aucun envoi', description: "Aucune expédition n'a encore été créée pour cette entreprise." }}
           />
-        )}
+        </Section>
 
-        {/* Tâches Tab */}
-        {tab === 'tâches' && (
-          <div>
-            <div className="flex justify-end mb-3">
-              <button onClick={() => { setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' }); setEditingTask(null); setShowTaskModal(true) }} className="btn-primary btn-sm"><Plus size={14} /> Ajouter</button>
-            </div>
-            <DataTable
-              table="company_tasks"
-              columns={taskColumns}
-              data={tasks}
-              searchFields={['title', 'status', 'priority']}
-              onRowClick={row => { setEditingTask(row); setTaskForm({ title: row.title, status: row.status, priority: row.priority, due_date: row.due_date || '', contact_id: row.contact_id || '', assigned_to: row.assigned_to || '', notes: row.notes || '' }); setShowTaskModal(true) }}
-              height="calc(100vh - 360px)"
-              emptyState={{ icon: CheckSquare, title: 'Aucune tâche', description: "Aucune tâche n'est associée à cette entreprise pour l'instant.", cta: { label: 'Ajouter', icon: Plus, onClick: () => { setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' }); setEditingTask(null); setShowTaskModal(true) } } }}
-            />
-          </div>
-        )}
-        {/* Achats fournisseurs Tab */}
-        {tab === 'achats' && (
-          <DataTable
-            table="company_achats"
-            columns={achatColumns}
-            data={achats}
-            searchFields={['reference', 'bill_number', 'vendor_invoice_number', 'description', 'status']}
-            height="calc(100vh - 360px)"
-            emptyState={{ icon: ShoppingCart, title: 'Aucun achat fournisseur', description: "Aucune facture ou dépense fournisseur n'est rattachée à cette entreprise." }}
-          />
-        )}
-
-        {/* Retours (RMA) Tab */}
-        {tab === 'onboarding' && (
-          <OnboardingResponsesPanel responses={onboardingResponses} />
-        )}
-
-        {tab === 'qualification' && (
-          <QualificationCallsPanel calls={qualificationCalls} />
-        )}
-
-        {tab === 'retours' && (
+        <Section id="retours" label={SECTION_LABELS.retours} count={sectionCounts.retours} registerRef={registerSection('retours')}>
           <DataTable
             table="company_retours"
             columns={retourColumns}
             data={retours}
             searchFields={['return_number', 'status', 'processing_status', 'contact_first_name', 'contact_last_name', 'order_number']}
             onRowClick={row => navigate(`/retours/${row.id}`)}
-            height="calc(100vh - 360px)"
+            height={stackedTableHeight(retours.length)}
             emptyState={{ icon: Undo2, title: 'Aucun retour', description: "Aucune demande de retour (RMA) n'a été enregistrée pour cette entreprise." }}
           />
+        </Section>
+
+        <Section id="support" label={SECTION_LABELS.support} count={sectionCounts.support} registerRef={registerSection('support')}>
+          <DataTable
+            table="company_tickets"
+            columns={ticketColumns}
+            data={company.tickets || []}
+            searchFields={['title', 'type', 'status']}
+            onRowClick={row => navigate(`/tickets/${row.id}`)}
+            height={stackedTableHeight(company.tickets?.length)}
+            emptyState={{ icon: LifeBuoy, title: 'Aucun ticket', description: "Aucune demande de support n'a été ouverte pour cette entreprise." }}
+          />
+        </Section>
+
+        <Section id="numéros de série" label={SECTION_LABELS['numéros de série']} count={sectionCounts['numéros de série']} registerRef={registerSection('numéros de série')}>
+          <DataTable
+            table="company_serials"
+            columns={SERIAL_COLUMNS}
+            data={company.serials || []}
+            searchFields={['serial', 'product_name', 'status']}
+            onRowClick={row => navigate(`/serials/${row.id}`)}
+            height={stackedTableHeight(company.serials?.length)}
+            bulkActions={[{
+              key: 'return-serials',
+              label: 'Retourner tous les numéros de série',
+              icon: Undo2,
+              show: rows => rows.length > 0,
+              onClick: (ids) => { setBulkReturnSerialIds(ids); setBulkReturnReason('') },
+            }]}
+          />
+        </Section>
+
+        <Section id="factures" label={SECTION_LABELS.factures} count={sectionCounts.factures} registerRef={registerSection('factures')}>
+          <DataTable
+            table="company_factures"
+            columns={factureColumns}
+            data={factures}
+            searchFields={['document_number', 'status', 'currency']}
+            onRowClick={row => navigate(`/factures/${row.id}`)}
+            height={stackedTableHeight(factures.length)}
+            emptyState={{ icon: FileText, title: 'Aucune facture', description: "Aucune facture n'a encore été émise pour cette entreprise." }}
+          />
+        </Section>
+
+        <Section id="abonnements" label={SECTION_LABELS.abonnements} count={sectionCounts.abonnements} registerRef={registerSection('abonnements')}>
+          <DataTable
+            table="company_abonnements"
+            columns={abonnementColumns}
+            data={abonnements}
+            searchFields={['product_name', 'type', 'status']}
+            onRowClick={row => setSelectedAbonnement(row)}
+            height={stackedTableHeight(abonnements.length)}
+            emptyState={{ icon: RefreshCw, title: 'Aucun abonnement', description: "Cette entreprise n'a aucun abonnement Stripe actif ou passé." }}
+          />
+
+          <AbonnementDetailModal
+            abonnement={selectedAbonnement}
+            onClose={() => setSelectedAbonnement(null)}
+            onChange={() => api.abonnements.list({ company_id: id, limit: 'all' }).then(r => setAbonnements(r.data || [])).catch(() => {})}
+          />
+        </Section>
+
+        <Section
+          id="tâches"
+          label={SECTION_LABELS.tâches}
+          count={sectionCounts.tâches}
+          registerRef={registerSection('tâches')}
+          action={<button onClick={() => { setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' }); setEditingTask(null); setShowTaskModal(true) }} className="btn-primary btn-sm"><Plus size={14} /> Ajouter</button>}
+        >
+          <DataTable
+            table="company_tasks"
+            columns={taskColumns}
+            data={tasks}
+            searchFields={['title', 'status', 'priority']}
+            onRowClick={row => { setEditingTask(row); setTaskForm({ title: row.title, status: row.status, priority: row.priority, due_date: row.due_date || '', contact_id: row.contact_id || '', assigned_to: row.assigned_to || '', notes: row.notes || '' }); setShowTaskModal(true) }}
+            height={stackedTableHeight(tasks.length)}
+            emptyState={{ icon: CheckSquare, title: 'Aucune tâche', description: "Aucune tâche n'est associée à cette entreprise pour l'instant.", cta: { label: 'Ajouter', icon: Plus, onClick: () => { setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' }); setEditingTask(null); setShowTaskModal(true) } } }}
+          />
+        </Section>
+
+        {company.quickbooks_vendor_id && (
+          <Section id="achats" label={SECTION_LABELS.achats} count={sectionCounts.achats} registerRef={registerSection('achats')}>
+            <DataTable
+              table="company_achats"
+              columns={achatColumns}
+              data={achats}
+              searchFields={['reference', 'bill_number', 'vendor_invoice_number', 'description', 'status']}
+              height={stackedTableHeight(achats.length)}
+              emptyState={{ icon: ShoppingCart, title: 'Aucun achat fournisseur', description: "Aucune facture ou dépense fournisseur n'est rattachée à cette entreprise." }}
+            />
+          </Section>
         )}
 
+        {onboardingResponses.length > 0 && (
+          <Section id="onboarding" label={SECTION_LABELS.onboarding} count={sectionCounts.onboarding} registerRef={registerSection('onboarding')}>
+            <OnboardingResponsesPanel responses={onboardingResponses} />
+          </Section>
+        )}
 
-          </div>{/* end tab content */}
-        </div>{/* end flex tabs+content */}
+        {qualificationCalls.length > 0 && (
+          <Section id="qualification" label={SECTION_LABELS.qualification} count={sectionCounts.qualification} registerRef={registerSection('qualification')}>
+            <QualificationCallsPanel calls={qualificationCalls} />
+          </Section>
+        )}
+
+          </div>{/* end sections */}
+        </div>{/* end flex nav+sections */}
       </div>
 
       {/* Task Modal */}
@@ -1682,6 +1845,47 @@ export default function CompanyDetail({ recordId, embedded = false, onClose }) {
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal isOpen={!!bulkReturnSerialIds} onClose={() => setBulkReturnSerialIds(null)} title="Retourner tous les numéros de série" size="sm">
+        <div className="space-y-4">
+          <p className="text-sm text-slate-600">
+            {bulkReturnSerialIds?.length} numéro(s) de série sélectionné(s) seront marqués « En retour » et regroupés dans un nouveau dossier de retour.
+          </p>
+          <div>
+            <label className="label">Raison du retour</label>
+            <select className="input" value={bulkReturnReason} onChange={e => setBulkReturnReason(e.target.value)} autoFocus>
+              <option value="">Sélectionner…</option>
+              <option value="Fin d'abonnement">Fin d'abonnement</option>
+              <option value="Le client à changé d'idée">Le client à changé d'idée</option>
+              <option value="Erreur de commande">Erreur de commande</option>
+              <option value="Retour d'équipement de courtoisie">Retour d'équipement de courtoisie</option>
+            </select>
+          </div>
+          <div className="flex justify-end gap-3 pt-2">
+            <button type="button" onClick={() => setBulkReturnSerialIds(null)} className="btn-secondary">Annuler</button>
+            <button
+              type="button"
+              disabled={!bulkReturnReason || bulkReturnSubmitting}
+              onClick={async () => {
+                setBulkReturnSubmitting(true)
+                try {
+                  await api.retours.bulkFromSerials({ company_id: id, serial_ids: bulkReturnSerialIds, reason: bulkReturnReason })
+                  addToast({ message: 'Retour créé avec succès.', type: 'success' })
+                  setBulkReturnSerialIds(null)
+                  api.companies.get(id).then(setCompany).catch(() => {})
+                } catch (err) {
+                  addToast({ message: err.message, type: 'error' })
+                } finally {
+                  setBulkReturnSubmitting(false)
+                }
+              }}
+              className="btn-primary"
+            >
+              {bulkReturnSubmitting ? 'Création…' : 'Confirmer'}
+            </button>
+          </div>
+        </div>
       </Modal>
     </>
   )

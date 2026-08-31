@@ -5,6 +5,8 @@ import { parseInvoiceLinks, parseCardDate, parseCardTotal } from './amazon.js'
 import { amountMatches, dateMatches, selectDocuments, isDue } from './invoiceNeeds.js'
 import { stripBankNoise } from './vendorFromBankLabel.js'
 import { parseSessionPayload, sessionCoversDomain } from './session.js'
+// index.js ouvre la base au chargement : on n'importe ici que le collecteur.
+import simplex, { parseSimplexDate, parseSimplexAmount, parseSimplexRows } from './simplex.js'
 
 // Vecteur officiel RFC 6238 (secret ASCII « 12345678901234567890 », T = 59 s).
 test('generateTotp suit le vecteur RFC 6238', () => {
@@ -137,6 +139,54 @@ test('selectDocuments refuse de deviner entre deux factures au même montant', (
   const { picks, unmatched } = selectDocuments(needs, docs)
   assert.equal(picks.length, 0)
   assert.equal(unmatched[0].reason, 'ambigue')
+})
+
+test('parseSimplexDate lit les trois formats du portail Simplex', () => {
+  assert.equal(parseSimplexDate('Facture du 2026-07-31 · 128,74 $'), '2026-07-31')
+  assert.equal(parseSimplexDate('Invoice July 31, 2026'), '2026-07-31')
+  assert.equal(parseSimplexDate('31 juillet 2026'), '2026-07-31')
+  // Un jour > 12 tranche l'ordre ; sinon jj/mm (locale CA du compte).
+  assert.equal(parseSimplexDate('31/07/2026'), '2026-07-31')
+  assert.equal(parseSimplexDate('05/07/2026'), '2026-07-05')
+  assert.equal(parseSimplexDate('rien ici'), null)
+})
+
+test('parseSimplexAmount lit les deux écritures du dollar', () => {
+  assert.equal(parseSimplexAmount('Total 128,74 $'), 128.74)
+  assert.equal(parseSimplexAmount('Total $1,284.05'), 1284.05)
+  assert.equal(parseSimplexAmount('aucun montant'), null)
+})
+
+test('parseSimplexRows préfère le numéro de facture à la date comme identifiant', () => {
+  // Le numéro est le seul identifiant stable : la date peut changer de format
+  // avec la locale du compte, et deux factures peuvent porter la même.
+  const docs = parseSimplexRows([
+    { index: 0, href: '/Invoice/Download/9912', text: 'Télécharger', row: 'Invoice INV-9912 2026-07-31 128,74 $' },
+    { index: 1, href: '', text: '', row: 'Facture 2026-06-30 131,02 $' },
+    { index: 2, href: '', text: '', row: 'Solde du compte' },
+  ])
+  assert.deepEqual(docs.map(d => d.externalId), ['simplex:9912', 'simplex:2026-06-30'])
+  assert.equal(docs[0].amount, 128.74)
+  assert.equal(docs[0].date, '2026-07-31')
+  assert.equal(docs[0].href, '/Invoice/Download/9912')
+  // Ligne sans lien : c'est son index qui permettra de la recliquer.
+  assert.equal(docs[1].index, 1)
+  assert.equal(docs[1].currency, 'CAD')
+})
+
+test('parseSimplexRows dédoublonne la même facture vue en lien et en ligne', () => {
+  const docs = parseSimplexRows([
+    { index: 0, href: '/Invoice/Download/9912', text: 'PDF', row: 'INV-9912 2026-07-31 128,74 $' },
+    { index: 1, href: '', text: '', row: 'Invoice INV-9912 2026-07-31 128,74 $' },
+  ])
+  assert.equal(docs.length, 1)
+  assert.equal(docs[0].href, '/Invoice/Download/9912')
+})
+
+test('le collecteur Simplex respecte le contrat attendu par l’orchestrateur', () => {
+  assert.equal(simplex.label, 'Simplex Wireless')
+  assert.equal(typeof simplex.list, 'function')
+  assert.ok(simplex.fields.username && simplex.fields.password)
 })
 
 test('isDue espace les nouvelles tentatives puis abandonne', () => {

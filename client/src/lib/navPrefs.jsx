@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { useAuth } from './auth.jsx'
 import api from './api.js'
+import { canonicalNavHidden, canonicalNavOrder } from './navItems.js'
 
 // État partagé des préférences d'affichage du menu de gauche.
 // `hidden` = liste de clés cachées (blacklist). Chargée au login, mutée par la
@@ -32,8 +33,8 @@ export function NavPrefsProvider({ children }) {
     api.auth.getPreferences()
       .then((d) => {
         if (cancelled || writeSeq.current !== seq) return
-        setHiddenState(Array.isArray(d?.nav_hidden) ? d.nav_hidden : [])
-        setOrderState(d?.nav_order && typeof d.nav_order === 'object' && !Array.isArray(d.nav_order) ? d.nav_order : {})
+        setHiddenState(Array.isArray(d?.nav_hidden) ? canonicalNavHidden(d.nav_hidden) : [])
+        setOrderState(d?.nav_order && typeof d.nav_order === 'object' && !Array.isArray(d.nav_order) ? canonicalNavOrder(d.nav_order) : {})
         setLoaded(true)
       })
       .catch(() => { if (!cancelled) setLoaded(true) })

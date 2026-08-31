@@ -3,8 +3,9 @@
 // Les suggestions sont implémentées immédiatement (POST /backlog auto-approuve),
 // donc la zone « en attente » n'a plus de raison d'être. Ce test vérifie :
 //   1. la zone « Suggestions & correctifs » n'apparaît plus sur /agent ;
-//   2. une fiche bloquée (cas qui vivait dans cette zone) reste visible,
-//      repliée dans « En cours d'implémentation » (triée en tête).
+//   2. la zone « En cours d'implémentation » n'apparaît plus non plus — même
+//      quand une fiche bloquée existe (elle vivait dans cette zone). Le travail
+//      en cours se suit désormais dans « Demandes de modification du système ».
 //
 // L'agent est forcé OFF pour tout le run → aucune exécution Claude réelle.
 // Seed et cleanup passent par l'API ; le toggle est restauré (règle CLAUDE.md).
@@ -87,19 +88,20 @@ describe('Agent autonome — plus de section « Suggestions & correctifs »', ()
       'l\'état vide « Aucune suggestion en attente » ne doit plus être rendu')
   })
 
-  test('une fiche bloquée reste visible dans « En cours d\'implémentation »', async () => {
+  test('la zone « En cours d\'implémentation » a disparu, même avec une fiche bloquée', async () => {
     // (page déjà sur /agent après le test précédent — recharger pour un état propre)
     await page.goto(URL + '/agent', { waitUntil: 'networkidle' })
     await page.waitForSelector('text=Agent autonome', { timeout: 10000 })
 
     // Scoper sur le titre h2 : le texte d'une carte peut lui aussi contenir
     // « en cours d'implémentation » (strict mode violation sinon).
-    const zone = page.locator('h2', { hasText: 'En cours d\'implémentation' })
-    await zone.waitFor({ timeout: 5000 })
+    assert.equal(await page.locator('h2', { hasText: 'En cours d\'implémentation' }).count(), 0,
+      'la zone « En cours d\'implémentation » ne doit plus être rendue')
+    assert.equal(await page.locator('[data-testid="col-en-cours"]').count(), 0,
+      'la colonne « En cours » ne doit plus exister dans le DOM')
 
-    const card = page.locator(`[data-testid="col-en-cours"] [data-testid="suggestion-card"]:has-text("${SEED_TEXT}")`)
-    await card.waitFor({ timeout: 5000 })
-    assert.equal(await card.count(), 1, 'la fiche bloquée doit rester visible')
-    assert.ok(await card.locator('text=Bloqué').count() >= 1, 'la fiche doit porter le badge Bloqué')
+    // La fiche bloquée seedée n'apparaît donc plus sur la page.
+    assert.equal(await page.locator(`[data-testid="suggestion-card"]:has-text("${SEED_TEXT}")`).count(), 0,
+      'la fiche bloquée ne doit plus être affichée sur /agent')
   })
 })

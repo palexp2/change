@@ -936,6 +936,13 @@ export function regenerateView(erpTable) {
   const byLevel = Array.from({ length: maxLevel + 1 }, () => [])
   for (const cf of virtualCols) byLevel[levelByColumn.get(cf.column_name) || 0].push(cf)
 
+  // Colonnes physiques masquées par un champ virtuel de même nom : le champ a
+  // été converti depuis 'data', sa colonne SQL a été conservée intacte.
+  const physicalCols = new Set(db.pragma(`table_info(${erpTable})`).map(c => c.name))
+  const convertedColumns = new Set(
+    virtualCols.map(cf => cf.column_name).filter(n => physicalCols.has(n))
+  )
+
   const alias = { n: 0 }
   // cf.id → message d'erreur (string) ou null si sain. Persisté en fin de tx
   // dans custom_fields.view_error pour que le client distingue #ERROR de « vide ».
@@ -949,7 +956,23 @@ export function regenerateView(erpTable) {
     // Couche 0 : on part de la table physique (`table.*`). Couches supérieures :
     // on enveloppe la couche précédente (`*` ré-expose toutes ses colonnes, dont
     // les champs custom calculés en-dessous, désormais résolvables par SQLite).
-    const exprs = [lv === 0 ? `${erpTable}.*` : '*']
+    // Couche 0 : d'ordinaire `table.*`. Mais si un champ CONVERTI (data →
+    // formule/lookup/rollup) porte encore sa colonne physique — on ne la
+    // détruit jamais, les données doivent survivre à un retour en arrière —,
+    // `table.*` l'exposerait sous le même nom que la valeur calculée. SQLite
+    // accepte deux colonnes homonymes dans une vue et la lecture par nom
+    // renvoie la PHYSIQUE : la formule serait calculée puis silencieusement
+    // ignorée. On énumère donc explicitement, moins les colonnes converties.
+    const baseSelect = lv === 0
+      ? (convertedColumns.size === 0
+        ? `${erpTable}.*`
+        : db.pragma(`table_info(${erpTable})`)
+          .map(c => c.name)
+          .filter(n => !convertedColumns.has(n))
+          .map(n => `${erpTable}.${n}`)
+          .join(', '))
+      : '*'
+    const exprs = [baseSelect]
     for (const cf of byLevel[lv]) {
       if (cyclicColumns.has(cf.column_name)) {
         exprs.push(`NULL AS ${cf.column_name}`)

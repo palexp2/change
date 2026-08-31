@@ -67,8 +67,9 @@ describe('Collecte de factures — copie du journal et de l\'erreur', () => {
   })
 
   test("le journal d'une tournée se copie en un clic", async () => {
-    await page.goto(`${URL}/collecte-factures`, { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('h1:has-text("Collecte de factures")', { timeout: 20000 })
+    // Devenu un onglet d'Extraction de données — /collecte-factures ne fait plus que rediriger ici.
+    await page.goto(`${URL}/sale-receipts?onglet=collecte`, { waitUntil: 'domcontentloaded' })
+    await page.waitForSelector('[data-testid="tab-collecte"]', { timeout: 20000 })
 
     // La ligne du compte affiche déjà son erreur, avec son propre bouton de copie.
     const card = page.locator('text=E2E Copie — compte factice').first()

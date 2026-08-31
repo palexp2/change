@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, ChevronsDownUp, ChevronsUpDown, AlertTriangle, Lock, Unlock, Pencil, Trash2, Paintbrush } from 'lucide-react'
+import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, ChevronsDownUp, ChevronsUpDown, AlertTriangle, Lock, Unlock, Pencil, Trash2, Paintbrush, SlidersHorizontal } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { FilterRow, FieldSelect, defaultOpForType } from './FilterRow.jsx'
 import { TableConfigModal } from './TableConfigModal.jsx'
@@ -712,6 +712,7 @@ export function ViewToolbar({
   disabledColumns = null,
   manageViews = false,
   manageViewsBulkDelete = false,
+  onOpenFieldConfig,        // () => void — ouvre la modale « Configuration des champs » (fournie par DataTable)
 }) {
   const [openPanel, setOpenPanel] = useState(null)
   // Élément bouton servant d'ancre au panneau (rendu en portal position:fixed).
@@ -1158,6 +1159,17 @@ export function ViewToolbar({
               badge={Array.isArray(colorRules) ? colorRules.length : 0}
               dataPanelBtn="color" disabled={activeViewLocked}
               onClick={(e) => togglePanel('color', e)} />
+          )}
+
+          {/* Configuration des champs de la table (ordre, renommage, suppression,
+              mapping Airtable) — présent sur toutes les pages à DataTable. */}
+          {onOpenFieldConfig && (
+            <ToolbarBtn
+              icon={<SlidersHorizontal size={14} />}
+              label="Configurer les champs"
+              dataPanelBtn="field-config"
+              onClick={() => onOpenFieldConfig()}
+            />
           )}
 
           {activeViewLocked && (

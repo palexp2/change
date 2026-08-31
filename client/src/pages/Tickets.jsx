@@ -2,9 +2,11 @@ import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { Plus, LifeBuoy, Star } from 'lucide-react'
 import api from '../lib/api.js'
+import { useAuth } from '../lib/auth.jsx'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge, ticketStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -22,18 +24,13 @@ function fmtDuration(mins) {
 }
 
 const RENDERS = {
-  title: row => (
-    <div>
-      <div className="font-medium text-slate-900">{row.title}</div>
-      {row.contact_name && (
-        <div className="text-xs">
-          {row.contact_id
-            ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.contact_name}</Link>
-            : <span className="text-slate-400">{row.contact_name}</span>}
-        </div>
-      )}
-    </div>
-  ),
+  title: row => <div className="font-medium text-slate-900">{row.title}</div>,
+  contact_name: row => {
+    if (!row.contact_name) return null
+    return row.contact_id
+      ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.contact_name}</Link>
+      : <span className="text-slate-400">{row.contact_name}</span>
+  },
   status: row => <Badge color={ticketStatusColor(row.status)}>{row.status}</Badge>,
   type: row => row.type ? <Badge color="gray">{row.type}</Badge> : null,
   duration_minutes: row => <span className="text-slate-500">{fmtDuration(row.duration_minutes)}</span>,
@@ -53,9 +50,9 @@ const RENDERS = {
 
 const COLUMNS = TABLE_COLUMN_META.tickets.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
-function TicketForm({ initial = {}, meta = {}, companies = [], users = [], contacts = [], onSave, onClose }) {
+function TicketForm({ initial = {}, meta = {}, companies = [], users = [], contacts = [], defaultAssignedTo = '', onSave, onClose }) {
   const [form, setForm] = useState({
-    title: '', company_id: '', contact_id: '', assigned_to: '',
+    title: '', company_id: '', contact_id: '', assigned_to: defaultAssignedTo,
     type: '', status: 'Waiting on us', description: '', duration_minutes: 0,
     ...initial
   })
@@ -158,6 +155,7 @@ function TicketForm({ initial = {}, meta = {}, companies = [], users = [], conta
 }
 
 export default function Tickets() {
+  const { user } = useAuth()
   const [meta, setMeta] = useState({ types: [], statuses: [] })
   const [showModal, setShowModal] = useState(false)
 
@@ -189,9 +187,7 @@ export default function Tickets() {
     <Layout>
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-2xl font-bold text-slate-900">Billets</h1>
-          </div>
+          <PageTitle>Billets</PageTitle>
           <div className="flex items-center gap-2">
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouveau billet
@@ -218,7 +214,7 @@ export default function Tickets() {
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau billet" size="lg">
-        <TicketForm meta={meta} companies={companies} contacts={contacts} users={users} onSave={handleCreate} onClose={() => setShowModal(false)} />
+        <TicketForm meta={meta} companies={companies} contacts={contacts} users={users} defaultAssignedTo={user?.id || ''} onSave={handleCreate} onClose={() => setShowModal(false)} />
       </Modal>
 
     </Layout>

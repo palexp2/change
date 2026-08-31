@@ -21,6 +21,7 @@ import { GlobalSearch as CRMSearch } from './GlobalSearch.jsx'
 import { FeedbackFab } from './FeedbackFab.jsx'
 import ThemeToggle from './ThemeToggle.jsx'
 import { TravauxQuickButton } from './TravauxQuickPanel.jsx'
+import { Logo } from './Logo.jsx'
 
 // Raccourcis clavier de navigation globaux — source unique de vérité.
 // Le handler clavier de Layout construit sa table de routage à partir d'ici,
@@ -216,7 +217,6 @@ function useFlyoutDismiss({ open, pinned, triggerRef, panelRef, childRects, clos
  * `variant` :
  *   - 'flyout'  : dans un panneau flottant
  *   - 'group'   : sous-item compact d'un groupe de la sidebar
- *   - 'bottom'  : ligne pleine hauteur (bas de la sidebar)
  */
 // Une entrée peut viser un onglet précis d'une page (`?onglet=`). L'état actif
 // de react-router ne regarde que le chemin : sans ça, « Comptes prépayés » et
@@ -262,18 +262,14 @@ function NavRow({ item, variant }) {
   }
 
   const inFlyout = variant === 'flyout'
-  // 'bottom' : mêmes dimensions que les NavItem pleine hauteur, pour que la
-  // ligne porte un sous-menu au survol sans détonner visuellement.
-  const inBottom = variant === 'bottom'
   const cls = ({ isActive: routerActive }) => {
     const isActive = tabAwareActive(item.to, location, routerActive)
-    return inBottom
-      ? `flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all
-         ${isActive ? 'bg-brand-600 text-white shadow-sm' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'}`
-      : `flex items-center gap-2.5 rounded-md text-sm font-medium transition-colors
+    // `nav-active` porte la teinte de section héritée (`--nav-accent`, posée
+    // par NavGroup ; vert de marque par défaut hors groupe).
+    return `flex items-center gap-2.5 rounded-md text-sm font-medium transition-colors
      ${inFlyout ? 'px-3 py-2 mx-1' : 'px-3 py-1.5'}
      ${isActive
-        ? 'bg-brand-600 text-white'
+        ? 'nav-active'
         : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'}`
   }
 
@@ -292,7 +288,7 @@ function NavRow({ item, variant }) {
         onMouseLeave={hover.onMouseLeave}
         className={cls}
       >
-        <item.icon size={inBottom ? 16 : inFlyout ? 15 : 14} className="flex-shrink-0" />
+        <item.icon size={inFlyout ? 15 : 14} className="flex-shrink-0" />
         <span className="flex-1">{item.label}</span>
         {hasSubsections && <ChevronRight size={11} className="flex-shrink-0 opacity-50" />}
       </NavLink>
@@ -563,7 +559,7 @@ function NavSortable({ container, itemKey, children }) {
   )
 }
 
-function NavGroup({ group, icon: Icon, items }) {
+function NavGroup({ group, icon: Icon, items, accent }) {
   const location = useLocation()
   const isActive = items.some(item => navItemMatches(location.pathname, item))
 
@@ -589,25 +585,67 @@ function NavGroup({ group, icon: Icon, items }) {
     })
   }
 
+  // Survol : déplie la section sans clic, comme le reste des menus de la
+  // sidebar (cf. NavRow, NavFlyoutItem), et la replie quand la souris la
+  // quitte (cf. useFlyoutDismiss) — sauf si elle est épinglée : ouverte par
+  // clic (persistée en localStorage) ou active (route courante). Court délai
+  // d'intention à l'ouverture pour qu'un simple balayage ne déplie pas tout
+  // au passage ; `openedByHoverRef` ne suit que les ouvertures dues au survol,
+  // pour ne jamais refermer une section épinglée.
+  const enterTimerRef = useRef(null)
+  const leaveTimerRef = useRef(null)
+  const openedByHoverRef = useRef(false)
+  function onHoverEnter() {
+    if (leaveTimerRef.current) { clearTimeout(leaveTimerRef.current); leaveTimerRef.current = null }
+    if (open) return
+    enterTimerRef.current = setTimeout(() => {
+      openedByHoverRef.current = true
+      setOpen(true)
+    }, 90)
+  }
+  function onHoverLeave() {
+    if (enterTimerRef.current) { clearTimeout(enterTimerRef.current); enterTimerRef.current = null }
+    if (openedByHoverRef.current && !isActive) {
+      leaveTimerRef.current = setTimeout(() => {
+        openedByHoverRef.current = false
+        setOpen(false)
+      }, 150)
+    }
+  }
+
+  // Teinte de section : posée ici, héritée par toutes les entrées du groupe
+  // (cf. `.nav-active` dans index.css). Hors groupe, `--nav-accent` retombe
+  // sur le vert de marque défini au `:root`.
+  const accentVar = accent ? { '--nav-accent': `var(--acc-${accent})` } : undefined
+
   return (
-    <div>
+    <div style={accentVar} onMouseEnter={onHoverEnter} onMouseLeave={onHoverLeave}>
       <button
         type="button"
         onClick={toggle}
         aria-expanded={open}
         className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium w-full transition-all
-          ${isActive ? 'bg-brand-600 text-white' : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100'}`}
+          ${isActive ? 'nav-active' : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100'}`}
       >
-        <Icon size={16} className="flex-shrink-0" />
+        <Icon
+          size={16}
+          className="flex-shrink-0"
+          // Groupe éteint : l'icône garde la teinte, c'est elle qui sert de
+          // repère. Groupe allumé : elle suit la couleur du texte.
+          style={isActive ? undefined : { color: 'rgb(var(--nav-accent))' }}
+        />
         <span className="flex-1 text-left">{group}</span>
         <ChevronDown
           size={12}
-          className={`flex-shrink-0 transition-transform duration-150 ${open ? '' : '-rotate-90'} ${isActive ? 'text-brand-200' : 'text-slate-400'}`}
+          className={`flex-shrink-0 transition-transform duration-150 ${open ? '' : '-rotate-90'} ${isActive ? '' : 'text-slate-400'}`}
         />
       </button>
 
       {open && (
-        <div className="mt-0.5 ml-4 pl-2 border-l border-slate-200 space-y-0.5">
+        <div
+          className="mt-0.5 ml-4 pl-2 border-l space-y-0.5"
+          style={{ borderColor: 'rgb(var(--nav-accent) / 0.3)' }}
+        >
           {items.map(item => (
             <NavSortable key={item.to || item.href} container={`group:${group}`} itemKey={item.to || item.href}>
               {item.flyoutGroups
@@ -935,8 +973,8 @@ export function Layout({ children }) {
       {/* En-tête : logo + repli */}
       <div className="flex items-center h-14 px-3 border-b border-slate-100 flex-shrink-0 gap-2">
         <NavLink to="/dashboard" className="flex items-center gap-2 min-w-0" title="Tableau de bord">
-          <img src="/erp/favicon.png" alt="Orisha ERP" className="h-7 w-auto" />
-          <span className="text-[15px] font-semibold text-slate-800 tracking-tight">Orisha</span>
+          <Logo size={24} className="text-brand-600 flex-shrink-0" />
+          <span className="text-[15px] font-semibold text-slate-800 tracking-tight">Boréal</span>
         </NavLink>
         {/* File de travaux : joignable depuis n'importe quelle page (⌘/Ctrl + /). */}
         <TravauxQuickButton className="ml-auto" />
@@ -975,14 +1013,14 @@ export function Layout({ children }) {
         ))}
       </nav>
 
-      {/* Bas de barre : Agent, Paramètres admin, compte */}
+      {/* Bas de barre : Agent, Admin, compte */}
       <div className="border-t border-slate-100 py-2 px-2 space-y-0.5 flex-shrink-0">
         {/* Agent visible par tous : suggestions + correctifs (bulle d'aide).
-            La ligne porte un sous-menu au survol (Agent autonome, file de
-            prompts de l'agent, suggestions, idées). */}
-        <NavRow item={{ to: '/agent', icon: Bot, label: 'Agent' }} variant="bottom" />
+            Lien simple, sans sous-menu — la page Agent mène elle-même à ses
+            travaux. */}
+        <NavItem to="/agent" icon={Bot} label="Agent" />
         {user?.role === 'admin' && (
-          <NavItem to="/admin" icon={Settings} label="Paramètres" />
+          <NavItem to="/admin" icon={Settings} label="Admin" />
         )}
         <div className="pt-1">
           <UserAvatarMenu user={user} roleLabel={roleLabel} onLogout={logout} hasUnseenNews={hasUnseenNews} />
@@ -1011,7 +1049,7 @@ export function Layout({ children }) {
             onMouseLeave={cancelPeekArm}
             className="flex flex-col items-center w-12 py-3 gap-1.5"
           >
-            <img src="/erp/favicon.png" alt="Orisha ERP" className="h-6 w-auto mb-1" />
+            <Logo size={22} className="text-brand-600 mb-1" />
             <button
               onClick={toggleSidebar}
               data-testid="sidebar-reopen"
@@ -1085,7 +1123,7 @@ export function Layout({ children }) {
           <button onClick={() => setMobileOpen(true)} className="text-slate-600 mr-3">
             <Menu size={20} />
           </button>
-          <img src="/erp/favicon.png" alt="Orisha ERP" className="h-7 w-auto" />
+          <Logo size={24} className="text-brand-600" />
           <TravauxQuickButton compact className="ml-auto" />
           <ThemeToggle compact />
         </div>

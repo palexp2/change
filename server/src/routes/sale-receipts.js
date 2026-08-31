@@ -188,7 +188,7 @@ router.patch('/:id', (req, res) => {
   const row = db.prepare('SELECT id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
-  const editable = ['company', 'address', 'receipt_number', 'general_description', 'service_period', 'payment_method', 'receipt_date', 'currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'memo', 'quickbooks_id', 'quickbooks_type', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'vendor_id', 'transaction_type', 'due_date', 'payment_terms_days', 'bank_charged_total']
+  const editable = ['company', 'address', 'receipt_number', 'general_description', 'service_period', 'payment_method', 'receipt_date', 'order_date', 'currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'memo', 'quickbooks_id', 'quickbooks_type', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'vendor_id', 'transaction_type', 'due_date', 'payment_terms_days', 'bank_charged_total']
   // bank_charged_total : paramètre de publication (conversion de devise) — persisté
   // comme brouillon pour être retrouvé au retour sur la facture.
   const numericFields = new Set(['subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'bank_charged_total'])
@@ -205,7 +205,7 @@ router.patch('/:id', (req, res) => {
       let v = req.body[key]
       if (textFields.has(key)) {
         v = v == null ? null : String(v).trim() || null
-      } else if (key === 'receipt_date' || key === 'due_date') {
+      } else if (key === 'receipt_date' || key === 'due_date' || key === 'order_date') {
         // Dates métier date-only (YYYY-MM-DD) — pas de composante horaire/UTC.
         v = v == null ? null : String(v).trim() || null
         if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return res.status(400).json({ error: `${key}: format YYYY-MM-DD attendu` })
@@ -266,6 +266,11 @@ router.patch('/:id', (req, res) => {
               // Code de taxe QB par ligne (Id QuickBooks) — facultatif. Vide/null =
               // la ligne suit le code de taxe global du document à la publication.
               tax_code_id: it.tax_code_id == null || it.tax_code_id === '' ? null : String(it.tax_code_id),
+              // Compte de dépense QB par ligne (Id QuickBooks) — facultatif. Vide/null =
+              // la ligne suit le compte de dépense global du document à la publication.
+              // Certains achats se ventilent sur PLUSIEURS comptes (ex. pièces au stock
+              // + frais de transport), d'où l'exception par ligne.
+              expense_account_id: it.expense_account_id == null || it.expense_account_id === '' ? null : String(it.expense_account_id),
               // Achat LIA rattaché à la ligne (purchases.id) et son code (purchases.at_id,
               // dupliqué pour l'affichage). Posé par l'appariement automatique ou choisi
               // à la main dans la fiche — cf. purchaseLiaMatch.js.

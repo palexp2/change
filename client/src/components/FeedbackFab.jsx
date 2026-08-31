@@ -61,7 +61,10 @@ export function FeedbackFab() {
   const [picking, setPicking] = useState(false)
   // Le picking a-t-il été (re)lancé depuis le formulaire ? → Échap y retourne.
   const fromFormRef = useRef(false)
-  const [saving, setSaving] = useState(false)
+  // Un envoi est-il en vol ? La modale étant refermée sur-le-champ, ce n'est pas
+  // un état d'affichage — juste un garde-fou contre un double envoi (deux
+  // « Entrée » dans le même rendu).
+  const sendingRef = useRef(false)
   const isQuestion = mode === 'question'
 
   useEffect(() => {
@@ -123,11 +126,20 @@ export function FeedbackFab() {
   async function submit(e) {
     e.preventDefault()
     const trimmed = text.trim()
-    if (!trimmed || saving) return
-    setSaving(true)
+    if (!trimmed || sendingRef.current) return
+    sendingRef.current = true
     const context = buildPageContext({
       pathname: location.pathname, search: location.search, element, appWide,
     })
+    // Fermeture IMMÉDIATE, sans attendre le serveur : le dépôt dans la file ne
+    // peut rien apprendre qui change la fenêtre, et l'aller-retour (réponse, puis
+    // rafraîchissements déclenchés en temps réel) laissait la modale figée sur
+    // « Envoi… » une demi-seconde ou plus quand le serveur est occupé. Le
+    // brouillon est mis de côté : si l'envoi échoue, la fenêtre revient telle
+    // qu'elle était, rien n'est perdu.
+    const draft = { text, mode, element, appWide, placement }
+    setOpen(false)
+    reset()
     try {
       // Dépose un prompt dans la file de la section Travaux — le contexte (page +
       // élément ciblé) est inclus dans le prompt, c'est lui que l'agent recevra.
@@ -143,20 +155,26 @@ export function FeedbackFab() {
         // Le serveur dépose l'item devant la file quand priority est vrai.
         priority: placement === 'first',
       })
-      // Pas d'écran de confirmation : la demande est déposée, on referme
-      // directement. Un toast suffit à accuser réception sans étape de plus.
-      setOpen(false)
-      reset()
+      // Pas d'écran de confirmation : la fenêtre est déjà refermée, le toast
+      // accuse réception dès que le serveur a confirmé le dépôt.
       addToast({
         message: created?.status === 'running'
           ? 'Demande envoyée — l\'agent s\'y met tout de suite'
-          : placement === 'first' ? 'Ajoutée en tête de la file de l\'Agent' : 'Ajoutée à la file de l\'Agent',
+          : draft.placement === 'first' ? 'Ajoutée en tête de la file de l\'Agent' : 'Ajoutée à la file de l\'Agent',
         type: 'success',
       })
     } catch {
+      // Envoi manqué : on rend la fenêtre et le brouillon exactement comme ils
+      // étaient — refermer sans rien déposer perdrait le texte saisi.
+      setText(draft.text)
+      setMode(draft.mode)
+      setElement(draft.element)
+      setAppWide(draft.appWide)
+      setPlacement(draft.placement)
+      setOpen(true)
       addToast({ message: 'Échec de l\'envoi de la suggestion', type: 'error' })
     } finally {
-      setSaving(false)
+      sendingRef.current = false
     }
   }
 
@@ -191,8 +209,9 @@ export function FeedbackFab() {
         size="sm"
       >
         {/* Bouton Envoyer requis : c'est une création de record (exception
-            admise à la règle autosave). Pas d'écran de confirmation après
-            l'envoi : la demande est déposée et la modale se referme aussitôt. */}
+            admise à la règle autosave). Ni écran de confirmation, ni attente :
+            la fenêtre se referme au clic et l'envoi finit en arrière-plan (un
+            toast accuse réception ; un échec rouvre la fenêtre intacte). */}
         <form onSubmit={submit} className="space-y-4">
           {/* Choix du mode : demande d'implémentation vs simple question.
               Une question n'implémente rien — l'agent répond dans le compte-rendu
@@ -309,10 +328,10 @@ export function FeedbackFab() {
               <button
                 type="submit"
                 data-testid="feedback-fab-submit"
-                disabled={saving || !text.trim()}
+                disabled={!text.trim()}
                 className="btn-primary"
               >
-                {saving ? 'Envoi…' : 'Envoyer'}
+                Envoyer
               </button>
             </div>
           </div>

@@ -116,7 +116,9 @@ function Bubble({ item, showContact, onOpen }) {
           )}
         </div>
 
-        <div className={`text-[10px] mt-1 px-2 ${metaColor} ${isOut ? 'text-right' : 'text-left'}`}>
+        {/* Hors de la bulle : sur le fond de page, donc jamais `metaColor`
+            (brand-200 clair sur fond clair = illisible) */}
+        <div data-testid="interaction-meta" className={`text-[10px] mt-1 px-2 text-slate-600 ${isOut ? 'text-right' : 'text-left'}`}>
           {fmtDateTime(item.timestamp)}
           {item.user_name && <span> · {item.user_name}</span>}
         </div>

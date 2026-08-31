@@ -7,7 +7,6 @@ import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { CustomFieldModal } from '../components/CustomFieldModal.jsx'
-import { AirtableCoreMapModal } from '../components/AirtableCoreMapModal.jsx'
 import { StripeFieldMapModal } from '../components/StripeFieldMapModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
@@ -219,7 +218,6 @@ export default function Factures() {
   const { fields: customFields, loaded: customFieldsLoaded, reload: reloadCustomFields } = useCustomFields('factures')
   const [customFieldModal, setCustomFieldModal] = useState(null) // { editing: field|null }
   const [stripeMapOpen, setStripeMapOpen] = useState(false)
-  const [airtableMapOpen, setAirtableMapOpen] = useState(false)
   const [subscriptionModal, setSubscriptionModal] = useState(null)
   const [companyPeek, setCompanyPeek] = useState(null) // { id, name } — side-peek entreprise
 
@@ -372,14 +370,6 @@ export default function Factures() {
             >
               <SlidersHorizontal size={13} /> Sync Stripe
             </button>
-            <button
-              onClick={() => setAirtableMapOpen(true)}
-              className="btn-secondary btn-sm flex items-center gap-1.5"
-              title="Choisir quels champs Airtable alimentent les liens projet/commande des factures"
-              data-testid="factures-airtable-map-open"
-            >
-              <SlidersHorizontal size={13} /> Sync Airtable
-            </button>
           </div>
         </div>
 
@@ -416,6 +406,10 @@ export default function Factures() {
           }}
           customFieldsByColumn={customFieldsByColumn}
           customFieldsLoaded={customFieldsLoaded}
+          // Le menu d'en-tête (duplication, masquage global) crée ou masque des
+          // champs sans passer par les gestionnaires de cette page : sans ce
+          // rappel, sa liste de champs resterait périmée jusqu'au rechargement.
+          onFieldsChanged={async () => { await reloadCustomFields(); load() }}
           onAddCustomField={() => setCustomFieldModal({ editing: null })}
           onEditCustomField={(field) => setCustomFieldModal({ editing: field })}
           onDeleteCustomField={handleDeleteCustomField}
@@ -429,13 +423,6 @@ export default function Factures() {
         onSaved={() => { load(); kickReimportPoll() }}
       />
 
-      <AirtableCoreMapModal
-        isOpen={airtableMapOpen}
-        onClose={() => setAirtableMapOpen(false)}
-        modules={[{ module: 'factures', title: 'Factures' }]}
-        title="Mapping des champs Airtable"
-        onSaved={() => { load(); kickReimportPoll() }}
-      />
 
       {/* Side-peek abonnement (clic sur la colonne « Abonnement ») */}
       <AbonnementDetailModal

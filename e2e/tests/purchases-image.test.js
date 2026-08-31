@@ -49,8 +49,11 @@ describe('Page Achats — colonne Image', () => {
     const count = await productImgs.count()
     assert.ok(count > 0, `aucune vignette product-images rendue (count=${count})`)
 
-    // Verify size is reasonable (not text masquerading as img)
+    // Verify size is reasonable (not text masquerading as img). La borne suit
+    // TABLE_THUMB_CLASS (28px, cf. components/TableThumb.jsx) : les vignettes de
+    // tableau sont volontairement un peu plus PETITES que la ligne de 32px —
+    // règle vérifiée par datatable-image-thumb-fits-row.test.js.
     const box = await productImgs.first().boundingBox()
-    assert.ok(box && box.width >= 30 && box.height >= 30, `vignette trop petite: ${JSON.stringify(box)}`)
+    assert.ok(box && box.width >= 24 && box.height >= 24, `vignette trop petite: ${JSON.stringify(box)}`)
   })
 })

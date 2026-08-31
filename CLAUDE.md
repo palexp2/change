@@ -19,6 +19,24 @@ cd /home/ec2-user/erp/client && npm run build
 
 Sans ce build, les changements ne sont pas visibles — Vite n'est pas en mode watch, il n'y a pas de dev server actif.
 
+## Règle impérative — journal des nouveautés
+
+**Toute modification de `client/src/**` ou `server/src/**` doit être accompagnée d'une nouvelle entrée dans `client/src/data/changelog.json`** (affiché sur `/changelog`). L'entrée est rédigée pour l'utilisateur : ce qui change dans l'app, pas quel fichier a bougé.
+
+Format d'une entrée (à ajouter en tête de `entries`) :
+
+```json
+{ "date": "YYYY-MM-DD", "title": "Titre court", "category": "Comptabilité",
+  "changes": [ { "type": "new|improved|fixed", "text": "…" } ] }
+```
+
+Une entrée sans date ISO, sans titre ou sans changement décrit **ne compte pas**.
+
+C'est vérifié, pas conseillé :
+- `deploy.sh` **bloque** le déploiement si du code applicatif a changé depuis le dernier déploiement (`.last-deploy-commit`) sans nouvelle entrée. Échappatoire explicite : `./deploy.sh --skip-changelog` (ou `SKIP_CHANGELOG=1`).
+- La page `/changelog` affiche l'état de la garde (bandeau vert / orange) via `GET /api/changelog/status`.
+- Logique partagée : `server/src/services/changelogGuard.js` ; vérification manuelle : `node server/src/scripts/check-changelog.js`.
+
 ## Redémarrage serveur
 
 Après une modification dans `server/src/`, redémarre :

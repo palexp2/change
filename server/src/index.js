@@ -13,6 +13,10 @@ import { initSchema, seedSellableProducts } from './db/schema.js'
 import { initChangeLog } from './db/changeLog.js'
 import { startFieldRuleWatcher } from './services/fieldRuleWatcher.js'
 import { startRevenueRecognitionWatcher } from './services/revenueRecognitionWatcher.js'
+import { startReturnItemCreatedWatcher } from './services/returnItemCreatedWatcher.js'
+import { startReturnItemReceivedWatcher } from './services/returnItemReceivedWatcher.js'
+import { sendReturnExchangeReminders } from './services/returnExchangeReminder.js'
+import { startAddressCheckWatcher } from './services/addressCheck.js'
 import { syncAllPrepaidAccountsFromQB } from './services/prepaid.js'
 import bootstrapRouter from './routes/bootstrap.js'
 import { seedSystemAutomations, logSystemRun, isSystemAutomationActive } from './services/systemAutomations.js'
@@ -23,7 +27,6 @@ import contactsRouter from './routes/contacts.js'
 import projectsRouter from './routes/projects.js'
 import customFieldsRouter from './routes/custom-fields.js'
 import fieldVisibilityRulesRouter from './routes/field-visibility-rules.js'
-import fieldOverridesRouter from './routes/field-overrides.js'
 import productsRouter from './routes/products.js'
 import ordersRouter from './routes/orders.js'
 import ticketsRouter from './routes/tickets.js'
@@ -40,6 +43,7 @@ import purchasesRouter from './routes/purchases.js'
 import serialsRouter from './routes/serials.js'
 import viewsRouter from './routes/views.js'
 import projetsRouter from './routes/projets.js'
+import retoursRouter from './routes/retours.js'
 import paymentsRouter from './routes/payments.js'
 import catalogRouter from './routes/catalog.js'
 import documentsRouter from './routes/documents.js'
@@ -62,6 +66,8 @@ import scrapersRouter from './routes/scrapers.js'
 import fxRouter from './routes/fx.js'
 import monthEndRouter from './routes/month-end.js'
 import driveInventoryRouter from './routes/drive-inventory.js'
+import mapaqRouter from './routes/mapaq.js'
+import reqRouter from './routes/req.js'
 import employeesRouter from './routes/employees.js'
 import vacationsRouter from './routes/vacations.js'
 import qualificationCallsRouter from './routes/qualification-calls.js'
@@ -74,6 +80,7 @@ import activityCodesRouter from './routes/activity-codes.js'
 import hourBankRouter from './routes/hour-bank.js'
 import saleReceiptsRouter from './routes/sale-receipts.js'
 import anomaliesRouter from './routes/anomalies.js'
+import changelogRouter from './routes/changelog.js'
 import { runAnomalyScan, runQbLinkVerification } from './services/transactionAnomalies.js'
 import attachmentsRouter from './routes/attachments.js'
 import journalEntriesRouter from './routes/journal-entries.js'
@@ -90,6 +97,9 @@ import stripeQueueRouter from './routes/stripe-queue.js'
 import stripePayoutsRouter from './routes/stripe-payouts.js'
 import stripeInvoiceItemsRouter from './routes/stripe-invoice-items.js'
 import novoxpressRouter from './routes/novoxpress.js'
+import digikeyRouter from './routes/digikey.js'
+import upsRouter from './routes/ups.js'
+import purolatorRouter from './routes/purolator.js'
 import trackRouter from './routes/track.js'
 import installationFeedbackRouter from './routes/installation-feedback.js'
 import telnyxWebhooksRouter from './routes/telnyx-webhooks.js'
@@ -225,6 +235,7 @@ import { seedBankAccounts } from './services/bankReconciliation.js'
 import { seedMonthEndProvisions } from './services/monthEndSeed.js'
 import { seedRecurringWork } from './services/recurringWork.js'
 import { seedLtDebts } from './services/ltDebtSeed.js'
+import { seedCardCeilings } from './services/cardCeiling.js'
 import { seedCancelUrls } from './services/subscriptionCancelUrls.js'
 import { initPromptQueue } from './services/promptQueue.js'
 
@@ -236,6 +247,9 @@ seedBankAccounts()
 seedMonthEndProvisions()
 seedRecurringWork()
 seedLtDebts()
+// Cartes dont on suit le plafond (MasterCard BNC) — n'écrase aucune config
+// existante et ne ressuscite pas une carte retirée du suivi.
+seedCardCeilings()
 // Pages d'annulation des abonnements fournisseurs — ne remplit que les vides.
 seedCancelUrls()
 runPurge()
@@ -284,7 +298,6 @@ app.use('/api/contacts', contactsRouter)
 app.use('/api/projects', projectsRouter)
 app.use('/api/custom-fields', customFieldsRouter)
 app.use('/api/field-visibility-rules', fieldVisibilityRulesRouter)
-app.use('/api/field-overrides', fieldOverridesRouter)
 app.use('/api/products', productsRouter)
 app.use('/api/orders', ordersRouter)
 app.use('/api/tickets', ticketsRouter)
@@ -302,6 +315,7 @@ app.use('/api/purchases', purchasesRouter)
 app.use('/api/serials', serialsRouter)
 app.use('/api/views', viewsRouter)
 app.use('/api/projets', projetsRouter)
+app.use('/api/retours', retoursRouter)
 app.use('/api/payments', paymentsRouter)
 app.use('/api/catalog', catalogRouter)
 app.use('/api/documents', documentsRouter)
@@ -328,8 +342,11 @@ app.use('/api/scrapers', scrapersRouter)
 app.use('/api/fx', fxRouter)
 app.use('/api/month-end', monthEndRouter)
 app.use('/api/drive-inventory', driveInventoryRouter)
+app.use('/api/mapaq', mapaqRouter)
+app.use('/api/req', reqRouter)
 app.use('/api/sale-receipts', saleReceiptsRouter)
 app.use('/api/anomalies', anomaliesRouter)
+app.use('/api/changelog', changelogRouter)
 // Pièces jointes polymorphes (toute entité). Le static '/api/attachments'
 // (ligne ~189) sert les fichiers bruts ; ce router gère list/upload/download/delete.
 app.use('/api/attachments', attachmentsRouter)
@@ -364,6 +381,12 @@ app.use('/api/comments', commentsRouter)
 app.use('/api/receipt-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')))
 app.use('/api/novoxpress/labels', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')))
 app.use('/api/novoxpress', novoxpressRouter)
+// Étiquettes servies sous un chemin neutre (elles ne sont plus toutes
+// Novoxpress depuis l'ajout du connecteur UPS) — même dossier uploads/labels.
+app.use('/api/labels', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')))
+app.use('/api/ups', upsRouter)
+app.use('/api/purolator', purolatorRouter)
+app.use('/api/digikey', digikeyRouter)
 app.use('/api/track', trackRouter)
 app.use('/api/public/installation-feedback', installationFeedbackRouter)
 app.use('/api/public/ticket-survey', ticketSurveysPublicRouter)
@@ -407,6 +430,16 @@ const server = app.listen(PORT, () => {
   // post the sale-recognition JE, and retries persisted failures with backoff.
   // Démarré sans flag : intégrité comptable (remplace les fire-and-forget de route).
   startRevenueRecognitionWatcher()
+
+  // Vérificateur d'adresses postales — tail change_log(adresses) : contrôle
+  // chaque adresse écrite, quelle qu'en soit l'origine (UI, appel de
+  // qualification, formulaire client, sync Airtable), et notifie les fautives.
+  startAddressCheckWatcher()
+
+  // Import des automatisations Airtable « Retours » (Phase 2) — voir
+  // services/returnItemCreatedWatcher.js et returnItemReceivedWatcher.js.
+  startReturnItemCreatedWatcher()
+  startReturnItemReceivedWatcher()
 
   // Gmail sync — toutes les heures
   function scheduleGmailSync() {
@@ -688,6 +721,43 @@ const server = app.listen(PORT, () => {
   }
   scheduleInstallationFollowup()
 
+  // Rappel retours avec échange immédiat (import Airtable #4) — quotidien à
+  // 09:00 local, tant que le retour n'est pas facturé (PAS one-shot, fidèle à
+  // l'original). Désactivé par défaut (default_active: 0).
+  async function runReturnExchangeReminder() {
+    if (!isSystemAutomationActive('sys_return_exchange_reminder')) {
+      logSystemRun('sys_return_exchange_reminder', { status: 'skipped', result: 'Automatisation désactivée — aucun envoi.', duration_ms: 0 })
+      return
+    }
+    const t0 = Date.now()
+    try {
+      const out = await sendReturnExchangeReminders(db, { fromAddress: getAutomationFrom('sys_return_exchange_reminder') })
+      logSystemRun('sys_return_exchange_reminder', {
+        status: out.errors > 0 ? 'partial' : 'success',
+        result: `${out.sent} envoyé(s) · ${out.errors} erreur(s) · ${out.skipped} skip · ${out.total} éligible(s).\n` +
+          out.details.map(d => `${d.action.toUpperCase()} — retour ${d.return_id} → ${d.to || '—'}${d.error ? ` · ${d.error}` : ''}`).join('\n'),
+        duration_ms: Date.now() - t0,
+        triggerData: { total: out.total, sent: out.sent, errors: out.errors },
+      })
+    } catch (e) {
+      console.error('Return exchange reminder error:', e.message)
+      logSystemRun('sys_return_exchange_reminder', { status: 'error', error: e.message, duration_ms: Date.now() - t0 })
+    }
+  }
+
+  function scheduleReturnExchangeReminder() {
+    const now = new Date()
+    const next = new Date(now)
+    next.setHours(9, 5, 0, 0) // décalé de 5 min pour ne pas coïncider avec le followup d'installation
+    if (next <= now) next.setDate(next.getDate() + 1)
+    const delay = next.getTime() - now.getTime()
+    setTimeout(() => {
+      runReturnExchangeReminder()
+      setInterval(runReturnExchangeReminder, 24 * 60 * 60 * 1000)
+    }, delay)
+  }
+  scheduleReturnExchangeReminder()
+
   // Comptabilisation QB des Stripe payouts — deux passages par jour (12h et 22h UTC
   // = 8h et 18h à Montréal) : le passage du matin ramasse les payouts réglés la
   // veille, celui du soir ceux marqués « paid » par Stripe en cours de journée
@@ -781,6 +851,15 @@ const server = app.listen(PORT, () => {
       .catch(e => console.error('solde sheet catch-up:', e.message))
   }, 150_000)
 
+  // Suivi Purolator : rafraîchissement horaire des envois non livrés (le
+  // service court-circuite si sys_purolator_tracking est désactivée ou si
+  // Purolator n'est pas configuré) — cf. services/purolator.js.
+  cron.schedule('0 * * * *', () => {
+    import('./services/purolator.js')
+      .then(({ refreshPurolatorTracking }) => refreshPurolatorTracking({ trigger: 'scheduled' }))
+      .catch(e => console.error('purolator tracking cron:', e.message))
+  })
+
   // Reprise automatique (30 min) de l'onglet « Pmt_Suivi » du fichier CTB -
   // Suivi : les paiements ajoutés à la main dans le fichier arrivent seuls dans
   // la page Paiements émis, et le passage au vert coche « passé à la banque ».
@@ -855,6 +934,18 @@ const server = app.listen(PORT, () => {
       .catch(e => console.error('pieces disbursements cron:', e.message))
   })
 
+  // Registre des entreprises du Québec : rafraîchissement mensuel du miroir
+  // local, le 3 à 8h UTC = 4h à Montréal (le Registraire republie deux fois par
+  // mois ; une passe mensuelle suffit à un usage de prospection). Import
+  // additif : upsert par NEQ, jamais de suppression. Coupe-circuit si
+  // sys_req_import est désactivée ; le service journalise lui-même
+  // (sync_log + automation_logs).
+  cron.schedule('0 8 3 * *', () => {
+    import('./services/reqImport.js')
+      .then(({ scheduledReqImport }) => scheduledReqImport())
+      .catch(e => console.error('req import cron:', e.message))
+  })
+
   // Collecte des factures sur les portails fournisseurs (Amazon, Wix) : une
   // tournée quotidienne à 9h UTC = 5h à Montréal, hors des heures où quelqu'un
   // pourrait travailler dans l'ERP — un Chromium headless par compte, en série.
@@ -869,12 +960,36 @@ const server = app.listen(PORT, () => {
     } catch (e) { console.error('scrapers cron:', e.message) }
   })
 
+  // DigiKey : rapatriement des commandes et de leurs factures PDF, une fois par
+  // jour à 10h UTC (6h à Montréal) — juste après la collecte de portails, pour
+  // que la journée comptable commence avec les brouillons déjà là.
+  cron.schedule('0 10 * * *', async () => {
+    try {
+      const { isSystemAutomationActive } = await import('./services/systemAutomations.js')
+      if (!isSystemAutomationActive('sys_digikey_orders')) return
+      const { isDigikeyConfigured } = await import('./connectors/digikey.js')
+      if (!isDigikeyConfigured()) return
+      const { syncDigikey } = await import('./services/digikey.js')
+      await syncDigikey({ trigger: 'scheduled' })
+    } catch (e) { console.error('digikey cron:', e.message) }
+  })
+
   // Rappel mensuel de paiement des cartes (Visa CAD / USD) : scan quotidien à
   // 12h UTC = 8h à Montréal. Le service ne fait rien hors du jour de rappel.
   cron.schedule('0 12 * * *', () => {
     import('./services/cardPaymentReminder.js')
       .then(({ checkCardPaymentReminder }) => checkCardPaymentReminder({ trigger: 'cron quotidien' }))
       .catch(e => console.error('card reminder cron:', e.message))
+  })
+
+  // Plafond des cartes (MasterCard BNC) : même heure que le rappel ci-dessus,
+  // 5 minutes après pour ne pas empiler deux lectures QuickBooks. Question
+  // différente (la place qui reste, pas le paiement du mois) et automation
+  // distincte : les deux peuvent être activées ou coupées séparément.
+  cron.schedule('5 12 * * *', () => {
+    import('./services/cardCeiling.js')
+      .then(({ checkCardCeilings }) => checkCardCeilings({ trigger: 'cron quotidien' }))
+      .catch(e => console.error('card ceiling cron:', e.message))
   })
 
   // Budget marketing (Émilie) : détection des nouvelles dépenses dans les

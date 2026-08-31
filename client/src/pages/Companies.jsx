@@ -21,12 +21,8 @@ const TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centr
 const PHASES = ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore']
 
 const RENDERS = {
-  name: row => (
-    <div>
-      <div className="font-medium text-slate-900">{row.name}</div>
-      {row.city && <div className="text-xs text-slate-400">{row.city}{row.province ? `, ${row.province}` : ''}</div>}
-    </div>
-  ),
+  name: row => <div className="font-medium text-slate-900">{row.name}</div>,
+  city: row => row.city ? <span>{row.city}{row.province ? `, ${row.province}` : ''}</span> : null,
   lifecycle_phase: row => row.lifecycle_phase
     ? <Badge color={phaseBadgeColor(row.lifecycle_phase)}>{row.lifecycle_phase}</Badge>
     : <span className="text-slate-400">—</span>,

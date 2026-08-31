@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ChevronRight, ChevronDown, Trash2, Plus, Edit2, Layers, Filter, ArrowUp, ArrowDown, EyeOff, RotateCcw, Inbox, Sigma, Check, HelpCircle, GripVertical } from 'lucide-react'
+import { useNavigate, useLocation } from 'react-router-dom'
+import { ChevronRight, ChevronDown, Trash2, Plus, Edit2, Layers, Filter, ArrowUp, ArrowDown, EyeOff, RotateCcw, Inbox, Sigma, Check, HelpCircle, GripVertical, Copy, ArrowLeftToLine, ArrowRightToLine } from 'lucide-react'
 import EmptyState from './EmptyState.jsx'
 import { useTableView } from '../lib/useTableView.js'
 import { applyFilter, applyFilterGroup, countFilterRules } from '../lib/tableFilters.js'
@@ -15,10 +16,12 @@ import { useConfirm } from './ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { CustomFieldModal } from './CustomFieldModal.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
-import { customFieldToColumn, CUSTOM_FIELD_TABLES } from '../lib/customFieldDisplay.jsx'
+import { customFieldToColumn, CUSTOM_FIELD_TABLES, isImageUrl, ImageValue } from '../lib/customFieldDisplay.jsx'
+import { LINKED_RECORD_TYPE_LABELS } from '../lib/tableDefs.js'
 import { summarizeDependents } from '../lib/customFieldDeps.js'
-import { useFieldOverrides, applyFieldOverrides } from '../lib/fieldOverrides.jsx'
+import { useFieldOverrides, applyFieldOverrides, applyFieldOrder } from '../lib/fieldOverrides.jsx'
 import RecordPeekDrawer from './RecordPeekDrawer.jsx'
+import { ResizeHandle } from './ResizeHandle.jsx'
 import { useDecimalPrefs, formatDecimals } from '../lib/decimalPrefs.jsx'
 import { parseDurationToSeconds, formatDurationSeconds } from '../lib/duration.js'
 
@@ -89,9 +92,11 @@ function DynamicCell({ value, col, decimals }) {
     let items = value
     try { items = JSON.parse(value) } catch {}
     if (!Array.isArray(items)) items = [items]
+    // Même règle que `renderCustomFieldValue` : hauteur de ligne fixe → pas de
+    // retour à la ligne, sinon les pastilles débordent sur les lignes voisines.
     return (
-      <div className="flex gap-1 flex-wrap">
-        {items.map((v, i) => <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-brand-50 text-brand-700">{v}</span>)}
+      <div className="flex items-center gap-1 overflow-hidden" title={items.join(', ')}>
+        {items.map((v, i) => <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 shrink-0 whitespace-nowrap">{v}</span>)}
       </div>
     )
   }
@@ -123,12 +128,12 @@ function DynamicCell({ value, col, decimals }) {
   if (type === 'phone') {
     return <span className="font-mono text-sm">{fmtPhone(value)}</span>
   }
-  // Image URL — render as thumbnail
-  if (type === 'text' && col.options?.format === 'url') {
-    const str = String(value)
-    if (/\.(jpe?g|png|gif|webp|svg|avif)(\?.*)?$/i.test(str) || str.includes('/product-images/')) {
-      return <img src={str} alt="" className="h-6 w-6 object-cover rounded" loading="lazy" />
-    }
+  // Une valeur qui EST une image (URL ou chemin servi par l'app) s'affiche en
+  // vignette, jamais en URL brute — même règle que `renderCustomFieldValue`
+  // (customFieldDisplay.jsx), pour que ça vaille dans TOUS les tableaux quelle
+  // que soit l'origine de la colonne.
+  if ((!type || type === 'text' || type === 'long_text' || type === 'url') && isImageUrl(value)) {
+    return <ImageValue value={value} />
   }
   // text, long_text, link, etc.
   const str = String(value)
@@ -242,7 +247,11 @@ function SelectCellEditor({ col, value, onCommit, onCancel }) {
 function renderCell(col, item, decimals) {
   if (col.render) return col.render(item)
   const value = item[col.field]
-  if (col.dynamic) return <DynamicCell value={value} col={col} decimals={decimals} />
+  // Colonne date sans render() de page : formatage unifié via DynamicCell
+  // (YYYY-MM-DD, cf. fmtDate) plutôt que l'ISO brut « 2025-11-14T00:00:00.000Z ».
+  // Sans ça, toute colonne type:'date' dont la page n'a pas câblé de render
+  // (ex. « Créé le » / « Modifié le » du Pipeline) affichait le timestamp brut.
+  if (col.dynamic || col.type === 'date') return <DynamicCell value={value} col={col} decimals={decimals} />
   if (col.type === 'number' && decimals != null) {
     const formatted = formatDecimals(value, decimals)
     if (formatted != null) return <span className="tabular-nums">{formatted}</span>
@@ -324,41 +333,6 @@ function normalizeGroupBy(g) {
   return g ? [g] : []
 }
 
-function ResizeHandle({ onResize }) {
-  const startX = useRef(0)
-  const startW = useRef(0)
-
-  function onPointerDown(e) {
-    e.preventDefault()
-    e.stopPropagation()
-    startX.current = e.clientX
-    startW.current = e.currentTarget.parentElement.offsetWidth
-    e.currentTarget.setPointerCapture(e.pointerId)
-  }
-
-  function onPointerMove(e) {
-    if (!e.currentTarget.hasPointerCapture(e.pointerId)) return
-    const delta = e.clientX - startX.current
-    const newW = Math.max(50, startW.current + delta)
-    onResize(newW)
-  }
-
-  function onPointerUp(e) {
-    if (e.currentTarget.hasPointerCapture(e.pointerId)) {
-      e.currentTarget.releasePointerCapture(e.pointerId)
-    }
-  }
-
-  return (
-    <div
-      className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize z-10 bg-transparent group-hover/header:bg-slate-200 hover:!bg-brand-400 active:!bg-brand-500"
-      onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
-      onPointerUp={onPointerUp}
-    />
-  )
-}
-
 // Petit « ? » survolable dans l'en-tête de colonne. Affiche la `description`
 // (provenance/unité/calcul) en infobulle. Positionnée en `fixed` à partir du
 // getBoundingClientRect de l'icône pour ne pas être clippée par l'en-tête
@@ -435,6 +409,7 @@ export function DataTable({
   peek,                   // { title, subtitle?, to?, width?, render } — si fourni, un clic sur une ligne ouvre un drawer latéral (side-peek à la Airtable) au lieu de naviguer. Chaque champ est soit une valeur, soit une fonction (item) => valeur ; `render(item, { close })` retourne le corps du drawer (typiquement une page *Detail.jsx en mode `embedded`). `to(item)` active le bouton « ouvrir en grand ». Prend le pas sur `onRowClick` pour le clic simple.
   onRowReorder,           // (orderedIds) => void — active une poignée de drag & drop en tête de chaque ligne pour réordonner manuellement (ordre custom persisté par le parent, ex. sort_order). Actif seulement quand l'ordre affiché == l'ordre réel des données : sans tri, groupage, recherche ni filtre.
   rowClassName,           // (item) => string — classes CSS additionnelles par ligne (ex. font-semibold pour un reçu non lu).
+  onFieldsChanged,        // () => void — les pages qui gèrent elles-mêmes leurs champs (Pipeline, Factures) passent leur reload : le menu d'en-tête (duplication, masquage global) doit pouvoir rafraîchir leur liste.
 }) {
   const [visibleCols, setVisibleCols] = useState([])
   // groupBy : tableau de field names. Hérité du legacy : accepte aussi null /
@@ -504,6 +479,8 @@ export function DataTable({
   const confirm = useConfirm()
   const { addToast } = useToast()
   const { getDecimals } = useDecimalPrefs()
+  const navigate = useNavigate()
+  const routeLocation = useLocation()
 
   // ── Champs custom auto-gérés ──────────────────────────────────────────────
   // Quand la table supporte les champs custom (miroir client de ALLOWED_TABLES
@@ -556,22 +533,140 @@ export function DataTable({
     // Rapport d'usage : liste les dépendances (champs calculés, automations,
     // vues, règles de visibilité) que la suppression va affecter, avant de les
     // casser en silence (#ERROR). Même logique que Factures/Pipeline.
+    //
+    // Pas de confirmation quand le champ n'est utilisé nulle part : la
+    // suppression est réversible (soft delete + corbeille) et l'app ne
+    // re-confirme pas le réversible — on la remplace par « Annuler » pendant
+    // 10 s. La boîte de dialogue ne réapparaît que s'il y a des dépendances :
+    // casser une formule ou une automation, ça, ça ne s'annule pas d'un clic
+    // dans la tête de l'utilisateur.
     let dependents = []
     try { dependents = (await api.customFields.dependents(field.id))?.dependents || [] } catch {}
-    const depMsg = summarizeDependents(dependents)
-    if (!(await confirm({
-      title: 'Supprimer le champ',
-      message: `Supprimer le champ "${field.name}" ? Restaurable depuis la corbeille.${depMsg}`,
-      confirmLabel: dependents.length ? 'Supprimer quand même' : 'Supprimer',
-    }))) return
+    if (dependents.length) {
+      const depMsg = summarizeDependents(dependents)
+      if (!(await confirm({
+        title: 'Supprimer le champ',
+        message: `Supprimer le champ "${field.name}" ? Restaurable depuis la corbeille.${depMsg}`,
+        confirmLabel: 'Supprimer quand même',
+      }))) return
+    }
     try {
       await api.customFields.delete(field.id)
-      addToast({ message: 'Champ supprimé', type: 'success' })
-      await reloadOwnCustomFields()
+      await refreshFields()
+      addToast({
+        type: 'undo',
+        message: `Champ « ${field.name} » supprimé`,
+        duration: 10000,
+        action: {
+          label: 'Annuler',
+          onClick: async () => {
+            try {
+              await api.admin.restoreTrash('custom_fields', field.id)
+              await refreshFields()
+              addToast({ message: 'Champ restauré', type: 'success', duration: 2000 })
+            } catch (e) {
+              addToast({ message: 'Restauration échouée : ' + (e.message || 'erreur'), type: 'error' })
+            }
+          },
+        },
+      })
     } catch (e) {
       addToast({ message: e.message, type: 'error' })
     }
   })
+
+  // ── Actions du menu d'en-tête communes à TOUS les champs ─────────────────
+  // Un champ natif et un champ perso s'y comportent pareil ; seule la mécanique
+  // diffère (masquage global d'un côté, soft delete de l'autre).
+  // useFieldOverrides est instancié plus bas dans le composant ; la ref permet
+  // aux actions définies ici de déclencher son rechargement sans réordonner le
+  // fichier.
+  const reloadFieldOverridesRef = useRef(null)
+  const refreshFields = useCallback(async () => {
+    await Promise.all([
+      reloadOwnCustomFields?.(),
+      reloadFieldOverridesRef.current?.(),
+      onFieldsChanged?.(),
+    ].filter(Boolean).map(p => Promise.resolve(p)))
+  }, [reloadOwnCustomFields, onFieldsChanged])
+
+  // Supprimer un champ NATIF = le masquer partout, réversible. Sa colonne SQL
+  // est lue par des routes serveur, des syncs et les fiches détail : la
+  // détruire casserait l'app. L'utilisateur, lui, voit bien le champ disparaître.
+  const hideNativeField = useCallback(async (col) => {
+    try {
+      await api.customFields.setNativeHidden(table, col.id, true)
+      await refreshFields()
+      addToast({
+        type: 'undo',
+        message: `Champ « ${col.label} » supprimé`,
+        duration: 10000,
+        action: {
+          label: 'Annuler',
+          onClick: async () => {
+            try {
+              await api.customFields.setNativeHidden(table, col.id, false)
+              await refreshFields()
+              addToast({ message: 'Champ restauré', type: 'success', duration: 2000 })
+            } catch (e) {
+              addToast({ message: 'Restauration échouée : ' + (e.message || 'erreur'), type: 'error' })
+            }
+          },
+        },
+      })
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  }, [table, refreshFields, addToast])
+
+  // Armé quand une création de champ part de CE tableau (bouton « + », insertion
+  // depuis le menu d'un champ, duplication). Consommé par l'effet d'affichage
+  // ci-dessous : sans lui, aucune colonne ne s'ajoute d'elle-même à la vue.
+  const creationIntent = useRef(false)
+  const pendingInsert = useRef(null)
+  const duplicateField = useCallback(async (col) => {
+    try {
+      // La copie se pose juste à droite de l'original, comme dans Airtable. Le
+      // placement passe par la même ancre que « Insérer à droite » : c'est
+      // l'effet d'auto-affichage qui positionne la colonne, sinon il la
+      // remettrait en bout de tableau juste après.
+      creationIntent.current = true
+      pendingInsert.current = { anchorId: col.id, side: 'after' }
+      const created = await api.customFields.duplicate(table, { field_id: col.field ?? col.id, label: col.label })
+      await refreshFields()
+      addToast({ message: `Champ « ${created.name} » créé`, type: 'success', duration: 3000 })
+    } catch (e) {
+      creationIntent.current = false
+      pendingInsert.current = null
+      addToast({ message: e.message, type: 'error' })
+    }
+  }, [table, refreshFields, addToast])
+
+  // Insérer à gauche / à droite : la position est une propriété de la VUE, donc
+  // on mémorise l'ancre et le côté ; le champ créé s'y glisse (voir l'effet
+  // d'auto-affichage, qui autrement l'ajouterait en fin de liste).
+  // Renommage EN LIGNE dans l'en-tête (double-clic), façon Airtable : pas de
+  // modale pour l'acte le plus fréquent. Autosave au blur / Entrée, Échap annule.
+  const [renamingCol, setRenamingCol] = useState(null) // { id, value } | null
+  const commitRename = useCallback(async (col, value) => {
+    const next = String(value || '').trim()
+    setRenamingCol(null)
+    if (!next || next === col.label) return
+    const field = cfByColumn?.get(col.field) || cfByColumn?.get(col.id)
+    try {
+      if (field) await api.customFields.update(field.id, { name: next })
+      else await api.fieldOverrides.save(table, col.id, { label: next })
+      await refreshFields()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  }, [cfByColumn, table, refreshFields, addToast])
+
+  const insertFieldAt = useCallback((col, side) => {
+    creationIntent.current = true
+    pendingInsert.current = { anchorId: col.id, side }
+    addCustomField?.()
+  }, [addCustomField])
 
   // ── Overrides de champs natifs (renommage / changement de type) ──────────
   // Les colonnes définies en dur dans tableDefs.js deviennent éditables via le
@@ -581,6 +676,7 @@ export function DataTable({
   // bougent pas. Appliqué AVANT useTableView pour que les panneaux Champs /
   // Filtres / Grouper voient les libellés et types overridés.
   const { overrides: fieldOverrides, reload: reloadFieldOverrides } = useFieldOverrides(table)
+  reloadFieldOverridesRef.current = reloadFieldOverrides
   const [fieldOverrideModal, setFieldOverrideModal] = useState(null) // { col } | null — col = définition d'origine
   const columnsWithOverrides = useMemo(
     () => applyFieldOverrides(columnsWithOwnCf, fieldOverrides),
@@ -595,14 +691,52 @@ export function DataTable({
   }, [filteredData, onFilteredDataChange])
   const hasBulkActions = Array.isArray(bulkActions) && bulkActions.length > 0
   const selectionActive = (bulkDeleteEnabled || bulkDeleteAlways) && (typeof onBulkDelete === 'function' || hasBulkActions)
-  // Use allColumns (hardcoded + dynamic Airtable fields) everywhere
-  const mergedColumns = allColumns || columnsWithOverrides
+  // Use allColumns (hardcoded + dynamic Airtable fields) everywhere.
+  // applyFieldOrder : ordre d'affichage choisi par l'utilisateur dans la modale
+  // de configuration des champs (field_overrides.sort_order) — pilote le panneau
+  // « Champs » et la position par défaut des colonnes.
+  // Champs masqués globalement (« Supprimer » sur un champ natif) : ils sortent
+  // de TOUTES les colonnes — tableau, panneau Champs, filtres, tris, groupes —
+  // sans que leur colonne SQL ni leurs données ne soient touchées. À ne pas
+  // confondre avec la visibilité par vue (visibleCols), qui est un choix local.
+  const mergedColumns = useMemo(
+    () => applyFieldOrder(allColumns || columnsWithOverrides, fieldOverrides)
+      .filter(c => !fieldOverrides.get(c.id)?.hidden),
+    [allColumns, columnsWithOverrides, fieldOverrides]
+  )
   // Helper passé aux consumers pour savoir si une colonne est désactivée
   // (import Airtable coupé via la modale de sync). Comparaison sur field OU id.
   const isDisabled = useCallback((c) => {
     if (!disabledColumns || disabledColumns.size === 0 || !c) return false
     return disabledColumns.has(c.field) || disabledColumns.has(c.id)
   }, [disabledColumns])
+
+  // Page pleine page « Configuration des champs » (/champs/:table). On passe en
+  // state de navigation les définitions D'ORIGINE des colonnes affichées
+  // (sérialisables : pas de render()), dans l'ordre courant — la page applique
+  // ensuite overrides et ordre elle-même, comme le fait la DataTable.
+  const openFieldConfig = useCallback(() => {
+    const columnsMeta = mergedColumns
+      .filter(c => !c.alwaysVisible)
+      .map(c => {
+        const orig = columnsWithOwnCf.find(x => x.id === c.id)
+          || (view.dynamicFields || []).find(d => d.id === c.id)
+          || c
+        // renderTypeLabel : nom du type d'origine quand la colonne porte un
+        // rendu sur-mesure nommé (lien vers une fiche). Calculé ici parce que la
+        // page de configuration ne reçoit pas les fonctions render() — le state
+        // de navigation doit rester sérialisable.
+        return {
+          id: c.id, field: c.field, label: orig.label, type: orig.type ?? null,
+          ...(orig.render && LINKED_RECORD_TYPE_LABELS[c.id]
+            ? { renderTypeLabel: LINKED_RECORD_TYPE_LABELS[c.id] }
+            : {}),
+        }
+      })
+    navigate(`/champs/${table}`, {
+      state: { columns: columnsMeta, fromPath: routeLocation.pathname + routeLocation.search },
+    })
+  }, [mergedColumns, columnsWithOwnCf, view.dynamicFields, navigate, table, routeLocation])
 
   const parentRef = useRef(null)
   const saveWidthsTimer = useRef(null)
@@ -798,18 +932,20 @@ export function DataTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.activeViewId, view.configReady])
 
-  // Auto-show newly created custom fields in the active view : on diffe les
-  // clés de customFieldsByColumn entre renders ; toute nouvelle clé est
-  // ajoutée à visibleCols (l'autosave de ViewToolbar persiste). Skippé au
-  // premier render pour ne pas clobber la liste initiale chargée du serveur.
+  // Un champ nouvellement créé n'apparaît QUE dans la vue où il a été créé.
   //
-  // Garde `cfLoaded` : tant que les champs custom ne sont pas chargés, cfByColumn
-  // est une Map vide TRANSITOIRE. Sans cette garde, cette Map vide était capturée
-  // comme baseline puis, à l'arrivée des champs, TOUTES les clés paraissaient
-  // « nouvelles » et étaient ré-ajoutées à visibleCols — écrasant silencieusement
-  // les colonnes que l'utilisateur venait de masquer (bug : masquage non persistant
-  // au rechargement). En attendant le chargement, la baseline est établie à partir
-  // de l'ensemble RÉEL des champs, donc seule une création ultérieure déclenche l'ajout.
+  // La visibilité et l'ordre des colonnes appartiennent à la VUE, pas au champ :
+  // une vue composée à la main ne doit pas se faire polluer parce que quelqu'un
+  // a créé un champ ailleurs. On n'ajoute donc une colonne que si la création
+  // vient de CE tableau — le « + », « Insérer à gauche/droite » ou « Dupliquer »
+  // arment `creationIntent`, et rien d'autre ne déclenche d'affichage.
+  //
+  // C'est aussi ce qui fait disparaître, par construction, le bug de
+  // ré-affichage : auparavant toute clé « nouvelle » entre deux renders était
+  // ajoutée, si bien qu'un simple rechargement (ou une création faite par
+  // quelqu'un d'autre) pouvait remettre des colonnes que l'utilisateur venait de
+  // masquer. La garde `cfLoaded` reste nécessaire pour que la baseline ne soit
+  // jamais la Map vide transitoire d'avant chargement.
   useEffect(() => {
     if (!view.configReady) return
     if (!cfByColumn) return
@@ -817,12 +953,21 @@ export function DataTable({
     const currentKeys = new Set(cfByColumn.keys())
     const prev = prevCustomFieldKeys.current
     if (prev) {
-      const newOnes = [...currentKeys].filter(k => !prev.has(k))
+      const intent = creationIntent.current
+      const newOnes = intent ? [...currentKeys].filter(k => !prev.has(k)) : []
       if (newOnes.length > 0) {
+        creationIntent.current = false
+        // « Insérer à gauche / à droite » : le champ vient d'être créé depuis le
+        // menu d'un champ précis — il se pose à cet endroit plutôt qu'en bout de
+        // tableau. L'ancre est consommée une seule fois.
+        const insert = pendingInsert.current
+        pendingInsert.current = null
         setVisibleCols(cols => {
-          const set = new Set(cols)
-          for (const k of newOnes) set.add(k)
-          return [...set]
+          const next = cols.filter(id => !newOnes.includes(id))
+          const at = insert ? next.indexOf(insert.anchorId) : -1
+          if (at === -1) return [...next, ...newOnes]
+          next.splice(insert.side === 'before' ? at : at + 1, 0, ...newOnes)
+          return next
         })
       }
     }
@@ -840,6 +985,48 @@ export function DataTable({
   const [dragOverCol, setDragOverCol] = useState(null)
   const [dragOverSide, setDragOverSide] = useState(null) // 'before' | 'after'
   const dragColRef = useRef(null)
+
+  // Multi-sélection d'en-têtes de colonnes (⌘/Ctrl+clic pour ajouter/retirer,
+  // Maj+clic pour une plage) → masquage en lot en un seul setVisibleCols, donc
+  // un seul autosave de la vue. Les ids qui ne sont plus visibles sont ignorés
+  // à la lecture (pas de nettoyage impératif nécessaire).
+  const [selectedColIds, setSelectedColIds] = useState(() => new Set())
+  const lastColClickRef = useRef(null)
+
+  const clearColSelection = useCallback(() => {
+    setSelectedColIds(prev => (prev.size ? new Set() : prev))
+    lastColClickRef.current = null
+  }, [])
+
+  function handleColHeaderClick(e, colId) {
+    const additive = e.metaKey || e.ctrlKey
+    const range = e.shiftKey
+    if (!additive && !range) {
+      clearColSelection()
+      return
+    }
+    e.preventDefault()
+    const ids = visibleColumns.map(c => c.id)
+    const anchor = lastColClickRef.current
+    if (range && anchor && ids.includes(anchor) && anchor !== colId) {
+      const a = ids.indexOf(anchor)
+      const b = ids.indexOf(colId)
+      const [from, to] = a < b ? [a, b] : [b, a]
+      setSelectedColIds(prev => {
+        const next = new Set(prev)
+        for (let i = from; i <= to; i++) next.add(ids[i])
+        return next
+      })
+    } else {
+      setSelectedColIds(prev => {
+        const next = new Set(prev)
+        if (next.has(colId)) next.delete(colId)
+        else next.add(colId)
+        return next
+      })
+      lastColClickRef.current = colId
+    }
+  }
 
   function handleColDragStart(e, colId) {
     dragColRef.current = colId
@@ -876,6 +1063,21 @@ export function DataTable({
     setDragOverCol(null)
     setDragOverSide(null)
   }
+
+  // Colonnes sélectionnées réellement masquables : on ignore les ids devenus
+  // invisibles et les colonnes d'action (`alwaysVisible`).
+  const hideableSelectedColIds = useMemo(
+    () => visibleColumns.filter(c => selectedColIds.has(c.id) && !c.alwaysVisible).map(c => c.id),
+    [visibleColumns, selectedColIds]
+  )
+
+  const hideSelectedColumns = useCallback(() => {
+    if (hideableSelectedColIds.length === 0) return
+    const toHide = new Set(hideableSelectedColIds)
+    setVisibleCols(prev => prev.filter(id => !toHide.has(id)))
+    setSelectedColIds(new Set())
+    lastColClickRef.current = null
+  }, [hideableSelectedColIds])
 
   // ── Réordonnancement manuel de lignes (drag & drop, opt-in) ───────────────
   // Actif seulement quand l'ordre affiché correspond à l'ordre réel des données
@@ -1409,6 +1611,14 @@ export function DataTable({
     }
   }, [gridMode, editingCell, sel, selBounds, copyCells, pasteCells, fillDown, moveCursor, startEdit, clearCells, rowIndexById, colIndexById, visibleColumns, isColEditable])
 
+  // Échap abandonne la multi-sélection d'en-têtes de colonnes.
+  useEffect(() => {
+    if (selectedColIds.size === 0) return
+    const h = (e) => { if (e.key === 'Escape') clearColSelection() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [selectedColIds, clearColSelection])
+
   keyHandlerRef.current = onGridKeyDown
   useEffect(() => {
     if (!gridMode) return
@@ -1465,6 +1675,7 @@ export function DataTable({
         disabledColumns={disabledColumns}
         manageViews={manageViews}
         manageViewsBulkDelete={typeof onBulkDelete === 'function' && !bulkDeleteAlways}
+        onOpenFieldConfig={openFieldConfig}
       />
 
       {selectionActive && selectedIds.size > 0 && (
@@ -1508,6 +1719,36 @@ export function DataTable({
         </div>
       )}
 
+      {hideableSelectedColIds.length > 0 && (
+        <div
+          data-testid="datatable-colsel-bar"
+          className="flex items-center gap-3 px-4 py-2 bg-brand-50 border-b border-brand-100"
+        >
+          <span className="text-sm text-brand-900">
+            {hideableSelectedColIds.length} colonne{hideableSelectedColIds.length > 1 ? 's' : ''} sélectionnée{hideableSelectedColIds.length > 1 ? 's' : ''}
+          </span>
+          <span className="hidden sm:inline text-xs text-brand-700/70">
+            ⌘/Ctrl+clic pour ajouter · Maj+clic pour une plage
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              onClick={clearColSelection}
+              className="text-xs text-slate-500 hover:text-slate-700 px-2 py-1"
+            >
+              Désélectionner
+            </button>
+            <button
+              onClick={hideSelectedColumns}
+              data-testid="colsel-hide"
+              className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 px-3 py-1.5 rounded transition-colors"
+            >
+              <EyeOff size={13} />
+              Cacher {hideableSelectedColIds.length > 1 ? 'ces colonnes' : 'cette colonne'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {gridMode && sel && gridBounds && (
         <div data-testid="datatable-grid-bar" className="flex items-center gap-3 px-4 py-1.5 bg-slate-50 border-b border-slate-100 text-xs text-slate-500">
           <span className="font-medium text-slate-600">
@@ -1546,17 +1787,30 @@ export function DataTable({
             {expandable && <div aria-hidden />}
             {visibleColumns.map(col => {
               const customField = cfByColumn?.get(col.field) || cfByColumn?.get(col.id)
+              const colSelected = selectedColIds.has(col.id)
               return (
                 <div
                   key={col.id}
-                  draggable
+                  data-testid={`col-header-${col.id}`}
+                  data-col-selected={colSelected ? 'true' : undefined}
+                  onDoubleClick={e => {
+                    // Renommage en ligne — seulement sur un champ manipulable.
+                    if (col.alwaysVisible) return
+                    e.stopPropagation()
+                    setRenamingCol({ id: col.id, value: col.label || '' })
+                  }}
+                  draggable={renamingCol?.id !== col.id}
                   onDragStart={e => handleColDragStart(e, col.id)}
                   onDragOver={e => handleColDragOver(e, col.id)}
                   onDrop={handleColDrop}
                   onDragEnd={handleColDragEnd}
                   onDragLeave={() => setDragOverCol(prev => prev === col.id ? null : prev)}
+                  onClick={e => handleColHeaderClick(e, col.id)}
                   onContextMenu={(e) => {
                     e.preventDefault()
+                    // Clic droit hors sélection : on repart d'une sélection vide
+                    // pour que le menu ne propose pas un lot inattendu.
+                    if (!selectedColIds.has(col.id)) clearColSelection()
                     setColMenu({
                       x: e.clientX,
                       y: e.clientY,
@@ -1565,12 +1819,52 @@ export function DataTable({
                       field: customField || null,
                     })
                   }}
-                  className="relative px-4 py-2.5 text-xs font-semibold text-slate-500 uppercase tracking-wide leading-tight break-words select-none cursor-grab active:cursor-grabbing"
+                  className={`group/col relative px-4 py-2.5 text-xs font-semibold uppercase tracking-wide leading-tight break-words select-none cursor-grab active:cursor-grabbing ${colSelected ? 'bg-brand-100 text-brand-800' : 'text-slate-500'}`}
                 >
-                  <span className="inline-flex items-baseline gap-1">
-                    {col.label}
-                    {col.description && <ColumnHelp description={col.description} />}
-                  </span>
+                  {renamingCol?.id === col.id ? (
+                    <input
+                      autoFocus
+                      value={renamingCol.value}
+                      data-testid={`col-rename-${col.id}`}
+                      onChange={e => setRenamingCol({ id: col.id, value: e.target.value })}
+                      onBlur={e => commitRename(col, e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') { e.preventDefault(); commitRename(col, e.currentTarget.value) }
+                        else if (e.key === 'Escape') { e.preventDefault(); setRenamingCol(null) }
+                        e.stopPropagation()
+                      }}
+                      onClick={e => e.stopPropagation()}
+                      className="w-full bg-white border border-brand-400 rounded px-1 py-0.5 text-xs font-semibold uppercase tracking-wide text-slate-700 focus:outline-none"
+                    />
+                  ) : (
+                    <span className="inline-flex items-baseline gap-1 pr-4">
+                      {col.label}
+                      {col.description && <ColumnHelp description={col.description} />}
+                    </span>
+                  )}
+                  {/* Chevron d'ouverture du menu de champ — visible au survol,
+                      clic GAUCHE (le clic droit reste supporté). C'est le geste
+                      Airtable : on n'a pas à deviner qu'un menu contextuel existe. */}
+                  {!renamingCol && (
+                    <button
+                      type="button"
+                      aria-label={`Menu du champ ${col.label}`}
+                      data-testid={`col-menu-btn-${col.id}`}
+                      onClick={e => {
+                        e.stopPropagation()
+                        const r = e.currentTarget.getBoundingClientRect()
+                        if (!selectedColIds.has(col.id)) clearColSelection()
+                        setColMenu({
+                          x: r.left, y: r.bottom + 2, col,
+                          source: customField ? (customField.source || 'native') : null,
+                          field: customField || null,
+                        })
+                      }}
+                      className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-400 opacity-0 group-hover/col:opacity-100 hover:bg-slate-200 hover:text-slate-700 transition-opacity"
+                    >
+                      <ChevronDown size={13} />
+                    </button>
+                  )}
                   {dragOverCol === col.id && dragColRef.current && dragColRef.current !== col.id && (
                     <div
                       className={`absolute top-0 bottom-0 w-0.5 bg-brand-500 pointer-events-none ${dragOverSide === 'before' ? '-left-px' : '-right-px'}`}
@@ -1584,7 +1878,7 @@ export function DataTable({
               <div className="flex items-center justify-center">
                 <button
                   type="button"
-                  onClick={addCustomField}
+                  onClick={() => { creationIntent.current = true; addCustomField() }}
                   className="p-1 rounded text-slate-400 hover:text-brand-600 hover:bg-brand-50 transition-colors"
                   title="Ajouter un champ"
                   aria-label="Ajouter un champ"
@@ -1597,6 +1891,12 @@ export function DataTable({
 
           {colMenu && (() => {
             const c = colMenu.col
+            // Un champ est manipulable dès qu'on sait le rattacher à quelque
+            // chose : un champ perso/Airtable (colMenu.field), ou une colonne
+            // native connue de la table. Les colonnes d'action (boutons de
+            // ligne) n'en sont pas.
+            const isFieldManageable = !!colMenu.field
+              || (!!table && !c?.alwaysVisible && columnsWithOwnCf.some(x => x.id === c.id))
             const canGroup = c?.groupable !== false && c?.field
             const canSort = c?.sortable !== false && c?.field
             const canFilter = c?.filterable !== false && c?.field
@@ -1641,55 +1941,88 @@ export function DataTable({
                       <ArrowDown size={13} /> Trier décroissant
                     </button>
                   )}
-                  <button
-                    onClick={() => {
-                      setVisibleCols(prev => prev.filter(id => id !== c.id))
-                      setColMenu(null)
-                    }}
-                    className={itemCls}
-                  >
-                    <EyeOff size={13} /> Cacher cette colonne
-                  </button>
-                  {/* Champ natif (défini dans tableDefs, pas un champ custom/Airtable) :
-                      renommage + changement de type via la modale commune
-                      (CustomFieldModal en mode natif). */}
-                  {!colMenu.source && table && columnsWithOwnCf.some(x => x.id === c.id) && (
-                    <>
-                      <div className="my-1 border-t border-slate-100" />
-                      <button
-                        onClick={() => {
-                          // La modale attend la définition D'ORIGINE (pré-override)
-                          // pour afficher « nom/type d'origine » et détecter un reset.
-                          const orig = columnsWithOwnCf.find(x => x.id === c.id) || c
-                          setFieldOverrideModal({ col: orig })
-                          setColMenu(null)
-                        }}
-                        className={itemCls}
-                        data-testid="colmenu-edit-native-field"
-                      >
-                        <Edit2 size={13} /> Modifier le champ
-                      </button>
-                    </>
+                  {hideableSelectedColIds.length > 1 && selectedColIds.has(c.id) ? (
+                    <button
+                      onClick={() => { hideSelectedColumns(); setColMenu(null) }}
+                      className={itemCls}
+                      data-testid="colmenu-hide-selected"
+                    >
+                      <EyeOff size={13} /> Cacher les {hideableSelectedColIds.length} colonnes sélectionnées
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setVisibleCols(prev => prev.filter(id => id !== c.id))
+                        setColMenu(null)
+                      }}
+                      className={itemCls}
+                    >
+                      <EyeOff size={13} /> Cacher cette colonne
+                    </button>
                   )}
-                  {colMenu.source && (
+                  {/* Actions de CHAMP — identiques pour un champ natif (défini
+                      dans tableDefs) et pour un champ perso/Airtable. Seule la
+                      mécanique diffère sous le capot : la modale native écrit
+                      une personnalisation, la modale perso édite le champ ;
+                      « Supprimer » masque globalement le natif et soft-delete
+                      le perso. L'utilisateur, lui, voit un seul type de champ. */}
+                  {isFieldManageable && (
                     <>
                       <div className="my-1 border-t border-slate-100" />
                       <button
                         onClick={() => {
-                          editCustomField?.(colMenu.field)
                           setColMenu(null)
+                          if (colMenu.field) editCustomField?.(colMenu.field)
+                          else {
+                            // La modale attend la définition D'ORIGINE (pré-override)
+                            // pour afficher « nom/type d'origine » et détecter un reset.
+                            const orig = columnsWithOwnCf.find(x => x.id === c.id) || c
+                            setFieldOverrideModal({
+                              col: orig.render && LINKED_RECORD_TYPE_LABELS[orig.id]
+                                ? { ...orig, renderTypeLabel: LINKED_RECORD_TYPE_LABELS[orig.id] }
+                                : orig,
+                            })
+                          }
                         }}
                         className={itemCls}
+                        data-testid={colMenu.field ? 'colmenu-edit-custom-field' : 'colmenu-edit-native-field'}
                       >
                         <Edit2 size={13} /> Modifier le champ
                       </button>
+                      <button
+                        onClick={() => { setColMenu(null); duplicateField(c) }}
+                        className={itemCls}
+                        data-testid="colmenu-duplicate-field"
+                      >
+                        <Copy size={13} /> Dupliquer le champ
+                      </button>
+                      {addCustomField && (
+                        <>
+                          <button
+                            onClick={() => { setColMenu(null); insertFieldAt(c, 'before') }}
+                            className={itemCls}
+                            data-testid="colmenu-insert-left"
+                          >
+                            <ArrowLeftToLine size={13} /> Insérer un champ à gauche
+                          </button>
+                          <button
+                            onClick={() => { setColMenu(null); insertFieldAt(c, 'after') }}
+                            className={itemCls}
+                            data-testid="colmenu-insert-right"
+                          >
+                            <ArrowRightToLine size={13} /> Insérer un champ à droite
+                          </button>
+                        </>
+                      )}
                       <button
                         onClick={() => {
                           const f = colMenu.field
                           setColMenu(null)
-                          deleteCustomField?.(f)
+                          if (f) deleteCustomField?.(f)
+                          else hideNativeField(c)
                         }}
                         className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 text-left"
+                        data-testid="colmenu-delete-field"
                       >
                         <Trash2 size={13} /> Supprimer le champ
                       </button>

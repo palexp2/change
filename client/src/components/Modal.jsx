@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 
 // Sélecteur des éléments réellement focusables à l'intérieur de la modale.
@@ -95,7 +96,11 @@ export function Modal({ isOpen, onClose, title, children, size = 'md' }) {
     xl: 'max-w-4xl',
   }
 
-  return (
+  // Portée via createPortal directement sous <body>, comme RecordPeekDrawer :
+  // sinon, ouverte pendant qu'un drawer est déjà là, la modale reste imbriquée
+  // sous #root alors que le drawer est un sibling ajouté après #root — à
+  // z-index égal (50), le drawer gagnait l'empilement et recouvrait la modale.
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div
         className="fixed inset-0 bg-black/50"
@@ -119,7 +124,8 @@ export function Modal({ isOpen, onClose, title, children, size = 'md' }) {
           {children}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
 

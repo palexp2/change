@@ -364,7 +364,7 @@ const lineUnitPrice = line => {
  *
  * @param {Object} line    ligne extraite du reçu { description, quantity, unit_price, total }
  * @param {Object} purchase achat enrichi { lia_ref, part_name, part_sku, qty_ordered, unit_cost, order_date, ... }
- * @param {Object} ctx     { receiptDate }
+ * @param {Object} ctx     { receiptDate, orderDate }
  */
 export function scoreLine(line, purchase, ctx = {}) {
   const reasons = []
@@ -437,14 +437,17 @@ export function scoreLine(line, purchase, ctx = {}) {
 
   // Prix unitaire et montant total de la ligne.
   const unitScore = amountScore(lineUnitPrice(line), purchase.unit_cost)
-  add('unit', 0.22, unitScore, 'prix unitaire concordant')
-  add('total', 0.13, amountScore(lineAmt, expectedTotal), 'montant de ligne concordant')
+  add('unit', 0.16, unitScore, 'prix unitaire concordant')
+  add('total', 0.09, amountScore(lineAmt, expectedTotal), 'montant de ligne concordant')
 
   // Quantité : signal fort quand elle est exacte (100 unités commandées, 100 facturées).
+  // Poids relevé (0,15 → 0,19) : avec le nom et la date de commande, c'est l'un des trois
+  // signaux que l'opérateur veut voir trancher en premier — le prix unitaire d'un achat
+  // encore à recevoir n'est souvent qu'une estimation, la quantité commandée ne l'est pas.
   const q = num(line?.quantity), qo = num(purchase.qty_ordered)
   if (q && qo) {
     const qScore = q === qo ? 1 : (amountScore(q, qo) ?? 0)
-    add('qty', 0.15, qScore, `quantité ${q === qo ? 'identique' : 'proche'} (${qo} commandés)`)
+    add('qty', 0.19, qScore, `quantité ${q === qo ? 'identique' : 'proche'} (${qo} commandés)`)
   }
 
   // Commande encore SANS PRIX : dans le flux Achats, le coût unitaire est renseigné
@@ -477,15 +480,29 @@ export function scoreLine(line, purchase, ctx = {}) {
     add('recv', 0.14, recvScore, d <= RECV_NEAR_DAYS ? `reçu ${d} j avant la facture` : null)
   }
 
-  // Antériorité : un achat est commandé avant d'être facturé. Plus la commande est
-  // proche de la facture, plus le couple est plausible.
-  if (ctx.receiptDate && purchase.order_date) {
+  // DATE DE COMMANDE IMPRIMÉE SUR LA FACTURE (« Date de la commande / Order Date » —
+  // Digikey notamment l'imprime, distincte de la date de facture) : elle se compare
+  // DIRECTEMENT à purchases.order_date. C'est le signal le plus net qui existe pour
+  // départager deux commandes de la MÊME pièce encore à recevoir — bien plus net que la
+  // simple proximité avec la date de facture, puisque les deux dates désignent la même
+  // chose. Cas réel Digikey : deux commandes de Raspberry Pi 4 (LIA-1998 commandé le
+  // 17 août, LIA-2002 le 25 août) facturées séparément le 27 août — seule la date de
+  // commande IMPRIMÉE sur chaque facture (17 et 20 août respectivement) les distingue,
+  // la date de facture étant identique ou proche pour les deux.
+  if (ctx.orderDate && purchase.order_date) {
+    const d = Math.abs(daysBetween(purchase.order_date, ctx.orderDate) ?? 9999)
+    const odScore = d === 0 ? 1 : Math.max(0, 1 - d / 30)
+    add('order_date_match', 0.30, odScore, d === 0 ? 'date de commande imprimée identique' : (d <= 3 ? 'date de commande imprimée très proche' : null))
+  } else if (ctx.receiptDate && purchase.order_date) {
+    // Repli : la facture n'imprime pas de date de commande distincte — on retombe sur
+    // la proximité (plus faible) entre la date de commande de l'achat et la date de
+    // facture (un achat est commandé avant d'être facturé, parfois plusieurs mois avant).
     const d = daysBetween(purchase.order_date, ctx.receiptDate)
     if (d != null) {
       const dateScore = d < -WINDOW_AFTER_DAYS || d > WINDOW_BEFORE_DAYS
         ? 0
         : Math.max(0, 1 - Math.max(0, d) / WINDOW_BEFORE_DAYS)
-      add('date', 0.05, dateScore, null)
+      add('date', 0.08, dateScore, null)
     }
   }
 
@@ -698,13 +715,13 @@ export function learnLineAliases({ candidates = [], excludeReceiptId = null } = 
  *
  * @returns {{ lines: Array<{index, match, candidates}>, candidates: Array }}
  */
-export function matchReceiptItems({ items, company, vendorProfileId = null, receiptDate = null, excludeReceiptId = null }) {
+export function matchReceiptItems({ items, company, vendorProfileId = null, receiptDate = null, orderDate = null, excludeReceiptId = null }) {
   const candidates = listCandidatePurchases({ company, vendorProfileId, receiptDate, excludeReceiptId })
   // Vocabulaire appris du fournisseur (best effort : sans historique, on retombe
   // simplement sur la comparaison au nom de la pièce).
   let aliasesByPart = new Map()
   try { aliasesByPart = learnLineAliases({ candidates, excludeReceiptId }) } catch { /* pas bloquant */ }
-  return matchLines({ items, candidates, receiptDate, aliasesByPart })
+  return matchLines({ items, candidates, receiptDate, orderDate, aliasesByPart })
 }
 
 /**
@@ -712,11 +729,11 @@ export function matchReceiptItems({ items, company, vendorProfileId = null, rece
  * sont fournis par l'appelant. Séparé de matchReceiptItems pour que la logique de
  * sélection soit testable sur des jeux de candidats construits à la main.
  */
-export function matchLines({ items, candidates = [], receiptDate = null, aliasesByPart = new Map() }) {
+export function matchLines({ items, candidates = [], receiptDate = null, orderDate = null, aliasesByPart = new Map() }) {
   const list = Array.isArray(items) ? items : []
   const lines = list.map((_, index) => ({ index, match: null, candidates: [] }))
   if (!candidates.length) return { lines, candidates }
-  const ctx = { receiptDate, aliasesByPart }
+  const ctx = { receiptDate, orderDate, aliasesByPart }
 
   // CODES CONSOMMÉS : un achat dont la facture est déjà entrée — lien « Dépense Line item »
   // dans Airtable, ou rattachement à un autre reçu de l'ERP — n'est plus un code libre.
@@ -751,6 +768,12 @@ export function matchLines({ items, candidates = [], receiptDate = null, aliases
     // après que la réception a été cochée est un cas courant (Simplex, Digikey), et la
     // laisser sans code obligerait à rouvrir tout l'historique à la main. Les achats
     // DÉJÀ FACTURÉS, eux, ne sont jamais notés (cf. openCandidates).
+    // Le cadrage reste strict : tant qu'un achat À RECEVOIR tient la route, c'est lui (et
+    // lui seul) qui est proposé — jamais un achat déjà reçu à sa place. C'est la quantité
+    // commandée qui doit départager deux commandes de la même pièce encore en vol, pas un
+    // repli vers l'historique reçu (cf. calibrage qty ci-dessous : cas réel Digikey où
+    // LIA-1999, qté 2 exacte, avait été écarté par une donnée Airtable corrompue plutôt
+    // que par ce cadrage — une fois la donnée corrigée, le score qty tranche seul).
     const scoredPending = scored.filter(s => s.purchase.pending_reception)
     const usePending = (scoredPending[0]?.score || 0) >= LIA_SUGGEST_THRESHOLD
     const pool = usePending ? scoredPending : scored
@@ -840,9 +863,9 @@ export function applyAutoMatches(items, lines) {
  * Point d'entrée de l'extraction : apparie puis applique les certitudes. Best effort —
  * toute erreur (achats indisponibles, données partielles) laisse les lignes intactes.
  */
-export function autoLinkReceiptItems({ items, company, vendorProfileId = null, receiptDate = null, excludeReceiptId = null }) {
+export function autoLinkReceiptItems({ items, company, vendorProfileId = null, receiptDate = null, orderDate = null, excludeReceiptId = null }) {
   try {
-    const { lines } = matchReceiptItems({ items, company, vendorProfileId, receiptDate, excludeReceiptId })
+    const { lines } = matchReceiptItems({ items, company, vendorProfileId, receiptDate, orderDate, excludeReceiptId })
     return applyAutoMatches(items, lines)
   } catch (e) {
     console.warn(`Appariement LIA indisponible: ${e.message}`)

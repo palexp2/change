@@ -54,7 +54,7 @@ export default function Setup() {
           <div className="inline-flex items-center justify-center w-16 h-16 bg-brand-600 rounded-2xl mb-4 shadow-lg">
             <span className="text-white font-bold text-2xl">O</span>
           </div>
-          <h1 className="text-3xl font-bold text-white">Orisha ERP</h1>
+          <h1 className="text-3xl font-bold text-white">Boréal</h1>
           <p className="text-slate-400 mt-1">Configuration initiale</p>
         </div>
 

@@ -4,7 +4,6 @@ import { Plus, X, Truck } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
-import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
@@ -12,8 +11,6 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 
-
-const STATUS_COLORS = { 'À envoyer': 'yellow', 'Envoyé': 'green' }
 
 const RENDERS = {
   order_number: row => row.order_id
@@ -25,7 +22,6 @@ const RENDERS = {
   tracking_number: row => <span className="font-mono text-xs text-slate-700">{row.tracking_number || '—'}</span>,
   carrier: row => <span className="text-slate-700">{row.carrier || '—'}</span>,
   pays: row => <span className="text-slate-700">{row.pays || '—'}</span>,
-  status: row => <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>,
   shipped_at: row => <span className="text-slate-500">{fmtDate(row.shipped_at)}</span>,
   created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
 }

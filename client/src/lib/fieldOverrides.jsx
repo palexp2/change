@@ -3,30 +3,42 @@ import api from './api.js'
 import { fmtDate } from './formatDate.js'
 import { formatCurrency, UrlValue, PhoneValue, isCheckboxTruthy } from './customFieldDisplay.jsx'
 
-// Overrides d'affichage des champs NATIFS d'une table (renommage / changement
-// de type) — pendant, pour les colonnes définies en dur dans tableDefs.js, du
-// CustomFieldModal des champs custom. L'override est purement cosmétique :
-// aucune colonne SQL n'est modifiée, les syncs continuent d'écrire dans les
-// colonnes d'origine. Persisté côté serveur (table field_overrides) via
-// /api/field-overrides, appliqué par DataTable via applyFieldOverrides().
+// Personnalisation d'affichage des champs NATIFS d'une table (renommage /
+// changement de type) — les colonnes définies en dur dans tableDefs.js.
+// Purement cosmétique : aucune colonne SQL n'est modifiée, les syncs continuent
+// d'écrire dans les colonnes d'origine. Depuis l'unification des champs, c'est
+// persisté dans custom_fields (kind='native') via /api/custom-fields/:table/native
+// — même table et même route que les champs perso — et appliqué par DataTable
+// via applyFieldOverrides().
 
 // Types d'affichage proposés dans la modale commune de champ (CustomFieldModal,
-// mode natif). Doit rester aligné avec
-// ALLOWED_TYPES côté serveur (routes/field-overrides.js).
+// mode natif). Doit rester aligné avec NATIVE_TYPES côté serveur
+// (routes/custom-fields.js).
 export const OVERRIDE_TYPES = [
   { value: 'text',     label: 'Texte' },
   { value: 'number',   label: 'Nombre' },
   { value: 'currency', label: 'Devise (CAD)' },
   { value: 'date',     label: 'Date' },
-  { value: 'boolean',  label: 'Case à cocher' },
+  // 'checkbox' est le vocabulaire unifié (celui des champs perso) ; 'boolean'
+  // reste accepté en lecture pour les personnalisations écrites avant la fusion.
+  { value: 'checkbox', label: 'Case à cocher' },
   { value: 'url',      label: 'URL' },
   { value: 'phone',    label: 'Téléphone' },
 ]
+
+// Normalise un type venu de tableDefs.js vers le vocabulaire unifié des champs
+// (celui de custom_fields). Seul 'boolean' diffère — même chose que 'checkbox'
+// sous un autre nom, héritage des deux systèmes de champs d'avant la fusion.
+export function normalizeFieldType(type) {
+  if (!type) return 'text'
+  return type === 'boolean' ? 'checkbox' : type
+}
 
 // Libellé FR d'un type de colonne (types d'override + types natifs tableDefs).
 export function typeLabel(type) {
   const t = OVERRIDE_TYPES.find(o => o.value === type)
   if (t) return t.label
+  if (type === 'boolean') return 'Case à cocher'
   return {
     single_select: 'Sélection',
     multi_select:  'Sélection multiple',
@@ -108,6 +120,7 @@ const OVERRIDE_TO_COLUMN_TYPE = {
   number: 'number',
   currency: 'number',
   date: 'date',
+  checkbox: 'boolean',
   boolean: 'boolean',
   url: 'text',
   phone: 'text',
@@ -117,7 +130,7 @@ const OVERRIDE_TO_COLUMN_TYPE = {
 // spécifique de la page quand le type est changé (l'ancien render suppose la
 // sémantique du type d'origine, ex. fmtCad sur un montant).
 export function renderOverriddenValue(ov, value) {
-  if (ov.type === 'boolean') {
+  if (ov.type === 'checkbox' || ov.type === 'boolean') {
     return <span className={isCheckboxTruthy(value) ? 'text-slate-700' : 'text-slate-400'}>{isCheckboxTruthy(value) ? 'Oui' : 'Non'}</span>
   }
   if (value == null || value === '') return <span className="text-slate-400">—</span>
@@ -171,4 +184,28 @@ export function applyFieldOverrides(columns, overrides) {
     }
     return next
   })
+}
+
+// Applique l'ordre d'affichage choisi par l'utilisateur (sort_order des
+// overrides, persisté par la modale de configuration des champs). Les champs
+// sans ordre explicite restent à leur position d'origine, après les champs
+// ordonnés. Les colonnes d'action (`alwaysVisible`) ne sont jamais déplacées :
+// elles restent en fin de tableau.
+export function applyFieldOrder(columns, overrides) {
+  if (!overrides || overrides.size === 0) return columns
+  let hasOrder = false
+  for (const o of overrides.values()) if (o.sort_order != null) { hasOrder = true; break }
+  if (!hasOrder) return columns
+  const pinned = columns.filter(c => c.alwaysVisible)
+  const orderable = columns.filter(c => !c.alwaysVisible)
+  const keyed = orderable.map((c, i) => {
+    const so = overrides.get(c.id)?.sort_order
+    return { c, ordered: so != null, so: so ?? 0, i }
+  })
+  keyed.sort((a, b) => {
+    if (a.ordered !== b.ordered) return a.ordered ? -1 : 1
+    if (a.ordered) return a.so - b.so || a.i - b.i
+    return a.i - b.i
+  })
+  return [...keyed.map(k => k.c), ...pinned]
 }

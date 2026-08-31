@@ -97,16 +97,16 @@ describe('Comptabilité — trésorerie scannable et apprise du relevé', () => 
     for (const l of learning.learned) assert.ok(ids.has(l.id), 'apprentissage sur une récurrente inconnue')
   })
 
-  test('la sync du fichier ne demande aucun clic', async () => {
+  // Désactivée le 2026-08-29 (Charles : le fichier créait des paiements en
+  // double avec Pmt_Suivi/la cédule — [[reference_solde_sheet_sync]]). Le test
+  // vérifie maintenant qu'elle reste bien inerte, pas qu'elle tourne.
+  test('la sync du fichier reste désactivée (doublons Pmt_Suivi)', async () => {
     const status = (await apiFetch('/treasury/solde-sheet/status')).body
-    assert.equal(status.active, true, 'automation de sync désactivée')
-    assert.ok(status.every_minutes > 0, 'cadence de sync automatique absente')
-    // Idempotent : appelé à chaque ouverture de page, il ne relit le fichier que
-    // si la donnée est vieille. Avec 24 h de tolérance, il ne doit rien faire.
+    assert.equal(status.active, false, 'la sync du fichier de solde doit rester désactivée')
     const r = await apiFetch('/treasury/solde-sheet/sync-if-stale', {
       method: 'POST', body: JSON.stringify({ max_age_minutes: 1440 }),
     })
     assert.equal(r.status, 200)
-    assert.equal(r.body.skipped, true, 'la sync a tourné alors que la donnée était fraîche')
+    assert.equal(r.body.skipped, true, 'automation désactivée doit rester sans effet')
   })
 })

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { Bot, Send, CheckCircle, XCircle, Loader2, AlertTriangle, ChevronDown, ChevronUp, Trash2, Terminal, FileText, Edit3, Search, Activity, Maximize2, Minimize2, Lightbulb, MessageSquare, Power, ShieldAlert, RotateCw, Clock, Sparkles, Star, Settings, HelpCircle, Globe, ListChecks } from 'lucide-react'
 import { api } from '../lib/api.js'
@@ -12,6 +12,10 @@ import { useAuth } from '../lib/auth.jsx'
 import { invalidate } from '../lib/prefetch.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { PageLink, isAppWideContext, contextPage } from '../components/PageLink.jsx'
+// La file des demandes de modification du système (FAB « Modifier le système »,
+// space='agent') est celle de la page Travaux : on réutilise le même composant
+// plutôt que d'en maintenir un second.
+import { QueueTab } from './Travaux.jsx'
 
 const STATUS_CONFIG = {
   pending:       { label: 'À lire',      color: 'text-slate-600',   bg: 'bg-white',       border: 'border-l-slate-400',   icon: Lightbulb },
@@ -490,7 +494,7 @@ function SuggestionCard({ item, task, onApprove, onRetry, onDelete, onRelaunch, 
   }
 
   return (
-    <div className={`rounded-xl border border-slate-200 border-l-[3px] ${st.border} ${st.bg} transition-all shadow-sm`} data-testid="suggestion-card">
+    <div className={`rounded-xl border border-slate-200 border-l-[3px] ${st.border} ${st.bg} transition-all shadow-sm`} data-testid="suggestion-card" data-task-id={task?.id || undefined}>
       {/* En-tête : le signalement lui-même + provenance */}
       <div className="flex items-start gap-2.5 p-3.5 sm:p-4 cursor-pointer" onClick={() => setExpanded(s => !s)}>
         <Icon size={15} className={`mt-0.5 flex-shrink-0 ${st.color} ${spinning ? 'animate-spin' : ''}`} />
@@ -867,8 +871,14 @@ export function AgentContent() {
   const [streamData, setStreamData] = useState({})
   const [settingsOpen, setSettingsOpen] = useState(false)
   const fetchedStreamRef = useRef(new Set())
-  const { showToast } = useToast()
+  const { showToast, addToast } = useToast()
   const { user } = useAuth()
+  // QueueTab attend toast.error/success/info ; le provider expose addToast.
+  const queueToast = useMemo(() => ({
+    error:   m => addToast({ message: m, type: 'error' }),
+    success: m => addToast({ message: m, type: 'success' }),
+    info:    m => addToast({ message: m, type: 'info' }),
+  }), [addToast])
 
   const load = useCallback(async () => {
     try {
@@ -985,6 +995,9 @@ export function AgentContent() {
     }
     try {
       if (task) { await api.agent.deleteTask(task.id); setTasks(prev => prev.filter(t => t.id !== task.id)) }
+      // Fiche synthétisée depuis une tâche de la file : rien à supprimer côté backlog,
+      // et l'id `task:<uuid>` n'y correspond à aucun item.
+      if (item.synthetic) return
       await api.agent.deleteBacklog(item.id)
       setBacklog(prev => prev.filter(i => i.id !== item.id))
     } catch { showToast('Erreur lors de la suppression', 'error') }
@@ -1008,20 +1021,40 @@ export function AgentContent() {
     .map(item => ({ item, task: item.task_id ? taskById.get(item.task_id) || null : null }))
     .sort((a, b) => (b.item.created_at || '').localeCompare(a.item.created_at || ''))
 
-  // Plus de section « en attente » : les suggestions sont implémentées immédiatement.
-  // Les fiches sans tâche (transitoires) ou bloquées restent visibles dans « En cours »,
-  // bloquées en tête pour attirer l'attention.
-  const enCours = fiches.filter(f => !f.task || ['approved', 'in_progress', 'blocked'].includes(f.task.status))
-    .sort((a, b) => {
-      const rank = f => (f.task?.status === 'blocked' ? 0 : 1)
-      return (rank(a) - rank(b)) || (b.item.created_at || '').localeCompare(a.item.created_at || '')
-    })
-  const implantees = fiches.filter(f => f.task && ['done', 'rejected'].includes(f.task.status))
+  // Plus de section « en attente » ni « En cours d'implémentation » : les suggestions
+  // sont implémentées immédiatement, et le travail en cours se suit dans la file
+  // « Demandes de modification du système » ci-dessus. Seul l'historique des fiches
+  // implantées reste affiché.
+  const linkedTaskIds = new Set(backlog.map(i => i.task_id).filter(Boolean))
+
+  // Demandes déposées par le FAB « Modifier le système » : elles ne créent plus
+  // d'item de backlog — le dernier date du 2026-08-05 — mais un prompt dans la file
+  // Travaux, dont naît une tâche porteuse d'un `work_prompt_id`. Sans fiche, elles
+  // n'entraient pas dans « Implantées » et se noyaient parmi les sous-tâches de
+  // l'agent. On leur synthétise donc une fiche à partir de la tâche, pour que la
+  // colonne reste l'historique unifié des demandes implantées.
+  const promptFiches = tasks
+    .filter(t => t.work_prompt_id && !linkedTaskIds.has(t.id) && ['done', 'rejected'].includes(t.status))
+    .map(t => ({
+      item: {
+        id: `task:${t.id}`,
+        text: t.description,
+        author: t.author,
+        context: t.context,
+        created_at: t.created_at,
+        mode: t.mode,
+        synthetic: true,   // pas d'item de backlog derrière : cf. deleteSuggestion
+      },
+      task: t,
+    }))
+
+  const implantees = [...fiches.filter(f => f.task && ['done', 'rejected'].includes(f.task.status)), ...promptFiches]
+    .sort((a, b) => (b.item.created_at || '').localeCompare(a.item.created_at || ''))
 
   // Tâches hors fiches : sous-tâches internes (créées par l'agent en cours d'exécution)
   // et tâches historiques sans suggestion liée.
-  const linkedTaskIds = new Set(backlog.map(i => i.task_id).filter(Boolean))
-  const otherTasks = tasks.filter(t => !linkedTaskIds.has(t.id))
+  const implanteeTaskIds = new Set(promptFiches.map(f => f.task.id))
+  const otherTasks = tasks.filter(t => !linkedTaskIds.has(t.id) && !implanteeTaskIds.has(t.id))
     .sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || ''))
 
   const activityLabel = activity === 'execution' ? 'Code en cours…' : activity === 'conversation' ? 'Répond…' : null
@@ -1082,54 +1115,38 @@ export function AgentContent() {
       {/* Utilisation Claude — en haut de la page (session 5 h + semaine 7 j) */}
       <ClaudeUsageBar />
 
+      {/* Demandes de modification du système : depuis que le FAB dépose des prompts
+          (space='agent') au lieu de créer des items de backlog, elles ne vivent plus
+          que dans la file Travaux. On la remonte ici pour qu'elles restent visibles
+          sur /agent — la page Travaux de l'agent reste accessible pour les autres
+          onglets (suggestions, idées, récurrents). */}
+      <Zone title="Demandes de modification du système">
+        {/* Sans le dépôt « Nouveau prompt… » : ici on ne fait que suivre la file.
+            Déposer une demande passe par le FAB « Modifier le système » (partout
+            dans l'app) ou par la page Travaux de l'agent. */}
+        <QueueTab toast={queueToast} space="agent" noComposer />
+      </Zone>
+
       {loading ? (
         <div className="flex items-center justify-center py-16"><Loader2 size={20} className="animate-spin text-slate-400" /></div>
       ) : (
         <>
-          {/* Deux colonnes côte à côte : implantées à gauche, en cours à droite.
-              Sur mobile (1 colonne) « En cours » remonte en premier (plus actionnable)
-              via lg:order — l'ordre DOM garde enCours en tête. */}
-          {(enCours.length > 0 || implantees.length > 0) && (
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 items-start" data-testid="agent-columns">
-              <div className="lg:order-2" data-testid="col-en-cours">
-                <Zone title="En cours d'implémentation" count={enCours.length}>
-                  {enCours.length > 0 ? (
-                    <div className="space-y-2.5">
-                      {enCours.map(({ item, task }) => (
-                        <SuggestionCard key={item.id} item={item} task={task}
-                          onApprove={approveSuggestion} onRetry={retrySuggestion} onDelete={deleteSuggestion}
-                          onRelaunch={t => handleUpdate(t.id, { status: 'approved' })}
-                          onRate={(id, rating) => handleUpdate(id, { rating })}
-                          streamChunks={task ? streamData[task.id] : undefined}
-                          defaultExpanded={!task || task.status === 'in_progress'}
-                          autoApprove={settings.autoApprove}
-                          onAutoApproveChange={handleAutoApproveChange} />
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-slate-400 py-2">Aucune implémentation en cours.</p>
-                  )}
-                </Zone>
-              </div>
-              <div className="lg:order-1" data-testid="col-implantees">
-                <Zone title="Implantées" count={implantees.length}>
-                  {implantees.length > 0 ? (
-                    <div className="space-y-2.5">
-                      {implantees.map(({ item, task }) => (
-                        <SuggestionCard key={item.id} item={item} task={task}
-                          onApprove={approveSuggestion} onRetry={retrySuggestion} onDelete={deleteSuggestion}
-                          onRelaunch={t => handleUpdate(t.id, { status: 'approved' })}
-                          onRate={(id, rating) => handleUpdate(id, { rating })}
-                          streamChunks={streamData[task.id]}
-                          autoApprove={settings.autoApprove}
-                          onAutoApproveChange={handleAutoApproveChange} />
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-slate-400 py-2">Aucune carte implantée pour l'instant.</p>
-                  )}
-                </Zone>
-              </div>
+          {/* Historique des fiches implantées, sur toute la largeur. */}
+          {implantees.length > 0 && (
+            <div data-testid="col-implantees">
+              <Zone title="Implantées" count={implantees.length}>
+                <div className="space-y-2.5">
+                  {implantees.map(({ item, task }) => (
+                    <SuggestionCard key={item.id} item={item} task={task}
+                      onApprove={approveSuggestion} onRetry={retrySuggestion} onDelete={deleteSuggestion}
+                      onRelaunch={t => handleUpdate(t.id, { status: 'approved' })}
+                      onRate={(id, rating) => handleUpdate(id, { rating })}
+                      streamChunks={streamData[task.id]}
+                      autoApprove={settings.autoApprove}
+                      onAutoApproveChange={handleAutoApproveChange} />
+                  ))}
+                </div>
+              </Zone>
             </div>
           )}
 

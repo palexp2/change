@@ -817,7 +817,10 @@ function usePromptActions({ load, dropPrompt, undropPrompt, liftPrompt, unliftPr
   return useMemo(() => ({ patch, remove, first, reply, steer }), [patch, remove, first, reply, steer])
 }
 
-function QueueTab({ toast, space }) {
+// `noComposer` : masque le dépôt « Nouveau prompt… ». Utilisé par l'encart de
+// /agent, qui n'affiche que la file — le dépôt s'y fait par le FAB « Modifier le
+// système » ou sur la page /agent/travaux.
+export function QueueTab({ toast, space, noComposer }) {
   const [view, setView] = useState('file')
   const [search, setSearch] = useState('')
   const [historyLimit, setHistoryLimit] = useState(HISTORY_PAGE)
@@ -971,7 +974,7 @@ function QueueTab({ toast, space }) {
         </div>
       )}
 
-      <NewPromptComposer agentEnabled={data.agent_enabled} onCreate={create} />
+      {!noComposer && <NewPromptComposer agentEnabled={data.agent_enabled} onCreate={create} />}
 
       {/* Barre de navigation : deux vues, comptées, et une recherche. Elle colle en
           haut pour rester accessible sans remonter toute la liste. */}
@@ -1297,10 +1300,11 @@ const AREA_LABELS = {
   ventes: 'Ventes', logistique: 'Logistique', comptabilite: 'Comptabilité',
   rh: 'RH', marketing: 'Marketing', technique: 'Technique', support: 'Support',
 }
+const areaOf = s => (AREA_ORDER.includes(s.area) ? s.area : 'technique')
 function groupSuggestionsByArea(suggestions) {
   const byArea = new Map()
   for (const s of suggestions) {
-    const area = AREA_ORDER.includes(s.area) ? s.area : 'technique'
+    const area = areaOf(s)
     if (!byArea.has(area)) byArea.set(area, [])
     byArea.get(area).push(s)
   }
@@ -1313,6 +1317,10 @@ function SuggestionsTab({ toast, space }) {
   const [suggestions, setSuggestions] = useState([])
   const [status, setStatus] = useState('new')
   const [kind, setKind] = useState('')
+  // Domaine métier sélectionné ('' = tous). Filtre purement client : la liste
+  // tient en mémoire, et garder les suggestions non filtrées permet d'afficher
+  // le compte de chaque domaine sur ses pastilles.
+  const [area, setArea] = useState('')
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
 
@@ -1354,6 +1362,17 @@ function SuggestionsTab({ toast, space }) {
     try { await api.travaux.dismissSuggestion(id); load() } catch (e) { toast.error(e.message) }
   }
 
+  // Pastilles de domaine : on n'affiche que les domaines réellement présents dans
+  // la liste courante — plus celui qui est sélectionné, pour qu'il ne disparaisse
+  // pas sous le doigt quand on change de statut ou de nature.
+  const areaCounts = suggestions.reduce((acc, s) => {
+    const a = areaOf(s)
+    acc[a] = (acc[a] || 0) + 1
+    return acc
+  }, {})
+  const areaChips = AREA_ORDER.filter(a => areaCounts[a] || a === area)
+  const visible = area ? suggestions.filter(s => areaOf(s) === area) : suggestions
+
   return (
     <div>
       <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
@@ -1389,6 +1408,28 @@ function SuggestionsTab({ toast, space }) {
         </button>
       </div>
 
+      {/* Filtre par domaine : sept domaines au plus, tous visibles d'un coup — pas
+          besoin de dropdown ni de recherche (règle des >10 options). */}
+      {areaChips.length > 1 && (
+        <div className="flex items-center gap-1.5 flex-wrap mb-4" data-testid="suggestion-area-filter">
+          <button
+            className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${area === '' ? 'bg-slate-900 text-white border-slate-900' : 'text-slate-600 border-slate-200 hover:bg-slate-100'}`}
+            data-testid="suggestion-area-chip-all"
+            aria-pressed={area === ''}
+            onClick={() => setArea('')}
+          >Tous les domaines <span className={area === '' ? 'text-slate-300' : 'text-slate-400'}>{suggestions.length}</span></button>
+          {areaChips.map(a => (
+            <button
+              key={a}
+              className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${area === a ? 'bg-slate-900 text-white border-slate-900' : 'text-slate-600 border-slate-200 hover:bg-slate-100'}`}
+              data-testid={`suggestion-area-chip-${a}`}
+              aria-pressed={area === a}
+              onClick={() => setArea(area === a ? '' : a)}
+            >{AREA_LABELS[a]} <span className={area === a ? 'text-slate-300' : 'text-slate-400'}>{areaCounts[a] || 0}</span></button>
+          ))}
+        </div>
+      )}
+
       <p className="text-xs text-slate-500 mb-4">
         L'agent regarde chaque matin les travaux que tu fais encore à la main, les chantiers récents et les erreurs de synchronisation,
         puis propose ici les prochaines étapes. Il propose aussi des <strong className="font-medium text-slate-600">intégrations</strong> — des
@@ -1398,14 +1439,21 @@ function SuggestionsTab({ toast, space }) {
 
       {loading ? (
         <div className="text-sm text-slate-500 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Chargement…</div>
-      ) : suggestions.length ? (
+      ) : visible.length ? (
         <div className="space-y-6" data-testid="suggestions-by-area">
-          {groupSuggestionsByArea(suggestions).map(({ area, label, items }) => (
-            <div key={area} data-testid={`suggestion-area-${area}`}>
-              <div className="flex items-center gap-2 mb-2.5">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</h3>
+          {groupSuggestionsByArea(visible).map(({ area: a, label, items }) => (
+            <div key={a} data-testid={`suggestion-area-${a}`}>
+              {/* Le titre de section est lui-même le filtre : cliquer « Ventes »
+                  isole les ventes, recliquer revient à tout voir. */}
+              <button
+                className="flex items-center gap-2 mb-2.5 group"
+                data-testid={`suggestion-area-title-${a}`}
+                title={area === a ? 'Revoir tous les domaines' : `Ne voir que ${label}`}
+                onClick={() => setArea(area === a ? '' : a)}
+              >
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 group-hover:text-slate-900 transition-colors">{label}</h3>
                 <span className="text-xs text-slate-400">{items.length}</span>
-              </div>
+              </button>
               <div className="space-y-2.5">
                 {items.map(s => (
                   <SuggestionCard key={s.id} s={s} onAccept={accept} onDismiss={dismiss} />
@@ -1415,8 +1463,14 @@ function SuggestionsTab({ toast, space }) {
           ))}
         </div>
       ) : (
-        <div className="text-sm text-slate-500 rounded-xl border border-dashed border-slate-200 p-6 text-center">
-          Aucune {kind === 'integration' ? 'intégration proposée' : 'suggestion'} {status === 'new' ? 'en attente' : ''}.
+        <div className="text-sm text-slate-500 rounded-xl border border-dashed border-slate-200 p-6 text-center" data-testid="suggestions-empty">
+          Aucune {kind === 'integration' ? 'intégration proposée' : 'suggestion'} {status === 'new' ? 'en attente' : ''}
+          {area ? ` en ${AREA_LABELS[area]}` : ''}.
+          {area && (
+            <button className="ml-1.5 text-slate-700 underline underline-offset-2 hover:text-slate-900" onClick={() => setArea('')}>
+              Voir tous les domaines
+            </button>
+          )}
         </div>
       )}
     </div>

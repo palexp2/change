@@ -9,14 +9,10 @@ import { fmtDate } from '../lib/formatDate.js'
 
 
 const RENDERS = {
-  product_name: row => (
-    <div>
-      {row.product_id
-        ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="font-medium text-brand-600 hover:underline">{row.product_name || '—'}</Link>
-        : <div className="font-medium text-slate-900">{row.product_name || '—'}</div>}
-      {row.sku && <div className="text-xs text-slate-400 font-mono">{row.sku}</div>}
-    </div>
-  ),
+  product_name: row => row.product_id
+    ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="font-medium text-brand-600 hover:underline">{row.product_name || '—'}</Link>
+    : <div className="font-medium text-slate-900">{row.product_name || '—'}</div>,
+  sku: row => row.sku ? <span className="text-slate-500 font-mono">{row.sku}</span> : null,
   qty_produced: row => <span className="font-bold text-slate-900">{row.qty_produced ?? '—'}</span>,
   assembled_at: row => <span className="text-slate-500">{fmtDate(row.assembled_at)}</span>,
 }

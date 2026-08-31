@@ -20,6 +20,7 @@
 // automatiquement `cleared_at`.
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { qbGet } from '../connectors/quickbooks.js'
 
 export const PAYMENT_METHODS = ['interac', 'cheque', 'carte', 'transfert', 'code_paiement', 'autre']
 
@@ -36,12 +37,31 @@ const LIST_SELECT = `
          -- cédule. La ligne ayant quitté la cédule, c'est le seul endroit où
          -- l'erreur peut encore se voir.
          COALESCE(a.due_date, a.date_achat) AS achat_due_date,
+         -- Date réelle de la facture réglée : date_achat est la TxnDate
+         -- synchronisée depuis QuickBooks (voir services/quickbooks.js) — la
+         -- source de vérité, pas une saisie. Écrase invoice_date à la lecture.
+         a.date_achat AS achat_invoice_date,
          t.txn_date AS bank_txn_date, t.description AS bank_txn_label
   FROM treasury_payments p
   LEFT JOIN achats_fournisseurs a ON a.id = p.achat_id
   LEFT JOIN bank_transactions t ON t.id = p.bank_txn_id
   WHERE p.deleted_at IS NULL
 `
+
+const setInvoiceDateStmt = db.prepare('UPDATE treasury_payments SET invoice_date = ? WHERE id = ?')
+
+// « Date de la facture » n'est éditable à la main que pour un paiement sans
+// facture liée (mouvement interne, ou lien jamais établi) : dès qu'un achat_id
+// existe, sa date_achat (= TxnDate QuickBooks) prime toujours sur toute valeur
+// stockée — persistée en base pour que les autres lecteurs (export, rapports)
+// voient la même chose.
+function resolveInvoiceDate(row) {
+  if (row?.achat_invoice_date && row.achat_invoice_date !== row.invoice_date) {
+    setInvoiceDateStmt.run(row.achat_invoice_date, row.id)
+    row.invoice_date = row.achat_invoice_date
+  }
+  return row
+}
 
 // status : 'pending' (pas encore passé à la banque) | 'cleared' | 'all'.
 export function listPayments({ status = 'all', from = null, to = null, limit = 300 } = {}) {
@@ -53,18 +73,49 @@ export function listPayments({ status = 'all', from = null, to = null, limit = 3
   if (to) { where.push('p.payment_date <= ?'); args.push(dayOnly(to)) }
   const sql = `${LIST_SELECT} ${where.length ? `AND ${where.join(' AND ')}` : ''}
     ORDER BY p.payment_date DESC, p.created_at DESC LIMIT ?`
-  return db.prepare(sql).all(...args, Math.min(2000, Math.max(1, Number(limit) || 300)))
+  return db.prepare(sql).all(...args, Math.min(2000, Math.max(1, Number(limit) || 300))).map(resolveInvoiceDate)
 }
 
 export function getPayment(id) {
-  return db.prepare(`${LIST_SELECT} AND p.id = ?`).get(id) || null
+  return resolveInvoiceDate(db.prepare(`${LIST_SELECT} AND p.id = ?`).get(id) || null)
+}
+
+// Recherche QuickBooks (Bill puis Purchase) par n° de facture : sert quand le
+// paiement n'a AUCUN achat_id lié (import historique, virement) mais porte un
+// n° de facture — on va chercher sa TxnDate directement chez QuickBooks plutôt
+// que de la laisser vide. `cap` borne le nombre d'appels par chargement de
+// liste : un lookup qui échoue (offline, TxnDate absente) réessaiera au
+// prochain chargement, jamais bloquant pour l'utilisateur.
+async function fetchQbInvoiceDate(invoiceNumber) {
+  const safe = String(invoiceNumber).replace(/'/g, "\\'")
+  for (const entity of ['Bill', 'Purchase']) {
+    try {
+      const q = new URLSearchParams({ query: `SELECT Id, TxnDate FROM ${entity} WHERE DocNumber = '${safe}' MAXRESULTS 1` })
+      const data = await qbGet(`/query?${q}`)
+      const hit = data.QueryResponse?.[entity]?.[0]
+      if (hit?.TxnDate) return hit.TxnDate
+    } catch { /* entité suivante, ou capitulation si aucune ne répond */ }
+  }
+  return null
+}
+
+export async function enrichInvoiceDatesFromQb(rows, { cap = 12 } = {}) {
+  let calls = 0
+  for (const p of rows) {
+    if (p.invoice_date || p.achat_id || !p.invoice_number) continue
+    if (calls >= cap) break
+    calls++
+    const date = await fetchQbInvoiceDate(p.invoice_number)
+    if (date) { setInvoiceDateStmt.run(date, p.id); p.invoice_date = date }
+  }
+  return rows
 }
 
 // ── Écriture ─────────────────────────────────────────────────────────────────
 
 export const PAYMENT_FIELDS = [
   'payment_date', 'direction', 'amount', 'currency', 'account', 'label',
-  'achat_id', 'invoice_number', 'reference', 'method', 'notes',
+  'achat_id', 'invoice_date', 'invoice_number', 'reference', 'method', 'notes',
   // Mouvement interne : l'autre compte (transfert, paiement de carte). Virement
   // ou chèque : le bénéficiaire réel (courriel Interac, « à l'ordre de »).
   'counterparty_account', 'recipient',
@@ -92,13 +143,13 @@ export function createPayment(body, userId = null) {
   db.prepare(`
     INSERT INTO treasury_payments (
       id, payment_date, direction, amount, currency, account, label, achat_id,
-      invoice_number, reference, method, notes, counterparty_account, recipient,
+      invoice_date, invoice_number, reference, method, notes, counterparty_account, recipient,
       cleared_at, cleared_source, sheet_seen_at, source, import_key, created_by
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     id, dayOnly(body.payment_date), body.direction === 'in' ? 'in' : 'out', r2(body.amount),
     body.currency || 'CAD', body.account || 'BNC CAD', body.label || null, body.achat_id || null,
-    body.invoice_number || null, body.reference || null, body.method || null, body.notes || null,
+    body.invoice_date ? dayOnly(body.invoice_date) : null, body.invoice_number || null, body.reference || null, body.method || null, body.notes || null,
     body.counterparty_account || null, body.recipient || null,
     body.cleared_at || null, body.cleared_at ? (body.cleared_source || 'manual') : null,
     body.sheet_seen_at || null, body.source || 'manual', body.import_key || null, userId,

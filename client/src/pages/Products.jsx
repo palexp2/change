@@ -1,6 +1,6 @@
-import { useState, useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { Plus, Package, SlidersHorizontal } from 'lucide-react'
+import { useState, useMemo, useCallback } from 'react'
+import { useNavigate, useLocation } from 'react-router-dom'
+import { Plus, Package } from 'lucide-react'
 import api from '../lib/api.js'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
@@ -8,7 +8,8 @@ import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { Layout } from '../components/Layout.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { AirtableCoreMapModal } from '../components/AirtableCoreMapModal.jsx'
+import TableThumb from '../components/TableThumb.jsx'
+import ProductDetail from './ProductDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 const PROCUREMENT_TYPES = ['Acheté', 'Fabriqué', 'Drop ship']
@@ -167,9 +168,19 @@ function StockAdjustModal({ product, onSave, onClose }) {
 export default function Products() {
   const navigate = useNavigate()
   const [showModal, setShowModal] = useState(false)
-  const [airtableMapOpen, setAirtableMapOpen] = useState(false)
   const [stockProduct, setStockProduct] = useState(null)
   const undoableDelete = useUndoableDelete()
+
+  // Ouverture du side-peek demandée par la fiche plein écran (« revenir au
+  // panneau latéral ») — l'id voyage via location.state.peekId. Consommée une
+  // fois le drawer ouvert, et le state d'historique est nettoyé pour qu'un
+  // refresh ne rouvre pas le drawer. Même pattern que Companies.jsx.
+  const location = useLocation()
+  const [peekOpenId, setPeekOpenId] = useState(() => location.state?.peekId ?? null)
+  const consumePeekOpen = useCallback(() => {
+    setPeekOpenId(null)
+    navigate(location.pathname + location.search, { replace: true, state: null })
+  }, [navigate, location.pathname, location.search])
 
   // Cache global (lib/dataStore) : hydraté au login par /api/bootstrap, mis à
   // jour par delta polling toutes les 10s. La page filtre l'état "inactif"
@@ -185,7 +196,7 @@ export default function Products() {
       ? {
           ...meta,
           render: row => row.image_url
-            ? <img src={row.image_url} alt="" className="h-8 w-8 object-cover rounded border border-slate-200" loading="lazy" />
+            ? <TableThumb src={row.image_url} className="border border-slate-200" />
             : <span className="text-slate-300">—</span>,
         }
       : meta
@@ -205,14 +216,6 @@ export default function Products() {
             <h1 className="text-2xl font-bold text-slate-900">Inventaire</h1>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setAirtableMapOpen(true)}
-              className="btn-secondary btn-sm flex items-center gap-1.5"
-              title="Choisir quels champs Airtable alimentent les produits"
-              data-testid="products-airtable-map-open"
-            >
-              <SlidersHorizontal size={13} /> Sync Airtable
-            </button>
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouveau produit
             </button>
@@ -225,7 +228,15 @@ export default function Products() {
           columns={COLUMNS}
           data={products}
           loading={loading}
-          onRowClick={row => navigate(`/products/${row.id}`)}
+          peek={{
+            title: row => row.name_fr || row.name_en || 'Produit',
+            subtitle: row => [row.sku, row.type].filter(Boolean).join(' · '),
+            to: row => `/products/${row.id}`,
+            width: 720,
+            openId: peekOpenId,
+            onOpenConsumed: consumePeekOpen,
+            render: (row, { close }) => <ProductDetail recordId={row.id} embedded onClose={close} />,
+          }}
           searchFields={['name_fr', 'name_en', 'sku', 'supplier']}
           onBulkDelete={async (ids) => {
             await undoableDelete({
@@ -244,13 +255,6 @@ export default function Products() {
         <ProductForm onSave={handleCreate} onClose={() => setShowModal(false)} />
       </Modal>
 
-      <AirtableCoreMapModal
-        isOpen={airtableMapOpen}
-        onClose={() => setAirtableMapOpen(false)}
-        modules={[{ module: 'pieces', title: 'Produits' }]}
-        title="Mapping des champs Airtable"
-        onSaved={syncStore}
-      />
 
       <Modal isOpen={!!stockProduct} onClose={() => setStockProduct(null)} title="Ajustement de stock" size="sm">
         {stockProduct && (

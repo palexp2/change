@@ -17,6 +17,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
     "express": "^5.0.1",
+    "fast-xml-parser": "^5.11.1",
     "form-data": "^4.0.5",
     "googleapis": "^171.4.0",
     "helmet": "^8.1.0",

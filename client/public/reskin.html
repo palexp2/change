@@ -1,0 +1,813 @@
+<title>Atelier de reskin Orisha</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+
+<style>
+/* ─────────────────────────────────────────────────────────────
+   Chrome de l'atelier — suit le thème du lecteur (3 états)
+   ───────────────────────────────────────────────────────────── */
+:root {
+  --lab-bg: #EDEAE4;
+  --lab-panel: #FFFFFF;
+  --lab-ink: #1F1B16;
+  --lab-muted: #6E665C;
+  --lab-line: #D9D3C9;
+  --lab-accent: #21B14B;
+  --lab-shadow: 0 24px 60px -28px rgba(40, 32, 20, .45);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --lab-bg: #14120E;
+    --lab-panel: #1D1A15;
+    --lab-ink: #F2EDE5;
+    --lab-muted: #A29888;
+    --lab-line: #302B23;
+    --lab-accent: #43CC6E;
+    --lab-shadow: 0 24px 60px -28px rgba(0, 0, 0, .8);
+  }
+}
+:root[data-theme="dark"] {
+  --lab-bg: #14120E;
+  --lab-panel: #1D1A15;
+  --lab-ink: #F2EDE5;
+  --lab-muted: #A29888;
+  --lab-line: #302B23;
+  --lab-accent: #43CC6E;
+  --lab-shadow: 0 24px 60px -28px rgba(0, 0, 0, .8);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--lab-bg);
+  color: var(--lab-ink);
+  font-family: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap {
+  max-width: 1360px;
+  margin: 0 auto;
+  padding: 28px 20px 72px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ── Bandeau titre ── */
+.masthead { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px 28px; }
+.masthead h1 {
+  margin: 0;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  text-wrap: balance;
+}
+.masthead p {
+  margin: 0;
+  max-width: 60ch;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--lab-muted);
+}
+
+/* ── Console de réglages ── */
+.console {
+  background: var(--lab-panel);
+  border: 1px solid var(--lab-line);
+  border-radius: 14px;
+  padding: 16px 18px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 18px 24px;
+  align-items: start;
+}
+.ctl { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.ctl > span.lbl {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--lab-muted);
+}
+.seg { display: flex; gap: 4px; background: var(--lab-bg); padding: 3px; border-radius: 9px; border: 1px solid var(--lab-line); }
+.seg button {
+  flex: 1;
+  min-width: 0;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--lab-muted);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background .14s, color .14s;
+}
+.seg button:hover { color: var(--lab-ink); }
+.seg button[aria-pressed="true"] { background: var(--lab-panel); color: var(--lab-ink); box-shadow: 0 1px 2px rgba(0,0,0,.12); }
+.seg button:focus-visible { outline: 2px solid var(--lab-accent); outline-offset: 1px; }
+
+.slider { display: flex; align-items: center; gap: 10px; }
+.slider input[type=range] { flex: 1; accent-color: var(--lab-accent); min-width: 0; }
+.slider output {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11.5px;
+  color: var(--lab-muted);
+  min-width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.swatches { display: flex; gap: 5px; }
+.swatches i { width: 100%; height: 18px; border-radius: 4px; border: 1px solid rgba(0,0,0,.08); }
+
+.note {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--lab-muted);
+}
+.note b { color: var(--lab-ink); font-weight: 600; }
+
+/* ─────────────────────────────────────────────────────────────
+   La maquette de l'ERP — vit dans son propre monde de tokens
+   (--a-*), pilotés par JS, indépendants du thème du lecteur.
+   ───────────────────────────────────────────────────────────── */
+.app {
+  --a-r: 10px;
+  --a-r-sm: 6px;
+  --a-row: 38px;
+  --a-fs: 13px;
+  --a-pad: 12px;
+
+  font-family: var(--a-font, 'Plus Jakarta Sans'), -apple-system, sans-serif;
+  font-size: var(--a-fs);
+  color: var(--a-t900);
+  background: var(--a-bg);
+  border: 1px solid var(--a-line);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: var(--lab-shadow);
+  display: grid;
+  grid-template-columns: 218px 1fr;
+  min-height: 660px;
+  transition: background .25s, color .25s, border-color .25s;
+}
+
+/* ── Barre latérale ── */
+.side {
+  background: var(--a-side);
+  border-right: 1px solid var(--a-line);
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 14px; }
+.brand .mark {
+  width: 26px; height: 26px; flex: none;
+  border-radius: 8px;
+  background: linear-gradient(150deg, var(--a-brand400), var(--a-brand700));
+  display: grid; place-items: center;
+  color: #fff; font-weight: 700; font-size: 13px;
+}
+.brand .nm { font-weight: 700; font-size: 14.5px; letter-spacing: -.01em; }
+.brand .nm span { color: var(--a-t400); font-weight: 500; }
+
+.sec-lbl {
+  font-size: 10px; font-weight: 700; letter-spacing: .11em; text-transform: uppercase;
+  color: var(--a-t400);
+  padding: 14px 10px 5px;
+}
+.nav {
+  display: flex; align-items: center; gap: 9px;
+  padding: 0 10px;
+  height: 31px;
+  border-radius: var(--a-r-sm);
+  color: var(--a-t700);
+  font-weight: 500;
+  cursor: pointer;
+  position: relative;
+  transition: background .12s, color .12s;
+}
+.nav:hover { background: var(--a-hover); color: var(--a-t900); }
+.nav .dot { width: 7px; height: 7px; border-radius: 3px; flex: none; background: var(--acc); }
+.nav .ct { margin-left: auto; font-size: 11px; color: var(--a-t400); font-variant-numeric: tabular-nums; }
+.nav.on { background: var(--a-selected); color: var(--a-t900); font-weight: 600; }
+.nav.on::before {
+  content: ""; position: absolute; left: -10px; top: 6px; bottom: 6px;
+  width: 3px; border-radius: 0 3px 3px 0; background: var(--acc);
+}
+
+/* ── Colonne principale ── */
+.main { display: flex; flex-direction: column; min-width: 0; background: var(--a-bg); }
+
+.topbar {
+  height: 50px; flex: none;
+  border-bottom: 1px solid var(--a-line);
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 14px;
+  background: var(--a-surface);
+}
+.search {
+  flex: 1; max-width: 380px;
+  display: flex; align-items: center; gap: 8px;
+  height: 31px; padding: 0 10px;
+  border: 1px solid var(--a-line);
+  border-radius: var(--a-r-sm);
+  color: var(--a-t400);
+  background: var(--a-bg);
+  font-size: 12.5px;
+}
+.search kbd {
+  margin-left: auto;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10.5px;
+  border: 1px solid var(--a-line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  background: var(--a-surface);
+}
+.avatar {
+  margin-left: auto;
+  width: 27px; height: 27px; border-radius: 50%;
+  background: var(--a-brand100); color: var(--a-brand800);
+  display: grid; place-items: center;
+  font-size: 11px; font-weight: 700;
+}
+
+.pagehead { padding: 16px 18px 0; }
+.pagehead .crumb { font-size: 11.5px; color: var(--a-t400); font-weight: 500; }
+.pagehead h2 {
+  margin: 3px 0 0;
+  font-size: 21px; font-weight: 700; letter-spacing: -.02em;
+  display: flex; align-items: center; gap: 10px;
+}
+.pagehead h2::before {
+  content: ""; width: 4px; height: 19px; border-radius: 2px; background: var(--acc);
+}
+
+/* ── Barre de vues ── */
+.views {
+  display: flex; align-items: center; gap: 6px;
+  padding: 14px 18px 0;
+  overflow-x: auto;
+}
+.pill {
+  height: 27px; padding: 0 11px;
+  display: inline-flex; align-items: center; gap: 6px;
+  border-radius: 999px;
+  border: 1px solid var(--a-line);
+  background: var(--a-surface);
+  color: var(--a-t600);
+  font-size: 12px; font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color .12s, color .12s, background .12s;
+}
+.pill:hover { color: var(--a-t900); border-color: var(--a-line-strong); }
+.pill.on { background: var(--a-brand50); border-color: var(--a-brand200); color: var(--a-brand800); }
+.pill.ghost { border-style: dashed; color: var(--a-t400); }
+
+.toolbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 18px 12px;
+  border-bottom: 1px solid var(--a-line);
+  flex-wrap: wrap;
+}
+.tool {
+  height: 28px; padding: 0 10px;
+  display: inline-flex; align-items: center; gap: 6px;
+  border-radius: var(--a-r-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--a-t600);
+  font: inherit; font-size: 12.5px; font-weight: 500;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.tool:hover { background: var(--a-hover); color: var(--a-t900); }
+.tool.active { background: var(--a-brand50); color: var(--a-brand800); }
+.tool svg { width: 14px; height: 14px; }
+.spacer { flex: 1; }
+.btn-primary {
+  height: 28px; padding: 0 13px;
+  border: 0; border-radius: var(--a-r-sm);
+  background: var(--a-brand600); color: #fff;
+  font: inherit; font-size: 12.5px; font-weight: 600;
+  cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.14);
+  transition: background .12s;
+}
+.btn-primary:hover { background: var(--a-brand500); }
+
+/* ── Zone tableau + tiroir ── */
+.body { flex: 1; display: grid; grid-template-columns: 1fr 0; min-height: 0; transition: grid-template-columns .28s cubic-bezier(.4,0,.2,1); }
+.body.peek { grid-template-columns: 1fr 316px; }
+.tablewrap { overflow: auto; min-width: 0; }
+
+table { width: 100%; border-collapse: separate; border-spacing: 0; }
+thead th {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--a-surface);
+  border-bottom: 1px solid var(--a-line);
+  text-align: left;
+  font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--a-t400);
+  padding: 0 var(--a-pad);
+  height: 32px;
+  white-space: nowrap;
+}
+tbody td {
+  border-bottom: 1px solid var(--a-line);
+  padding: 0 var(--a-pad);
+  height: var(--a-row);
+  white-space: nowrap;
+  color: var(--a-t700);
+}
+tbody tr { cursor: pointer; }
+tbody tr:hover td { background: var(--a-hover); }
+tbody tr.sel td { background: var(--a-selected); }
+tbody tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--acc); }
+.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--a-t900); font-weight: 600; }
+.mono { font-family: 'IBM Plex Mono', monospace; font-size: .92em; color: var(--a-t600); }
+.lnk { color: var(--a-t900); font-weight: 500; text-decoration: none; border-bottom: 1px solid transparent; }
+tbody tr:hover .lnk { border-bottom-color: var(--a-line-strong); }
+.dim { color: var(--a-t400); }
+
+.tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 20px; padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px; font-weight: 600;
+  white-space: nowrap;
+}
+.tag::before { content: ""; width: 5px; height: 5px; border-radius: 3px; background: currentColor; opacity: .75; }
+.t-ok   { background: var(--a-ok-bg);   color: var(--a-ok); }
+.t-warn { background: var(--a-warn-bg); color: var(--a-warn); }
+.t-crit { background: var(--a-crit-bg); color: var(--a-crit); }
+.t-info { background: var(--a-info-bg); color: var(--a-info); }
+.t-mute { background: var(--a-hover);   color: var(--a-t600); }
+
+/* ── Tiroir latéral ── */
+.drawer {
+  border-left: 1px solid var(--a-line);
+  background: var(--a-surface);
+  overflow: auto;
+  min-width: 0;
+}
+.body:not(.peek) .drawer { display: none; }
+.drawer-head { padding: 14px 16px 12px; border-bottom: 1px solid var(--a-line); }
+.drawer-head .k { font-size: 11px; color: var(--a-t400); font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+.drawer-head h3 { margin: 4px 0 8px; font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+.fields { padding: 12px 16px 22px; display: flex; flex-direction: column; gap: 2px; }
+.fld { display: grid; grid-template-columns: 92px 1fr; gap: 10px; align-items: center; padding: 6px 0; }
+.fld > .k { font-size: 11.5px; color: var(--a-t400); font-weight: 500; }
+.fld > .v { font-size: 12.5px; color: var(--a-t900); min-width: 0; }
+.inp {
+  width: 100%; height: 28px; padding: 0 9px;
+  border: 1px solid var(--a-line);
+  border-radius: var(--a-r-sm);
+  background: var(--a-bg);
+  color: var(--a-t900);
+  font: inherit; font-size: 12.5px;
+  transition: border-color .12s, box-shadow .12s;
+}
+.inp:focus { outline: none; border-color: var(--a-brand400); box-shadow: 0 0 0 3px var(--a-brand-ring); }
+.saved { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--a-t400); padding-top: 8px; }
+.saved b { color: var(--a-ok); font-weight: 600; }
+
+.hr { height: 1px; background: var(--a-line); margin: 10px 0; }
+
+.legend {
+  display: flex; flex-wrap: wrap; gap: 8px 20px;
+  font-size: 12px; color: var(--lab-muted);
+  padding: 2px 2px 0;
+}
+.legend b { color: var(--lab-ink); font-weight: 600; }
+
+@media (max-width: 860px) {
+  .app { grid-template-columns: 1fr; }
+  .side { display: none; }
+  .body.peek { grid-template-columns: 1fr; }
+  .body.peek .tablewrap { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
+}
+</style>
+
+<div class="wrap">
+
+  <header class="masthead">
+    <div style="flex:1; min-width:260px">
+      <h1>Atelier de reskin Orisha</h1>
+      <p>Un écran type de l'ERP — barre latérale, barre de vues, tableau, tiroir de détail — rejoué sous trois palettes chaudes. Change les réglages, compare jour et nuit, et dis-moi laquelle on applique aux tokens réels.</p>
+    </div>
+  </header>
+
+  <section class="console" aria-label="Réglages de la maquette">
+    <div class="ctl">
+      <span class="lbl">Palette</span>
+      <div class="seg" role="group" id="segVariant">
+        <button type="button" data-v="douce" aria-pressed="true">Crème douce</button>
+        <button type="button" data-v="neutre" aria-pressed="false">Chaud neutre</button>
+        <button type="button" data-v="contraste" aria-pressed="false">Chaud contrasté</button>
+      </div>
+      <div class="swatches" id="swatches" aria-hidden="true"></div>
+    </div>
+
+    <div class="ctl">
+      <span class="lbl">Thème de l'ERP</span>
+      <div class="seg" role="group" id="segTheme">
+        <button type="button" data-t="light" aria-pressed="true">Jour</button>
+        <button type="button" data-t="dark" aria-pressed="false">Nuit</button>
+      </div>
+      <span class="note">Indépendant du thème de ton navigateur.</span>
+    </div>
+
+    <div class="ctl">
+      <span class="lbl">Typographie</span>
+      <div class="seg" role="group" id="segFont">
+        <button type="button" data-f="Plus Jakarta Sans" aria-pressed="true">Jakarta</button>
+        <button type="button" data-f="Manrope" aria-pressed="false">Manrope</button>
+        <button type="button" data-f="system-ui" aria-pressed="false">Système</button>
+      </div>
+      <span class="note">« Système » = ce que l'ERP utilise aujourd'hui.</span>
+    </div>
+
+    <div class="ctl">
+      <span class="lbl">Chaleur des neutres</span>
+      <div class="slider">
+        <input type="range" id="warmth" min="0" max="100" value="65" aria-label="Chaleur des neutres">
+        <output id="warmthOut">65</output>
+      </div>
+      <span class="note">0 = les gris froids actuels. 100 = franchement crème.</span>
+    </div>
+
+    <div class="ctl">
+      <span class="lbl">Rayon des coins</span>
+      <div class="slider">
+        <input type="range" id="radius" min="2" max="16" value="10" aria-label="Rayon des coins">
+        <output id="radiusOut">10px</output>
+      </div>
+      <span class="note">L'ERP est aujourd'hui à 8px (<code>rounded-lg</code>).</span>
+    </div>
+
+    <div class="ctl">
+      <span class="lbl">Densité du tableau</span>
+      <div class="seg" role="group" id="segDensity">
+        <button type="button" data-d="compact" aria-pressed="false">Compact</button>
+        <button type="button" data-d="normal" aria-pressed="true">Normal</button>
+        <button type="button" data-d="confort" aria-pressed="false">Confort</button>
+      </div>
+      <span class="note">Aujourd'hui : entre compact et normal.</span>
+    </div>
+  </section>
+
+  <div class="app" id="app">
+
+    <aside class="side">
+      <div class="brand">
+        <div class="mark">O</div>
+        <div class="nm">Orisha <span>ERP</span></div>
+      </div>
+
+      <div class="sec-lbl">Ventes</div>
+      <div class="nav on" style="--acc: var(--a-sec-ventes)"><span class="dot"></span> Commandes <span class="ct">42</span></div>
+      <div class="nav" style="--acc: var(--a-sec-ventes)"><span class="dot"></span> Soumissions <span class="ct">17</span></div>
+      <div class="nav" style="--acc: var(--a-sec-ventes)"><span class="dot"></span> Pipeline</div>
+      <div class="nav" style="--acc: var(--a-sec-ventes)"><span class="dot"></span> Entreprises</div>
+
+      <div class="sec-lbl">Logistique</div>
+      <div class="nav" style="--acc: var(--a-sec-logi)"><span class="dot"></span> Envois <span class="ct">8</span></div>
+      <div class="nav" style="--acc: var(--a-sec-logi)"><span class="dot"></span> Assemblages</div>
+      <div class="nav" style="--acc: var(--a-sec-logi)"><span class="dot"></span> Achats</div>
+
+      <div class="sec-lbl">Comptabilité</div>
+      <div class="nav" style="--acc: var(--a-sec-compta)"><span class="dot"></span> Factures <span class="ct">3</span></div>
+      <div class="nav" style="--acc: var(--a-sec-compta)"><span class="dot"></span> Trésorerie</div>
+      <div class="nav" style="--acc: var(--a-sec-compta)"><span class="dot"></span> Rapprochement</div>
+
+      <div class="sec-lbl">Équipe</div>
+      <div class="nav" style="--acc: var(--a-sec-rh)"><span class="dot"></span> Feuille de temps</div>
+      <div class="nav" style="--acc: var(--a-sec-rh)"><span class="dot"></span> Paies</div>
+    </aside>
+
+    <div class="main" style="--acc: var(--a-sec-ventes)">
+      <div class="topbar">
+        <div class="search">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          Rechercher une commande, un client, un produit…
+          <kbd>⌘K</kbd>
+        </div>
+        <div class="avatar">GL</div>
+      </div>
+
+      <div class="pagehead">
+        <div class="crumb">Ventes</div>
+        <h2>Commandes</h2>
+      </div>
+
+      <div class="views">
+        <button class="pill on" type="button">À expédier</button>
+        <button class="pill" type="button">Toutes</button>
+        <button class="pill" type="button">En attente de paiement</button>
+        <button class="pill" type="button">Assemblage requis</button>
+        <button class="pill ghost" type="button">+ Vue</button>
+      </div>
+
+      <div class="toolbar">
+        <button class="tool active" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+          2 filtres
+        </button>
+        <button class="tool" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 6h16M4 12h10M4 18h6"/></svg>
+          Trier
+        </button>
+        <button class="tool" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+          Champs
+        </button>
+        <button class="tool" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M7 12h10M10 17h4"/></svg>
+          Grouper
+        </button>
+        <span class="spacer"></span>
+        <button class="btn-primary" type="button">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg>
+          Nouvelle commande
+        </button>
+      </div>
+
+      <div class="body peek" id="body">
+        <div class="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th>N°</th>
+                <th>Client</th>
+                <th>Statut</th>
+                <th>Produits</th>
+                <th style="text-align:right">Montant</th>
+                <th>Livraison</th>
+                <th>Envoi</th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+
+        <aside class="drawer">
+          <div class="drawer-head">
+            <div class="k">Commande</div>
+            <h3>CMD-2941</h3>
+            <span class="tag t-warn">Assemblage en cours</span>
+          </div>
+          <div class="fields">
+            <div class="fld"><span class="k">Client</span><span class="v"><a class="lnk" href="#">Serres Bellefeuille</a></span></div>
+            <div class="fld"><span class="k">Contact</span><span class="v"><a class="lnk" href="#">Mireille Cauchon</a></span></div>
+            <div class="fld"><span class="k">Commandé le</span><span class="v mono">2026-08-19</span></div>
+            <div class="hr"></div>
+            <div class="fld"><span class="k">Livraison</span><span class="v"><input class="inp" value="2026-09-04"></span></div>
+            <div class="fld"><span class="k">Transporteur</span><span class="v"><input class="inp" value="Nationex"></span></div>
+            <div class="fld"><span class="k">Note</span><span class="v"><input class="inp" value="Quai arrière, avant 15 h"></span></div>
+            <div class="saved">
+              <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="3"><path d="m5 13 4 4L19 7"/></svg>
+              <b>Enregistré</b> il y a 3 s
+            </div>
+            <div class="hr"></div>
+            <div class="fld"><span class="k">Sous-total</span><span class="v num" style="text-align:left">6 480,00 $</span></div>
+            <div class="fld"><span class="k">TPS + TVQ</span><span class="v num" style="text-align:left">970,38 $</span></div>
+            <div class="fld"><span class="k">Total</span><span class="v num" style="text-align:left; font-size:14px">7 450,38 $</span></div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><b>Accent par section</b> — vert Ventes, bleu Logistique, ocre Comptabilité, prune Équipe. Uniquement dans la navigation et le titre de page, jamais dans le tableau.</span>
+    <span><b>Vert de marque</b> — <code>#21B14B</code> conservé, légèrement désaturé selon la palette pour s'accorder au fond chaud.</span>
+  </div>
+</div>
+
+<script>
+/* ── Utilitaires couleur ───────────────────────────────────── */
+function hsl(h, s, l) {
+  s /= 100; l /= 100;
+  const k = n => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+  const to = v => Math.round(255 * v).toString(16).padStart(2, '0');
+  return '#' + to(f(0)) + to(f(8)) + to(f(4));
+}
+
+/* Chaque palette : teinte/saturation des neutres, tons du fond,
+   et la version du vert de marque qui s'accorde au fond. */
+const VARIANTS = {
+  douce: {
+    hue: 40, satMax: 16,
+    light: { page: [97.0, 1.35], surface: [100, 0], line: 90.5, lineStrong: 84, hover: 96.0, selected: 94.2,
+             t400: 55, t600: 41, t700: 33, t900: 17 },
+    dark:  { page: 7.8, surface: 11.0, line: 19.0, lineStrong: 26, hover: 14.5, selected: 17.5,
+             t400: 55, t600: 68, t700: 78, t900: 93, sat: 9 },
+    brand: 145, brandSat: 60,
+  },
+  neutre: {
+    hue: 34, satMax: 9,
+    light: { page: [96.4, 1.2], surface: [99.6, .5], line: 89.5, lineStrong: 82, hover: 95.2, selected: 93.4,
+             t400: 52, t600: 39, t700: 30, t900: 15 },
+    dark:  { page: 7.0, surface: 10.2, line: 18.0, lineStrong: 25, hover: 13.6, selected: 16.6,
+             t400: 54, t600: 67, t700: 78, t900: 94, sat: 6 },
+    brand: 145, brandSat: 68,
+  },
+  contraste: {
+    hue: 30, satMax: 13,
+    light: { page: [95.2, 1.5], surface: [100, 0], line: 87.0, lineStrong: 76, hover: 94.0, selected: 91.6,
+             t400: 47, t600: 34, t700: 25, t900: 10 },
+    dark:  { page: 5.6, surface: 9.2, line: 18.5, lineStrong: 28, hover: 12.8, selected: 16.0,
+             t400: 56, t600: 70, t700: 81, t900: 97, sat: 7 },
+    brand: 146, brandSat: 78,
+  },
+};
+
+/* Accents de section — teintes chaudes, calibrées pour rester
+   lisibles sur fond crème comme sur fond sombre. */
+const SECTIONS = {
+  light: { ventes: '#1E9A46', logi: '#2F6E9E', compta: '#9C6E1F', rh: '#7C568F' },
+  dark:  { ventes: '#4FC978', logi: '#69AEDD', compta: '#D2A44C', rh: '#B78FC7' },
+};
+
+const SEMANTIC = {
+  light: {
+    ok:   ['#1B7F3C', '#E4F4E6'],
+    warn: ['#8A5C10', '#FAEFD8'],
+    crit: ['#A8382C', '#F9E5E1'],
+    info: ['#2A5F92', '#E3EDF7'],
+  },
+  dark: {
+    ok:   ['#63CE84', '#16301F'],
+    warn: ['#DDAB55', '#33270F'],
+    crit: ['#E38B7E', '#361D19'],
+    info: ['#7FB6E4', '#152535'],
+  },
+};
+
+const state = { variant: 'douce', theme: 'light', font: 'Plus Jakarta Sans', warmth: 65, radius: 10, density: 'normal' };
+const app = document.getElementById('app');
+
+function apply() {
+  const V = VARIANTS[state.variant];
+  const dark = state.theme === 'dark';
+  const w = state.warmth / 100;
+  const h = V.hue;
+  const s = V.satMax * w;              // 0 chaleur → gris franc
+  const set = (k, v) => app.style.setProperty(k, v);
+
+  if (!dark) {
+    const L = V.light;
+    set('--a-bg',          hsl(h, s * L.page[1], L.page[0]));
+    set('--a-surface',     hsl(h, s * L.surface[1], L.surface[0]));
+    set('--a-side',        hsl(h, s * (L.page[1] * .8), L.page[0] + 1.2));
+    set('--a-line',        hsl(h, s * .55, L.line));
+    set('--a-line-strong', hsl(h, s * .5, L.lineStrong));
+    set('--a-hover',       hsl(h, s * .8, L.hover));
+    set('--a-selected',    hsl(h, s * .85, L.selected));
+    set('--a-t400',        hsl(h, s * .35, L.t400));
+    set('--a-t600',        hsl(h, s * .4, L.t600));
+    set('--a-t700',        hsl(h, s * .45, L.t700));
+    set('--a-t900',        hsl(h, s * .5, L.t900));
+    set('--a-brand50',     hsl(V.brand, 46, 95.5));
+    set('--a-brand100',    hsl(V.brand, 44, 90));
+    set('--a-brand200',    hsl(V.brand, 42, 82));
+    set('--a-brand400',    hsl(V.brand, V.brandSat, 52));
+    set('--a-brand500',    hsl(V.brand, V.brandSat, 44));
+    set('--a-brand600',    hsl(V.brand, V.brandSat, 38));
+    set('--a-brand700',    hsl(V.brand, V.brandSat, 31));
+    set('--a-brand800',    hsl(V.brand, V.brandSat - 6, 25));
+    set('--a-brand-ring',  hsl(V.brand, 55, 62) + '40');
+  } else {
+    const D = V.dark, ds = D.sat * (.35 + .65 * w);
+    set('--a-bg',          hsl(h, ds, D.page));
+    set('--a-surface',     hsl(h, ds * .95, D.surface));
+    set('--a-side',        hsl(h, ds, D.page + .9));
+    set('--a-line',        hsl(h, ds * .8, D.line));
+    set('--a-line-strong', hsl(h, ds * .75, D.lineStrong));
+    set('--a-hover',       hsl(h, ds * .9, D.hover));
+    set('--a-selected',    hsl(h, ds * .95, D.selected));
+    set('--a-t400',        hsl(h, ds * .5, D.t400));
+    set('--a-t600',        hsl(h, ds * .4, D.t600));
+    set('--a-t700',        hsl(h, ds * .3, D.t700));
+    set('--a-t900',        hsl(h, ds * .2, D.t900));
+    set('--a-brand50',     hsl(V.brand, 34, 15));
+    set('--a-brand100',    hsl(V.brand, 32, 20));
+    set('--a-brand200',    hsl(V.brand, 30, 28));
+    set('--a-brand400',    hsl(V.brand, V.brandSat - 10, 58));
+    set('--a-brand500',    hsl(V.brand, V.brandSat - 8, 50));
+    set('--a-brand600',    hsl(V.brand, V.brandSat - 6, 44));
+    set('--a-brand700',    hsl(V.brand, V.brandSat, 36));
+    set('--a-brand800',    hsl(V.brand, 40, 78));
+    set('--a-brand-ring',  hsl(V.brand, 50, 45) + '55');
+  }
+
+  const key = dark ? 'dark' : 'light';
+  for (const [k, v] of Object.entries(SECTIONS[key])) set('--a-sec-' + k, v);
+  for (const [k, [fg, bg]] of Object.entries(SEMANTIC[key])) {
+    set('--a-' + k, fg);
+    set('--a-' + k + '-bg', bg);
+  }
+
+  set('--a-font', state.font);
+  set('--a-r', state.radius + 'px');
+  set('--a-r-sm', Math.max(3, Math.round(state.radius * .62)) + 'px');
+
+  const D = { compact: [30, 12.3, 9], normal: [38, 13, 12], confort: [46, 13.8, 16] }[state.density];
+  set('--a-row', D[0] + 'px');
+  set('--a-fs', D[1] + 'px');
+  set('--a-pad', D[2] + 'px');
+
+  // Nuancier de la console
+  const sw = document.getElementById('swatches');
+  const cs = getComputedStyle(app);
+  sw.innerHTML = ['--a-bg', '--a-surface', '--a-line', '--a-t400', '--a-t900', '--a-brand600']
+    .map(k => `<i style="background:${cs.getPropertyValue(k)}"></i>`).join('');
+}
+
+/* ── Données de la maquette ────────────────────────────────── */
+const ROWS = [
+  ['CMD-2941', 'Serres Bellefeuille', 'warn', 'Assemblage en cours', 'Contrôleur AirZone ×4, Sonde CO₂ ×8', '7 450,38 $', '4 sept.', ['mute', 'À préparer'], true],
+  ['CMD-2940', 'Jardins Provencher', 'ok', 'Expédiée', 'Contrôleur AirZone ×2', '3 214,60 $', '28 août', ['info', 'Nationex · en transit']],
+  ['CMD-2939', 'Groupe Horti-Beauce', 'crit', 'Paiement en retard', 'Station météo ×1, Sonde CO₂ ×12', '11 902,15 $', '2 sept.', ['mute', '—']],
+  ['CMD-2938', 'Ferme Lanaudière inc.', 'ok', 'Expédiée', 'Sonde humidité ×24', '2 088,00 $', '25 août', ['info', 'Purolator · livrée']],
+  ['CMD-2937', 'Serres du Haut-Richelieu', 'warn', 'Assemblage en cours', 'Contrôleur AirZone ×6, Panneau relais ×6', '14 760,90 $', '11 sept.', ['mute', 'À préparer']],
+  ['CMD-2936', 'Coop Maraîchère Estrie', 'ok', 'Expédiée', 'Station météo ×2', '5 940,00 $', '21 août', ['info', 'Uber · livrée']],
+  ['CMD-2935', 'Pépinière Rive-Sud', 'info', 'En attente de pièces', 'Panneau relais ×10', '4 330,25 $', '18 sept.', ['warn', 'Achat LIA en cours']],
+  ['CMD-2934', 'Serres Bellefeuille', 'ok', 'Expédiée', 'Sonde CO₂ ×4', '1 276,80 $', '14 août', ['info', 'Nationex · livrée']],
+  ['CMD-2933', 'Vergers Deschênes', 'warn', 'Soumission acceptée', 'Contrôleur AirZone ×1', '1 862,50 $', '9 sept.', ['mute', 'À préparer']],
+  ['CMD-2932', 'Hydro-Serres Montérégie', 'ok', 'Expédiée', 'Contrôleur AirZone ×8, Station météo ×1', '19 405,00 $', '12 août', ['info', 'Loomis · livrée']],
+  ['CMD-2931', 'Ferme Boisvert & Fils', 'crit', 'Retour demandé', 'Sonde humidité ×6', '522,00 $', '—', ['crit', 'RMA-118']],
+  ['CMD-2930', 'Serres Trois-Rivières', 'ok', 'Expédiée', 'Panneau relais ×3', '1 299,00 $', '7 août', ['info', 'Canpar · livrée']],
+];
+
+document.getElementById('rows').innerHTML = ROWS.map(r => `
+  <tr class="${r[8] ? 'sel' : ''}">
+    <td class="mono">${r[0]}</td>
+    <td><a class="lnk" href="#">${r[1]}</a></td>
+    <td><span class="tag t-${r[2]}">${r[3]}</span></td>
+    <td class="dim">${r[4]}</td>
+    <td class="num">${r[5]}</td>
+    <td>${r[6]}</td>
+    <td><span class="tag t-${r[7][0]}">${r[7][1]}</span></td>
+  </tr>`).join('');
+
+/* ── Câblage des contrôles ─────────────────────────────────── */
+function seg(id, attr, key, after) {
+  const el = document.getElementById(id);
+  el.addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    [...el.querySelectorAll('button')].forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    state[key] = b.dataset[attr];
+    if (after) after();
+    apply();
+  });
+}
+seg('segVariant', 'v', 'variant');
+seg('segTheme', 't', 'theme');
+seg('segFont', 'f', 'font');
+seg('segDensity', 'd', 'density');
+
+const warmth = document.getElementById('warmth'), warmthOut = document.getElementById('warmthOut');
+warmth.addEventListener('input', () => { state.warmth = +warmth.value; warmthOut.textContent = warmth.value; apply(); });
+
+const radius = document.getElementById('radius'), radiusOut = document.getElementById('radiusOut');
+radius.addEventListener('input', () => { state.radius = +radius.value; radiusOut.textContent = radius.value + 'px'; apply(); });
+
+/* Le tiroir s'ouvre au clic sur une ligne, comme le RecordPeekDrawer. */
+const bodyEl = document.getElementById('body');
+document.getElementById('rows').addEventListener('click', e => {
+  const tr = e.target.closest('tr');
+  if (!tr) return;
+  [...tr.parentNode.children].forEach(x => x.classList.toggle('sel', x === tr));
+  bodyEl.classList.add('peek');
+  const head = document.querySelector('.drawer-head');
+  head.querySelector('h3').textContent = tr.children[0].textContent;
+  head.querySelector('.tag').className = tr.querySelector('.tag').className;
+  head.querySelector('.tag').textContent = tr.querySelector('.tag').textContent;
+  document.querySelector('.fld .lnk').textContent = tr.children[1].textContent;
+});
+
+apply();
+</script>

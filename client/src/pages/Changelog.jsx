@@ -1,8 +1,9 @@
-import { useEffect, useMemo } from 'react'
-import { Sparkles, Plus, ArrowUpCircle, Wrench } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { Sparkles, Plus, ArrowUpCircle, Wrench, AlertTriangle, CheckCircle2 } from 'lucide-react'
 import { Layout } from '../components/Layout.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { changelogEntries, markChangelogSeen } from '../lib/changelog.js'
+import { api } from '../lib/api.js'
 
 // Configuration d'affichage par type de changement.
 const TYPE_CONFIG = {
@@ -60,6 +61,89 @@ function ChangelogEntry({ entry, isLast }) {
   )
 }
 
+// Garde « toute modification de l'app est décrite ici ». L'état vient de
+// GET /api/changelog/status, qui compare le code modifié depuis le dernier
+// déploiement aux entrées ajoutées au journal. Tant que la garde est rouge,
+// deploy.sh refuse de livrer — la page le dit explicitement.
+function GuardStatus() {
+  const [st, setSt] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    api.changelog
+      .status()
+      .then((r) => alive && setSt(r))
+      .catch(() => alive && setSt({ error: true }))
+    return () => {
+      alive = false
+    }
+  }, [])
+
+  // Rien à dire tant qu'on ne sait pas, en cas d'erreur, ou hors contexte git.
+  if (!st || st.error || st.skipped) return null
+
+  if (st.ok) {
+    return (
+      <div
+        data-testid="changelog-guard"
+        data-state="ok"
+        className="mb-6 flex items-start gap-2 rounded-lg bg-emerald-50 ring-1 ring-inset ring-emerald-200 px-3 py-2"
+      >
+        <CheckCircle2 size={16} className="text-emerald-600 flex-shrink-0 mt-0.5" />
+        <p className="text-sm text-emerald-800">
+          Journal à jour —{' '}
+          {st.changedCount === 0
+            ? 'aucune modification de l’app n’attend d’être décrite.'
+            : `les modifications en cours sont décrites ci-dessous (${st.newEntries.length} entrée${st.newEntries.length > 1 ? 's' : ''} ajoutée${st.newEntries.length > 1 ? 's' : ''}).`}
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <div
+      data-testid="changelog-guard"
+      data-state="violation"
+      className="mb-6 rounded-lg bg-amber-50 ring-1 ring-inset ring-amber-200 px-3 py-2.5"
+    >
+      <div className="flex items-start gap-2">
+        <AlertTriangle size={16} className="text-amber-600 flex-shrink-0 mt-0.5" />
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-amber-900">
+            {st.changedCount} modification{st.changedCount > 1 ? 's' : ''} de l’app ne {st.changedCount > 1 ? 'sont' : 'est'} pas encore décrite
+            {st.changedCount > 1 ? 's' : ''} ici.
+          </p>
+          <p className="text-xs text-amber-800 mt-0.5">
+            Le journal des nouveautés est obligatoire : la prochaine livraison est bloquée tant qu’aucune entrée
+            ne raconte ces changements.
+            {st.invalidCount > 0 && ` ${st.invalidCount} entrée(s) incomplète(s) ne comptent pas (date, titre et au moins un changement requis).`}
+          </p>
+          {(st.commits.length > 0 || st.changedFiles.length > 0) && (
+            <details className="mt-2">
+              <summary className="text-xs text-amber-800 cursor-pointer select-none hover:text-amber-900">
+                Voir le détail
+              </summary>
+              <ul className="mt-1.5 space-y-0.5">
+                {st.commits.map((c) => (
+                  <li key={c.sha} className="text-xs text-amber-800/90 font-mono truncate">
+                    {c.sha} {c.subject}
+                  </li>
+                ))}
+                {st.commits.length === 0 &&
+                  st.changedFiles.map((f) => (
+                    <li key={f} className="text-xs text-amber-800/90 font-mono truncate">
+                      {f}
+                    </li>
+                  ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Changelog() {
   const entries = useMemo(() => changelogEntries, [])
 
@@ -80,6 +164,8 @@ export default function Changelog() {
             Les évolutions de l'ERP, livraison après livraison.
           </p>
         </div>
+
+        <GuardStatus />
 
         {entries.length === 0 ? (
           <div className="text-center text-slate-400 py-16">

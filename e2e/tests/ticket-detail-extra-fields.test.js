@@ -7,9 +7,11 @@ const EMAIL = process.env.ERP_EMAIL || 'pap@orisha.io'
 const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
-// Vérifie que les nouveaux champs (Lien GitHub, Escalade, Mots-clés, Arbre de
-// troubleshoot utilisé, Documents, Items retour) sont visibles, éditables et
-// persistés via PUT /api/tickets/:id.
+// Vérifie que les nouveaux champs (Lien GitHub, Escalade, Arbre de troubleshoot
+// utilisé, Documents, Items retour) sont visibles, éditables et persistés via
+// PUT /api/tickets/:id.
+// « Mots-clés » n'est plus un champ texte mais une sélection multiple : il est
+// couvert par tests/ticket-keywords-multiselect.test.js.
 describe('TicketDetail — nouveaux champs', () => {
   let browser, ctx, page, token, ticketId
 
@@ -45,14 +47,13 @@ describe('TicketDetail — nouveaux champs', () => {
     await browser?.close()
   })
 
-  test('les 6 champs sont visibles et persistent via blur', async () => {
+  test('les 5 champs texte sont visibles et persistent via blur', async () => {
     await page.goto(`${URL}/tickets/${ticketId}`, { waitUntil: 'domcontentloaded' })
     await page.waitForLoadState('networkidle')
 
     const cases = [
       { label: 'Lien GitHub',                    value: 'https://github.com/orisha/erp/issues/42', column: 'lien_issue_github' },
       { label: 'Escalade',                       value: 'Marc',                                     column: 'escalade' },
-      { label: 'Mots-clés',                      value: 'capteur, valve, calibration',              column: 'mots_cles' },
       { label: 'Arbre de troubleshoot utilisé',  value: 'Capteur de température',                   column: 'arbre_de_troubleshoot_utilise' },
       { label: 'Documents',                      value: 'manuel-v2.pdf, photos serre',              column: 'documents' },
       { label: 'Items retour',                   value: 'Capteur S-12 (RMA-2026-001)',              column: 'items_retours' },

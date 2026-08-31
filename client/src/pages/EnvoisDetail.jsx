@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Pencil, Printer, Download, Package, Mail, XCircle, FileText, X, Trash2, RefreshCw, AlertTriangle } from 'lucide-react'
+import { ArrowLeft, Pencil, Printer, Download, Package, Mail, XCircle, FileText, X, Trash2, RefreshCw, AlertTriangle, Truck } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useUndoSend } from '../components/UndoSendProvider.jsx'
@@ -21,9 +20,6 @@ function fmtCurrency(v) {
   if (v == null) return '—'
   return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(v)
 }
-
-const STATUS_COLORS = { 'À envoyer': 'yellow', 'Envoyé': 'green' }
-
 
 function SendTrackingModal({ envoi, onClose, onSent }) {
   const defaultEmail = envoi.address_contact_email || ''
@@ -118,7 +114,6 @@ function EditEnvoiModal({ envoi, adresses, onSave, onDelete, onClose }) {
   const [form, setForm] = useState({
     tracking_number: envoi.tracking_number || '',
     carrier: envoi.carrier || '',
-    status: envoi.status || 'À envoyer',
     shipped_at: envoi.shipped_at ? envoi.shipped_at.slice(0, 10) : '',
     notes: envoi.notes || '',
     address_id: envoi.address_id || '',
@@ -144,17 +139,6 @@ function EditEnvoiModal({ envoi, adresses, onSave, onDelete, onClose }) {
 
   return (
     <div className="space-y-4">
-      <div>
-        <label className="label">Statut{savingLabel('status')}</label>
-        <select
-          value={form.status}
-          onChange={e => saveField('status', e.target.value)}
-          className="select"
-        >
-          <option value="À envoyer">À envoyer</option>
-          <option value="Envoyé">Envoyé</option>
-        </select>
-      </div>
       <div>
         <label className="label">Transporteur{savingLabel('carrier')}</label>
         <input
@@ -239,15 +223,18 @@ export default function EnvoisDetail() {
   const [showSendTracking, setShowSendTracking] = useState(false)
   const [cancellingPickup, setCancellingPickup] = useState(false)
   const [novoxConfigured, setNovoxConfigured] = useState(false)
+  const [purolatorConfigured, setPurolatorConfigured] = useState(false)
   const [generatingPdf, setGeneratingPdf] = useState(false)
   const [showPdf, setShowPdf] = useState(false)
   const [retryingPdf, setRetryingPdf] = useState(false)
+  const [refreshingTracking, setRefreshingTracking] = useState(false)
   const confirm = useConfirm()
   const { addToast } = useToast()
 
   useEffect(() => {
     api.adresses.lookup().then(setAdresses).catch(() => {})
     api.novoxpress.status().then(r => setNovoxConfigured(!!r.configured)).catch(() => {})
+    api.purolator.status().then(r => setPurolatorConfigured(!!r.configured)).catch(() => {})
   }, [])
 
   function load() {
@@ -314,6 +301,21 @@ export default function EnvoisDetail() {
     }
   }
 
+  // Rafraîchit le statut du colis via la Tracking API UPS et le stocke sur
+  // l'envoi. Erreur UPS → toast avec le message brut de l'API (jamais muet).
+  async function handleRefreshTracking() {
+    setRefreshingTracking(true)
+    try {
+      const t = await api.ups.trackShipment(id)
+      addToast({ message: t.status ? `Statut UPS : ${t.status}` : 'UPS n\'a retourné aucun statut pour ce suivi', type: t.status ? 'success' : 'info' })
+      load()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally {
+      setRefreshingTracking(false)
+    }
+  }
+
   async function handleGenerateBonLivraison() {
     setGeneratingPdf(true)
     try { await api.shipments.generateBonLivraison(id); await load() }
@@ -346,7 +348,6 @@ export default function EnvoisDetail() {
               <h1 className="text-2xl font-bold text-slate-900">
                 {envoi.tracking_number ? `Envoi ${envoi.tracking_number}` : 'Envoi'}
               </h1>
-              <Badge color={STATUS_COLORS[envoi.status] || 'gray'} size="md">{envoi.status}</Badge>
             </div>
             {envoi.company_name && envoi.company_id && (
               <div className="text-sm text-slate-500 mt-1">
@@ -364,7 +365,7 @@ export default function EnvoisDetail() {
                 <RefreshCw size={14} className={retryingPdf ? 'animate-spin' : ''} />
                 {retryingPdf ? 'Récupération…' : 'Récupérer le PDF'}
               </button>
-            ) : novoxConfigured && envoi.address_id && (
+            ) : (novoxConfigured || purolatorConfigured) && envoi.address_id && (
               <button onClick={() => setShowLabel(true)} className="btn-primary flex items-center gap-1.5 text-sm">
                 <Printer size={14} />
                 {envoi.label_pdf_path ? 'Réimprimer' : 'Créer étiquette'}
@@ -378,6 +379,17 @@ export default function EnvoisDetail() {
             {envoi.tracking_number && (
               <button onClick={() => setShowSendTracking(true)} className="btn-secondary flex items-center gap-1.5 text-sm">
                 <Mail size={14} /> Envoyer le suivi
+              </button>
+            )}
+            {envoi.tracking_number && (
+              <button
+                onClick={handleRefreshTracking}
+                disabled={refreshingTracking}
+                className="btn-secondary flex items-center gap-1.5 text-sm"
+                data-testid="ups-refresh-tracking"
+              >
+                <Truck size={14} className={refreshingTracking ? 'animate-pulse' : ''} />
+                {refreshingTracking ? 'Suivi UPS…' : 'Rafraîchir le suivi UPS'}
               </button>
             )}
             <button onClick={handleGenerateBonLivraison} disabled={generatingPdf} className="btn-secondary flex items-center gap-1.5 text-sm">
@@ -419,6 +431,20 @@ export default function EnvoisDetail() {
               <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Créé le</dt>
               <dd className="text-slate-700">{fmtDate(envoi.created_at)}</dd>
             </div>
+            {envoi.ups_tracking_status && (
+              <div className="col-span-2 md:col-span-3" data-testid="ups-tracking-status">
+                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Statut UPS</dt>
+                <dd className="text-slate-700">
+                  {envoi.ups_tracking_status}
+                  {envoi.ups_tracking_last_activity && (
+                    <span className="text-slate-500"> — {envoi.ups_tracking_last_activity}</span>
+                  )}
+                  {envoi.ups_tracking_checked_at && (
+                    <span className="text-xs text-slate-400 block mt-0.5">Vérifié le {fmtDate(envoi.ups_tracking_checked_at)}</span>
+                  )}
+                </dd>
+              </div>
+            )}
             {(envoi.address_line1 || envoi.address_city) && (
               <div className="col-span-2 md:col-span-3">
                 <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Adresse de livraison</dt>

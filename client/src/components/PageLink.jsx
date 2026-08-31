@@ -6,16 +6,37 @@ import { ArrowUpRight } from 'lucide-react'
 import { architectureManifest } from '../lib/architectureManifest.js'
 
 // Le contexte d'une tâche combine la route d'où vient le signalement et,
-// optionnellement, le descriptif de l'élément ciblé (voir FeedbackFab). On sépare
-// les deux : le badge et la navigation n'utilisent que la partie « page », le
-// descriptif brut de l'élément (balise HTML) reste disponible au survol.
+// optionnellement, la fiche affichée et le descriptif de l'élément ciblé (voir
+// buildPageContext dans lib/pageContext). On sépare les deux : le badge et la
+// navigation n'utilisent que la partie « page », le reste (fiche, balise HTML)
+// reste disponible au survol.
 // Un seul élément (« élément ciblé… ») ou plusieurs (« éléments ciblés (3)… ») :
-// dans les deux cas la partie « page » s'arrête au séparateur.
-const CONTEXT_ELEMENT_SEP = / — éléments? cibl[ée]s? par l'utilisateur/
+// dans les deux cas la partie « page » s'arrête au premier séparateur.
+const CONTEXT_ELEMENT_SEP = / — (?:éléments? cibl[ée]s? par l'utilisateur|fiche affichée)/
 function contextPage(context) {
   if (!context) return ''
   const i = context.search(CONTEXT_ELEMENT_SEP)
-  return i === -1 ? context : context.slice(0, i)
+  return (i === -1 ? context : context.slice(0, i)).trim()
+}
+
+// Route utilisable d'une ligne de contexte, ou null : une demande « toute
+// l'application » n'a pas de page cible, et une ligne qui ne commence pas par
+// « / » n'est pas une route.
+function routeFromContext(context) {
+  if (!context || isAppWideContext(context)) return null
+  const page = contextPage(context)
+  return page.startsWith('/') ? page : null
+}
+
+// Les demandes déposées par le FAB « Modifier le système » (et le panneau rapide
+// de /travaux) n'alimentent pas la colonne `context` : elles collent la ligne de
+// contexte À LA FIN du prompt (« …\n\nContexte (ERP) : /factures — élément… »).
+// Sans cette lecture, la majorité des fiches implantées restaient sans lien.
+const EMBEDDED_CONTEXT_RE = /Contexte \(ERP\)\s*:\s*([^\n]+)/
+function embeddedContext(task) {
+  const text = task.description || task.prompt || ''
+  const m = String(text).match(EMBEDDED_CONTEXT_RE)
+  return m ? m[1].trim() : ''
 }
 
 // Une demande « toute l'application » n'a pas de page cible : son contexte est une
@@ -63,16 +84,14 @@ function derivePageFromAgentResult(agentResult) {
 }
 
 // Le contexte d'une tâche = la route d'où vient le signalement ; une fois le
-// correctif implanté, on offre la navigation directe vers la page modifiée — en
-// priorité celle du signalement, sinon celle déduite du rapport d'implémentation.
+// correctif implanté, on offre la navigation directe vers la page modifiée — par
+// ordre de fiabilité : la route du signalement (colonne `context`), celle collée
+// dans le texte de la demande, puis celle déduite du rapport d'implémentation.
 export function PageLink({ task }) {
   if (!task) return null
-  let page = null
-  if (!isAppWideContext(task.context)) {
-    const ctxPage = contextPage(task.context)
-    if (ctxPage.startsWith('/')) page = ctxPage
-  }
-  if (!page) page = derivePageFromAgentResult(task.agent_result)
+  const page = routeFromContext(task.context)
+    || routeFromContext(embeddedContext(task))
+    || derivePageFromAgentResult(task.agent_result)
   if (!page) return null
   return (
     <Link

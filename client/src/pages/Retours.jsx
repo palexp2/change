@@ -1,10 +1,11 @@
-import { useMemo } from 'react'
+import { useMemo, useState, useCallback } from 'react'
 import { Undo2 } from 'lucide-react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import RetourDetail from './RetourDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 
@@ -32,6 +33,7 @@ const COLUMNS = TABLE_COLUMN_META.retours.map(meta => ({ ...meta, render: RENDER
 
 export default function Retours() {
   const navigate = useNavigate()
+  const location = useLocation()
 
   const retoursRaw = useTable('returns')
   const companies = useTable('companies')
@@ -44,6 +46,14 @@ export default function Retours() {
       company_name: cById.get(r.company_id) || r.company_name,
     }))
   }, [retoursRaw, companies])
+
+  // Ouverture du side-peek demandée par la fiche plein écran (« revenir au
+  // panneau latéral ») — même pattern que Companies.jsx / Factures.jsx.
+  const [peekOpenId, setPeekOpenId] = useState(() => location.state?.peekId ?? null)
+  const consumePeekOpen = useCallback(() => {
+    setPeekOpenId(null)
+    navigate(location.pathname + location.search, { replace: true, state: null })
+  }, [navigate, location.pathname, location.search])
 
   return (
     <Layout>
@@ -60,7 +70,15 @@ export default function Retours() {
           columns={COLUMNS}
           data={retours}
           loading={loading}
-          onRowClick={row => navigate(`/retours/${row.id}`)}
+          peek={{
+            title: row => row.return_number || `Retour #${row.id}`,
+            subtitle: row => row.company_name,
+            to: row => `/retours/${row.id}`,
+            width: 720,
+            openId: peekOpenId,
+            onOpenConsumed: consumePeekOpen,
+            render: (row, { close }) => <RetourDetail recordId={row.id} embedded onClose={close} />,
+          }}
           searchFields={['return_number', 'tracking_number', 'company_name']}
           emptyState={{ icon: Undo2, title: 'Aucun retour', description: "Aucune demande de retour (RMA) n'a été enregistrée. Les retours clients apparaissent ici." }}
         />

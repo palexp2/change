@@ -42,6 +42,12 @@ export const MANUAL_RUNNERS = {
     const { syncSoldeSheet } = await import('./treasurySoldeSheet.js')
     return await syncSoldeSheet({ trigger: 'manuel', apply: !dryRun })
   },
+  // Suivi Purolator : dry-run et run-now font le même appel (une simple
+  // lecture de statut, jamais un achat) — pas de distinction utile ici.
+  sys_purolator_tracking: async () => {
+    const { refreshPurolatorTracking } = await import('./purolator.js')
+    return await refreshPurolatorTracking({ trigger: 'manuel' })
+  },
   // Reprise de l'onglet Pmt_Suivi (fichier CTB - Suivi) : dry-run = lignes qui
   // seraient ajoutées / mises à jour sans rien écrire ; run-now = import réel.
   sys_pmt_suivi_sheet: async ({ dryRun }) => {
@@ -58,6 +64,21 @@ export const MANUAL_RUNNERS = {
   // Sync du fichier TRX_Orisha (relevés des 11 comptes) : dry-run = lecture du
   // fichier + transactions qui seraient importées + audit d'anomalies, sans
   // écrire ; run-now = import réel + matching + liaison QB + alerte Slack.
+  sys_digikey_orders: async ({ dryRun }) => {
+    const { isDigikeyConfigured } = await import('../connectors/digikey.js')
+    if (!isDigikeyConfigured()) {
+      return { result: 'DigiKey non configuré (client_id / client_secret manquants dans Connecteurs)' }
+    }
+    const { syncDigikey } = await import('./digikey.js')
+    const out = await syncDigikey({ trigger: 'manuel', dryRun })
+    return {
+      result: dryRun
+        ? `${out.orders} commande(s) sur la fenêtre ${out.startDate} → ${out.endDate} · ${out.created} nouvelle(s), ${out.skipped} déjà connue(s) — rien écrit`
+        : `${out.created} achat(s) créé(s), ${out.updated} mis à jour, ${out.pdfs} facture(s) PDF téléchargée(s)`
+        + (out.errors.length ? ` · ${out.errors.length} erreur(s) : ${out.errors.slice(0, 2).join(' · ')}` : ''),
+    }
+  },
+
   sys_invoice_collection: async ({ dryRun }) => {
     const { refreshInvoiceNeeds, dueNeedsForAccount } = await import('./scrapers/invoiceNeeds.js')
     const { runAllScrapers } = await import('./scrapers/index.js')
@@ -81,6 +102,14 @@ export const MANUAL_RUNNERS = {
       result: results.map(r => `${r.vendor}: ${r.status}${r.imported ? ` (${r.imported} importée(s))` : ''}`).join(' · ')
         || 'aucun compte de collecte actif',
     }
+  },
+
+  // Vérificateur d'adresses postales : dry-run = liste ce qui serait signalé
+  // sans persister de verdict ni notifier ; run-now = passe complète.
+  sys_address_check: async ({ dryRun }) => {
+    const { runAddressCheck } = await import('./addressCheck.js')
+    const out = runAddressCheck({ trigger: 'manuel', apply: !dryRun, log: false })
+    return { summary: out.summary, counts: out.counts, problems: out.problems.slice(0, 50) }
   },
 
   sys_bank_trx_sheet: async ({ dryRun }) => {
@@ -109,6 +138,14 @@ export const MANUAL_RUNNERS = {
     const { diagnoseCardPaymentReminder, checkCardPaymentReminder } = await import('./cardPaymentReminder.js')
     if (dryRun) return diagnoseCardPaymentReminder()
     return await checkCardPaymentReminder({ force: true, trigger: 'manuel' })
+  },
+  // Plafond des cartes : dry-run = les chiffres lus dans QuickBooks + ce qui
+  // partirait sur Slack, sans envoi ; run-now = envoie l'alerte immédiatement
+  // (en court-circuitant la fenêtre J-N et l'anti-doublon du mois).
+  sys_card_ceiling_alert: async ({ dryRun }) => {
+    const { diagnoseCardCeilings, checkCardCeilings } = await import('./cardCeiling.js')
+    if (dryRun) return await diagnoseCardCeilings()
+    return await checkCardCeilings({ force: true, trigger: 'manuel' })
   },
   // Déboursés de pièces : dry-run = les trois montants du mois écoulé, calculés
   // depuis QuickBooks, sans fichier ni notification ; run-now = préparation
@@ -186,6 +223,14 @@ export const MANUAL_RUNNERS = {
     if (dryRun) return previewWeeklyProspectDigest()
     return await runWeeklyProspectDigest({ force: true, trigger: 'manuel' })
   },
+  // Registre des entreprises du Québec : dry-run = lit la source et compte ce
+  // qui serait importé sans rien écrire ; run-now = import complet (upsert).
+  sys_req_import: async ({ dryRun }) => {
+    const { runReqImport, getReqStatus } = await import('./reqImport.js')
+    const out = await runReqImport({ trigger: 'manuel', apply: !dryRun })
+    return { summary: out.summary, source: out.source, read: out.read, written: out.written, status: getReqStatus() }
+  },
+
   sys_paie_repartition: async () => {
     const { computePaieRepartition } = await import('./paieRepartition.js')
     const last = db.prepare('SELECT id, number FROM paies ORDER BY period_end DESC LIMIT 1').get()
@@ -564,6 +609,21 @@ export const SYSTEM_AUTOMATIONS = [
     default_active: 1,
   },
   {
+    id: 'sys_purolator_tracking',
+    name: 'Purolator : rafraîchissement horaire du suivi des envois',
+    description:
+      "Toutes les heures (et sur demande depuis le bouton « Simuler »/« Exécuter » ci-dessous), interroge le service de suivi Purolator (Tracking Service) pour chaque envoi dont le transporteur est Purolator et qui n'est pas encore marqué livré, et met à jour son statut et sa dernière activité sur la fiche envoi. " +
+      "Sens unique ERP → Purolator : achat d'étiquette côté page Envois (bouton « Tarifer »), ce job ne fait que LIRE le statut, jamais d'achat ni d'annulation. Court-circuite si Purolator n'est pas configuré (page Connecteurs).",
+    trigger_config: {
+      kind: 'schedule',
+      source: "cron '0 * * * *' (index.js) → services/purolator.js refreshPurolatorTracking()",
+      summary: 'Rafraîchissement toutes les 60 minutes, à l\'heure pile',
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
     id: 'sys_carm_balance_alert',
     name: 'Douanes ASFC : alerte de solde bas du compte CARM',
     description:
@@ -615,6 +675,29 @@ export const SYSTEM_AUTOMATIONS = [
       spreadsheet_id: '1ZJafa3fuuQwfuROyLfWlLPzg99k8jLqlv9jnNao8Ed0',
       sheet_name: 'Fournisseurs_TPS_TVQ_Anomalies',
       google_account_email: 'pap@orisha.io',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_digikey_orders',
+    name: 'DigiKey : commandes et factures rapatriées par l\u2019API',
+    description:
+      "Chaque jour à 6 h (heure de Montréal), interroge l\u2019API DigiKey (historique des commandes puis détail de chacune) sur les lookback_days derniers jours et, pour chaque commande facturée, crée une facture fournisseur DigiKey EN BROUILLON dans Fournisseurs → Achats, avec ses lignes d\u2019articles, ses taxes et son total. " +
+      "Le PDF de la facture est téléchargé et attaché à l\u2019achat (visible dans sa fiche). " +
+      "RIEN N\u2019EST PUBLIÉ DANS QUICKBOOKS : le brouillon attend une relecture et un clic sur « Publier vers QuickBooks ». Un achat déjà publié n\u2019est jamais réécrit par une tournée suivante. " +
+      "La déduplication porte sur le numéro de facture DigiKey (à défaut le numéro de commande) : relancer la sync ne crée pas de doublon, et une facture déjà saisie autrement (courriel, collecte de portail, import QuickBooks) est reconnue au lieu d\u2019être dupliquée. " +
+      "Sens unique DigiKey → ERP : rien n\u2019est jamais écrit chez DigiKey. " +
+      "Les identifiants OAuth (client_id / client_secret du plan développeur DigiKey) se saisissent dans Connecteurs → DigiKey ; tant qu\u2019ils manquent, la tournée ne fait rien. " +
+      "Le bouton « Simuler » liste ce qui serait importé sans rien écrire ni télécharger.",
+    trigger_config: {
+      kind: 'schedule',
+      source: "cron '0 10 * * *' (index.js) → services/digikey.js syncDigikey()",
+      summary: 'Tournée quotidienne à 10 h UTC (6 h à Montréal) + bouton « Importer les commandes » de Connecteurs → DigiKey',
+    },
+    action_config: {
+      lookback_days: '30',
+      vendor_name: 'DigiKey',
     },
     configurable: true,
     default_active: 1,
@@ -697,6 +780,34 @@ export const SYSTEM_AUTOMATIONS = [
       due_day: '24',
       work_days: '2,6',
       slack_webhook_env: 'SLACK_WEBHOOK_PERSO',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_card_ceiling_alert',
+    name: 'Plafond des cartes de crédit (MasterCard BNC)',
+    description:
+      "Surveille la PLACE qui reste sur les cartes de crédit d'opération — question distincte du rappel « payer les cartes » ci-dessus, qui reste actif : la Mastercard BNC sert à payer des fournisseurs et son paiement est pré-programmé le 4, donc un solde trop haut la rend inutilisable jusqu'au prélèvement. " +
+      "Le solde est lu dans QuickBooks (solde comptabilisé du compte de carte, résolu par NUMÉRO de compte) puis complété par les transactions du relevé bancaire connues de l'ERP mais pas encore comptabilisées — sans elles on sous-estimerait le solde, l'erreur exactement dans le mauvais sens. Les deux chiffres restent affichés séparément. " +
+      "Deux alertes possibles, chacune au plus une fois par carte et par mois : (a) J-5 avant le prélèvement, avec le montant à payer pour repasser sous le plafond (arrondi au dollar supérieur) et la date de paiement ramenée au jour ouvrable précédent si le prélèvement tombe une fin de semaine ou un férié ; (b) immédiatement, hors fenêtre, si le solde projeté franchit le plafond. " +
+      "Par défaut l'alerte J-5 ne part que s'il y a réellement un paiement à faire — le canal comptabilité ne porte que ce qui appelle une action. Mettre « Rappel systématique » à 1 pour la recevoir chaque mois. " +
+      "Limite de crédit, plafond cible, jour de prélèvement et compte QuickBooks de CHAQUE carte se règlent sur la carte « Plafond des cartes » du dashboard comptabilité (autosave) — un seul endroit, pas deux. Ici se règlent le périmètre et le canal. " +
+      "Le bouton « Simuler » affiche les chiffres et le message qui partirait, sans rien envoyer ; « Exécuter » envoie l'état actuel immédiatement, sans condition — et ne consomme pas l'alerte du mois, la vraie partira quand même le moment venu.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 5 12 * * * UTC (index.js) → services/cardCeiling.js',
+      summary: 'Scan quotidien à 8 h (Montréal) ; alerte à J-5 du prélèvement ou dès le franchissement du plafond',
+    },
+    action_config: {
+      acctnums: '22000',
+      lead_days: '5',
+      min_alert_amount: '100',
+      pending_lookback_days: '90',
+      lead_always: '0',
+      slack_channel: '#comptabilite',
+      slack_webhook_url: '',
+      slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
     },
     configurable: true,
     default_active: 1,
@@ -977,6 +1088,57 @@ export const SYSTEM_AUTOMATIONS = [
     default_active: 1,
   },
   {
+    id: 'sys_req_import',
+    name: 'Registre des entreprises du Québec : rafraîchissement mensuel',
+    description:
+      "Une fois par mois (le 3 à 4h du matin, heure de Montréal), recharge le miroir local du Registre des entreprises du Québec — les données ouvertes publiées par le Registraire sur Données Québec, republiées deux fois par mois. "
+      + "SENS UNIQUE ET LECTURE SEULE : rien ne repart jamais vers le Registraire, aucun compte ni aucune clé n'est utilisé, le jeu de données est public. "
+      + "L'import est ADDITIF et IDEMPOTENT : chaque entreprise est mise à jour par son NEQ, aucune ligne n'est jamais supprimée — une entreprise absente d'une livraison garde sa dernière version connue plutôt que de disparaître de l'ERP. Relancer deux fois le même fichier laisse exactement le même contenu. "
+      + "Ce qui est conservé par entreprise : NEQ, nom légal, autres noms utilisés, statut d'immatriculation, date d'immatriculation, adresse du domicile, forme juridique et codes d'activité économique. "
+      + "À quoi ça sert : la fiche entreprise affiche un bloc « Registre des entreprises » qui retrouve tout seul la correspondance par nom + ville (avec un bandeau d'alerte si l'entreprise est radiée), et la page « Prospects REQ » liste les entreprises horticoles du registre qui ne sont pas encore dans l'ERP. "
+      + "⚠️ Le téléchargement automatique est aujourd'hui refusé par la protection Cloudflare du site du Registraire (HTTP 403 depuis ce serveur) : tant que ce n'est pas débloqué, il faut récupérer le fichier ZIP à la main sur Données Québec, le déposer sur le serveur et renseigner local_zip_path ci-dessous — l'import mensuel le lira alors sans rien télécharger. "
+      + "activity_codes et activity_keywords définissent ce qui compte comme « culture en serre / horticulture » sur la page Prospects (les codes seuls ne suffisent pas : le filtre retient aussi toute activité déclarée dont le texte parle de serre, d'horticulture, de pépinière ou de maraîchage). "
+      + "Le bouton « Simuler » lit la source et compte ce qui serait importé sans rien écrire ; « Exécuter » lance l'import complet.",
+    trigger_config: {
+      kind: 'schedule',
+      source: "cron '0 8 3 * *' (index.js) → services/reqImport.js + POST /api/req/import",
+      summary: 'Le 3 de chaque mois à 4h (Montréal) + import manuel depuis la page Prospects REQ',
+    },
+    action_config: {
+      local_zip_path: '',
+      activity_codes: '0126,0125,0121',
+      activity_keywords: 'serre|serricol|horticol|horticultur|pepiniere|floricol|floricultur|jardinerie|maraich|hydroponi',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_address_check',
+    name: 'Vérification des adresses postales + notification des adresses fautives',
+    description:
+      "Chaque adresse postale qui entre dans l'ERP est contrôlée à l'écriture, QUELLE QUE SOIT SON ORIGINE : saisie sur la fiche entreprise, appel de qualification, formulaire post-paiement du client, sync Airtable. La détection ne dépend pas de la route utilisée — un watcher lit le journal des mutations de la table Adresses, donc aucune origine ne peut passer à côté. " +
+      "Sont détectés : champ obligatoire manquant (rue, ville, province, code postal, pays), valeur bouche-trou (« à venir », « n/a », « x »), code postal mal formé (A1A 1A1 au Canada, 12345 ou 12345-6789 aux États-Unis), province / État inexistant, et code postal qui ne correspond PAS à la province (ex. un code postal en G… déclaré en Ontario). " +
+      "Une rue sans numéro civique est signalée en simple avertissement (un rang ou une route rurale reste plausible). " +
+      "Quand une adresse est fautive, une notification in-app part vers l'auteur de la saisie ; les adresses arrivées sans auteur connu (sync Airtable, formulaire client) notifient les rôles listés dans fallback_roles. " +
+      "Anti-spam : une adresse déjà signalée ne re-notifie pas tant que ses problèmes n'ont pas changé — corriger puis re-casser l'adresse renotifie. Et une PASSE COMPLÈTE (bouton « Vérifier toutes les adresses », ou « Exécuter » ici) ne notifie JAMAIS : elle rafraîchit l'affichage, sinon tout le passif hérité d'Airtable tomberait dans la cloche d'un coup. " +
+      "L'état complet est visible dans Paramètres → Adresses (compteurs + liste des adresses à corriger avec le lien vers l'entreprise), et un pastille d'alerte apparaît sur la fiche entreprise. " +
+      "AUCUN appel réseau : la vérification est locale et déterministe (la clé Google de l'ERP n'a accès ni à la Geocoding API ni au Places New). " +
+      "require_postal_code à 0 rétrograde le code postal absent en avertissement ; notify à 0 vérifie et affiche sans jamais notifier. " +
+      "Le bouton « Simuler » liste ce qui serait signalé sans rien écrire ni notifier ; « Exécuter » relance une passe complète sur toutes les adresses.",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'change_log(adresses) → services/addressCheck.js (watcher, poll 5 s) + appel direct dans routes/projets.js POST/PUT /adresses',
+      summary: "Déclenché à chaque écriture DB d'une adresse (UI, appel de qualification, formulaire client, sync Airtable)",
+    },
+    action_config: {
+      require_postal_code: '1',
+      fallback_roles: 'admin',
+      notify: '1',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
     id: 'sys_airtable_webhooks_init',
     name: 'Enregistrement webhooks Airtable (boot)',
     description:
@@ -988,6 +1150,126 @@ export const SYSTEM_AUTOMATIONS = [
       source: 'index.js:initAirtableWebhooks',
       summary: 'Démarrage du serveur (+5s après listen())',
     },
+  },
+  {
+    id: 'sys_return_label',
+    name: 'Étiquette de retour (RMA) — achat Novoxpress',
+    description:
+      "Depuis une fiche Retour, achète une étiquette de retour Novoxpress (le client expédie, Orisha reçoit — l'inverse d'un envoi sortant). " +
+      "Le transporteur est proposé automatiquement : Purolator si le client est au Canada, UPS s'il est aux États-Unis, sauf si un autre " +
+      "tarif de la liste est moins cher de plus que le seuil configuré ci-dessous — auquel cas le moins cher est proposé à la place, avec la raison affichée. " +
+      "Le tarif proposé reste modifiable manuellement avant achat. Le PDF est enregistré sous uploads/labels/return-<id>.pdf et " +
+      "les colonnes dédiées de returns sont mises à jour (jamais tracking_number, écrasée par la sync Airtable).",
+    trigger_config: {
+      kind: 'manual',
+      source: 'POST /api/retours/:id/return-label',
+      summary: "Déclenché manuellement depuis la fiche retour (bouton « Générer l'étiquette de retour »)",
+    },
+    action_config: {
+      prefer_ca: 'purolator',
+      prefer_us: 'ups',
+      savings_threshold: '0',
+    },
+    configurable: true,
+  },
+  {
+    id: 'sys_ups_return_label',
+    name: 'Étiquette de retour (RMA) — achat UPS',
+    description:
+      "Depuis une fiche Retour, achète une étiquette de retour directement chez UPS (Shipping API, ReturnService code 9 « Print Return Label ») : " +
+      "l'adresse du client est l'expéditeur, l'atelier d'Orisha le destinataire, et le compte UPS d'Orisha paie. " +
+      "Le PDF est enregistré sous uploads/labels/ups-return-<id>.pdf ; le suivi, le coût, la devise et le service sont écrits sur le retour. " +
+      "Pour un client hors Canada, la facture commerciale (description, valeur, pays d'origine, code SH) est générée depuis les items du retour. " +
+      "L'environnement UPS (CIE de test / production) vient du connecteur — en CIE aucune étiquette n'est facturée ni utilisable.",
+    trigger_config: {
+      kind: 'manual',
+      source: 'POST /api/ups/returns/:id/return-label',
+      summary: "Déclenché manuellement depuis la fiche retour (bouton « Créer l'étiquette de retour UPS »)",
+    },
+  },
+  {
+    id: 'sys_ups_return_label_email',
+    name: 'Étiquette de retour UPS au client (Postmark)',
+    description:
+      "Envoie au client l'étiquette de retour UPS en pièce jointe PDF. L'envoi est planifié côté interface avec une fenêtre " +
+      "d'annulation de 10 s (toast « Annuler ») : le serveur n'est appelé qu'une fois le délai écoulé. Une interaction 'email' " +
+      "est créée comme pour les autres courriels sortants, et returns.return_label_sent_at est mis à jour.",
+    trigger_config: {
+      kind: 'manual',
+      source: 'POST /api/ups/returns/:id/return-label/send',
+      summary: "Déclenché depuis la fiche retour, après la fenêtre d'annulation de 10 s",
+    },
+  },
+  {
+    id: 'sys_return_instructions_email',
+    name: 'Instructions de retour au client (Postmark)',
+    description:
+      "Envoie l'un des 6 templates HubSpot réels (US/CAN-FR/CAN-EN × immédiat/différé — sélection par pays, langue du contact " +
+      "et raison du retour) avec l'étiquette de retour et l'aide-mémoire en pièces jointes. Même mécanique que " +
+      "sys_shipment_tracking_email : interaction 'email' créée, et returns.instructions_sent_at mis à jour.",
+    trigger_config: {
+      kind: 'manual',
+      source: 'POST /api/retours/:id/send-instructions',
+      summary: "Déclenché manuellement depuis la fiche retour (bouton « Envoyer les instructions »)",
+    },
+  },
+  {
+    id: 'sys_return_bulk_by_company',
+    name: 'Retourner tous les numéros de série (import Airtable #3)',
+    description:
+      "Depuis la fiche entreprise, sélectionne des numéros de série dans le tableau et choisit une raison de retour : " +
+      "crée un dossier de retour (returns) + un item de retour par numéro de série sélectionné, et passe chaque numéro de " +
+      "série au statut « En retour ».",
+    trigger_config: {
+      kind: 'manual',
+      source: 'POST /api/retours/bulk-from-serials',
+      summary: "Déclenché manuellement depuis la fiche entreprise (action groupée sur le tableau des numéros de série)",
+    },
+  },
+  {
+    id: 'sys_return_item_created',
+    name: 'Création d\'un item de retour (import Airtable #2)',
+    description:
+      "Dès qu'un item de retour est créé (quelle qu'en soit l'origine — bouton retour, retour en masse, sync Airtable), " +
+      "passe le numéro de série lié au statut « En retour », et si la raison est « Retour de garantie avec échange immédiat », " +
+      "crée automatiquement une vraie commande de remplacement (orders + order_items, item_type='Remplacement'). " +
+      "Toute erreur part en alerte Slack. Idempotent via return_items.rma_processed_at — un item déjà traité n'est jamais rejoué.",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'change_log(return_items) → returnItemCreatedWatcher (poll 5s)',
+      summary: "Déclenché à la création d'un item de retour",
+    },
+  },
+  {
+    id: 'sys_return_item_received',
+    name: 'Réception d\'un retour (import Airtable #5 + #6)',
+    description:
+      "Quand un item de retour est marqué reçu (date + réceptionniste renseignés), écrit les instructions au réceptionniste " +
+      "et met à jour le statut du numéro de série selon la raison du retour (À analyser / À reconditionner). Alerte Slack pour " +
+      "un changement d'idée client / fin d'abonnement, et pour un retour sans raison reconnue. Idempotent via " +
+      "return_items.reception_processed_at.",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'change_log(return_items) → returnItemReceivedWatcher (poll 5s)',
+      summary: "Déclenché quand un item de retour passe reçu (received_at + received_by renseignés)",
+    },
+  },
+  {
+    id: 'sys_return_exchange_reminder',
+    name: 'Rappel retours avec échange immédiat (import Airtable #4)',
+    description:
+      "Relance quotidiennement (tant que le retour n'est pas facturé) les clients ayant un échange de garantie immédiat en " +
+      "cours dont au moins un item n'a pas encore été reçu — email bilingue avec le détail des items dus et un avertissement " +
+      "rouge « facturation à venir » passé 21 jours depuis la demande. Fidèle à l'original Airtable : ce n'est PAS un envoi " +
+      "one-shot, le rappel repart chaque jour tant que la condition tient. " +
+      "⚠️ Désactivé par défaut au premier déploiement — activer manuellement depuis cette page après vérification (impact client direct).",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'index.js:scheduleReturnExchangeReminder',
+      cron: 'every 24h at 09:00',
+      summary: 'Scheduler interne — une fois par jour à 9h (local)',
+    },
+    default_active: 0,
   },
 ]
 

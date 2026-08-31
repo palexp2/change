@@ -107,32 +107,32 @@ describe('Sidebar — coup d\'œil au survol et réordonnancement', () => {
 
   test('glisser une section la déplace et l\'ordre est sauvegardé', async () => {
     await page.goto(URL + '/dashboard', { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('[data-nav-sortable="group:Envois"]', { timeout: 15000 })
+    await page.waitForSelector('[data-nav-sortable="group:Transport"]', { timeout: 15000 })
 
     const before = await domOrder('root')
     const iClients = before.indexOf('group:Clients')
-    const iEnvois = before.indexOf('group:Envois')
-    assert.ok(iClients >= 0 && iEnvois > iClients, `Envois après Clients au départ (${before.join(', ')})`)
+    const iTransport = before.indexOf('group:Transport')
+    assert.ok(iClients >= 0 && iTransport > iClients, `Transport après Clients au départ (${before.join(', ')})`)
 
-    await dragBefore('group:Envois', 'group:Clients')
+    await dragBefore('group:Transport', 'group:Clients')
 
     await page.waitForFunction(() => {
       const keys = [...document.querySelectorAll('[data-nav-container="root"]')].map(e => e.dataset.navSortable)
-      return keys.indexOf('group:Envois') < keys.indexOf('group:Clients')
+      return keys.indexOf('group:Transport') < keys.indexOf('group:Clients')
     }, null, { timeout: 5000 })
 
     // Persistance côté serveur.
     const prefs = await getPrefs()
     const root = prefs.nav_order?.root || []
-    assert.ok(root.indexOf('group:Envois') >= 0 && root.indexOf('group:Envois') < root.indexOf('group:Clients'),
-      `nav_order.root place Envois avant Clients (${root.join(', ')})`)
+    assert.ok(root.indexOf('group:Transport') >= 0 && root.indexOf('group:Transport') < root.indexOf('group:Clients'),
+      `nav_order.root place Transport avant Clients (${root.join(', ')})`)
 
     // Et l'ordre survit à un rechargement (les préférences arrivent en async).
     await page.reload({ waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('[data-nav-sortable="group:Envois"]', { timeout: 15000 })
+    await page.waitForSelector('[data-nav-sortable="group:Transport"]', { timeout: 15000 })
     await page.waitForFunction(() => {
       const keys = [...document.querySelectorAll('[data-nav-container="root"]')].map(e => e.dataset.navSortable)
-      return keys.indexOf('group:Envois') < keys.indexOf('group:Clients')
+      return keys.indexOf('group:Transport') < keys.indexOf('group:Clients')
     }, null, { timeout: 10000 })
   })
 
@@ -144,7 +144,7 @@ describe('Sidebar — coup d\'œil au survol et réordonnancement', () => {
     // lignes se décalent entre la mesure et le glissé.
     await page.waitForFunction(() => {
       const keys = [...document.querySelectorAll('[data-nav-container="root"]')].map(e => e.dataset.navSortable)
-      return keys.indexOf('group:Envois') < keys.indexOf('group:Clients')
+      return keys.indexOf('group:Transport') < keys.indexOf('group:Clients')
     }, null, { timeout: 10000 })
 
     // La section doit être dépliée pour voir ses sous-items.

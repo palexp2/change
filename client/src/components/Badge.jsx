@@ -1,4 +1,4 @@
-export function Badge({ children, color = 'gray', size = 'sm' }) {
+export function Badge({ children, color = 'gray', size = 'sm', className = '' }) {
   const colors = {
     gray: 'bg-slate-100 text-slate-700',
     slate: 'bg-slate-200 text-slate-800',
@@ -18,7 +18,7 @@ export function Badge({ children, color = 'gray', size = 'sm' }) {
     md: 'text-sm px-3 py-1',
   }
   return (
-    <span className={`inline-flex items-center rounded-full font-medium ${colors[color] || colors.gray} ${sizes[size] || sizes.sm}`}>
+    <span className={`inline-flex items-center rounded-full font-medium ${colors[color] || colors.gray} ${sizes[size] || sizes.sm}${className ? ` ${className}` : ''}`}>
       {children}
     </span>
   )
@@ -61,15 +61,6 @@ export function ticketStatusColor(status) {
     'Waiting on us': 'orange',
     'Waiting on them': 'yellow',
     'Closed': 'green',
-  }
-  return map[status] || 'gray'
-}
-
-export function projectStatusColor(status) {
-  const map = {
-    'Ouvert': 'blue',
-    'Gagné': 'green',
-    'Perdu': 'red',
   }
   return map[status] || 'gray'
 }

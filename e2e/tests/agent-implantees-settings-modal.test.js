@@ -1,16 +1,15 @@
-// Agent autonome — layout deux colonnes + réglages en modale.
+// Agent autonome — colonne « Implantées » seule + réglages en modale.
 //
-// Demande utilisateur : afficher les cartes implantées et les cartes en cours
-// d'implémentation en deux colonnes côte à côte (implantées à GAUCHE, en cours
-// à DROITE) et déplacer les réglages de l'agent dans une modale ouverte via un
-// bouton du header.
+// Remplace l'ancien test « deux colonnes » : la section « En cours
+// d'implémentation » a été retirée sur demande de l'utilisateur. Il ne reste que
+// l'historique des fiches implantées, sur toute la largeur.
 //
 // Ce test vérifie :
-//   1. les deux colonnes existent et sont côte à côte (implantées à gauche) ;
-//   2. une carte terminée vit dans la colonne « Implantées », une carte bloquée
-//      dans la colonne « En cours d'implémentation » ;
-//   3. les réglages ne sont plus rendus en zone de page — ils s'ouvrent dans
-//      une modale via le bouton « Réglages », et la modale se ferme (Échap).
+//   1. la zone « Implantées » est rendue et occupe toute la largeur (plus de
+//      grille deux colonnes) ;
+//   2. une carte terminée y apparaît, une carte bloquée n'apparaît plus nulle part ;
+//   3. les réglages ne sont pas rendus en zone de page — ils s'ouvrent dans une
+//      modale via le bouton « Réglages », et la modale se ferme (Échap).
 //
 // L'agent est forcé OFF pour tout le run → aucune exécution Claude réelle.
 // Seed et cleanup passent par l'API ; le toggle est restauré (règle CLAUDE.md).
@@ -24,8 +23,8 @@ const EMAIL = process.env.ERP_EMAIL || 'claude@orisha.io'
 const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
-const DONE_TEXT = `E2E carte implantée deux colonnes ${Date.now()}`
-const BLOCKED_TEXT = `E2E carte en cours deux colonnes ${Date.now()}`
+const DONE_TEXT = `E2E carte implantée colonne unique ${Date.now()}`
+const BLOCKED_TEXT = `E2E carte bloquée colonne unique ${Date.now()}`
 
 async function login(page) {
   await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
@@ -46,14 +45,13 @@ function apiFetch(page, method, p, body) {
 }
 const apiGet = (page, p) => apiFetch(page, 'GET', p)
 
-describe('Agent autonome — deux colonnes + réglages en modale', () => {
+describe('Agent autonome — Implantées seule + réglages en modale', () => {
   let browser, ctx, page
   let originalEnabled = false
   const seeded = [] // { itemId, taskId }
 
   before(async () => {
     browser = await chromium.launch()
-    // Viewport large (≥ lg) pour que la grille 2 colonnes s'applique.
     ctx = await browser.newContext({ viewport: { width: 1400, height: 1000 } })
     page = await ctx.newPage()
     await login(page)
@@ -64,7 +62,7 @@ describe('Agent autonome — deux colonnes + réglages en modale', () => {
     originalEnabled = !!s.enabled
     await apiFetch(page, 'PUT', '/agent/settings', { enabled: false })
 
-    // Seed 1 : suggestion → tâche liée forcée « done » (colonne Implantées).
+    // Seed 1 : suggestion → tâche liée forcée « done » (zone Implantées).
     const doneItem = await apiFetch(page, 'POST', '/agent/backlog', { text: DONE_TEXT })
     assert.ok(doneItem.task_id, 'le POST /backlog doit auto-approuver et lier une tâche')
     seeded.push({ itemId: doneItem.id, taskId: doneItem.task_id })
@@ -73,7 +71,7 @@ describe('Agent autonome — deux colonnes + réglages en modale', () => {
       user_summary: '(seed E2E — implémentation simulée)',
     })
 
-    // Seed 2 : suggestion → tâche liée forcée « blocked » (colonne En cours).
+    // Seed 2 : suggestion → tâche liée forcée « blocked » (ne doit plus s'afficher).
     const blockedItem = await apiFetch(page, 'POST', '/agent/backlog', { text: BLOCKED_TEXT })
     assert.ok(blockedItem.task_id, 'le POST /backlog doit auto-approuver et lier une tâche')
     seeded.push({ itemId: blockedItem.id, taskId: blockedItem.task_id })
@@ -93,40 +91,34 @@ describe('Agent autonome — deux colonnes + réglages en modale', () => {
     await browser?.close()
   })
 
-  test('les colonnes sont côte à côte, implantées à gauche', async () => {
+  test('la zone Implantées occupe toute la largeur, plus de colonne « En cours »', async () => {
     await page.goto(URL + '/agent', { waitUntil: 'networkidle' })
     await page.waitForSelector('text=Agent autonome', { timeout: 10000 })
 
-    const grid = page.locator('[data-testid="agent-columns"]')
-    await grid.waitFor({ timeout: 10000 })
-
     const colImplantees = page.locator('[data-testid="col-implantees"]')
-    const colEnCours = page.locator('[data-testid="col-en-cours"]')
-    await colImplantees.waitFor({ timeout: 5000 })
-    await colEnCours.waitFor({ timeout: 5000 })
+    await colImplantees.waitFor({ timeout: 10000 })
 
-    const boxImplantees = await colImplantees.boundingBox()
-    const boxEnCours = await colEnCours.boundingBox()
-    assert.ok(boxImplantees && boxEnCours, 'les deux colonnes doivent avoir un bounding box')
-    // Côte à côte : même rangée (tops proches) et implantées strictement à gauche.
-    assert.ok(boxImplantees.x + boxImplantees.width <= boxEnCours.x + 1,
-      `implantées (${boxImplantees.x}+${boxImplantees.width}) doit être à gauche d'en cours (${boxEnCours.x})`)
-    assert.ok(Math.abs(boxImplantees.y - boxEnCours.y) < 50,
-      'les deux colonnes doivent être sur la même rangée')
+    assert.equal(await page.locator('[data-testid="agent-columns"]').count(), 0,
+      'la grille deux colonnes ne doit plus exister')
+    assert.equal(await page.locator('[data-testid="col-en-cours"]').count(), 0,
+      'la colonne « En cours » ne doit plus exister')
+    assert.equal(await page.locator('h2', { hasText: 'En cours d\'implémentation' }).count(), 0,
+      'le titre « En cours d\'implémentation » ne doit plus être rendu')
+
+    // Pleine largeur : la zone couvre l'essentiel du conteneur de page.
+    const box = await colImplantees.boundingBox()
+    const container = await page.locator('h1:has-text("Agent autonome")').boundingBox()
+    assert.ok(box && container, 'bounding boxes disponibles')
+    assert.ok(box.width > 700, `la zone Implantées doit être large (mesuré ${box.width}px)`)
   })
 
-  test('chaque carte vit dans la bonne colonne', async () => {
+  test('la carte terminée est dans Implantées, la bloquée n\'apparaît plus', async () => {
     const doneCard = page.locator(`[data-testid="col-implantees"] [data-testid="suggestion-card"]:has-text("${DONE_TEXT}")`)
     await doneCard.waitFor({ timeout: 5000 })
-    assert.equal(await doneCard.count(), 1, 'la carte terminée doit être dans la colonne Implantées')
+    assert.equal(await doneCard.count(), 1, 'la carte terminée doit être dans la zone Implantées')
 
-    const blockedCard = page.locator(`[data-testid="col-en-cours"] [data-testid="suggestion-card"]:has-text("${BLOCKED_TEXT}")`)
-    await blockedCard.waitFor({ timeout: 5000 })
-    assert.equal(await blockedCard.count(), 1, 'la carte bloquée doit être dans la colonne En cours')
-
-    // Vérification croisée : pas de fuite d'une carte dans l'autre colonne.
-    assert.equal(await page.locator(`[data-testid="col-en-cours"] [data-testid="suggestion-card"]:has-text("${DONE_TEXT}")`).count(), 0)
-    assert.equal(await page.locator(`[data-testid="col-implantees"] [data-testid="suggestion-card"]:has-text("${BLOCKED_TEXT}")`).count(), 0)
+    assert.equal(await page.locator(`[data-testid="suggestion-card"]:has-text("${BLOCKED_TEXT}")`).count(), 0,
+      'la carte bloquée ne doit plus être affichée sur /agent')
   })
 
   test('les réglages s\'ouvrent dans une modale via le bouton du header', async () => {

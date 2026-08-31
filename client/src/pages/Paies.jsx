@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { RefreshCw, Plus, Pencil, Trash2, SlidersHorizontal } from 'lucide-react'
+import { RefreshCw, Plus, Pencil, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -11,7 +11,6 @@ import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { useAuth } from '../lib/auth.jsx'
-import { AirtableCoreMapModal } from '../components/AirtableCoreMapModal.jsx'
 
 function bool(row, key) {
   return row[key] ? <span className="text-green-600">✓</span> : <span className="text-slate-300">—</span>
@@ -542,7 +541,6 @@ export default function Paies() {
   const [selected, setSelected] = useState(null)
   const [editing, setEditing] = useState(null)
   const [showForm, setShowForm] = useState(false)
-  const [airtableMapOpen, setAirtableMapOpen] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -580,14 +578,6 @@ export default function Paies() {
           <div className="flex items-center gap-2">
             {isHR && (
               <>
-                <button
-                  onClick={() => setAirtableMapOpen(true)}
-                  className="btn-secondary btn-sm flex items-center gap-1.5"
-                  title="Choisir quels champs Airtable alimentent les paies et les items de paie"
-                  data-testid="paies-airtable-map-open"
-                >
-                  <SlidersHorizontal size={13} /> Sync Airtable
-                </button>
                 <button onClick={openCreate} className="btn-primary flex items-center gap-2">
                   <Plus size={15} /> Nouvelle paie
                 </button>
@@ -629,19 +619,6 @@ export default function Paies() {
           onDeleted={handleSaved}
         />
       </Modal>
-
-      {isHR && (
-        <AirtableCoreMapModal
-          isOpen={airtableMapOpen}
-          onClose={() => setAirtableMapOpen(false)}
-          modules={[
-            { module: 'paies', title: 'Paies' },
-            { module: 'paie_items', title: 'Items de paie' },
-          ]}
-          title="Mapping des champs Airtable"
-          onSaved={load}
-        />
-      )}
     </Layout>
   )
 }

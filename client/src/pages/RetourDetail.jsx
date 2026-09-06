@@ -1,14 +1,12 @@
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, ExternalLink, PanelRight, Package } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ExternalLink, Package } from 'lucide-react'
 import api from '../lib/api.js'
-import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
 import RetourActionsSection from '../components/RetourActionsSection.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtMoney } from '../utils/formatters.js'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
@@ -176,14 +174,7 @@ const ITEM_RENDERS = {
 }
 const ITEM_COLUMNS = TABLE_COLUMN_META.return_items.map(meta => ({ ...meta, render: ITEM_RENDERS[meta.id] }))
 
-export default function RetourDetail({ recordId, embedded = true }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const navigate = useNavigate()
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
-
+export default function RetourDetail({ recordId: id }) {
   const { record: retour, setRecord: setRetour, loading, loadError, reload: load } =
     useDetailRecord(() => api.retours.get(id), [id], { clearOnError: true })
 
@@ -192,48 +183,24 @@ export default function RetourDetail({ recordId, embedded = true }) {
     if (msg.type === 'return:updated') setRetour(r => (r ? { ...r, ...msg.payload } : r))
   })
 
-  if (loading) return shell(<Spinner center />)
-  if (loadError && !retour) return shell(<DetailLoadError message={loadError} onRetry={load} />)
-  if (!retour) return shell(<div className="p-6 text-slate-500">Retour introuvable.</div>)
+  const pending = detailPending({ loading, loadError, onRetry: load, record: retour, notFound: 'Retour introuvable.' })
+  if (pending) return pending
 
-  return shell(
-    <>
-    <div className={embedded ? 'p-6' : 'p-6 max-w-5xl mx-auto'}>
-        {/* Header */}
-        <div className="flex items-start gap-4 mb-6">
-          {!embedded && (
-            <button onClick={() => navigate('/retours')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-              <ArrowLeft size={18} />
-            </button>
-          )}
-          <div className="flex-1">
-            <div className="flex items-center gap-3 flex-wrap">
-              <PageTitle>{retour.n_de_retour || `Retour #${id}`}</PageTitle>
-            </div>
-            <div className="text-sm text-slate-500 mt-1">
-              {retour.company_name && retour.company_id && (
-                <LinkedRecordField
-                  name="company_id"
-                  value={retour.company_id}
-                  options={[{ id: retour.company_id, name: retour.company_name }]}
-                  getHref={c => `/companies/${c.id}`}
-                  disabled
-                  allowClear={false}
-                />
-              )}
-            </div>
-          </div>
-          {!embedded && (
-            <button
-              onClick={() => navigate('/retours', { state: { peekId: id } })}
-              title="Revenir au panneau"
-              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg"
-            >
-              <PanelRight size={18} />
-            </button>
-          )}
-        </div>
-
+  return (
+    <DetailShell
+      header={{
+        meta: retour.company_name && retour.company_id && (
+          <LinkedRecordField
+            name="company_id"
+            value={retour.company_id}
+            options={[{ id: retour.company_id, name: retour.company_name }]}
+            getHref={c => `/companies/${c.id}`}
+            disabled
+            allowClear={false}
+          />
+        ),
+      }}
+    >
         {/* Info section */}
         <div className="card p-5 mb-4">
           <h2 className="font-semibold text-slate-900 mb-4">Informations</h2>
@@ -290,7 +257,6 @@ export default function RetourDetail({ recordId, embedded = true }) {
             }}
           />
         </div>
-      </div>
-    </>,
+    </DetailShell>
   )
 }

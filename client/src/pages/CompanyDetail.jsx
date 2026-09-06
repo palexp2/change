@@ -1,18 +1,18 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, LifeBuoy, ShoppingCart, Undo2, Users, MapPin, Phone, ClipboardList, PanelRight } from 'lucide-react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
+import { Link } from 'react-router-dom'
+import { Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, LifeBuoy, ShoppingCart, Undo2, Users, MapPin, Phone, ClipboardList } from 'lucide-react'
 import EmptyState from '../components/EmptyState.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import { CreateInvoiceModal } from '../components/CreateInvoiceModal.jsx'
 import { CreateSubscriptionModal } from '../components/CreateSubscriptionModal.jsx'
 import api from '../lib/api.js'
 import { invalidate } from '../lib/prefetch.js'
-import Spinner from '../components/Spinner.jsx'
 import { Badge, phaseBadgeColor, orderStatusColor, ticketStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
-import SectionNav, { SECTION_NAV_INSET } from '../components/SectionNav.jsx'
+import { Section } from '../components/SectionNav.jsx'
+import { useSectionNav } from '../lib/useSectionNav.js'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import ContactDetail from './ContactDetail.jsx'
 import OrderDetail from './OrderDetail.jsx'
@@ -30,12 +30,10 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
-import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
 import { AddressCheckBadge, AddressCheckIssues, parseCheckIssues } from '../components/AddressCheckIssues.jsx'
@@ -612,43 +610,18 @@ function stackedTableHeight(rows) {
   return `${Math.min(520, Math.max(160, 44 + rows * 32))}px`
 }
 
-// Bloc de section : ancre pour le scroll-spy + titre et action optionnelle.
-function Section({ id, label, count, action, registerRef, children }) {
-  return (
-    <section ref={registerRef} data-section={id} className="pt-1 pb-8 scroll-mt-16">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <h2 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wide text-slate-400">
-          {label}
-          {count > 0 && (
-            <span className="bg-slate-100 text-slate-500 text-[11px] font-medium px-1.5 py-0.5 rounded-full leading-none normal-case tracking-normal">{count}</span>
-          )}
-        </h2>
-        {action}
-      </div>
-      {children}
-    </section>
-  )
-}
-
 // `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
 // (RecordPeekDrawer) d'une liste : pas de Layout, pas de bouton retour ni de
 // titre (le drawer fournit le sien). `onClose` ferme le drawer (utilisé quand
 // le record est supprimé pendant que le drawer est ouvert).
-export default function CompanyDetail({ recordId, embedded = true, onClose }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const navigate = useNavigate()
-  const { user: _user } = useAuth()
+export default function CompanyDetail({ recordId, onClose }) {
+  const id = recordId
   const confirm = useConfirm()
   const { addToast } = useToast()
   // Bulk « Retourner tous les numéros de série » (import automatisation Airtable #3)
   const [bulkReturnSerialIds, setBulkReturnSerialIds] = useState(null)
   const [bulkReturnReason, setBulkReturnReason] = useState('')
   const [bulkReturnSubmitting, setBulkReturnSubmitting] = useState(false)
-  // Toutes les sections sont affichées d'un coup (empilées) : `activeSection`
-  // sert uniquement à surligner l'entrée du sélecteur latéral en fonction de la
-  // position de défilement (scroll-spy), cf. useEffect plus bas.
-  const [activeSection, setActiveSection] = useState('info')
   const [fieldSaving, setFieldSaving] = useState(null)
   const { status: saveState, save } = useSaveStatus()
   const [showContactModal, setShowContactModal] = useState(false)
@@ -697,8 +670,7 @@ export default function CompanyDetail({ recordId, embedded = true, onClose }) {
     if (msg.type === 'company:updated') {
       setCompany(c => c ? { ...c, ...msg.payload } : c)
     } else if (msg.type === 'company:deleted') {
-      if (embedded) onClose?.()
-      else navigate('/companies')
+      onClose?.()
     } else if (msg.type === 'company:contacts_changed') {
       // Re-fetch la fiche pour rafraîchir le sous-tableau `contacts`
       // (link/délink/rename d'un contact lié, depuis un autre onglet/user).
@@ -734,99 +706,7 @@ export default function CompanyDetail({ recordId, embedded = true, onClose }) {
     'interactions',
   ], [company?.quickbooks_vendor_id, onboardingResponses.length, qualificationCalls.length])
 
-  const sectionEls = useRef(new Map())
-  const sectionsRef = useRef(sections)
-  sectionsRef.current = sections
-  const spyMutedUntil = useRef(0)
-  // Callbacks de ref mémoïsés par section : sinon React les rejouerait
-  // (null puis el) à chaque rendu.
-  const sectionRefCbs = useRef(new Map())
-  const registerSection = (key) => {
-    if (!sectionRefCbs.current.has(key)) {
-      sectionRefCbs.current.set(key, (el) => {
-        if (el) sectionEls.current.set(key, el)
-        else sectionEls.current.delete(key)
-      })
-    }
-    return sectionRefCbs.current.get(key)
-  }
-
-  // Le conteneur de défilement diffère selon le contexte : <main> en pleine page,
-  // le panneau du side-peek en mode embedded. On le retrouve en remontant le DOM.
-  function scrollParentOf(el) {
-    let p = el?.parentElement
-    while (p) {
-      if (/(auto|scroll|overlay)/.test(getComputedStyle(p).overflowY)) return p
-      p = p.parentElement
-    }
-    return document.scrollingElement
-  }
-
-  // Hauteur visible du conteneur de défilement (l'écran en pleine page).
-  function viewportHeightOf(root) {
-    if (!root || root === document.scrollingElement) return window.innerHeight
-    return root.clientHeight || window.innerHeight
-  }
-
-  useEffect(() => {
-    if (loading || !company) return
-    const first = sectionEls.current.get(sectionsRef.current[0])
-    const root = scrollParentOf(first)
-    if (!root) return
-    const target = root === document.scrollingElement ? window : root
-    let raf = 0
-    const compute = () => {
-      raf = 0
-      if (Date.now() < spyMutedUntil.current) return
-      const rootTop = root === document.scrollingElement ? 0 : root.getBoundingClientRect().top
-      // Sonde à mi-hauteur : même repère que goToSection(), qui centre la section
-      // visée. Sinon le surlignage retomberait sur la section précédente juste
-      // après le clic.
-      const probe = rootTop + viewportHeightOf(root) / 2
-      const keys = sectionsRef.current
-      let current = keys[0]
-      for (const key of keys) {
-        const el = sectionEls.current.get(key)
-        if (!el) continue
-        if (el.getBoundingClientRect().top <= probe) current = key
-      }
-      // Bas de page : la dernière section est forcément « celle où on est rendu »,
-      // même si son haut n'a pas franchi la ligne de sonde.
-      if (root.scrollHeight - root.scrollTop - root.clientHeight < 6) current = keys[keys.length - 1]
-      setActiveSection(prev => (prev === current ? prev : current))
-    }
-    const onScroll = () => { if (!raf) raf = requestAnimationFrame(compute) }
-    target.addEventListener('scroll', onScroll, { passive: true })
-    compute()
-    return () => {
-      target.removeEventListener('scroll', onScroll)
-      if (raf) cancelAnimationFrame(raf)
-    }
-  }, [loading, company, sections])
-
-  function goToSection(key) {
-    setActiveSection(key)
-    const el = sectionEls.current.get(key)
-    if (!el) return
-    // On coupe le scroll-spy pendant l'animation, sinon les sections traversées
-    // feraient sauter le surlignage.
-    spyMutedUntil.current = Date.now() + 900
-    const root = scrollParentOf(el)
-    const height = el.getBoundingClientRect().height
-    if (!root || root === document.scrollingElement) {
-      // Une section plus haute que l'écran est calée en haut : la centrer
-      // pousserait son titre hors du champ.
-      const fits = height < window.innerHeight
-      el.scrollIntoView({ behavior: 'smooth', block: fits ? 'center' : 'start' })
-      return
-    }
-    const viewport = viewportHeightOf(root)
-    // Marge haute qui centre la section dans la zone visible (8 px si elle est
-    // trop haute pour tenir).
-    const offset = height < viewport ? Math.max(SECTION_NAV_INSET, (viewport - height) / 2) : SECTION_NAV_INSET
-    const delta = el.getBoundingClientRect().top - root.getBoundingClientRect().top
-    root.scrollTo({ top: Math.max(0, root.scrollTop + delta - offset), behavior: 'smooth' })
-  }
+  const { activeSection, goToSection, registerSection } = useSectionNav(sections, { ready: !loading && !!company })
 
   // ── Colonnes DataTable des sous-tableaux liés ────────────────────────────
   // Dérivées des metas company_* de tableDefs.js, enrichies ici des render()
@@ -1067,176 +947,135 @@ export default function CompanyDetail({ recordId, embedded = true, onClose }) {
     return () => clearTimeout(tid)
   }, [linkQuery, contactMode, id])
 
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
-
-  if (loading) {
-    return shell(<Spinner center />)
-  }
-  if (loadError && !company) {
-    return shell(<DetailLoadError message={loadError} onRetry={load} />)
-  }
-  if (!company) {
-    return shell(<div className="p-6 text-slate-500">Entreprise introuvable.</div>)
-  }
-
   const sectionCounts = {
-    contacts: company.contacts?.length,
-    projets: company.projects?.length,
+    contacts: company?.contacts?.length,
+    projets: company?.projects?.length,
     interactions: interactionsTotal || undefined,
-    commandes: company.orders?.length,
+    commandes: company?.orders?.length,
     envois: envoisTotal || undefined,
-    support: company.tickets?.length,
-    'numéros de série': company.serials?.length,
+    support: company?.tickets?.length,
+    'numéros de série': company?.serials?.length,
     factures: facturesTotal || undefined,
     abonnements: abonnementsTotal || undefined,
     tâches: tasks.length || undefined,
     achats: achatsTotal || undefined,
-    retours: retours.length || company.returns_count || undefined,
+    retours: retours.length || company?.returns_count || undefined,
     onboarding: onboardingResponses.length || undefined,
     qualification: qualificationCalls.length || undefined,
   }
 
-  return shell(
-    <>
-      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-5xl mx-auto'}>
-        {/* Header */}
-        <div className="flex items-start gap-4 mb-6">
-          {!embedded && (
-            <button onClick={() => navigate('/companies')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-              <ArrowLeft size={18} />
-            </button>
+  const pending = detailPending({ loading, loadError, onRetry: load, record: company, notFound: 'Entreprise introuvable.' })
+  if (pending) return pending
+
+  return (
+    <DetailShell
+      header={{
+        badge: company?.lifecycle_phase && (
+          <Badge color={phaseBadgeColor(company.lifecycle_phase)} size="md">{company.lifecycle_phase}</Badge>
+        ),
+        status: <SaveStatus status={saveState} />,
+        meta: (
+          <>
+          {company?.type && <span>{company?.type}</span>}
+          {company?.phone && <span>· {fmtPhone(company?.phone)}</span>}
+          {company?.central_controllers?.length > 0 && (
+            <span className="flex items-center gap-3 flex-wrap">
+              {company?.central_controllers.map(cc => (
+                <a
+                  key={cc.address}
+                  href={`https://app.orisha.io/#admin/${encodeURIComponent(cc.address)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={cc.serial ? `Contrôleur ${cc.serial} · adresse ${cc.address}` : `Adresse ${cc.address}`}
+                  className="inline-flex items-center gap-1 text-brand-600 hover:underline"
+                >
+                  <ExternalLink size={12} />
+                  {company?.central_controllers.length === 1 ? 'Ouvrir dans Orisha' : `Orisha ${cc.address}`}
+                </a>
+              ))}
+            </span>
           )}
-          <div className="flex-1">
-            <div className="flex items-center gap-3 flex-wrap">
-              {!embedded && <PageTitle>{company.name}</PageTitle>}
-              {company.lifecycle_phase && (
-                <Badge color={phaseBadgeColor(company.lifecycle_phase)} size="md">{company.lifecycle_phase}</Badge>
-              )}
-              <SaveStatus status={saveState} />
-            </div>
-            <div className="flex items-center gap-3 mt-1 text-sm text-slate-500 flex-wrap">
-              {company.type && <span>{company.type}</span>}
-              {company.phone && <span>· {fmtPhone(company.phone)}</span>}
-              {company.central_controllers?.length > 0 && (
-                <span className="flex items-center gap-3 flex-wrap">
-                  {company.central_controllers.map(cc => (
-                    <a
-                      key={cc.address}
-                      href={`https://app.orisha.io/#admin/${encodeURIComponent(cc.address)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title={cc.serial ? `Contrôleur ${cc.serial} · adresse ${cc.address}` : `Adresse ${cc.address}`}
-                      className="inline-flex items-center gap-1 text-brand-600 hover:underline"
-                    >
-                      <ExternalLink size={12} />
-                      {company.central_controllers.length === 1 ? 'Ouvrir dans Orisha' : `Orisha ${cc.address}`}
-                    </a>
-                  ))}
-                </span>
-              )}
-            </div>
+          </>
+        ),
+        actions: (
+        <div className="relative">
+          <button
+            onClick={() => setInvoiceMenuOpen(o => !o)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg"
+          >
+            <FileText size={14} /> Nouvelle facture <ChevronDown size={14} />
+          </button>
+          {invoiceMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-10" onClick={() => setInvoiceMenuOpen(false)} />
+              <div className="absolute right-0 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-lg min-w-[240px] py-1">
+                <button
+                  onClick={() => { setInvoiceModalMode('new'); setInvoiceModalOpen(true); setInvoiceMenuOpen(false) }}
+                  className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                >Créer une nouvelle facture</button>
+                <button
+                  onClick={() => { setInvoiceModalMode('convert'); setInvoiceModalOpen(true); setInvoiceMenuOpen(false) }}
+                  className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                >Convertir une soumission en facture</button>
+                <div className="my-1 border-t border-slate-100" />
+                <button
+                  onClick={() => { setSubscriptionModalOpen(true); setInvoiceMenuOpen(false) }}
+                  data-testid="company-new-subscription"
+                  className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
+                >Créer un abonnement récurrent</button>
+              </div>
+            </>
+          )}
+        </div>
+        ),
+      }}
+      beforeNav={(
+        <>
+      <CreateInvoiceModal
+        companyId={id}
+        initialMode={invoiceModalMode}
+        isOpen={invoiceModalOpen}
+        onClose={() => setInvoiceModalOpen(false)}
+      />
+
+      <CreateSubscriptionModal
+        companyId={id}
+        isOpen={subscriptionModalOpen}
+        onClose={() => setSubscriptionModalOpen(false)}
+        onCreated={reloadAbonnements}
+      />
+
+      <FurnaceV1Alert
+        centralControllers={company?.central_controllers}
+        serials={company.serials}
+      />
+
+      {company?.central_controllers?.some(cc => cc.permissions && Object.keys(cc.permissions).length > 0) && (
+        <div className="card p-4 mb-4">
+          <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-3">
+            Permissions des contrôleurs centraux
           </div>
-          <div className="flex items-center gap-2">
-            {!embedded && (
-              /* Chemin inverse du panneau latéral : retourne à la
-                 liste avec cette entreprise ouverte en panneau latéral. */
-              <button
-                onClick={() => navigate('/companies', { state: { peekId: id } })}
-                className="p-1.5 text-slate-400 hover:text-brand-600 hover:bg-slate-100 rounded-lg"
-                title="Revenir à la liste avec cette entreprise en panneau latéral"
-                aria-label="Ouvrir en panneau latéral"
-                data-testid="company-open-as-peek"
-              >
-                <PanelRight size={16} />
-              </button>
-            )}
-            <div className="relative">
-              <button
-                onClick={() => setInvoiceMenuOpen(o => !o)}
-                className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg"
-              >
-                <FileText size={14} /> Nouvelle facture <ChevronDown size={14} />
-              </button>
-              {invoiceMenuOpen && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setInvoiceMenuOpen(false)} />
-                  <div className="absolute right-0 mt-1 z-20 bg-white border border-slate-200 rounded-lg shadow-lg min-w-[240px] py-1">
-                    <button
-                      onClick={() => { setInvoiceModalMode('new'); setInvoiceModalOpen(true); setInvoiceMenuOpen(false) }}
-                      className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                    >Créer une nouvelle facture</button>
-                    <button
-                      onClick={() => { setInvoiceModalMode('convert'); setInvoiceModalOpen(true); setInvoiceMenuOpen(false) }}
-                      className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                    >Convertir une soumission en facture</button>
-                    <div className="my-1 border-t border-slate-100" />
-                    <button
-                      onClick={() => { setSubscriptionModalOpen(true); setInvoiceMenuOpen(false) }}
-                      data-testid="company-new-subscription"
-                      className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                    >Créer un abonnement récurrent</button>
+          <div className="space-y-3">
+            {company?.central_controllers
+              .filter(cc => cc.permissions && Object.keys(cc.permissions).length > 0)
+              .map(cc => (
+                <div key={cc.address} className="border-l-2 border-brand-100 pl-3">
+                  <div className="text-sm font-medium text-slate-700 mb-1.5">
+                    {cc.serial ? (
+                      <Link to={`/serials/${cc.id}`} className="text-brand-600 hover:underline font-mono">{cc.serial}</Link>
+                    ) : <span className="font-mono">—</span>}
+                    <span className="ml-2 text-xs text-slate-400">adresse {cc.address}</span>
                   </div>
-                </>
-              )}
-            </div>
+                  <CentralControllerPermissions permissions={cc.permissions} />
+                </div>
+              ))}
           </div>
         </div>
-
-        <CreateInvoiceModal
-          companyId={id}
-          initialMode={invoiceModalMode}
-          isOpen={invoiceModalOpen}
-          onClose={() => setInvoiceModalOpen(false)}
-        />
-
-        <CreateSubscriptionModal
-          companyId={id}
-          isOpen={subscriptionModalOpen}
-          onClose={() => setSubscriptionModalOpen(false)}
-          onCreated={reloadAbonnements}
-        />
-
-        <FurnaceV1Alert
-          centralControllers={company.central_controllers}
-          serials={company.serials}
-        />
-
-        {company.central_controllers?.some(cc => cc.permissions && Object.keys(cc.permissions).length > 0) && (
-          <div className="card p-4 mb-4">
-            <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-3">
-              Permissions des contrôleurs centraux
-            </div>
-            <div className="space-y-3">
-              {company.central_controllers
-                .filter(cc => cc.permissions && Object.keys(cc.permissions).length > 0)
-                .map(cc => (
-                  <div key={cc.address} className="border-l-2 border-brand-100 pl-3">
-                    <div className="text-sm font-medium text-slate-700 mb-1.5">
-                      {cc.serial ? (
-                        <Link to={`/serials/${cc.id}`} className="text-brand-600 hover:underline font-mono">{cc.serial}</Link>
-                      ) : <span className="font-mono">—</span>}
-                      <span className="ml-2 text-xs text-slate-400">adresse {cc.address}</span>
-                    </div>
-                    <CentralControllerPermissions permissions={cc.permissions} />
-                  </div>
-                ))}
-            </div>
-          </div>
-        )}
-
-        {/* Sélecteur de section (barre du haut, collante) + sections empilées */}
-        <SectionNav
-          sections={sections}
-          labels={SECTION_LABELS}
-          counts={sectionCounts}
-          active={activeSection}
-          onSelect={goToSection}
-          embedded={embedded}
-          testId="company-section-nav"
-        />
-
+      )}
+        </>
+      )}
+      nav={{ sections, labels: SECTION_LABELS, counts: sectionCounts, active: activeSection, onSelect: goToSection, testId: 'company-section-nav' }}
+    >
         {/* Sections */}
         <div className="min-w-0">
 
@@ -1570,7 +1409,6 @@ export default function CompanyDetail({ recordId, embedded = true, onClose }) {
         </Section>
 
         </div>{/* end sections */}
-      </div>
 
       {/* Task Modal */}
       {showTaskModal && (
@@ -1755,6 +1593,6 @@ export default function CompanyDetail({ recordId, embedded = true, onClose }) {
           </div>
         </div>
       </Modal>
-    </>
+    </DetailShell>
   )
 }

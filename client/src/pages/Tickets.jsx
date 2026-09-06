@@ -1,16 +1,13 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Plus, LifeBuoy, Star, X } from 'lucide-react'
+import { Plus, LifeBuoy, Star } from 'lucide-react'
 import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
-import { useTable, isTableHydrated } from '../lib/dataStore.js'
-import { sync as syncStore } from '../lib/dataSync.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useTable } from '../lib/dataStore.js'
+import { useListData } from '../lib/useListData.js'
+import { ListPage, FilterBanner } from '../components/ListPage.jsx'
 import { Badge, ticketStatusColor } from '../components/Badge.jsx'
-import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { RecordForm } from '../components/RecordForm.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -101,17 +98,15 @@ function ticketFormFields({ meta, companies, contacts, users, defaultAssignedTo 
 export default function Tickets() {
   const { user } = useAuth()
   const [meta, setMeta] = useState({ types: [], statuses: [] })
-  const [showModal, setShowModal] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   // Filtre temporaire posé par un clic sur une barre du graphique « Billets de
   // support » (vue globale du dashboard) : 'YYYY-MM'.
   const createdMonth = searchParams.get('createdMonth')
 
-  const ticketsRaw = useTable('tickets')
+  const { rows: ticketsRaw, loading, reload } = useListData({ table: 'tickets' })
   const companies = useTable('companies')
   const contacts = useTable('contacts')
   const users = useTable('users')
-  const loading = !isTableHydrated('tickets')
 
   const tickets = useMemo(() => {
     const cById = new Map(companies.map(c => [c.id, c.name]))
@@ -135,7 +130,7 @@ export default function Tickets() {
     api.tickets.meta().then(setMeta).catch(() => {})
   }, [])
 
-  async function handleCreate(form) { await api.tickets.create(form); await syncStore() }
+  async function handleCreate(form) { await api.tickets.create(form); await reload() }
 
   const formFields = useMemo(
     () => ticketFormFields({ meta, companies, contacts, users, defaultAssignedTo: user?.id || '' }),
@@ -143,33 +138,17 @@ export default function Tickets() {
   )
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <PageTitle>Billets</PageTitle>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowModal(true)} className="btn-primary">
-              <Plus size={16} /> Nouveau billet
-            </button>
-          </div>
-        </div>
-
-        {createdMonth && (
-          <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg text-sm text-brand-700" data-testid="tickets-created-month-filter">
-            <span>
-              Billets créés en {new Date(`${createdMonth}-15T12:00:00Z`).toLocaleDateString('fr-CA', { month: 'long', year: 'numeric', timeZone: 'UTC' })}
-              {' '}({displayedTickets.length})
-            </span>
-            <button
-              onClick={() => setSearchParams({})}
-              className="ml-auto flex items-center gap-1 text-xs text-brand-500 hover:text-brand-700"
-              data-testid="tickets-created-month-clear"
-            >
-              <X size={13} /> Effacer
-            </button>
-          </div>
-        )}
-
+    <ListPage
+      title="Billets"
+      create={{ label: 'Nouveau billet', table: 'tickets', fields: formFields, columns: 2, size: 'lg', onSubmit: handleCreate }}
+      banner={createdMonth && (
+        <FilterBanner onClear={() => setSearchParams({})} testId="tickets-created-month-filter">
+          Billets créés en {new Date(`${createdMonth}-15T12:00:00Z`).toLocaleDateString('fr-CA', { month: 'long', year: 'numeric', timeZone: 'UTC' })}
+          {' '}({displayedTickets.length})
+        </FilterBanner>
+      )}
+    >
+      {({ openCreate }) => (
         <DataTable
           table="tickets"
           manageViews
@@ -185,20 +164,9 @@ export default function Tickets() {
             render: (row, { close }) => <TicketDetail recordId={row.id} embedded onClose={close} />,
           }}
           searchFields={['title', 'company_name', 'contact_name', 'assigned_name']}
-          emptyState={{ icon: LifeBuoy, title: 'Aucun ticket', description: "Aucune demande de support n'est ouverte. Crée un ticket pour suivre une demande client.", cta: { label: 'Nouveau ticket', icon: Plus, onClick: () => setShowModal(true) } }}
+          emptyState={{ icon: LifeBuoy, title: 'Aucun ticket', description: "Aucune demande de support n'est ouverte. Crée un ticket pour suivre une demande client.", cta: { label: 'Nouveau ticket', icon: Plus, onClick: openCreate } }}
         />
-      </div>
-
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau billet" size="lg">
-        <RecordForm
-          table="tickets"
-          fields={formFields}
-          columns={2}
-          onSubmit={handleCreate}
-          onClose={() => setShowModal(false)}
-        />
-      </Modal>
-
-    </Layout>
+      )}
+    </ListPage>
   )
 }

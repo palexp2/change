@@ -1,19 +1,14 @@
-import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import { Plus, X, Building2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
+import { useListData } from '../lib/useListData.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
 import { Badge, phaseBadgeColor } from '../components/Badge.jsx'
-import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { RecordForm } from '../components/RecordForm.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import CompanyDetail from './CompanyDetail.jsx'
 
 const TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin',
@@ -65,34 +60,19 @@ export default function Companies() {
   const [searchParams, setSearchParams] = useSearchParams()
   const farmProvince = searchParams.get('farm_province') || ''
   const shippingProvince = searchParams.get('shipping_province') || ''
-  const [companies, setCompanies] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [showModal, setShowModal] = useState(false)
   const undoableDelete = useUndoableDelete()
-
   const { peekOpenId, consumePeekOpen } = usePeekOpenId()
 
-  const load = useCallback(async () => {
-    const extraParams = {}
-    if (farmProvince) extraParams.farm_province = farmProvince
-    if (shippingProvince) extraParams.shipping_province = shippingProvince
-    await loadProgressive(
-      (page, limit) => api.companies.list({ limit, page, ...extraParams }),
-      setCompanies, setLoading
-    )
-  }, [farmProvince, shippingProvince])
-
-  useEffect(() => { load() }, [load])
-
-  useRealtimeChannel('companies:list', (msg) => {
-    if (msg.type === 'company:created') {
-      if (farmProvince || shippingProvince) return // province-filtered view: defer
-      setCompanies(prev => prev.some(c => c.id === msg.payload.id) ? prev : [msg.payload, ...prev])
-    } else if (msg.type === 'company:updated') {
-      setCompanies(prev => prev.map(c => c.id === msg.payload.id ? { ...c, ...msg.payload } : c))
-    } else if (msg.type === 'company:deleted') {
-      setCompanies(prev => prev.filter(c => c.id !== msg.payload.id))
-    }
+  const filtered = !!(farmProvince || shippingProvince)
+  const { rows: companies, loading, reload: load } = useListData({
+    fetch: (page, limit) => api.companies.list({
+      limit, page,
+      ...(farmProvince ? { farm_province: farmProvince } : {}),
+      ...(shippingProvince ? { shipping_province: shippingProvince } : {}),
+    }),
+    deps: [farmProvince, shippingProvince],
+    // Vue filtrée par province : une création n'y a pas forcément sa place.
+    realtime: { entity: 'company', channel: 'companies:list', predicate: () => !filtered },
   })
 
   async function handleCreate(form) {
@@ -100,40 +80,31 @@ export default function Companies() {
     load()
   }
 
-  return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Entreprises</PageTitle>
-            {farmProvince && (
-              <div className="flex items-center gap-2 mt-1">
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-3 py-1">
-                  Ferme en {farmProvince}
-                  <button onClick={() => setSearchParams({})} className="hover:text-blue-900">
-                    <X size={12} />
-                  </button>
-                </span>
-              </div>
-            )}
-            {shippingProvince && (
-              <div className="flex items-center gap-2 mt-1">
-                <span className="inline-flex items-center gap-1.5 text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-3 py-1">
-                  Client — livraison en {shippingProvince}
-                  <button onClick={() => setSearchParams({})} className="hover:text-blue-900">
-                    <X size={12} />
-                  </button>
-                </span>
-              </div>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowModal(true)} className="btn-primary">
-              <Plus size={16} /> Nouvelle entreprise
-            </button>
-          </div>
-        </div>
+  const provinceChip = (label) => (
+    <div className="flex items-center gap-2 mt-1">
+      <span className="inline-flex items-center gap-1.5 text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-3 py-1">
+        {label}
+        <button onClick={() => setSearchParams({})} className="hover:text-blue-900">
+          <X size={12} />
+        </button>
+      </span>
+    </div>
+  )
 
+  return (
+    <ListPage
+      title="Entreprises"
+      subtitle={<>
+        {farmProvince && provinceChip(`Ferme en ${farmProvince}`)}
+        {shippingProvince && provinceChip(`Client — livraison en ${shippingProvince}`)}
+      </>}
+      create={{
+        label: 'Nouvelle entreprise', table: 'companies', fields: COMPANY_FORM_FIELDS, columns: 2, size: 'lg',
+        onSubmit: handleCreate,
+        extra: values => <DuplicateWarning kind="company" values={values} />,
+      }}
+    >
+      {({ openCreate }) => (
         <DataTable
           table="companies"
           manageViews
@@ -158,20 +129,9 @@ export default function Companies() {
               onChange: load,
             })
           }}
-          emptyState={{ icon: Building2, title: 'Aucune entreprise', description: "Aucune entreprise n'est encore enregistrée. Ajoute une entreprise pour gérer ses contacts, commandes et factures.", cta: { label: 'Nouvelle entreprise', icon: Plus, onClick: () => setShowModal(true) } }}
+          emptyState={{ icon: Building2, title: 'Aucune entreprise', description: "Aucune entreprise n'est encore enregistrée. Ajoute une entreprise pour gérer ses contacts, commandes et factures.", cta: { label: 'Nouvelle entreprise', icon: Plus, onClick: openCreate } }}
         />
-      </div>
-
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouvelle entreprise" size="lg">
-        <RecordForm
-          table="companies"
-          fields={COMPANY_FORM_FIELDS}
-          columns={2}
-          onSubmit={handleCreate}
-          onClose={() => setShowModal(false)}
-          extra={values => <DuplicateWarning kind="company" values={values} />}
-        />
-      </Modal>
-    </Layout>
+      )}
+    </ListPage>
   )
 }

@@ -2,18 +2,15 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { Plus, Tag, X, Search } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
+import { useListData } from '../lib/useListData.js'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
 export default function CodesActivite() {
-  const [codes, setCodes] = useState([])
-  const [loading, setLoading] = useState(true)
   const [newName, setNewName] = useState('')
   const [newPayable, setNewPayable] = useState(true)
   const [newRsde, setNewRsde] = useState(false)
@@ -23,26 +20,23 @@ export default function CodesActivite() {
   const [usersByCode, setUsersByCode] = useState({})  // codeId → [{id, name}, ...]
   const { addToast } = useToast()
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
+  const { rows: codes, setRows: setCodes, loading, reload: load } = useListData({
+    fetch: async () => {
       // `?all=1` : page admin de gestion → on veut voir tous les codes, sans filtre de visibilité.
       const params = { all: '1' }
       if (includeInactive) params.include_inactive = '1'
       const r = await api.activityCodes.list(params)
       const list = r.data || r
-      setCodes(list)
-
       // Charge les assignations users en parallèle pour pouvoir afficher les chips dès l'arrivée.
       const entries = await Promise.all(
         list.map(c => api.activityCodes.getUsers(c.id).then(r => [c.id, r.data || []]).catch(() => [c.id, []]))
       )
       setUsersByCode(Object.fromEntries(entries))
-    } finally { setLoading(false) }
-  }, [includeInactive])
-
-  useEffect(() => { load() }, [load])
-  useEntityListRealtime('activity_code', setCodes)
+      return { data: list }
+    },
+    realtime: 'activity_code',
+    deps: [includeInactive],
+  })
 
   // Liste de tous les users (admin endpoint requis car on veut pouvoir assigner même des
   // comptes inactifs — utile p. ex. après l'import historique de feuilles de temps).
@@ -77,7 +71,7 @@ export default function CodesActivite() {
       addToast({ message: e.message, type: 'error' })
       load()
     }
-  }, [addToast, load])
+  }, [addToast, load, setCodes])
 
   const handleSetUsers = useCallback(async (codeId, user_ids) => {
     try {
@@ -155,14 +149,12 @@ export default function CodesActivite() {
   }, [handlePatch, handleSetUsers, users])
 
   return (
-    <Layout>
-      <div className="p-6 max-w-7xl mx-auto">
-        <div className="flex items-center gap-3 mb-6">
-          <Tag size={20} className="text-slate-400" />
-          <PageTitle>Codes d'activité</PageTitle>
-          <span className="text-sm text-slate-400">— utilisés dans les feuilles de temps</span>
-        </div>
-
+    <ListPage
+      title="Codes d'activité"
+      icon={Tag}
+      titleExtra={<span className="text-sm text-slate-400">— utilisés dans les feuilles de temps</span>}
+      className="p-6 max-w-7xl mx-auto"
+    >
         <div className="card p-5 mb-6">
           <h2 className="text-sm font-semibold text-slate-700 mb-3">Ajouter un code</h2>
           <form onSubmit={handleAdd} className="grid grid-cols-8 gap-3">
@@ -214,8 +206,7 @@ export default function CodesActivite() {
             description: 'Ajoutez-en un avec le formulaire ci-dessus.',
           }}
         />
-      </div>
-    </Layout>
+    </ListPage>
   )
 }
 

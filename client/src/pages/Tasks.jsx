@@ -1,18 +1,15 @@
 import { useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, CheckCircle2, Circle, Clock, AlertCircle, X } from 'lucide-react'
+import { CheckCircle2, Circle, Clock, AlertCircle, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
-import { useTable, isTableHydrated } from '../lib/dataStore.js'
-import { sync as syncStore } from '../lib/dataSync.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useTable } from '../lib/dataStore.js'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { Badge } from '../components/Badge.jsx'
-import { Modal } from '../components/Modal.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import TaskForm, { KeywordPicker } from '../components/TaskForm.jsx'
-import { RecordForm } from '../components/RecordForm.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -112,16 +109,14 @@ function taskFormFields({ companies, contacts, users, tickets, defaultAssignedTo
 
 export default function Tasks() {
   const { user } = useAuth()
-  const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState(null)
   const undoableDelete = useUndoableDelete()
 
-  const tasksRaw = useTable('tasks')
+  const { rows: tasksRaw, loading, reload } = useListData({ table: 'tasks' })
   const companies = useTable('companies')
   const contacts = useTable('contacts')
   const users = useTable('users')
   const tickets = useTable('tickets')
-  const loading = !isTableHydrated('tasks')
 
   const tasks = useMemo(() => {
     const cById = new Map(companies.map(c => [c.id, c.name]))
@@ -142,14 +137,14 @@ export default function Tasks() {
 
   async function handleCreate(form) {
     await api.tasks.create(form)
-    await syncStore()
+    await reload()
   }
 
   // Autosave (mode édition de TaskForm) : on persiste sans fermer la modale —
   // la fermeture se fait via « Fermer » (onClose).
   async function handleEdit(form) {
     await api.tasks.update(editing.id, form)
-    await syncStore()
+    await reload()
   }
 
   async function handleDelete(row) {
@@ -159,54 +154,38 @@ export default function Tasks() {
       id: row.id,
       deleteFn: () => api.tasks.delete(row.id),
       label: 'Tâche supprimée',
-      onChange: syncStore,
+      onChange: reload,
     })
   }
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Tâches</PageTitle>
-            <p className="text-sm text-slate-500 mt-0.5">{tasks.length} tâche{tasks.length !== 1 ? 's' : ''}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowModal(true)} className="btn-primary">
-              <Plus size={16} /> Nouvelle tâche
-            </button>
-          </div>
-        </div>
-
-        <DataTable
-          table="tasks"
-          manageViews
-          columns={COLUMNS}
-          data={tasks}
-          loading={loading}
-          onRowClick={(row) => setEditing(row)}
-          searchFields={['title', 'company_name', 'contact_name', 'assigned_name', 'ticket_title']}
-          onBulkDelete={async (ids) => {
-            await undoableDelete({
-              table: 'tasks',
-              ids,
-              deleteFn: () => Promise.all(ids.map(id => api.tasks.delete(id))),
-              label: `${ids.length} tâche${ids.length > 1 ? 's' : ''} supprimée${ids.length > 1 ? 's' : ''}`,
-              onChange: syncStore,
-            })
-          }}
-        />
-      </div>
-
-      <Modal isOpen={showModal} title="Nouvelle tâche" onClose={() => setShowModal(false)}>
-        <RecordForm
-          table="tasks"
-          fields={taskFormFields({ companies, contacts, users, tickets, defaultAssignedTo: user?.id || '' })}
-          columns={2}
-          onSubmit={handleCreate}
-          onClose={() => setShowModal(false)}
-        />
-      </Modal>
+    <ListPage
+      title="Tâches"
+      subtitle={<p className="text-sm text-slate-500 mt-0.5">{tasks.length} tâche{tasks.length !== 1 ? 's' : ''}</p>}
+      create={{
+        label: 'Nouvelle tâche', table: 'tasks', columns: 2,
+        fields: taskFormFields({ companies, contacts, users, tickets, defaultAssignedTo: user?.id || '' }),
+        onSubmit: handleCreate,
+      }}
+    >
+      <DataTable
+        table="tasks"
+        manageViews
+        columns={COLUMNS}
+        data={tasks}
+        loading={loading}
+        onRowClick={(row) => setEditing(row)}
+        searchFields={['title', 'company_name', 'contact_name', 'assigned_name', 'ticket_title']}
+        onBulkDelete={async (ids) => {
+          await undoableDelete({
+            table: 'tasks',
+            ids,
+            deleteFn: () => Promise.all(ids.map(id => api.tasks.delete(id))),
+            label: `${ids.length} tâche${ids.length > 1 ? 's' : ''} supprimée${ids.length > 1 ? 's' : ''}`,
+            onChange: reload,
+          })
+        }}
+      />
 
       {editing && (
         <RecordPeekDrawer open onClose={() => setEditing(null)} title={editing.title || 'Tâche'} subtitle={editing.company_name || undefined} width={640} peekKey="tasks">
@@ -231,6 +210,6 @@ export default function Tasks() {
           </div>
         </RecordPeekDrawer>
       )}
-    </Layout>
+    </ListPage>
   )
 }

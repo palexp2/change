@@ -1,14 +1,11 @@
 import { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, History } from 'lucide-react'
+import { History } from 'lucide-react'
 import api from '../lib/api.js'
-import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtCad } from '../utils/formatters.js'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import WeatherPanel from '../components/WeatherPanel.jsx'
@@ -27,17 +24,8 @@ function SerialField({ id, label, children }) {
   )
 }
 
-// `recordId` + `embedded` : monte la fiche dans un RecordPeekDrawer (side-peek)
-// sans le chrome de page (Layout, bouton retour). En route normale l'id vient
-// de l'URL.
-export default function SerialDetail({ recordId, embedded = true }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const navigate = useNavigate()
+export default function SerialDetail({ recordId: id }) {
   const [history, setHistory] = useState([])
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
 
   const { record: serial, setRecord: setSerial, loading, loadError, reload: load } = useDetailRecord(() => {
     // L'historique part en parallèle du record principal (échec silencieux).
@@ -52,39 +40,28 @@ export default function SerialDetail({ recordId, embedded = true }) {
     if (msg.type === 'serial_number:updated') setSerial(s => (s ? { ...s, ...msg.payload } : s))
   })
 
-  if (loading) return shell(<Spinner center />)
-  if (loadError && !serial) return shell(<DetailLoadError message={loadError} onRetry={load} />)
-  if (!serial) return shell(<div className="p-6 text-slate-500">Numéro de série introuvable.</div>)
+  const pending = detailPending({ loading, loadError, onRetry: load, record: serial, notFound: 'Numéro de série introuvable.' })
+  if (pending) return pending
 
-  return shell(
-      <div className={embedded ? 'p-6' : 'p-6 max-w-2xl mx-auto'}>
-        <div className="flex items-start gap-4 mb-6">
-          {!embedded && (
-            <button onClick={() => navigate(-1)} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-              <ArrowLeft size={18} />
-            </button>
-          )}
-          <div className="flex-1">
-            <div className="flex items-center gap-3">
-              <PageTitle titleClassName="text-2xl font-bold text-slate-900 font-mono">{serial.serial}</PageTitle>
-              {serial.status && <Badge color="blue">{serial.status}</Badge>}
-            </div>
-            {serial.product_name && (
-              <div className="text-sm text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
-                <LinkedRecordField
-                  name="product_id"
-                  value={serial.product_id || serial.product_name}
-                  options={[{ id: serial.product_id || serial.product_name, name: serial.product_name }]}
-                  getHref={serial.product_id ? p => `/products/${p.id}` : undefined}
-                  disabled
-                  allowClear={false}
-                />
-                {serial.sku && <span className="font-mono text-slate-400">({serial.sku})</span>}
-              </div>
-            )}
-          </div>
-        </div>
-
+  return (
+      <DetailShell
+        header={{
+          badge: serial.status && <Badge color="blue">{serial.status}</Badge>,
+          meta: serial.product_name && (
+            <>
+              <LinkedRecordField
+                name="product_id"
+                value={serial.product_id || serial.product_name}
+                options={[{ id: serial.product_id || serial.product_name, name: serial.product_name }]}
+                getHref={serial.product_id ? p => `/products/${p.id}` : undefined}
+                disabled
+                allowClear={false}
+              />
+              {serial.sku && <span className="font-mono text-slate-400">({serial.sku})</span>}
+            </>
+          ),
+        }}
+      >
         <div className="card p-5 space-y-5">
           <div className="grid grid-cols-2 gap-5">
             <SerialField id="company_name" label="Entreprise">
@@ -155,6 +132,6 @@ export default function SerialDetail({ recordId, embedded = true }) {
             </ol>
           )}
         </div>
-      </div>
+      </DetailShell>
   )
 }

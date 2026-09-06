@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { ArrowLeft, FileDown, Copy, Trash2, Pencil, Check, Plus, ChevronUp, ChevronDown, ExternalLink, PackagePlus } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
 import { Badge, SOUMISSION_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -11,7 +11,6 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
 import { Field } from '../components/Field.jsx'
@@ -37,12 +36,8 @@ function blankItem() {
   return { catalog_product_id: '', description_fr: '', description_en: '', qty: 1, unit_price_cad: 0 }
 }
 
-// Fiche d'une soumission. Rendue exclusivement dans un panneau latéral :
-// `recordId`/`onClose` viennent du panneau, `useParams` sert au montage depuis
-// l'URL (registre des fiches).
 export default function SoumissionDetail({ recordId, onClose }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
+  const id = recordId
   const navigate = useNavigate()
   const [catalog, setCatalog] = useState([])
   const [editing, setEditing] = useState(false)
@@ -81,7 +76,7 @@ export default function SoumissionDetail({ recordId, onClose }) {
 
   useRealtimeChannel(id ? `soumission:${id}` : null, (msg) => {
     if (msg.type === 'soumission:updated') setSoumission(s => s ? { ...s, ...msg.payload } : s)
-    else if (msg.type === 'soumission:deleted') navigate('/soumissions')
+    else if (msg.type === 'soumission:deleted') onClose?.()
   })
 
   const isDraft = soumission?.status === 'Brouillon' && !soumission?.airtable_id
@@ -235,12 +230,11 @@ export default function SoumissionDetail({ recordId, onClose }) {
 
   const inp = 'border border-slate-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-brand-400 bg-white'
 
-  if (loading) return <Spinner center label="Chargement…" />
-  if (loadError && !soumission) return <DetailLoadError message={loadError} onRetry={load} />
-  if (!soumission) return <div className="p-8 text-center text-slate-500">Soumission introuvable.</div>
+  const pending = detailPending({ loading, loadError, onRetry: load, record: soumission, notFound: 'Soumission introuvable.' })
+  if (pending) return pending
 
   return (
-    <div className="px-4 py-6">
+    <DetailShell className="px-4 py-6">
 
         {/* Top bar */}
         <div className="flex items-center justify-between mb-6">
@@ -593,6 +587,6 @@ export default function SoumissionDetail({ recordId, onClose }) {
             </div>
           </div>
         )}
-      </div>
+    </DetailShell>
   )
 }

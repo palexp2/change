@@ -6,6 +6,24 @@
 // juste dessous.
 export const SECTION_NAV_INSET = 56
 
+// Bloc de section : ancre pour le scroll-spy + titre et action optionnelle.
+export function Section({ id, label, count, action, registerRef, children }) {
+  return (
+    <section ref={registerRef} data-section={id} className="pt-1 pb-8 scroll-mt-16">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <h2 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wide text-slate-400">
+          {label}
+          {count > 0 && (
+            <span className="bg-slate-100 text-slate-500 text-[11px] font-medium px-1.5 py-0.5 rounded-full leading-none normal-case tracking-normal">{count}</span>
+          )}
+        </h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  )
+}
+
 export default function SectionNav({ sections, labels = {}, counts = {}, active, onSelect, embedded = true, testId }) {
   if (!sections?.length) return null
   // La barre déborde du padding de la fiche pour couvrir toute la largeur

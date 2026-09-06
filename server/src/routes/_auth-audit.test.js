@@ -103,6 +103,7 @@ const MOUNTS = {
   'companies.js':               '/api/companies',
   'connectors.js':              '/api/connectors',
   'contacts.js':                '/api/contacts',
+  'custom-field-files.js':      '/api/custom-field-files',
   'custom-fields.js':           '/api/custom-fields',
   'dashboard.js':               '/api/dashboard',
   'documents.js':               '/api/documents',

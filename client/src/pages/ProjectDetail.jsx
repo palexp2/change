@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, ExternalLink, Plus, FileDown, Trash2, ChevronUp, ChevronDown, X, FileText, PanelRight } from 'lucide-react'
+import { useNavigate, useLocation, Link } from 'react-router-dom'
+import { ExternalLink, Plus, FileDown, Trash2, ChevronUp, ChevronDown, X, FileText } from 'lucide-react'
 import { api } from '../lib/api.js'
 
 function pdfUrl(id, download = false) {
@@ -11,16 +11,15 @@ function pdfUrl(id, download = false) {
   const qs = params.toString()
   return `/erp/api/documents/soumissions/${id}/pdf${qs ? `?${qs}` : ''}`
 }
-import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
 import { Badge, SOUMISSION_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import FactureDetail from './FactureDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
-import SectionNav, { SECTION_NAV_INSET } from '../components/SectionNav.jsx'
+import { Section } from '../components/SectionNav.jsx'
+import { useSectionNav } from '../lib/useSectionNav.js'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { InlineText, InlineTextarea, InlineNumber, InlineDate } from '../components/InlineFields.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -308,40 +307,17 @@ function stackedTableHeight(rows) {
   return `${Math.min(520, Math.max(160, 44 + rows * 32))}px`
 }
 
-// Bloc de section : ancre pour le scroll-spy + titre et action optionnelle.
-function Section({ id, label, count, action, registerRef, children }) {
-  return (
-    <section ref={registerRef} data-section={id} className="pt-1 pb-8 scroll-mt-16">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <h2 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wide text-slate-400">
-          {label}
-          {count > 0 && (
-            <span className="bg-slate-100 text-slate-500 text-[11px] font-medium px-1.5 py-0.5 rounded-full leading-none normal-case tracking-normal">{count}</span>
-          )}
-        </h2>
-        {action}
-      </div>
-      {children}
-    </section>
-  )
-}
-
 // `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
 // (RecordPeekDrawer) de la liste des projets : pas de Layout, pas de bouton
 // retour ni de titre (le drawer fournit le sien). `onClose` ferme le drawer
 // (utilisé quand le projet est supprimé pendant que le drawer est ouvert).
-export default function ProjectDetail({ recordId, embedded = true, onClose }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
+export default function ProjectDetail({ recordId, onClose }) {
+  const id = recordId
   const navigate = useNavigate()
   const location = useLocation()
   const { addToast } = useToast()
   const confirm = useConfirm()
   const [deleting, setDeleting] = useState(false)
-  // Toutes les sections sont affichées d'un coup (empilées) : `activeSection`
-  // sert uniquement à surligner l'entrée du sélecteur latéral en fonction de la
-  // position de défilement (scroll-spy), cf. useEffect plus bas.
-  const [activeSection, setActiveSection] = useState('info')
   const [soumissions, setSoumissions] = useState([])
   const [factures, setFactures] = useState([])
   // Commissions : lues en direct dans Airtable (table hors miroir), donc elles
@@ -377,8 +353,7 @@ export default function ProjectDetail({ recordId, embedded = true, onClose }) {
     try {
       await api.projects.delete(id)
       addToast({ message: 'Projet supprimé', type: 'success' })
-      if (embedded) onClose?.()
-      else navigate('/pipeline')
+      onClose?.()
     } catch (e) {
       addToast({ message: `Erreur lors de la suppression : ${e.message}`, type: 'error' })
       setDeleting(false)
@@ -387,7 +362,7 @@ export default function ProjectDetail({ recordId, embedded = true, onClose }) {
 
   useRealtimeChannel(id ? `project:${id}` : null, (msg) => {
     if (msg.type === 'project:updated') setProject(p => p ? { ...p, ...msg.payload } : p)
-    else if (msg.type === 'project:deleted') { if (embedded) onClose?.(); else navigate('/pipeline') }
+    else if (msg.type === 'project:deleted') onClose?.()
   })
 
   useEffect(() => {
@@ -574,107 +549,13 @@ export default function ProjectDetail({ recordId, embedded = true, onClose }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
-  // ── Sections empilées + scroll-spy ──────────────────────────────────────────
-  // Le sélecteur latéral n'affiche plus/ne masque plus les sections : tout est
-  // rendu à la suite et l'entrée surlignée suit le défilement.
   const sections = useMemo(() => ['info', 'soumissions', 'factures', 'commissions'], [])
-
-  const sectionEls = useRef(new Map())
-  const spyMutedUntil = useRef(0)
-  // Callbacks de ref mémoïsés par section : sinon React les rejouerait
-  // (null puis el) à chaque rendu.
-  const sectionRefCbs = useRef(new Map())
-  const registerSection = (key) => {
-    if (!sectionRefCbs.current.has(key)) {
-      sectionRefCbs.current.set(key, (el) => {
-        if (el) sectionEls.current.set(key, el)
-        else sectionEls.current.delete(key)
-      })
-    }
-    return sectionRefCbs.current.get(key)
-  }
-
-  // Le conteneur de défilement diffère selon le contexte : <main> en pleine page,
-  // le panneau du side-peek en mode embedded. On le retrouve en remontant le DOM.
-  function scrollParentOf(el) {
-    let p = el?.parentElement
-    while (p) {
-      if (/(auto|scroll|overlay)/.test(getComputedStyle(p).overflowY)) return p
-      p = p.parentElement
-    }
-    return document.scrollingElement
-  }
-
-  // Hauteur visible du conteneur de défilement (l'écran en pleine page).
-  function viewportHeightOf(root) {
-    if (!root || root === document.scrollingElement) return window.innerHeight
-    return root.clientHeight || window.innerHeight
-  }
-
-  useEffect(() => {
-    if (loading || !project) return
-    const first = sectionEls.current.get(sections[0])
-    const root = scrollParentOf(first)
-    if (!root) return
-    const target = root === document.scrollingElement ? window : root
-    let raf = 0
-    const compute = () => {
-      raf = 0
-      if (Date.now() < spyMutedUntil.current) return
-      const rootTop = root === document.scrollingElement ? 0 : root.getBoundingClientRect().top
-      // Sonde à mi-hauteur : même repère que goToSection(), qui centre la section
-      // visée. Sinon le surlignage retomberait sur la section précédente juste
-      // après le clic.
-      const probe = rootTop + viewportHeightOf(root) / 2
-      let current = sections[0]
-      for (const key of sections) {
-        const el = sectionEls.current.get(key)
-        if (!el) continue
-        if (el.getBoundingClientRect().top <= probe) current = key
-      }
-      // Bas de page : la dernière section est forcément « celle où on est rendu »,
-      // même si son haut n'a pas franchi la ligne de sonde.
-      // Le test ne vaut que si la fiche défile vraiment : au montage, tant que
-      // les sous-tableaux ne sont pas peints, le contenu tient dans le panneau
-      // et ce raccourci surlignait « Factures » alors qu'on est tout en haut.
-      const scrollable = root.scrollHeight > root.clientHeight + 4
-      if (scrollable && root.scrollHeight - root.scrollTop - root.clientHeight < 6) current = sections[sections.length - 1]
-      setActiveSection(prev => (prev === current ? prev : current))
-    }
-    const onScroll = () => { if (!raf) raf = requestAnimationFrame(compute) }
-    target.addEventListener('scroll', onScroll, { passive: true })
-    compute()
-    return () => {
-      target.removeEventListener('scroll', onScroll)
-      if (raf) cancelAnimationFrame(raf)
-    }
-    // Les longueurs des sous-tableaux sont dans les dépendances pour recalculer
-    // le surlignage quand les sections grandissent après leur chargement.
-  }, [loading, project, sections, soumissions.length, factures.length, commissions.length])
-
-  function goToSection(key) {
-    setActiveSection(key)
-    const el = sectionEls.current.get(key)
-    if (!el) return
-    // On coupe le scroll-spy pendant l'animation, sinon les sections traversées
-    // feraient sauter le surlignage.
-    spyMutedUntil.current = Date.now() + 900
-    const root = scrollParentOf(el)
-    const height = el.getBoundingClientRect().height
-    if (!root || root === document.scrollingElement) {
-      // Une section plus haute que l'écran est calée en haut : la centrer
-      // pousserait son titre hors du champ.
-      const fits = height < window.innerHeight
-      el.scrollIntoView({ behavior: 'smooth', block: fits ? 'center' : 'start' })
-      return
-    }
-    const viewport = viewportHeightOf(root)
-    // Marge haute qui centre la section dans la zone visible (8 px si elle est
-    // trop haute pour tenir).
-    const offset = height < viewport ? Math.max(SECTION_NAV_INSET, (viewport - height) / 2) : SECTION_NAV_INSET
-    const delta = el.getBoundingClientRect().top - root.getBoundingClientRect().top
-    root.scrollTo({ top: Math.max(0, root.scrollTop + delta - offset), behavior: 'smooth' })
-  }
+  // Les longueurs des sous-tableaux recalculent le surlignage quand les
+  // sections grandissent après leur chargement.
+  const { activeSection, goToSection, registerSection } = useSectionNav(sections, {
+    ready: !loading && !!project,
+    deps: [soumissions.length, factures.length, commissions.length],
+  })
 
   // Arrivée depuis une soumission (« ← Projet ») : on ouvrait auparavant l'onglet
   // demandé ; on défile maintenant jusqu'à la section correspondante.
@@ -691,75 +572,31 @@ export default function ProjectDetail({ recordId, embedded = true, onClose }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, project, requestedSection, sections])
 
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
-
-  if (loading) return shell(<Spinner center />)
-  if (loadError && !project) return shell(<DetailLoadError message={loadError} onRetry={load} />)
-  if (!project) return shell(<div className="p-6 text-slate-500">Projet introuvable.</div>)
-
   const sectionCounts = {
     soumissions: soumissions.length || undefined,
     factures: factures.length || undefined,
     commissions: commissions.length || undefined,
   }
 
-  return shell(
-    <>
-      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-5xl mx-auto'}>
-        {/* Header */}
-        <div className="flex items-start gap-4 mb-6">
-          {!embedded && (
-            <button onClick={() => navigate('/pipeline')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-              <ArrowLeft size={18} />
-            </button>
-          )}
-          <div className="flex-1">
-            {!embedded && (
-              <div className="flex items-center gap-3 flex-wrap">
-                <PageTitle>{project.name}</PageTitle>
-              </div>
-            )}
-            <div className="text-sm text-slate-500 mt-1">
-              {project.company_name && project.company_id && (
-                <LinkedRecordField
-                  name="company_id"
-                  value={project.company_id}
-                  options={[{ id: project.company_id, name: project.company_name }]}
-                  getHref={c => `/companies/${c.id}`}
-                  disabled
-                  allowClear={false}
-                />
-              )}
-            </div>
-          </div>
-          {!embedded && (
-            /* Chemin inverse du panneau latéral : retourne à la
-               liste avec ce projet ouvert en panneau latéral. */
-            <button
-              onClick={() => navigate('/pipeline', { state: { peekId: id } })}
-              className="mt-1 p-1.5 text-slate-400 hover:text-brand-600 hover:bg-slate-100 rounded-lg"
-              title="Revenir à la liste avec ce projet en panneau latéral"
-              aria-label="Ouvrir en panneau latéral"
-              data-testid="project-open-as-peek"
-            >
-              <PanelRight size={16} />
-            </button>
-          )}
-        </div>
+  const pending = detailPending({ loading, loadError, onRetry: load, record: project, notFound: 'Projet introuvable.' })
+  if (pending) return pending
 
-        {/* Sélecteur de section (barre du haut, collante) + sections empilées */}
-        <SectionNav
-          sections={sections}
-          labels={SECTION_LABELS}
-          counts={sectionCounts}
-          active={activeSection}
-          onSelect={goToSection}
-          embedded={embedded}
-          testId="project-section-nav"
-        />
-
+  return (
+    <DetailShell
+      header={{
+        meta: project?.company_name && project?.company_id && (
+          <LinkedRecordField
+            name="company_id"
+            value={project.company_id}
+            options={[{ id: project.company_id, name: project.company_name }]}
+            getHref={c => `/companies/${c.id}`}
+            disabled
+            allowClear={false}
+          />
+        ),
+      }}
+      nav={{ sections, labels: SECTION_LABELS, counts: sectionCounts, active: activeSection, onSelect: goToSection, testId: 'project-section-nav' }}
+    >
         {/* Sections */}
         <div className="min-w-0">
 
@@ -976,7 +813,6 @@ export default function ProjectDetail({ recordId, embedded = true, onClose }) {
         </div>
 
         </div>
-      </div>
 
       {showCreate && (
         <CreateSoumissionModal
@@ -1010,7 +846,7 @@ export default function ProjectDetail({ recordId, embedded = true, onClose }) {
           </div>
         </div>
       )}
-    </>
+    </DetailShell>
   )
 }
 

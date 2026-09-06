@@ -207,9 +207,37 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   // les fiches de dettes), mais l'entrée doit exister — sans elle le PATCH
   // d'activation/désactivation répondrait 400 « lecture seule ».
   sys_plaid_sync: { actionKeys: new Set() },
+  // Alerte « banque muette » : seuil, anti-spam, destinataires, canal Slack.
+  sys_plaid_silence_alert: {
+    actionKeys: new Set(['silence_hours', 'repeat_hours', 'notify_roles', 'slack_webhook_env']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'silence_hours' || key === 'repeat_hours') {
+        if (!/^\d{1,4}$/.test(v)) throw new Error(`${key} doit être un nombre d'heures`)
+        return
+      }
+      if (key === 'notify_roles' && !/^[a-z_]+(\s*,\s*[a-z_]+)*$/i.test(v)) {
+        throw new Error('notify_roles : rôles séparés par des virgules (admin, ops…)')
+      }
+      if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{0,64}$/.test(v)) {
+        throw new Error('slack_webhook_env : nom de variable d\'environnement')
+      }
+    },
+  },
   sys_bank_debit_link: { actionKeys: new Set() },
-  // Même cas : déclarée configurable sans spec, son interrupteur répondait 400.
+  // Même cas : déclarées configurables sans spec, leur interrupteur répondait
+  // 400 « lecture seule » — impossible de les mettre en pause depuis la page.
+  // Rien à configurer côté action, mais l'entrée doit exister.
   sys_plaid_qb_audit: { actionKeys: new Set() },
+  sys_treasury_qb_clear: { actionKeys: new Set() },
+  sys_treasury_solde_sheet: { actionKeys: new Set() },
+  sys_fiscal_anomalies_sheet: { actionKeys: new Set() },
+  sys_invoice_collection: { actionKeys: new Set() },
+  sys_bank_trx_sheet: { actionKeys: new Set() },
+  sys_work_suggestions: { actionKeys: new Set() },
+  sys_month_end_provisions: { actionKeys: new Set() },
+  sys_address_check: { actionKeys: new Set() },
+  sys_return_label: { actionKeys: new Set() },
   // Vérificateur de prix d'achats : bornes de détection et notification.
   sys_purchase_price_check: {
     actionKeys: new Set(['ratio_min', 'ratio_max', 'min_abs_diff', 'fallback_roles', 'notify']),

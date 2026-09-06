@@ -1,8 +1,8 @@
 import { useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { useTable, isTableHydrated } from '../lib/dataStore.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useTable } from '../lib/dataStore.js'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import SerialDetail from './SerialDetail.jsx'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
@@ -36,10 +36,9 @@ const COLUMNS = TABLE_COLUMN_META.serial_numbers.map(meta => ({ ...meta, render:
 export default function SerialNumbers() {
   const { peekOpenId, consumePeekOpen } = usePeekOpenId()
 
-  const serialsRaw = useTable('serial_numbers')
+  const { rows: serialsRaw, loading } = useListData({ table: 'serial_numbers' })
   const products = useTable('products')
   const companies = useTable('companies')
-  const loading = !isTableHydrated('serial_numbers')
 
   const serials = useMemo(() => {
     const pById = new Map(products.map(p => [p.id, p]))
@@ -63,32 +62,24 @@ export default function SerialNumbers() {
   }, [serialsRaw, products, companies])
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Numéros de série</PageTitle>
-          </div>
-        </div>
-
-        <DataTable
-          table="serial_numbers"
-          manageViews
-          columns={COLUMNS}
-          data={serials}
-          loading={loading}
-          searchFields={['serial', 'product_name', 'company_name']}
-          peek={{
-            title: row => row.serial || `Numéro de série #${row.id}`,
-            subtitle: row => row.company_name || row.product_name || '',
-            to: row => `/serials/${row.id}`,
-            width: 680,
-            openId: peekOpenId,
-            onOpenConsumed: consumePeekOpen,
-            render: row => <SerialDetail recordId={row.id} embedded />,
-          }}
-        />
-      </div>
-    </Layout>
+    <ListPage title="Numéros de série">
+      <DataTable
+        table="serial_numbers"
+        manageViews
+        columns={COLUMNS}
+        data={serials}
+        loading={loading}
+        searchFields={['serial', 'product_name', 'company_name']}
+        peek={{
+          title: row => row.serial || `Numéro de série #${row.id}`,
+          subtitle: row => row.company_name || row.product_name || '',
+          to: row => `/serials/${row.id}`,
+          width: 680,
+          openId: peekOpenId,
+          onOpenConsumed: consumePeekOpen,
+          render: row => <SerialDetail recordId={row.id} embedded />,
+        }}
+      />
+    </ListPage>
   )
 }

@@ -1,10 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw, ExternalLink, CheckCircle2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { Badge, STRIPE_PAYOUT_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -39,19 +38,12 @@ const COLUMNS = TABLE_COLUMN_META.stripe_payouts.map(meta => ({ ...meta, render:
 
 export default function StripePayouts() {
   const navigate = useNavigate()
-  const [payouts, setPayouts] = useState([])
-  const [loading, setLoading] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [syncError, setSyncError] = useState(null)
 
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.stripePayouts.list({ limit, page }),
-      setPayouts, setLoading
-    )
-  }, [])
-
-  useEffect(() => { load() }, [load])
+  const { rows: payouts, loading, reload: load } = useListData({
+    fetch: (page, limit) => api.stripePayouts.list({ limit, page }),
+  })
 
   async function handleSync() {
     setSyncing(true)
@@ -67,50 +59,43 @@ export default function StripePayouts() {
   }
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Stripe Payouts</PageTitle>
-            <p className="text-xs text-slate-500 mt-0.5">Virements Stripe → banque. Pousser vers QuickBooks en tant que Deposit.</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleSync}
-              disabled={syncing}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
-              title="Synchroniser les nouveaux payouts depuis Stripe"
-            >
-              <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
-              {syncing ? 'Synchronisation…' : 'Sync Stripe'}
-            </button>
-            <a
-              href="https://dashboard.stripe.com/payouts"
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
-            >
-              <ExternalLink size={14} /> Stripe
-            </a>
-          </div>
-        </div>
+    <ListPage
+      title="Stripe Payouts"
+      subtitle={<p className="text-xs text-slate-500 mt-0.5">Virements Stripe → banque. Pousser vers QuickBooks en tant que Deposit.</p>}
+      actions={<>
+        <button
+          onClick={handleSync}
+          disabled={syncing}
+          className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
+          title="Synchroniser les nouveaux payouts depuis Stripe"
+        >
+          <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
+          {syncing ? 'Synchronisation…' : 'Sync Stripe'}
+        </button>
+        <a
+          href="https://dashboard.stripe.com/payouts"
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
+        >
+          <ExternalLink size={14} /> Stripe
+        </a>
+      </>}
+      banner={syncError && (
+        <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{syncError}</div>
+      )}
+    >
+      <DataTable
+        table="stripe_payouts"
+        manageViews
+        columns={COLUMNS}
+        data={payouts}
+        loading={loading}
+        searchFields={['stripe_id', 'description', 'bank_name', 'qb_deposit_id', 'amount']}
+        onRowClick={row => navigate(`/stripe-payouts/${row.stripe_id}`)}
+      />
 
-        {syncError && (
-          <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{syncError}</div>
-        )}
-
-        <DataTable
-          table="stripe_payouts"
-          manageViews
-          columns={COLUMNS}
-          data={payouts}
-          loading={loading}
-          searchFields={['stripe_id', 'description', 'bank_name', 'qb_deposit_id', 'amount']}
-          onRowClick={row => navigate(`/stripe-payouts/${row.stripe_id}`)}
-        />
-
-        <DirectDepositsSection />
-      </div>
-    </Layout>
+      <DirectDepositsSection />
+    </ListPage>
   )
 }

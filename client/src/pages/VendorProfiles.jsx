@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Plus, Sparkles } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
+import { useListData } from '../lib/useListData.js'
 import { VendorTabs } from '../components/VendorTabs.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -405,8 +405,9 @@ function InactiveSection({ profiles, onArchived }) {
 }
 
 export default function VendorProfiles() {
-  const [profiles, setProfiles] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { rows: profiles, setRows: setProfiles, loading, reload: load } = useListData({
+    fetch: () => api.vendorProfiles.list(),
+  })
   const [editing, setEditing] = useState(null)
   const [creating, setCreating] = useState(false)
   const [seeding, setSeeding] = useState(false)
@@ -419,15 +420,6 @@ export default function VendorProfiles() {
   useEffect(() => () => { mounted.current = false }, [])
   const [searchParams, setSearchParams] = useSearchParams()
 
-  const load = useCallback(async () => {
-    try {
-      const r = await api.vendorProfiles.list()
-      if (mounted.current) setProfiles(r.data || [])
-    } finally {
-      if (mounted.current) setLoading(false)
-    }
-  }, [])
-
   // Ouverture directe d'une fiche depuis la recherche globale (?open=<id>) —
   // consommé une fois puis retiré de l'URL pour ne pas rouvrir au retour arrière.
   useEffect(() => {
@@ -439,14 +431,13 @@ export default function VendorProfiles() {
   }, [searchParams, profiles, setSearchParams])
 
   useEffect(() => {
-    load()
     // Référentiels QB — best effort : QB déconnecté n'empêche pas d'afficher la liste
     // (les colonnes retombent alors sur les Ids bruts).
     api.quickbooks.accounts().then(a => mounted.current && setAccounts(a)).catch(() => {})
     api.quickbooks.vendors().then(v => mounted.current && setVendors(v)).catch(() => {})
     api.quickbooks.taxCodes().then(c => mounted.current && setTaxCodes(c)).catch(() => {})
     api.saleReceipts.transactionTypes().then(t => mounted.current && setTxTypes(t.data || [])).catch(() => {})
-  }, [load])
+  }, [])
 
   const qb = useMemo(() => {
     const accountLabel = a => (a.AcctNum ? `${a.AcctNum} — ${a.Name}` : a.Name)
@@ -520,66 +511,64 @@ export default function VendorProfiles() {
   }
 
   return (
-    <Layout>
-      <div className="p-6">
-        <VendorTabs active="profils" />
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Fournisseurs</PageTitle>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Fiche unique par fournisseur : défauts comptables appris à chaque publication QuickBooks (vendor par devise, comptes, statut fiscal, code de taxe, échéance) et particularités (devise habituelle, mode de paiement, catégorie, facturation/taxes). Le tout pré-remplit l'extraction de données.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={seed}
-              disabled={seeding}
-              title="Créer/enrichir les profils depuis l'historique des transactions publiées (n'écrase rien)"
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200 rounded-lg disabled:opacity-50"
-            >
-              <Sparkles size={14} /> {seeding ? 'Amorçage…' : 'Amorcer depuis l\'historique'}
-            </button>
-            <button
-              onClick={() => setCreating(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg"
-            >
-              <Plus size={14} /> Nouveau profil
-            </button>
-          </div>
-        </div>
+    <ListPage
+      before={<VendorTabs active="profils" />}
+      title="Fournisseurs"
+      subtitle={(
+        <p className="text-xs text-slate-500 mt-0.5">
+          Fiche unique par fournisseur : défauts comptables appris à chaque publication QuickBooks (vendor par devise, comptes, statut fiscal, code de taxe, échéance) et particularités (devise habituelle, mode de paiement, catégorie, facturation/taxes). Le tout pré-remplit l'extraction de données.
+        </p>
+      )}
+      actions={(
+        <>
+          <button
+            onClick={seed}
+            disabled={seeding}
+            title="Créer/enrichir les profils depuis l'historique des transactions publiées (n'écrase rien)"
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200 rounded-lg disabled:opacity-50"
+          >
+            <Sparkles size={14} /> {seeding ? 'Amorçage…' : 'Amorcer depuis l\'historique'}
+          </button>
+          <button
+            onClick={() => setCreating(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg"
+          >
+            <Plus size={14} /> Nouveau profil
+          </button>
+        </>
+      )}
+    >
+      <DuplicatesSection onMerged={load} onInspect={setEditing} />
+      <InactiveSection profiles={profiles} onArchived={load} />
 
-        <DuplicatesSection onMerged={load} onInspect={setEditing} />
-        <InactiveSection profiles={profiles} onArchived={load} />
+      <DataTable
+        table="vendor_profiles"
+        manageViews
+        columns={columns}
+        data={profiles}
+        loading={loading}
+        searchFields={['name', 'notes', 'qb_category', 'description', 'particularites']}
+        onRowClick={row => setEditing(row)}
+      />
 
-        <DataTable
-          table="vendor_profiles"
-          manageViews
-          columns={columns}
-          data={profiles}
-          loading={loading}
-          searchFields={['name', 'notes', 'qb_category', 'description', 'particularites']}
-          onRowClick={row => setEditing(row)}
+      {editing && (
+        <EditModal
+          profile={editing}
+          qb={qb}
+          onClose={() => setEditing(null)}
+          onSaved={updated => {
+            setProfiles(list => list.map(p => (p.id === updated.id ? updated : p)))
+            setEditing(e => (e && e.id === updated.id ? { ...e, ...updated } : e))
+          }}
+          onDeleted={id => setProfiles(list => list.filter(p => p.id !== id))}
         />
-
-        {editing && (
-          <EditModal
-            profile={editing}
-            qb={qb}
-            onClose={() => setEditing(null)}
-            onSaved={updated => {
-              setProfiles(list => list.map(p => (p.id === updated.id ? updated : p)))
-              setEditing(e => (e && e.id === updated.id ? { ...e, ...updated } : e))
-            }}
-            onDeleted={id => setProfiles(list => list.filter(p => p.id !== id))}
-          />
-        )}
-        {creating && (
-          <CreateModal
-            onClose={() => setCreating(false)}
-            onCreated={created => { setProfiles(list => [created, ...list].sort((a, b) => a.name.localeCompare(b.name))); setEditing(created) }}
-          />
-        )}
-      </div>
-    </Layout>
+      )}
+      {creating && (
+        <CreateModal
+          onClose={() => setCreating(false)}
+          onCreated={created => { setProfiles(list => [created, ...list].sort((a, b) => a.name.localeCompare(b.name))); setEditing(created) }}
+        />
+      )}
+    </ListPage>
   )
 }

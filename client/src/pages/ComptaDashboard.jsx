@@ -1772,6 +1772,7 @@ function CardCeilingRow({ card, onChanged }) {
         className="mt-2 flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-700">
         <ChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
         {fmtCad(card.posted, 2)} comptabilisé · {fmtCad(card.pending, 2)} en attente
+        {card.bank_owed != null && ` · ${fmtCad(card.bank_owed, 2)} à la banque`}
       </button>
 
       {open && (
@@ -1783,7 +1784,26 @@ function CardCeilingRow({ card, onChanged }) {
             <span className="text-right tabular-nums" data-testid="card-ceiling-pending">{fmtCad(card.pending, 2)}</span>
             <span className="font-medium text-slate-800">Solde projeté</span>
             <span className="text-right tabular-nums font-medium text-slate-800">{fmtCad(card.projected, 2)}</span>
+            {/* Le chiffre de la banque, quand la carte est connectée : la
+                réponse directe, là où le solde projeté est une reconstitution.
+                Il ne remplace pas le calcul, il permet de le recouper. */}
+            {card.bank_owed != null && (
+              <>
+                <span className="text-slate-500">Dû selon la banque</span>
+                <span className="text-right tabular-nums text-slate-500" data-testid="card-ceiling-bank">
+                  {fmtCad(card.bank_owed, 2)}
+                  {card.bank_available != null && ` · ${fmtCad(card.bank_available, 2)} de place`}
+                </span>
+              </>
+            )}
           </div>
+          {card.bank_owed != null && Math.abs(card.bank_owed - card.projected) >= 1 && (
+            <p className="text-[11px] text-amber-700" data-testid="card-ceiling-bank-gap">
+              {fmtCad(Math.abs(card.bank_owed - card.projected), 2)} d'écart entre la banque et le solde projeté
+              {card.bank_read_at ? ` (banque lue ${formatRelativeTime(card.bank_read_at)})` : ''} :
+              {' '}des achats manquent au rapprochement, ou un paiement n'y est pas encore.
+            </p>
+          )}
           {card.pending_stale_count > 0 && (
             <p className="text-[11px] text-slate-400" data-testid="card-ceiling-stale">
               {card.pending_stale_count} transaction(s) plus ancienne(s) que le {fmtDate(card.pending_since)}

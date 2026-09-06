@@ -13,13 +13,6 @@ const SYSTEM_SHORTCUTS = [
   { keys: ['?'], label: 'Afficher cette aide' },
 ]
 
-// Raccourcis disponibles sur une fiche détail (facture, billet) pour parcourir
-// la file d'enregistrements sans la souris. Implémentés par useRecordKeyNav.
-const RECORD_SHORTCUTS = [
-  { keys: ['J', '↓'], label: 'Enregistrement suivant' },
-  { keys: ['K', '↑'], label: 'Enregistrement précédent' },
-]
-
 function Kbd({ children }) {
   return (
     <kbd className="inline-flex items-center justify-center min-w-[1.75rem] h-7 px-2 text-sm font-semibold text-slate-700 bg-slate-100 border border-slate-300 border-b-2 rounded-md">
@@ -50,15 +43,6 @@ export function KeyboardShortcutsModal({ isOpen, onClose }) {
           <div className="divide-y divide-slate-100">
             {NAV_SHORTCUTS.map(s => (
               <ShortcutRow key={s.key} keys={[s.key.toUpperCase()]} label={s.label} />
-            ))}
-          </div>
-        </section>
-
-        <section className="mt-5">
-          <h3 className="text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1">Sur une fiche</h3>
-          <div className="divide-y divide-slate-100">
-            {RECORD_SHORTCUTS.map((s, i) => (
-              <ShortcutRow key={i} keys={s.keys} label={s.label} />
             ))}
           </div>
         </section>

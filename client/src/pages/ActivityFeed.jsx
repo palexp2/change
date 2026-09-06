@@ -1,8 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { Activity } from 'lucide-react'
 import { api } from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
+import { useListData } from '../lib/useListData.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -76,18 +75,11 @@ const RENDERS = {
 
 const COLUMNS = TABLE_COLUMN_META.activity_log.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
+// Pas de `ListPage` : ce contenu est aussi monté dans un onglet de /parametres.
 export function ActivityContent() {
-  const [rows, setRows] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.activity.list({ limit, page }),
-      setRows, setLoading
-    )
-  }, [])
-
-  useEffect(() => { load() }, [load])
+  const { rows, loading } = useListData({
+    fetch: (page, limit) => api.activity.list({ limit, page }),
+  })
 
   return (
     <div>

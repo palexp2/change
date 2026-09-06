@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import {
   ChevronLeft, ChevronRight,
   RefreshCw, AlertCircle, CheckCircle, Clock, BookOpen, ReceiptText,
@@ -9,7 +10,6 @@ import {
 import { api } from '../lib/api.js'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { CurrencyConversionModal } from '../components/CurrencyConversionModal.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
@@ -20,7 +20,6 @@ import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { findBestVendorMatch } from '../lib/vendorMatch.js'
 
 import { fmtCad } from '../utils/formatters.js'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 const round2 = x => Math.round((Number(x) || 0) * 100) / 100
 
@@ -2382,15 +2381,12 @@ function PrepaidStatementBanner({ receipt, onDone }) {
   )
 }
 
-// Fiche d'un reçu / facture fournisseur. Rendue exclusivement dans un panneau
-// latéral (large : le PDF et l'extraction cohabitent) — `recordId`/`onClose`
-// viennent du panneau, `useParams` sert au montage depuis l'URL.
+// Fiche d'un reçu / facture fournisseur. Panneau latéral large : le PDF et
+// l'extraction cohabitent.
 export default function SaleReceiptDetail({ recordId, onClose }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
+  const id = recordId
   const navigate = useNavigate()
-  // Quitter la fiche : refermer le panneau (ou, à défaut, revenir à la liste).
-  const leave = () => { if (onClose) onClose(); else navigate('/sale-receipts') }
+  const leave = () => onClose?.()
   const { addToast } = useToast()
   const confirm = useConfirm()
   const { record: receipt, setRecord: setReceipt, loading, loadError, reload: load } =
@@ -2572,21 +2568,14 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
   const prevId = currentIdx > 0 ? allIds[currentIdx - 1] : null
   const nextId = currentIdx >= 0 && currentIdx < allIds.length - 1 ? allIds[currentIdx + 1] : null
 
-  if (loading) return <Spinner center />
-
-  if (loadError && !receipt) {
-    return <DetailLoadError message={loadError} onRetry={load} />
-  }
-
-  if (!receipt) {
-    return <div className="p-6 text-slate-500">Reçu introuvable.</div>
-  }
+  const pending = detailPending({ loading, loadError, onRetry: load, record: receipt, notFound: 'Reçu introuvable.' })
+  if (pending) return pending
 
   const isPdf = receipt.file_type === '.pdf'
 
   return (
     <>
-      <div className="p-6">
+      <DetailShell className="p-6">
         <div className="flex items-start gap-4 mb-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
@@ -2810,7 +2799,7 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
             </div>
           </div>
         ))}
-      </div>
+      </DetailShell>
 
       <CurrencyConversionModal
         isOpen={conversionOpen}

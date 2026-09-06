@@ -4097,6 +4097,20 @@ export function initSchema() {
   // Libellé du prélèvement au relevé (« BDC », « VILLE DE QUEBEC ») — sert à
   // retrouver le versement dans le relevé. Vide = pas de recherche.
   try { db.exec(`ALTER TABLE lt_debts ADD COLUMN bank_label_pattern TEXT`) } catch {}
+
+  // Frais annuels prélevés AVEC un versement, une fois par an. Le prêteur les
+  // ajoute au débit sans les mettre dans la cédule : le montant vu au compte
+  // dépasse alors le capital + intérêts, et le versement semblait à tort
+  // introuvable. Vérifié sur deux dettes en 2026 : BDC 350 $ « Administration
+  // annuelle » en août (compte 79000), Ville de Québec 1 250 $ en février.
+  try { db.exec(`ALTER TABLE lt_debts ADD COLUMN annual_fee_amount REAL`) } catch {}
+  try { db.exec(`ALTER TABLE lt_debts ADD COLUMN annual_fee_month INTEGER`) } catch {}
+  try { db.exec(`ALTER TABLE lt_debts ADD COLUMN annual_fee_acctnum TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE lt_debts ADD COLUMN annual_fee_label TEXT`) } catch {}
+  // Écart constaté entre le débit réel et la cédule, sur le versement apparié :
+  // les frais quand ils sont reconnus, sinon un écart à expliquer — jamais
+  // avalé en silence.
+  try { db.exec(`ALTER TABLE lt_debt_payments ADD COLUMN bank_extra_amount REAL`) } catch {}
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_lt_debt_payment_date ON lt_debt_payments(debt_id, payment_date) WHERE deleted_at IS NULL`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_lt_debt_payments_debt ON lt_debt_payments(debt_id, payment_date, deleted_at)`) } catch {}
 

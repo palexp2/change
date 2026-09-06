@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { Plus, AlertTriangle, Ban, RotateCcw, HelpCircle, ExternalLink } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
+import { useListData } from '../lib/useListData.js'
 import { VendorTabs } from '../components/VendorTabs.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -640,21 +640,20 @@ export function MissingReceiptsSection({ refreshKey = 0, onSubscriptionChanged }
 }
 
 export default function VendorSubscriptions() {
-  const [subs, setSubs] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { rows: subs, setRows: setSubs, loading } = useListData({
+    fetch: async () => ({ data: await api.vendorSubscriptions.list() }),
+  })
   const [editing, setEditing] = useState(null)
   const [creating, setCreating] = useState(false)
   // Rechargement du bandeau des charges non comptabilisées après un
   // désabonnement fait depuis le tableau ou la fiche.
   const [missingKey, setMissingKey] = useState(0)
-  const mounted = useRef(true)
-  useEffect(() => () => { mounted.current = false }, [])
   const [searchParams, setSearchParams] = useSearchParams()
 
   const applyUpdate = useCallback(updated => {
     setSubs(list => list.map(s => (s.id === updated.id ? { ...s, ...updated } : s)))
     setEditing(e => (e && e.id === updated.id ? { ...e, ...updated } : e))
-  }, [])
+  }, [setSubs])
 
   const { toggle: toggleActive, busyId, modal } = useSubscriptionToggle({
     onOptimistic: applyUpdate,
@@ -670,17 +669,6 @@ export default function VendorSubscriptions() {
       )
       : RENDERS[meta.id] })), [toggleActive, busyId])
 
-  const load = useCallback(async () => {
-    try {
-      const rows = await api.vendorSubscriptions.list()
-      if (mounted.current) setSubs(rows)
-    } finally {
-      if (mounted.current) setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { load() }, [load])
-
   // Ouverture directe d'une fiche depuis la recherche globale (?open=<id>) —
   // consommé une fois puis retiré de l'URL pour ne pas rouvrir au retour arrière.
   useEffect(() => {
@@ -692,59 +680,55 @@ export default function VendorSubscriptions() {
   }, [searchParams, subs, setSearchParams])
 
   return (
-    <Layout>
-      <div className="p-6">
-        <VendorTabs active="abonnements" />
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Abonnements fournisseurs</PageTitle>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Registre de référence des charges récurrentes (SaaS, télécom…) et calendrier des reçus attendus.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setCreating(true)}
-              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg"
-            >
-              <Plus size={14} /> Nouvel abonnement
-            </button>
-          </div>
-        </div>
+    <ListPage
+      before={<VendorTabs active="abonnements" />}
+      title="Abonnements fournisseurs"
+      subtitle={(
+        <p className="text-xs text-slate-500 mt-0.5">
+          Registre de référence des charges récurrentes (SaaS, télécom…) et calendrier des reçus attendus.
+        </p>
+      )}
+      actions={(
+        <button
+          onClick={() => setCreating(true)}
+          className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg"
+        >
+          <Plus size={14} /> Nouvel abonnement
+        </button>
+      )}
+    >
+      <MissingReceiptsSection refreshKey={missingKey} onSubscriptionChanged={applyUpdate} />
 
-        <MissingReceiptsSection refreshKey={missingKey} onSubscriptionChanged={applyUpdate} />
+      <DataTable
+        table="vendor_subscriptions"
+        manageViews
+        columns={columns}
+        data={subs}
+        loading={loading}
+        searchFields={['vendor', 'plan', 'payment_method', 'comments']}
+        onRowClick={row => setEditing(row)}
+      />
 
-        <DataTable
-          table="vendor_subscriptions"
-          manageViews
-          columns={columns}
-          data={subs}
-          loading={loading}
-          searchFields={['vendor', 'plan', 'payment_method', 'comments']}
-          onRowClick={row => setEditing(row)}
+      {editing && (
+        <EditModal
+          sub={editing}
+          onClose={() => setEditing(null)}
+          onSaved={updated => {
+            setSubs(list => list.map(s => (s.id === updated.id ? updated : s)))
+            setEditing(e => (e && e.id === updated.id ? { ...e, ...updated } : e))
+          }}
+          onDeleted={id => setSubs(list => list.filter(s => s.id !== id))}
+          onToggleActive={toggleActive}
         />
-
-        {editing && (
-          <EditModal
-            sub={editing}
-            onClose={() => setEditing(null)}
-            onSaved={updated => {
-              setSubs(list => list.map(s => (s.id === updated.id ? updated : s)))
-              setEditing(e => (e && e.id === updated.id ? { ...e, ...updated } : e))
-            }}
-            onDeleted={id => setSubs(list => list.filter(s => s.id !== id))}
-            onToggleActive={toggleActive}
-          />
-        )}
-        {creating && (
-          <CreateModal
-            onClose={() => setCreating(false)}
-            onCreated={created => setSubs(list => [created, ...list])}
-          />
-        )}
-        {/* En dernier : la modale de désabonnement se superpose à la fiche. */}
-        {modal}
-      </div>
-    </Layout>
+      )}
+      {creating && (
+        <CreateModal
+          onClose={() => setCreating(false)}
+          onCreated={created => setSubs(list => [created, ...list])}
+        />
+      )}
+      {/* En dernier : la modale de désabonnement se superpose à la fiche. */}
+      {modal}
+    </ListPage>
   )
 }

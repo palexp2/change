@@ -2,16 +2,14 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { X, BookOpen, Plus, ShoppingCart, ExternalLink } from 'lucide-react'
 import { api } from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
+import { useListData } from '../lib/useListData.js'
 import { VendorTabs } from '../components/VendorTabs.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { VendorSelect } from '../components/VendorSelect.jsx'
 import { LineItemsTable } from '../components/LineItemsTable.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -585,25 +583,16 @@ function QBAttachmentsSection({ achatId }) {
 }
 
 export default function AchatsFournisseurs() {
-  const [rows, setRows] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { rows, loading, reload: load } = useListData({
+    fetch: (page, limit) => api.achatsFournisseurs.list({ limit, page }),
+    realtime: 'achat_fournisseur',
+  })
   const [editing, setEditing] = useState(null)
   const [creating, setCreating] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [syncResult, setSyncResult] = useState(null)
   const [searchParams, setSearchParams] = useSearchParams()
   const confirm = useConfirm()
-
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.achatsFournisseurs.list({ limit, page }),
-      setRows, setLoading
-    )
-  }, [])
-
-  useEffect(() => { load() }, [load])
-
-  useEntityListRealtime('achat_fournisseur', setRows)
 
   useEffect(() => {
     const openId = searchParams.get('id')
@@ -674,61 +663,56 @@ export default function AchatsFournisseurs() {
     : (creating === 'bill' ? 'Nouvelle facture fournisseur' : 'Nouvelle dépense')
 
   return (
-    <Layout>
-      <div className="p-6">
-        <VendorTabs active="achats" />
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Achats fournisseurs</PageTitle>
-            <p className="text-sm text-slate-500 mt-1">Dépenses et factures fournisseurs</p>
-          </div>
-          <div className="flex items-center gap-2">
-            {syncResult && !syncResult.error && (
-              <span className="text-sm text-green-700 bg-green-50 border border-green-200 rounded px-2 py-1">
-                Factures : {syncResult.bills?.inserted ?? 0}+{syncResult.bills?.updated ?? 0}
-                {' · '}
-                Dépenses : {syncResult.depenses?.inserted ?? 0}+{syncResult.depenses?.updated ?? 0}
-              </span>
-            )}
-            {syncResult?.error && (
-              <span className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1">{syncResult.error}</span>
-            )}
-            <button onClick={handleQBImport} disabled={syncing} className="btn-secondary" data-testid="qb-import-btn">
-              {syncing ? 'Importation…' : 'Importer depuis QB'}
-            </button>
-          </div>
-        </div>
-
-        {filterActive && (
-          <div
-            className="mb-3 flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-900"
-            data-testid="dashboard-filter-banner"
-          >
-            <span>
-              Filtré depuis le tableau de bord — compte <strong>{accountParam}</strong> du <strong>{fmtDate(fromParam)}</strong> au <strong>{fmtDate(toParam)}</strong>
-              <span className="ml-2 text-amber-700/70">({filteredRows.length} ligne{filteredRows.length !== 1 ? 's' : ''})</span>
+    <ListPage
+      before={<VendorTabs active="achats" />}
+      title="Achats fournisseurs"
+      subtitle={<p className="text-sm text-slate-500 mt-1">Dépenses et factures fournisseurs</p>}
+      actions={(
+        <>
+          {syncResult && !syncResult.error && (
+            <span className="text-sm text-green-700 bg-green-50 border border-green-200 rounded px-2 py-1">
+              Factures : {syncResult.bills?.inserted ?? 0}+{syncResult.bills?.updated ?? 0}
+              {' · '}
+              Dépenses : {syncResult.depenses?.inserted ?? 0}+{syncResult.depenses?.updated ?? 0}
             </span>
-            <button
-              onClick={clearDashboardFilter}
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-amber-900 hover:bg-amber-100"
-              data-testid="dashboard-filter-clear"
-            >
-              <X size={14} /> Effacer
-            </button>
-          </div>
-        )}
-
-        <DataTable
-          table="achats_fournisseurs"
-          manageViews
-          columns={COLUMNS}
-          data={filteredRows}
-          loading={loading}
-          onRowClick={row => setEditing(row)}
-          searchFields={['vendor', 'description', 'reference', 'vendor_invoice_number', 'bill_number', 'category', 'total_cad', 'amount_paid_cad', 'balance_due_cad']}
-          emptyState={{ icon: ShoppingCart, title: 'Aucun achat fournisseur', description: "Aucune facture ni dépense fournisseur n'est enregistrée. Crée-en une pour suivre les coûts.", cta: { label: 'Nouvelle facture fournisseur', icon: Plus, onClick: () => setCreating('bill') } }}
-        />
-      </div>
+          )}
+          {syncResult?.error && (
+            <span className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1">{syncResult.error}</span>
+          )}
+          <button onClick={handleQBImport} disabled={syncing} className="btn-secondary" data-testid="qb-import-btn">
+            {syncing ? 'Importation…' : 'Importer depuis QB'}
+          </button>
+        </>
+      )}
+      banner={filterActive && (
+        <div
+          className="mb-3 flex items-center justify-between gap-3 px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-sm text-amber-900"
+          data-testid="dashboard-filter-banner"
+        >
+          <span>
+            Filtré depuis le tableau de bord — compte <strong>{accountParam}</strong> du <strong>{fmtDate(fromParam)}</strong> au <strong>{fmtDate(toParam)}</strong>
+            <span className="ml-2 text-amber-700/70">({filteredRows.length} ligne{filteredRows.length !== 1 ? 's' : ''})</span>
+          </span>
+          <button
+            onClick={clearDashboardFilter}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-amber-900 hover:bg-amber-100"
+            data-testid="dashboard-filter-clear"
+          >
+            <X size={14} /> Effacer
+          </button>
+        </div>
+      )}
+    >
+      <DataTable
+        table="achats_fournisseurs"
+        manageViews
+        columns={COLUMNS}
+        data={filteredRows}
+        loading={loading}
+        onRowClick={row => setEditing(row)}
+        searchFields={['vendor', 'description', 'reference', 'vendor_invoice_number', 'bill_number', 'category', 'total_cad', 'amount_paid_cad', 'balance_due_cad']}
+        emptyState={{ icon: ShoppingCart, title: 'Aucun achat fournisseur', description: "Aucune facture ni dépense fournisseur n'est enregistrée. Crée-en une pour suivre les coûts.", cta: { label: 'Nouvelle facture fournisseur', icon: Plus, onClick: () => setCreating('bill') } }}
+      />
 
       <RecordPeekDrawer
         open={modalOpen}
@@ -746,6 +730,6 @@ export default function AchatsFournisseurs() {
           />
         </div>
       </RecordPeekDrawer>
-    </Layout>
+    </ListPage>
   )
 }

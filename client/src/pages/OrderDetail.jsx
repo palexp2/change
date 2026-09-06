@@ -1,13 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
+import { useSearchParams, Link } from 'react-router-dom'
 import {
-  ArrowLeft, Plus, Truck, Package, FileText, X, Printer,
+  Plus, Truck, Package, FileText, X, Printer,
   Copy, Check, Trash2, ScanBarcode, Boxes,
   MapPin, Clock, ChevronDown, ChevronRight, AlertCircle, RefreshCw
 } from 'lucide-react'
 import api from '../lib/api.js'
-import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
@@ -17,7 +15,8 @@ import { fmtDate } from '../lib/formatDate.js'
 import { fmtMoney } from '../utils/formatters.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
+import { useAutosave } from '../lib/useAutosave.js'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { RecordOps } from '../lib/recordOps.js'
@@ -848,14 +847,9 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
 // `recordId` + `embedded` : monte la fiche dans un RecordPeekDrawer (side-peek)
 // sans le chrome de page (Layout, bouton retour). `onClose` ferme le panneau
 // après suppression du record.
-export default function OrderDetail({ recordId, embedded = true, onClose }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const navigate = useNavigate()
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
-  const leaveRecord = () => { if (embedded) onClose?.(); else navigate('/orders') }
+export default function OrderDetail({ recordId, onClose }) {
+  const id = recordId
+  const leaveRecord = () => onClose?.()
   const [searchParams] = useSearchParams()
   const { record: order, setRecord: setOrder, loading, loadError, reload: load } =
     useDetailRecord(() => api.orders.get(id), [id])
@@ -921,26 +915,14 @@ export default function OrderDetail({ recordId, embedded = true, onClose }) {
     saveOverrideField('cogs_override_cad', setCogsOverrideDraft, cogsOverrideDraft, rawValue)
 
   // ── Champs de la carte : autosave champ par champ ───────────────────────────
-  // Un seul chemin pour les champs de <DetailFieldGrid> (champs codés ET champs
-  // personnalisés) : PUT partiel, puis application locale du seul champ modifié.
   // On ne fusionne PAS la réponse du PUT — elle porte la colonne legacy Airtable
   // `items` (TEXT JSON) qui écraserait le vrai tableau d'articles.
   const { addToast } = useToast()
-  const [fieldSaving, setFieldSaving] = useState({})
-
-  async function saveField(key, value) {
-    const next = value === '' || value === undefined ? null : value
-    if ((order?.[key] ?? null) === next) return
-    setFieldSaving(s => ({ ...s, [key]: true }))
-    try {
-      await api.orders.update(id, { [key]: next })
-      setOrder(o => (o ? { ...o, [key]: next } : o))
-    } catch (e) {
-      addToast({ message: `Sauvegarde échouée : ${e.message}`, type: 'error' })
-    } finally {
-      setFieldSaving(s => ({ ...s, [key]: false }))
-    }
-  }
+  const { save: saveAutosave, savingKeys: fieldSaving } = useAutosave(order, patch => api.orders.update(id, patch), {
+    compare: (a, b) => (a ?? null) === (b === '' || b === undefined ? null : b),
+    onSaved: (_r, key, value) => setOrder(o => (o ? { ...o, [key]: value } : o)),
+  })
+  const saveField = (key, value) => saveAutosave(key, value === undefined ? '' : value)
 
   // Recalcul des coûts figés à l'envoi : le gel automatique ne remplit que les
   // lignes vides, ce bouton reprend celles déjà envoyées avec les coûts du jour
@@ -1244,14 +1226,13 @@ export default function OrderDetail({ recordId, embedded = true, onClose }) {
     setOrder(o => ({ ...o, items: o.items.map(i => i.id === itemId ? { ...i, ...changes } : i) }))
   }
 
-  if (loading) return shell(<Spinner center />)
-  if (loadError && !order) return shell(<DetailLoadError message={loadError} onRetry={load} />)
-  if (!order) return shell(<div className="p-6 text-slate-500">Commande introuvable.</div>)
+  const pending = detailPending({ loading, loadError, onRetry: load, record: order, notFound: 'Commande introuvable.' })
+  if (pending) return pending
 
   // ── Expedition mode ─────────────────────────────────────────────────────────
   if (expeditionMode) {
-    return shell(
-      <>
+    return (
+      <DetailShell className="">
         <ExpeditionView
           order={order}
           orderId={id}
@@ -1262,7 +1243,7 @@ export default function OrderDetail({ recordId, embedded = true, onClose }) {
           setScanToast={setScanToast}
           flashItemId={flashItemId}
         />
-      </>
+      </DetailShell>
     )
   }
 
@@ -1463,33 +1444,22 @@ export default function OrderDetail({ recordId, embedded = true, onClose }) {
   const envoiColumns = TABLE_COLUMN_META.order_envois.map(meta => ({ ...meta, render: ENVOI_RENDERS[meta.id] }))
 
   // ── Commercial mode ─────────────────────────────────────────────────────────
-  return shell(
-    <>
-      <div className="p-6">
-
-        {/* Header — titre (hors panneau) et actions SEULEMENT : aucun champ ici.
-            Statut, type, entreprise, projet, factures et dates vivent dans la
-            carte de champs ci-dessous, la seule zone éditable de la fiche. */}
-        <div className="flex items-start gap-4 mb-4">
-          {!embedded && (
-            <button onClick={() => navigate('/orders')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-              <ArrowLeft size={18} />
-            </button>
-          )}
-          <div className="flex-1 min-w-0">
-            {!embedded && <PageTitle>Commande #{order.order_number}</PageTitle>}
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setExpeditionMode(true)}
-              className="btn-secondary btn-sm flex items-center gap-1.5 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
-            >
-              <Truck size={14} />
-              Mode expédition
-            </button>
-          </div>
-        </div>
-
+  // Aucun champ dans l'en-tête : statut, type, entreprise, projet, factures et
+  // dates vivent dans la carte de champs, la seule zone éditable de la fiche.
+  return (
+    <DetailShell
+      header={{
+        actions: (
+          <button
+            onClick={() => setExpeditionMode(true)}
+            className="btn-secondary btn-sm flex items-center gap-1.5 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+          >
+            <Truck size={14} />
+            Mode expédition
+          </button>
+        ),
+      }}
+    >
         {/* Carte de champs de la commande — même module que les fiches billet,
             projet ou envoi : l'ordre des champs et ceux qu'on garde se règlent
             depuis la fiche (bouton « Personnaliser les champs » dans l'en-tête
@@ -1812,13 +1782,11 @@ export default function OrderDetail({ recordId, embedded = true, onClose }) {
           )
         })()}
 
-      </div>
-
       <ScanToast toast={scanToast} onClose={() => setScanToast(null)} />
 
       <Modal isOpen={showAddItem} onClose={() => setShowAddItem(false)} title="Ajouter un article">
         <AddItemModal orderId={id} onSave={load} onClose={() => setShowAddItem(false)} />
       </Modal>
-    </>
+    </DetailShell>
   )
 }

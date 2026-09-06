@@ -2,8 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { PhoneCall, ChevronLeft, Search, Plus, Building2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
+import { useListData } from '../lib/useListData.js'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -363,25 +363,13 @@ function CallFrame({ company, callRecord, editableFarm, onBack }) {
 }
 
 export default function QualificationCall() {
-  const [calls, setCalls] = useState([])
   const [companies, setCompanies] = useState([])
-  const [loading, setLoading] = useState(true)
   const [creating, setCreating] = useState(false)
   const [activeCall, setActiveCall] = useState(null) // { company, record }
   const { addToast } = useToast()
-
-  async function load() {
-    setLoading(true)
-    try {
-      const r = await api.qualificationCalls.list()
-      setCalls(r.data || [])
-    } finally {
-      setLoading(false)
-    }
-  }
+  const { rows: calls, loading, reload: load } = useListData({ fetch: () => api.qualificationCalls.list() })
 
   useEffect(() => {
-    load()
     api.companies.lookup().then(list => setCompanies(Array.isArray(list) ? list : [])).catch(() => {})
   }, [])
 
@@ -436,30 +424,20 @@ export default function QualificationCall() {
   }
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Appels de qualification</PageTitle>
-            <p className="text-sm text-slate-500 mt-0.5">
-              {calls.length} appel{calls.length !== 1 ? 's' : ''}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <NewCallDropdown companies={companies} onPick={startCall} onPickNew={startNewCompanyCall} busy={creating} />
-          </div>
-        </div>
-
-        <DataTable
-          table="qualification_calls"
-          manageViews
-          columns={COLUMNS}
-          data={calls}
-          loading={loading}
-          onRowClick={openExistingCall}
-          searchFields={['company_name', 'company_name_raw', 'assignee', 'contact_full_name', 'motivation_today', 'summary', 'heard_about']}
-        />
-      </div>
+    <ListPage
+      title="Appels de qualification"
+      subtitle={<p className="text-sm text-slate-500 mt-0.5">{calls.length} appel{calls.length !== 1 ? 's' : ''}</p>}
+      actions={<NewCallDropdown companies={companies} onPick={startCall} onPickNew={startNewCompanyCall} busy={creating} />}
+    >
+      <DataTable
+        table="qualification_calls"
+        manageViews
+        columns={COLUMNS}
+        data={calls}
+        loading={loading}
+        onRowClick={openExistingCall}
+        searchFields={['company_name', 'company_name_raw', 'assignee', 'contact_full_name', 'motivation_today', 'summary', 'heard_about']}
+      />
 
       {creating && (
         <div className="fixed inset-0 bg-black/20 flex items-center justify-center z-50">
@@ -469,6 +447,6 @@ export default function QualificationCall() {
           </div>
         </div>
       )}
-    </Layout>
+    </ListPage>
   )
 }

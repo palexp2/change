@@ -1,9 +1,8 @@
 import { Undo2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
-import { useTable, isTableHydrated } from '../lib/dataStore.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import RetourDetail from './RetourDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -26,39 +25,30 @@ export default function Retours() {
   // « Entreprise » n'est plus jointe côté client : c'est un champ perso (lookup
   // sur company_id) et sa valeur arrive dans le snapshot par la vue returns_v.
   // Le recopier d'ici ferait survivre la colonne à la suppression du champ.
-  const retours = useTable('returns')
-  const loading = !isTableHydrated('returns')
+  const { rows: retours, loading } = useListData({ table: 'returns' })
 
   const { peekOpenId, consumePeekOpen } = usePeekOpenId()
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Retours</PageTitle>
-          </div>
-        </div>
-
-        <DataTable
-          table="retours"
-          manageViews
-          columns={COLUMNS}
-          data={retours}
-          loading={loading}
-          peek={{
-            title: row => row.n_de_retour || `Retour #${row.id}`,
-            subtitle: row => row.company_name,
-            to: row => `/retours/${row.id}`,
-            width: 720,
-            openId: peekOpenId,
-            onOpenConsumed: consumePeekOpen,
-            render: (row, { close }) => <RetourDetail recordId={row.id} embedded onClose={close} />,
-          }}
-          searchFields={['n_de_retour', 'company_name']}
-          emptyState={{ icon: Undo2, title: 'Aucun retour', description: "Aucune demande de retour (RMA) n'a été enregistrée. Les retours clients apparaissent ici." }}
-        />
-      </div>
-    </Layout>
+    <ListPage title="Retours">
+      <DataTable
+        table="retours"
+        manageViews
+        columns={COLUMNS}
+        data={retours}
+        loading={loading}
+        peek={{
+          title: row => row.n_de_retour || `Retour #${row.id}`,
+          subtitle: row => row.company_name,
+          to: row => `/retours/${row.id}`,
+          width: 720,
+          openId: peekOpenId,
+          onOpenConsumed: consumePeekOpen,
+          render: (row, { close }) => <RetourDetail recordId={row.id} embedded onClose={close} />,
+        }}
+        searchFields={['n_de_retour', 'company_name']}
+        emptyState={{ icon: Undo2, title: 'Aucun retour', description: "Aucune demande de retour (RMA) n'a été enregistrée. Les retours clients apparaissent ici." }}
+      />
+    </ListPage>
   )
 }

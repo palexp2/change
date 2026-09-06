@@ -32,7 +32,7 @@ export function useRealtimeChannel(channel, handler) {
  * @param {{ predicate?: (payload: any) => boolean }} [opts]
  */
 export function useEntityListRealtime(entity, setData, opts = {}) {
-  const channel = entity ? `${entity}:list` : null
+  const channel = opts.channel || (entity ? `${entity}:list` : null)
   const predicate = opts.predicate
   useRealtimeChannel(channel, (msg) => {
     const verb = msg.type?.split(':').slice(1).join(':') // strip "<entity>:" prefix

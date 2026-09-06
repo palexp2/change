@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Sparkles, Plus, ArrowUpCircle, Wrench, AlertTriangle, CheckCircle2 } from 'lucide-react'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -204,28 +203,24 @@ export default function Changelog() {
   )
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="mb-6">
-          <PageTitle icon={Sparkles}>Nouveautés</PageTitle>
-          <p className="text-xs text-slate-400 mt-0.5">Ce qui change dans l'ERP, et qui l'a demandé</p>
-        </div>
-
-        <GuardStatus />
-
-        <DataTable
-          table="changelog"
-          columns={columns}
-          data={rows}
-          renderExpanded={renderExpanded}
-          searchFields={['title', 'category', 'requester', 'summary']}
-          emptyState={{
-            icon: Sparkles,
-            title: 'Aucune nouveauté',
-            description: "Les évolutions de l'ERP s'afficheront ici.",
-          }}
-        />
-      </div>
-    </Layout>
+    <ListPage
+      title="Nouveautés"
+      icon={Sparkles}
+      subtitle={<p className="text-xs text-slate-400 mt-0.5">Ce qui change dans l'ERP, et qui l'a demandé</p>}
+      banner={<GuardStatus />}
+    >
+      <DataTable
+        table="changelog"
+        columns={columns}
+        data={rows}
+        renderExpanded={renderExpanded}
+        searchFields={['title', 'category', 'requester', 'summary']}
+        emptyState={{
+          icon: Sparkles,
+          title: 'Aucune nouveauté',
+          description: "Les évolutions de l'ERP s'afficheront ici.",
+        }}
+      />
+    </ListPage>
   )
 }

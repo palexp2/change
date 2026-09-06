@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Trash2, ChevronDown, ChevronUp, ExternalLink, Plus, CheckCircle2, Circle, Clock, X, Star, MessageSquare, Phone, AlertTriangle, Copy } from 'lucide-react'
+import { Trash2, ExternalLink, Plus, CheckCircle2, Circle, Clock, X, Star, MessageSquare, Phone, AlertTriangle, Copy } from 'lucide-react'
 import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge, ticketStatusColor } from '../components/Badge.jsx'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
@@ -18,9 +17,7 @@ import { Modal } from '../components/Modal.jsx'
 import TaskForm from '../components/TaskForm.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import WeatherPanel from '../components/WeatherPanel.jsx'
-import { useRecordKeyNav } from '../lib/useRecordKeyNav.js'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { contactsForCompany } from '../lib/contactCompanies'
 import { fmtPhone as fmtPhoneBase } from '../utils/formatters.js'
@@ -36,14 +33,9 @@ const cancelIdle = (h) => (typeof cancelIdleCallback === 'function'
   : clearTimeout(h))
 
 
-// `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
-// (RecordPeekDrawer) sans le chrome de page (Layout, bouton retour, nav
-// clavier prev/next). En mode route normale, l'`id` vient de l'URL.
 // `onClose` ferme le drawer (utilisé après suppression du billet).
-export default function TicketDetail({ recordId, embedded = true, onClose }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const navigate = useNavigate()
+export default function TicketDetail({ recordId, onClose }) {
+  const id = recordId
   const { user } = useAuth()
   const [ticket, setTicket] = useState(null)
   const [companies, setCompanies] = useState([])
@@ -55,7 +47,6 @@ export default function TicketDetail({ recordId, embedded = true, onClose }) {
   const [reloadKey, setReloadKey] = useState(0)
   const [surveyKey, setSurveyKey] = useState(0)
   const [fieldSaving, setFieldSaving] = useState({})
-  const [ticketIds, setTicketIds] = useState([])
   const [keywordOptions, setKeywordOptions] = useState([])
   const [linkedInteractions, setLinkedInteractions] = useState([])
   const [interactionsTotal, setInteractionsTotal] = useState(0)
@@ -87,11 +78,6 @@ export default function TicketDetail({ recordId, embedded = true, onClose }) {
     return () => { cancelIdle(handle); ac.abort() }
   }, [ticket?.id, loadTasks])
 
-  useEffect(() => {
-    api.tickets.ids()
-      .then(ids => setTicketIds(ids || []))
-      .catch(() => {})
-  }, [])
 
   // Options du champ « Mots clés » : dérivées des valeurs déjà utilisées sur les
   // billets (le champ vient d'Airtable, sans liste de choix côté ERP).
@@ -138,16 +124,6 @@ export default function TicketDetail({ recordId, embedded = true, onClose }) {
     }
   }
 
-  const currentIdx = ticketIds.indexOf(id)
-  const prevId = currentIdx > 0 ? ticketIds[currentIdx - 1] : null
-  const nextId = currentIdx >= 0 && currentIdx < ticketIds.length - 1 ? ticketIds[currentIdx + 1] : null
-
-  // Navigation clavier entre billets (j/↓ suivant · k/↑ précédent).
-  // Désactivée en mode embarqué : naviguer quitterait le drawer.
-  useRecordKeyNav({
-    prev: !embedded && prevId ? `/tickets/${prevId}` : null,
-    next: !embedded && nextId ? `/tickets/${nextId}` : null,
-  })
 
   // Modifié ailleurs (Airtable, un collègue) → la fiche suit sans rechargement.
   useRealtimeChannel(id ? `ticket:${id}` : null, (msg) => {
@@ -198,8 +174,7 @@ export default function TicketDetail({ recordId, embedded = true, onClose }) {
     if (!(await confirm('Supprimer ce billet ?'))) return
     try {
       await api.tickets.delete(id)
-      if (embedded) onClose?.()
-      else navigate('/tickets')
+      onClose?.()
     } catch (err) {
       addToast({ message: err.message || 'Erreur lors de la suppression', type: 'error' })
     }
@@ -246,64 +221,30 @@ export default function TicketDetail({ recordId, embedded = true, onClose }) {
     return [...users, { id: ticket.assigned_to, name: ticket.assigned_name || '…' }]
   }, [users, ticket?.assigned_to, ticket?.assigned_name])
 
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
+  const pending = detailPending({ loading, loadError, onRetry: () => setReloadKey(k => k + 1), record: ticket, notFound: 'Billet introuvable.' })
+  if (pending) return pending
 
-  if (loading) {
-    return shell(<Spinner center />)
-  }
-  if (loadError && !ticket) {
-    return shell(<DetailLoadError message={loadError} onRetry={() => setReloadKey(k => k + 1)} />)
-  }
-  if (!ticket) {
-    return shell(<div className="p-6 text-slate-500">Billet introuvable.</div>)
-  }
-
-  return shell(
+  return (
     <>
-      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-3xl mx-auto'}>
-        {/* Header */}
-        <div className="flex items-start gap-4 mb-6">
-          {!embedded && (
-            <button onClick={() => navigate('/tickets')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-              <ArrowLeft size={18} />
-            </button>
-          )}
-          <div className="flex-1">
-            {!embedded && <PageTitle>{ticket.title}</PageTitle>}
-            <div className="flex items-center gap-2 mt-1 flex-wrap">
+      <DetailShell
+        header={{
+          badge: (
+            <>
               <Badge color={ticketStatusColor(ticket.status)}>{ticket.status}</Badge>
               {ticket.type && <Badge color="gray">{ticket.type}</Badge>}
               <OrishaLinks controllers={ticket.central_controllers} />
-            </div>
-          </div>
-          <SurveySection ticketId={id} contactId={ticket.contact_id} onSent={() => setSurveyKey(k => k + 1)} />
-          {!embedded && (
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => prevId && navigate(`/tickets/${prevId}`)}
-                disabled={!prevId}
-                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-                title="Billet précédent (k / ↑)"
-              >
-                <ChevronUp size={16} />
+            </>
+          ),
+          actions: (
+            <>
+              <SurveySection ticketId={id} contactId={ticket.contact_id} onSent={() => setSurveyKey(k => k + 1)} />
+              <button onClick={handleDelete} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Supprimer">
+                <Trash2 size={16} />
               </button>
-              <button
-                onClick={() => nextId && navigate(`/tickets/${nextId}`)}
-                disabled={!nextId}
-                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-                title="Billet suivant (j / ↓)"
-              >
-                <ChevronDown size={16} />
-              </button>
-            </div>
-          )}
-          <button onClick={handleDelete} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Supprimer">
-            <Trash2 size={16} />
-          </button>
-        </div>
-
+            </>
+          ),
+        }}
+      >
         <SurveyCard ticketId={id} refreshKey={surveyKey} />
 
         {/* Info card — la disposition des champs (ordre, champs retirés) est
@@ -492,7 +433,7 @@ export default function TicketDetail({ recordId, embedded = true, onClose }) {
             />
           </div>
         )}
-      </div>
+      </DetailShell>
 
       <Modal isOpen={showTaskModal} title="Nouvelle tâche" onClose={() => setShowTaskModal(false)}>
         <TaskForm

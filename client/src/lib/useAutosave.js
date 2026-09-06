@@ -16,8 +16,8 @@ import { useToast } from '../contexts/ToastContext.jsx'
 //
 // Usage :
 //
-//   const { save, saving } = useAutosave(record, patch => api.x.update(record.id, patch), {
-//     onSaved: updated => ...,                 // reçoit le retour de l'updater
+//   const { save, saving, savingKeys } = useAutosave(record, patch => api.x.update(record.id, patch), {
+//     onSaved: (updated, key, value) => ...,   // retour de l'updater + champ envoyé
 //     onError: (key, prevValue, err) => ...,   // rollback local du champ
 //   })
 //   ...
@@ -40,25 +40,26 @@ export function useAutosave(record, updater, {
   onSaved,
   onError,
 } = {}) {
-  const [saving, setSaving] = useState(false)
+  const [savingKeys, setSavingKeys] = useState({})
   const { addToast } = useToast()
 
   const save = async (key, value) => {
     if (!enabled || !record) return
     if (compare(record[key], value)) return
-    setSaving(true)
+    setSavingKeys(s => ({ ...s, [key]: true }))
     try {
-      const result = await updater({ [key]: emptyToNull && value === '' ? null : value })
-      onSaved?.(result)
+      const sent = emptyToNull && value === '' ? null : value
+      const result = await updater({ [key]: sent })
+      onSaved?.(result, key, sent)
     } catch (e) {
       addToast({ message: errorMessage(e), type: 'error' })
       onError?.(key, record[key], e)
     } finally {
-      setSaving(false)
+      setSavingKeys(s => ({ ...s, [key]: false }))
     }
   }
 
-  return { save, saving }
+  return { save, savingKeys, saving: Object.values(savingKeys).some(Boolean) }
 }
 
 export default useAutosave

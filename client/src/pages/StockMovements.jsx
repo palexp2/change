@@ -1,9 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -43,34 +41,20 @@ const RENDERS = {
 const COLUMNS = TABLE_COLUMN_META.stock_movements.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
 export default function StockMovements() {
-  const [rows, setRows] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.stockMovements.list({ limit, page }),
-      setRows, setLoading
-    )
-  }, [])
-
-  useEffect(() => { load() }, [load])
+  const { rows, loading } = useListData({
+    fetch: (page, limit) => api.stockMovements.list({ limit, page }),
+  })
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <PageTitle>Mouvements d'inventaire</PageTitle>
-        </div>
-
-        <DataTable
-          table="stock_movements"
-          manageViews
-          columns={COLUMNS}
-          data={rows}
-          loading={loading}
-          searchFields={['product_sku', 'product_name', 'reason', 'reference_id', 'movement_value', 'unit_cost']}
-        />
-      </div>
-    </Layout>
+    <ListPage title="Mouvements d'inventaire">
+      <DataTable
+        table="stock_movements"
+        manageViews
+        columns={COLUMNS}
+        data={rows}
+        loading={loading}
+        searchFields={['product_sku', 'product_name', 'reason', 'reference_id', 'movement_value', 'unit_cost']}
+      />
+    </ListPage>
   )
 }

@@ -1,10 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, Save, Star, X, CheckSquare, Trash2 } from 'lucide-react'
+import { Plus, Save, Star, X, CheckSquare, Trash2 } from 'lucide-react'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import api from '../lib/api.js'
-import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
@@ -22,7 +20,6 @@ import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { fmtPhone } from '../utils/formatters.js'
 
 function fieldTypeInput(type) {
@@ -371,13 +368,8 @@ function TaskModalContent({ contactId, contactCompanies = [], editingTask, users
   )
 }
 
-// `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
-// (RecordPeekDrawer) sans le chrome de page (Layout, bouton retour). En mode
-// route normale, l'`id` vient de l'URL.
-export default function ContactDetail({ recordId, embedded = true, onClose }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const navigate = useNavigate()
+export default function ContactDetail({ recordId, onClose }) {
+  const id = recordId
   const { user: _user } = useAuth()
   const confirm = useConfirm()
   const { addToast } = useToast()
@@ -452,8 +444,7 @@ export default function ContactDetail({ recordId, embedded = true, onClose }) {
     api.auth.users().then(setUsers).catch(() => {})
   }, [id])
 
-  // Fermer la fiche : le side-peek se referme, la page pleine retourne à la liste.
-  const dismiss = () => { if (onClose) onClose(); else navigate('/contacts') }
+  const dismiss = () => onClose?.()
 
   useRealtimeChannel(id ? `contact:${id}` : null, (msg) => {
     if (msg.type === 'contact:updated') setContact(c => c ? { ...c, ...msg.payload } : c)
@@ -492,94 +483,42 @@ export default function ContactDetail({ recordId, embedded = true, onClose }) {
     }
   }
 
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
+  const pending = detailPending({ loading, loadError, onRetry: load, record: contact, notFound: 'Contact introuvable.' })
+  if (pending) return pending
 
-  if (loading) {
-    return shell(<Spinner center />)
-  }
-  if (loadError && !contact) {
-    return shell(<DetailLoadError message={loadError} onRetry={load} />)
-  }
-  if (!contact) {
-    return shell(<div className="p-6 text-slate-500">Contact introuvable.</div>)
-  }
-
-  return shell(
+  return (
     <>
-      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-3xl mx-auto'}>
-        {/* Header */}
-        {embedded ? (
-          <div className="flex items-center gap-3 flex-wrap mb-4">
-            {contact.language && (
-              <Badge color={contact.language === 'French' ? 'blue' : 'green'}>
-                {contact.language === 'French' ? 'FR' : 'EN'}
-              </Badge>
-            )}
-            <SaveStatus status={saveState} />
-            {contact.company_id && (
-              <LinkedRecordField
-                name="company_id"
-                value={contact.company_id}
-                options={[{ id: contact.company_id, name: contact.company_name || 'Entreprise' }]}
-                getHref={c => `/companies/${c.id}`}
-                disabled
-                allowClear={false}
-              />
-            )}
+      <DetailShell
+        header={{
+          badge: contact.language && (
+            <Badge color={contact.language === 'French' ? 'blue' : 'green'}>
+              {contact.language === 'French' ? 'FR' : 'EN'}
+            </Badge>
+          ),
+          status: <SaveStatus status={saveState} />,
+          meta: contact.company_id && (
+            <LinkedRecordField
+              name="company_id"
+              value={contact.company_id}
+              options={[{ id: contact.company_id, name: contact.company_name || 'Entreprise' }]}
+              getHref={c => `/companies/${c.id}`}
+              disabled
+              allowClear={false}
+            />
+          ),
+          actions: (
             <button
               onClick={handleDelete}
-              className="ml-auto p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
               title="Supprimer ce contact"
               aria-label="Supprimer ce contact"
               data-testid="delete-contact"
             >
               <Trash2 size={16} />
             </button>
-          </div>
-        ) : (
-          <div className="flex items-start gap-4 mb-6">
-            <button onClick={() => navigate('/contacts')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-              <ArrowLeft size={18} />
-            </button>
-            <div className="flex-1">
-              <div className="flex items-center gap-3 flex-wrap">
-                <PageTitle>{contact.first_name} {contact.last_name}</PageTitle>
-                {contact.language && (
-                  <Badge color={contact.language === 'French' ? 'blue' : 'green'}>
-                    {contact.language === 'French' ? 'FR' : 'EN'}
-                  </Badge>
-                )}
-                <SaveStatus status={saveState} />
-              </div>
-              {contact.company_id && (
-                <div className="mt-0.5">
-                  <LinkedRecordField
-                    name="company_id"
-                    value={contact.company_id}
-                    options={[{ id: contact.company_id, name: contact.company_name || 'Entreprise' }]}
-                    getHref={c => `/companies/${c.id}`}
-                    disabled
-                    allowClear={false}
-                  />
-                </div>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={handleDelete}
-                className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
-                title="Supprimer ce contact"
-                aria-label="Supprimer ce contact"
-                data-testid="delete-contact"
-              >
-                <Trash2 size={16} />
-              </button>
-            </div>
-          </div>
-        )}
-
+          ),
+        }}
+      >
         {/* Info card — l'ordre des champs et ceux qu'on garde se règlent dans la
             fiche elle-même (bouton « Personnaliser les champs » du panneau
             latéral, ou au survol de la carte ici). */}
@@ -622,7 +561,7 @@ export default function ContactDetail({ recordId, embedded = true, onClose }) {
             data={tasks}
             searchFields={['title', 'status']}
             onRowClick={row => { setEditingTask(row); setTaskForm({ title: row.title, status: row.status, priority: row.priority, due_date: row.due_date || '', assigned_to: row.assigned_to || '', notes: row.notes || '' }); setShowTaskModal(true) }}
-            height={embedded ? '260px' : 'calc(100vh - 440px)'}
+            height="260px"
             emptyState={{ icon: CheckSquare, title: 'Aucune tâche', description: "Aucune tâche n'est associée à ce contact pour l'instant.", cta: { label: 'Ajouter', icon: Plus, onClick: () => { setEditingTask(null); setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', assigned_to: '', notes: '' }); setShowTaskModal(true) } } }}
           />
         </div>
@@ -640,7 +579,7 @@ export default function ContactDetail({ recordId, embedded = true, onClose }) {
             showContact={false}
           />
         </div>
-      </div>
+      </DetailShell>
 
       {showTaskModal && (
         <TaskModalContent

@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { RefreshCw, Plus, Pencil, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
+import { useListData } from '../lib/useListData.js'
 import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
@@ -11,7 +11,6 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtMoney, fmtNumber } from '../utils/formatters.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { useAuth } from '../lib/auth.jsx'
 import Spinner from '../components/Spinner.jsx'
 
@@ -534,21 +533,9 @@ function PaieDetail({ paie, onEdit, onDeleted }) {
 export default function Paies() {
   const { user } = useAuth()
   const isHR = ['admin', 'rh'].includes(user?.role)
-  const [paies, setPaies] = useState([])
-  const [loading, setLoading] = useState(true)
   const [editing, setEditing] = useState(null)
   const [showForm, setShowForm] = useState(false)
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const { data } = await api.paies.list({ limit: 500 })
-      setPaies(data || [])
-    } finally { setLoading(false) }
-  }, [])
-
-  useEffect(() => { load() }, [load])
-  useEntityListRealtime('paie', setPaies)
+  const { rows: paies, loading, reload: load } = useListData({ fetch: () => api.paies.list({ limit: 500 }), realtime: 'paie' })
 
   function openCreate() {
     setEditing(null)
@@ -567,42 +554,34 @@ export default function Paies() {
   }
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <PageTitle>{isHR ? 'Paies' : 'Mes bulletins de paie'}</PageTitle>
-          <div className="flex items-center gap-2">
-            {isHR && (
-              <>
-                <button onClick={openCreate} className="btn-primary flex items-center gap-2">
-                  <Plus size={15} /> Nouvelle paie
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-
-        <DataTable
-          table="paies"
-          manageViews
-          columns={COLUMNS_PAIES}
-          data={paies}
-          loading={loading}
-          peek={{
-            title: row => `Paie — ${fmtDate(row.period_end)}${row.number ? ` (#${row.number})` : ''}`,
-            subtitle: row => row.status || '',
-            width: 860,
-            render: (row, { close }) => (
-              <PaieDetail
-                paie={row}
-                onEdit={paie => { close(); openEdit(paie) }}
-                onDeleted={() => { close(); load() }}
-              />
-            ),
-          }}
-          searchFields={['status', 'number', 'total_with_charges_and_reimb', 'total_regular_amount']}
-        />
-      </div>
+    <ListPage
+      title={isHR ? 'Paies' : 'Mes bulletins de paie'}
+      actions={isHR && (
+        <button onClick={openCreate} className="btn-primary flex items-center gap-2">
+          <Plus size={15} /> Nouvelle paie
+        </button>
+      )}
+    >
+      <DataTable
+        table="paies"
+        manageViews
+        columns={COLUMNS_PAIES}
+        data={paies}
+        loading={loading}
+        peek={{
+          title: row => `Paie — ${fmtDate(row.period_end)}${row.number ? ` (#${row.number})` : ''}`,
+          subtitle: row => row.status || '',
+          width: 860,
+          render: (row, { close }) => (
+            <PaieDetail
+              paie={row}
+              onEdit={paie => { close(); openEdit(paie) }}
+              onDeleted={() => { close(); load() }}
+            />
+          ),
+        }}
+        searchFields={['status', 'number', 'total_with_charges_and_reimb', 'total_regular_amount']}
+      />
 
       <Modal
         isOpen={showForm}
@@ -617,6 +596,6 @@ export default function Paies() {
           onDeleted={handleSaved}
         />
       </Modal>
-    </Layout>
+    </ListPage>
   )
 }

@@ -1,15 +1,12 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useNavigate, Link, useSearchParams } from 'react-router-dom'
-import { Plus, Package, X } from 'lucide-react'
+import { Plus, Package } from 'lucide-react'
 import api from '../lib/api.js'
-import { useTable, isTableHydrated } from '../lib/dataStore.js'
-import { sync as syncStore } from '../lib/dataSync.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useTable } from '../lib/dataStore.js'
+import { useListData } from '../lib/useListData.js'
+import { ListPage, FilterBanner } from '../components/ListPage.jsx'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
-import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { RecordForm } from '../components/RecordForm.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import OrderDetail from './OrderDetail.jsx'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
@@ -107,7 +104,7 @@ function orderFormFields({ companies, users, projects, adresses }) {
 export default function Orders() {
   const navigate = useNavigate()
   const { peekOpenId, consumePeekOpen } = usePeekOpenId()
-  const [showModal, setShowModal] = useState(false)
+  const [formOpen, setFormOpen] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   // Filtre temporaire posé par un clic sur une barre du graphique « Revenus
   // expédiés » (vue globale du dashboard) : lundi de la semaine, 'YYYY-MM-DD'.
@@ -116,24 +113,23 @@ export default function Orders() {
   // Cache global : hydraté au login par /api/bootstrap, rafraîchi par delta
   // polling toutes les 10s. Pas de WS direct ici — lag max ~10s acceptable
   // pour une liste de commandes.
-  const ordersRaw = useTable('orders')
+  const { rows: ordersRaw, loading, reload } = useListData({ table: 'orders' })
   const companies = useTable('companies')
   const users = useTable('users')
   const orderItems = useTable('order_items')
   const projects = useTable('projects')
   const shipments = useTable('shipments')
-  const loading = !isTableHydrated('orders')
 
   // Adresses : hors cache global, et seulement utiles quand la modale de
   // création est ouverte (le champ « Adresse de livraison » est masqué par
   // défaut) — chargées à l'ouverture, une fois.
   const [adresses, setAdresses] = useState([])
   useEffect(() => {
-    if (!showModal || adresses.length) return
+    if (!formOpen || adresses.length) return
     let alive = true
     api.adresses.lookup().then(d => { if (alive) setAdresses(Array.isArray(d) ? d : []) }).catch(() => {})
     return () => { alive = false }
-  }, [showModal, adresses.length])
+  }, [formOpen, adresses.length])
 
   const formFields = useMemo(
     () => orderFormFields({ companies, users, projects, adresses }),
@@ -183,37 +179,25 @@ export default function Orders() {
 
   async function handleCreate(form) {
     const order = await api.orders.create(form)
-    await syncStore()
+    await reload()
     navigate(`/orders/${order.id}`)
   }
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Commandes</PageTitle>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowModal(true)} className="btn-primary">
-              <Plus size={16} /> Nouvelle commande
-            </button>
-          </div>
-        </div>
-
-        {shippedWeek && (
-          <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg text-sm text-brand-700" data-testid="orders-shipped-week-filter">
-            <span>Commandes expédiées — semaine du {fmtWeekStart(shippedWeek)} ({displayedOrders.length})</span>
-            <button
-              onClick={() => setSearchParams({})}
-              className="ml-auto flex items-center gap-1 text-xs text-brand-500 hover:text-brand-700"
-              data-testid="orders-shipped-week-clear"
-            >
-              <X size={13} /> Effacer
-            </button>
-          </div>
-        )}
-
+    <ListPage
+      title="Commandes"
+      create={{
+        label: 'Nouvelle commande', table: 'orders', fields: formFields, includeAllFields: true,
+        onSubmit: handleCreate, submitLabel: 'Créer la commande', savingLabel: 'Création...',
+        onOpenChange: setFormOpen,
+      }}
+      banner={shippedWeek && (
+        <FilterBanner onClear={() => setSearchParams({})} testId="orders-shipped-week-filter">
+          Commandes expédiées — semaine du {fmtWeekStart(shippedWeek)} ({displayedOrders.length})
+        </FilterBanner>
+      )}
+    >
+      {({ openCreate }) => (
         <DataTable
           table="orders"
           manageViews
@@ -230,22 +214,9 @@ export default function Orders() {
             onOpenConsumed: consumePeekOpen,
             render: (row, { close }) => <OrderDetail recordId={row.id} embedded onClose={close} /> }}
           searchFields={['order_number', 'company_name']}
-          emptyState={{ icon: Package, title: 'Aucune commande', description: "Aucune commande n'a encore été créée. Crée une commande pour démarrer une vente.", cta: { label: 'Nouvelle commande', icon: Plus, onClick: () => setShowModal(true) } }}
+          emptyState={{ icon: Package, title: 'Aucune commande', description: "Aucune commande n'a encore été créée. Crée une commande pour démarrer une vente.", cta: { label: 'Nouvelle commande', icon: Plus, onClick: openCreate } }}
         />
-      </div>
-
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouvelle commande">
-        <RecordForm
-          table="orders"
-          fields={formFields}
-          includeAllFields
-          onSubmit={handleCreate}
-          onClose={() => setShowModal(false)}
-          submitLabel="Créer la commande"
-          savingLabel="Création..."
-        />
-      </Modal>
-
-    </Layout>
+      )}
+    </ListPage>
   )
 }

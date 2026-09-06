@@ -1,10 +1,8 @@
-import { Link, useParams, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { ExternalLink, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
@@ -109,13 +107,7 @@ function GreenhouseCard({ g, idx }) {
   )
 }
 
-// `recordId` + `embedded` : la fiche est toujours montée dans un
-// RecordPeekDrawer (voir components/RecordRoutePanel.jsx), sans chrome de page.
-export default function DiscoveryFormDetail({ recordId, onClose, onDeleted }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const shell = (content) => content
-  const navigate = useNavigate()
+export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }) {
   const confirm = useConfirm()
   const { addToast } = useToast()
 
@@ -129,51 +121,48 @@ export default function DiscoveryFormDetail({ recordId, onClose, onDeleted }) {
     try {
       await api.discoveryForms.delete(id)
       onDeleted?.()
-      if (onClose) onClose()
-      else navigate('/discovery-forms')
+      onClose?.()
     } catch (err) {
       addToast({ message: err.message || 'Erreur lors de la suppression', type: 'error' })
     }
   }
 
-  if (loading) return shell(<Spinner center />)
-  if (loadError && !form) return shell(<DetailLoadError message={loadError} onRetry={reload} />)
-  if (!form) return shell(<div className="p-6 text-slate-500">Système introuvable.</div>)
+  const pending = detailPending({ loading, loadError, onRetry: reload, record: form, notFound: 'Système introuvable.' })
+  if (pending) return pending
 
   const submitted = form.status === 'submitted'
   const greenhouses = form.greenhouses || []
   const extras = form.extras || []
   const sameShipping = form.shipping_same_as_farm === true
 
-  return shell(
-    <div className="p-6 space-y-4">
-      <div>
-        <div className="flex items-center gap-3">
-          <PageTitle titleClassName="text-xl font-bold text-slate-900">
-            {form.company_id
-              ? <Link to={`/companies/${form.company_id}`} className="text-brand-600 hover:underline">{form.company_name || 'Entreprise'}</Link>
-              : (form.company_name || 'System builder')}
-          </PageTitle>
-          <Badge color={submitted ? 'green' : 'blue'} size="sm">{submitted ? 'Soumis' : 'En cours'}</Badge>
+  return (
+    <DetailShell
+      header={{
+        badge: <Badge color={submitted ? 'green' : 'blue'} size="sm">{submitted ? 'Soumis' : 'En cours'}</Badge>,
+        meta: (
+          <>
+            {form.company_id && <Link to={`/companies/${form.company_id}`} className="text-brand-600 hover:underline">{form.company_name || 'Entreprise'}</Link>}
+            <span>Créé le {fmtDate(form.created_at)}</span>
+            {form.submitted_at && <span>Soumis le {fmtDate(form.submitted_at)}</span>}
+            {form.public_url && (
+              <a href={form.public_url} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:underline inline-flex items-center gap-1">
+                <ExternalLink size={11} /> Formulaire
+              </a>
+            )}
+          </>
+        ),
+        actions: (
           <button
             onClick={handleDelete}
-            className="ml-auto p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
             title="Supprimer"
           >
             <Trash2 size={16} />
           </button>
-        </div>
-        <div className="text-xs text-slate-400 mt-1 flex items-center gap-3">
-          <span>Créé le {fmtDate(form.created_at)}</span>
-          {form.submitted_at && <span>Soumis le {fmtDate(form.submitted_at)}</span>}
-          {form.public_url && (
-            <a href={form.public_url} target="_blank" rel="noopener noreferrer" className="text-brand-600 hover:underline inline-flex items-center gap-1">
-              <ExternalLink size={11} /> Formulaire
-            </a>
-          )}
-        </div>
-      </div>
-
+        ),
+      }}
+    >
+    <div className="space-y-4">
       <Section title="Site">
         <Row label="Type">{SITE_LABELS[form.is_new_site] || form.is_new_site}</Row>
         <Row label="Serres">{form.num_greenhouses || null}</Row>
@@ -202,6 +191,7 @@ export default function DiscoveryFormDetail({ recordId, onClose, onDeleted }) {
           ))}
         </Section>
       )}
-    </div>,
+    </div>
+    </DetailShell>
   )
 }

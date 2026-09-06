@@ -22,7 +22,10 @@ const DEBT_FIELDS = ['label', 'lender', 'loan_number', 'currency', 'principal',
   'annual_rate', 'payment_frequency', 'payment_amount',
   // Libellé du prélèvement au relevé bancaire (« BDC », « VILLE DE QUEBEC ») :
   // ce qui permet de reconnaître le versement quand il passe au compte.
-  'bank_label_pattern']
+  'bank_label_pattern',
+  // Frais annuels ajoutés par le prêteur au débit d'un mois précis, absents de
+  // la cédule (BDC 350 $ en août, Ville de Québec 1 250 $ en février).
+  'annual_fee_amount', 'annual_fee_month', 'annual_fee_acctnum', 'annual_fee_label']
 
 function debtSummary(debt) {
   const payments = db.prepare(`

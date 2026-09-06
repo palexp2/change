@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Plus, ExternalLink, Trash2, RefreshCw, BookOpen, AlertCircle, Wand2, ChevronDown, ChevronRight, Save } from 'lucide-react'
 import { api } from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { Modal } from '../components/Modal.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -1060,8 +1059,6 @@ const RENDERS = {
 const COLUMNS = TABLE_COLUMN_META.journal_entries.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
 export default function JournalEntries() {
-  const [entries, setEntries] = useState([])
-  const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [selectedId, setSelectedId] = useState(null)
   const [creating, setCreating] = useState(false)
@@ -1074,14 +1071,9 @@ export default function JournalEntries() {
     total: totalForRow(r),
   }))
 
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.journalEntries.list({ limit, page }).then(r => ({ data: decorate(r.data) })),
-      setEntries, setLoading
-    )
-  }, [])
-
-  useEffect(() => { load() }, [load])
+  const { rows: entries, setRows: setEntries, loading, reload: load } = useListData({
+    fetch: (page, limit) => api.journalEntries.list({ limit, page }).then(r => ({ data: decorate(r.data) })),
+  })
 
   async function openCreate() {
     try {
@@ -1107,39 +1099,32 @@ export default function JournalEntries() {
   }
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Écritures de journal</PageTitle>
-            <p className="text-sm text-slate-500 mt-1">Écritures synchronisées avec QuickBooks</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={load} disabled={loading} className="btn-secondary">
-              <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Actualiser
-            </button>
-            <button onClick={openCreate} className="btn-primary">
-              <Plus size={14} /> Nouvelle écriture
-            </button>
-          </div>
+    <ListPage
+      title="Écritures de journal"
+      subtitle={<p className="text-sm text-slate-500 mt-1">Écritures synchronisées avec QuickBooks</p>}
+      actions={<>
+        <button onClick={load} disabled={loading} className="btn-secondary">
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Actualiser
+        </button>
+        <button onClick={openCreate} className="btn-primary">
+          <Plus size={14} /> Nouvelle écriture
+        </button>
+      </>}
+      banner={error && (
+        <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-4">
+          <AlertCircle size={14} /> {error}
         </div>
-
-        {error && (
-          <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-700 rounded-lg px-3 py-2 text-sm mb-4">
-            <AlertCircle size={14} /> {error}
-          </div>
-        )}
-
-        <DataTable
-          table="journal_entries"
-          manageViews
-          columns={COLUMNS}
-          data={entries}
-          loading={loading}
-          searchFields={['doc_number', 'memo', 'total']}
-          onRowClick={row => setSelectedId(row.id)}
-        />
-      </div>
+      )}
+    >
+      <DataTable
+        table="journal_entries"
+        manageViews
+        columns={COLUMNS}
+        data={entries}
+        loading={loading}
+        searchFields={['doc_number', 'memo', 'total']}
+        onRowClick={row => setSelectedId(row.id)}
+      />
 
       <EntryDetailModal entryId={selectedId} onClose={() => setSelectedId(null)} />
 
@@ -1152,6 +1137,6 @@ export default function JournalEntries() {
           onDefaultsSaved={(d) => setJournalDefaults(d)}
         />
       </Modal>
-    </Layout>
+    </ListPage>
   )
 }

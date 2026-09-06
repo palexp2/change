@@ -2,15 +2,12 @@ import { useState, useMemo } from 'react'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import { Plus, Package } from 'lucide-react'
 import api from '../lib/api.js'
-import { useTable, isTableHydrated } from '../lib/dataStore.js'
-import { sync as syncStore } from '../lib/dataSync.js'
+import { useListData } from '../lib/useListData.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { RecordForm } from '../components/RecordForm.jsx'
 import TableThumb from '../components/TableThumb.jsx'
 import ProductDetail from './ProductDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -82,7 +79,6 @@ function StockAdjustModal({ product, onSave, onClose }) {
 }
 
 export default function Products() {
-  const [showModal, setShowModal] = useState(false)
   const [stockProduct, setStockProduct] = useState(null)
   const undoableDelete = useUndoableDelete()
   const { addToast } = useToast()
@@ -92,9 +88,8 @@ export default function Products() {
   // Cache global (lib/dataStore) : hydraté au login par /api/bootstrap, mis à
   // jour par delta polling toutes les 10s. La page filtre l'état "inactif"
   // côté client (l'ancien endpoint le faisait via ?active=true).
-  const allProducts = useTable('products')
+  const { rows: allProducts, loading, reload } = useListData({ table: 'products' })
   const products = useMemo(() => allProducts.filter(p => p.active !== 0), [allProducts])
-  const loading = !isTableHydrated('products')
 
   // Vignette pour la colonne Image — les colonnes hardcodées ne passent pas
   // par DynamicCell, le rendu custom vit ici (même pattern que Purchases).
@@ -112,86 +107,72 @@ export default function Products() {
   async function handleCreate(form) {
     await api.products.create(form)
     // Synchro immédiate pour voir le nouveau produit sans attendre le poll.
-    await syncStore()
+    await reload()
   }
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Inventaire</PageTitle>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowModal(true)} className="btn-primary">
-              <Plus size={16} /> Nouveau produit
-            </button>
-          </div>
-        </div>
-
-        <DataTable
-          table="products"
-          manageViews
-          columns={COLUMNS}
-          data={products}
-          loading={loading}
-          peek={{
-            title: row => row.name_fr || row.name_en || 'Produit',
-            subtitle: row => [row.sku, row.type].filter(Boolean).join(' · '),
-            to: row => `/products/${row.id}`,
-            width: 720,
-            openId: peekOpenId,
-            onOpenConsumed: consumePeekOpen,
-            render: (row, { close }) => <ProductDetail recordId={row.id} embedded onClose={close} /> }}
-          searchFields={['name_fr', 'name_en', 'sku', 'supplier']}
-          onBulkDelete={async (ids) => {
-            // Le serveur refuse (409) toute pièce citée par un BOM, un envoi ou
-            // un achat : on supprime ce qui peut l'être et on signale le reste,
-            // au lieu de tout perdre sur le premier refus.
-            const results = await Promise.allSettled(ids.map(id => api.products.delete(id)))
-            const done = ids.filter((_, i) => results[i].status === 'fulfilled')
-            const blocked = ids.length - done.length
-            if (done.length) {
-              await undoableDelete({
-                table: 'products',
-                ids: done,
-                deleteFn: () => Promise.resolve(), // déjà supprimé ci-dessus
-                label: `${done.length} produit${done.length > 1 ? 's' : ''} supprimé${done.length > 1 ? 's' : ''}`,
-                onChange: syncStore,
-              })
-            }
-            if (blocked) {
-              addToast({
-                type: 'error',
-                duration: 6000,
-                message: `${blocked} pièce${blocked > 1 ? 's' : ''} liée${blocked > 1 ? 's' : ''} à un BOM, un envoi ou un achat — conservée${blocked > 1 ? 's' : ''}`,
-              })
-            }
-          }}
-          emptyState={{ icon: Package, title: 'Aucun produit', description: "Aucun produit n'est encore au catalogue. Ajoute un produit pour le vendre et l'assembler.", cta: { label: 'Nouveau produit', icon: Plus, onClick: () => setShowModal(true) } }}
-        />
-      </div>
-
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau produit" size="lg">
-        <RecordForm
-          table="products"
-          fields={PRODUCT_FORM_FIELDS}
-          columns={2}
-          onSubmit={handleCreate}
-          onClose={() => setShowModal(false)}
-        />
-      </Modal>
-
-
-      <Modal isOpen={!!stockProduct} onClose={() => setStockProduct(null)} title="Ajustement de stock" size="sm">
-        {stockProduct && (
-          <StockAdjustModal
-            product={stockProduct}
-            onSave={() => { syncStore(); setStockProduct(null) }}
-            onClose={() => setStockProduct(null)}
+    <ListPage
+      title="Inventaire"
+      create={{
+        label: 'Nouveau produit', table: 'products', fields: PRODUCT_FORM_FIELDS, columns: 2, size: 'lg',
+        onSubmit: handleCreate,
+      }}
+    >
+      {({ openCreate }) => (
+        <>
+          <DataTable
+            table="products"
+            manageViews
+            columns={COLUMNS}
+            data={products}
+            loading={loading}
+            peek={{
+              title: row => row.name_fr || row.name_en || 'Produit',
+              subtitle: row => [row.sku, row.type].filter(Boolean).join(' · '),
+              to: row => `/products/${row.id}`,
+              width: 720,
+              openId: peekOpenId,
+              onOpenConsumed: consumePeekOpen,
+              render: (row, { close }) => <ProductDetail recordId={row.id} embedded onClose={close} /> }}
+            searchFields={['name_fr', 'name_en', 'sku', 'supplier']}
+            onBulkDelete={async (ids) => {
+              // Le serveur refuse (409) toute pièce citée par un BOM, un envoi ou
+              // un achat : on supprime ce qui peut l'être et on signale le reste,
+              // au lieu de tout perdre sur le premier refus.
+              const results = await Promise.allSettled(ids.map(id => api.products.delete(id)))
+              const done = ids.filter((_, i) => results[i].status === 'fulfilled')
+              const blocked = ids.length - done.length
+              if (done.length) {
+                await undoableDelete({
+                  table: 'products',
+                  ids: done,
+                  deleteFn: () => Promise.resolve(), // déjà supprimé ci-dessus
+                  label: `${done.length} produit${done.length > 1 ? 's' : ''} supprimé${done.length > 1 ? 's' : ''}`,
+                  onChange: reload,
+                })
+              }
+              if (blocked) {
+                addToast({
+                  type: 'error',
+                  duration: 6000,
+                  message: `${blocked} pièce${blocked > 1 ? 's' : ''} liée${blocked > 1 ? 's' : ''} à un BOM, un envoi ou un achat — conservée${blocked > 1 ? 's' : ''}`,
+                })
+              }
+            }}
+            emptyState={{ icon: Package, title: 'Aucun produit', description: "Aucun produit n'est encore au catalogue. Ajoute un produit pour le vendre et l'assembler.", cta: { label: 'Nouveau produit', icon: Plus, onClick: openCreate } }}
           />
-        )}
-      </Modal>
-    </Layout>
+
+          <Modal isOpen={!!stockProduct} onClose={() => setStockProduct(null)} title="Ajustement de stock" size="sm">
+            {stockProduct && (
+              <StockAdjustModal
+                product={stockProduct}
+                onSave={() => { reload(); setStockProduct(null) }}
+                onClose={() => setStockProduct(null)}
+              />
+            )}
+          </Modal>
+        </>
+      )}
+    </ListPage>
   )
 }

@@ -1,14 +1,11 @@
 import { useState } from 'react'
-import { useParams } from 'react-router-dom'
 import { RefreshCw, ExternalLink, CheckCircle2, AlertCircle, Info, Eye, Send, X } from 'lucide-react'
 import api from '../lib/api.js'
-import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
 import { Badge, STRIPE_PAYOUT_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { ConfirmModal } from '../components/Modal.jsx'
 import { FactureQuickViewModal } from '../components/FactureQuickViewModal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 
 import { fmtMoney } from '../utils/formatters.js'
@@ -63,12 +60,7 @@ function PayoutField({ id, label, value }) {
   )
 }
 
-// Fiche d'un payout Stripe. Rendue exclusivement dans un panneau latéral
-// (RecordPeekDrawer) : `recordId` vient du panneau, `useParams` sert au cas où
-// la fiche est montée directement depuis l'URL par le registre des fiches.
-export default function StripePayoutDetail({ recordId }) {
-  const { stripeId: paramStripeId } = useParams()
-  const stripeId = recordId ?? paramStripeId
+export default function StripePayoutDetail({ recordId: stripeId }) {
   const [transactions, setTransactions] = useState([])
 
   const [syncing, setSyncing] = useState(false)
@@ -200,13 +192,8 @@ export default function StripePayoutDetail({ recordId }) {
     }
   }
 
-  if (loading) return <Spinner center label="Chargement…" />
-  if (error && !payout) return <DetailLoadError message={error} onRetry={load} retrying={loading} />
-  if (!payout) return (
-    <div className="p-6">
-      <div className="text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm">Payout introuvable</div>
-    </div>
-  )
+  const pending = detailPending({ loading, loadError: error, onRetry: load, record: payout, notFound: 'Payout introuvable.' })
+  if (pending) return pending
 
   const alreadyPushed = !!payout.qb_deposit_id
 
@@ -224,15 +211,13 @@ export default function StripePayoutDetail({ recordId }) {
   })
 
   return (
-    <>
-      <div className="p-6">
-
+    <DetailShell>
         {/* Header */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 mb-4">
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div>
               <div className="flex items-center gap-3 flex-wrap">
-                <PageTitle titleClassName="text-2xl font-bold text-slate-900 tabular-nums">{fmtMoney(payout.amount, payout.currency)}</PageTitle>
+                <div className="text-2xl font-bold text-slate-900 tabular-nums">{fmtMoney(payout.amount, payout.currency)}</div>
                 {payout.status && <Badge color={STATUS_COLORS[payout.status] || 'gray'}>{payout.status}</Badge>}
                 {alreadyPushed && (
                   payout.qb_deposit_url ? (
@@ -415,7 +400,6 @@ export default function StripePayoutDetail({ recordId }) {
             </div>
           )}
         </div>
-      </div>
       <ConfirmModal
         isOpen={!!confirmState}
         onClose={confirmState?.onClose ?? (() => {})}
@@ -425,7 +409,7 @@ export default function StripePayoutDetail({ recordId }) {
         confirmLabel={confirmState?.confirmLabel}
         danger={confirmState?.danger}
       />
-    </>
+    </DetailShell>
   )
 }
 

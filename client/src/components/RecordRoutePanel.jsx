@@ -1,9 +1,10 @@
 import { Suspense, useCallback, useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useLocation } from 'react-router-dom'
 import RecordPeekDrawer from './RecordPeekDrawer.jsx'
 import ErrorBoundary from './ErrorBoundary.jsx'
 import { PEEK_ROUTES } from '../lib/recordPeekRoutes.jsx'
 import { RecordScope } from '../lib/recordLive.jsx'
+import { publishPageTitle } from '../lib/currentPageTitle.js'
 import Spinner from './Spinner.jsx'
 
 // Panneau d'une fiche atteinte par son URL (/orders/<id>) : navigation depuis
@@ -24,7 +25,15 @@ import Spinner from './Spinner.jsx'
 export default function RecordRoutePanel({ match, canGoBack }) {
   const def = PEEK_ROUTES[match.resource]
   const navigate = useNavigate()
+  const { pathname, search } = useLocation()
   const [record, setRecord] = useState(null)
+
+  // Nom du signet : les fiches n'ont plus de <PageTitle>, c'est le panneau qui
+  // connaît le titre.
+  useEffect(() => {
+    const title = record && def?.title?.(record)
+    if (title) publishPageTitle(pathname + search, title)
+  }, [record, def, pathname, search])
 
   // Titre/sous-titre de l'en-tête : l'URL ne porte que l'id, donc on charge le
   // record (le cache de `api` partage l'appel avec la fiche embarquée).

@@ -1,26 +1,25 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, ArrowLeftRight, FileText, ExternalLink, Download, RefreshCw, Hammer, AlertTriangle, CheckCircle2, PanelRight, ShoppingCart, ImagePlus, X, Trash2, Plus } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ArrowLeftRight, FileText, ExternalLink, Download, RefreshCw, Hammer, AlertTriangle, CheckCircle2, ShoppingCart, ImagePlus, X, Trash2, Plus } from 'lucide-react'
 import api from '../lib/api.js'
-import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge, stockStatusColor, stockStatusLabel, PURCHASE_STATUS_COLORS } from '../components/Badge.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
-import SectionNav, { SECTION_NAV_INSET } from '../components/SectionNav.jsx'
+import { Section } from '../components/SectionNav.jsx'
+import { useSectionNav } from '../lib/useSectionNav.js'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { PurchaseOrderModal } from '../components/PurchaseOrderModal.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import TableThumb from '../components/TableThumb.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { formatBytes, fmtCad, fmtMoney } from '../utils/formatters.js'
 import PurchaseDetail from './PurchaseDetail.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { useDetailFields } from '../lib/useDetailFields.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { sync as syncStore } from '../lib/dataSync.js'
@@ -236,24 +235,6 @@ function stackedTableHeight(rows) {
   return `${Math.min(520, Math.max(160, 44 + rows * 32))}px`
 }
 
-// Bloc de section : ancre pour le scroll-spy + titre et action optionnelle.
-function Section({ id, label, count, action, registerRef, children }) {
-  return (
-    <section ref={registerRef} data-section={id} className="pt-1 pb-8 scroll-mt-16">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <h2 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wide text-slate-400">
-          {label}
-          {count > 0 && (
-            <span className="bg-slate-100 text-slate-500 text-[11px] font-medium px-1.5 py-0.5 rounded-full leading-none normal-case tracking-normal">{count}</span>
-          )}
-        </h2>
-        {action}
-      </div>
-      {children}
-    </section>
-  )
-}
-
 // `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
 // (RecordPeekDrawer) d'une liste : pas de Layout, pas de bouton retour ni de
 // titre (le drawer fournit le sien). `onClose` ferme le drawer (utilisé quand
@@ -306,15 +287,8 @@ function ProductImageSlot({ src, alt, size, onPick, onRemove, busy }) {
   )
 }
 
-export default function ProductDetail({ recordId, embedded = true, onClose }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const navigate = useNavigate()
-  const { user: _user } = useAuth()
-  // Toutes les sections sont affichées d'un coup (empilées) : `activeSection`
-  // sert uniquement à surligner l'entrée du sélecteur latéral en fonction de la
-  // position de défilement (scroll-spy), cf. useEffect plus bas.
-  const [activeSection, setActiveSection] = useState('info')
+export default function ProductDetail({ recordId, onClose }) {
+  const id = recordId
   const [form, setForm] = useState({})
   const [bom, setBom] = useState([])
   const [achats, setAchats] = useState([])
@@ -377,7 +351,7 @@ export default function ProductDetail({ recordId, embedded = true, onClose }) {
 
   useRealtimeChannel(id ? `product:${id}` : null, (msg) => {
     if (msg.type === 'product:updated') setProduct(p => p ? { ...p, ...msg.payload } : p)
-    else if (msg.type === 'product:deleted') { if (embedded) onClose?.(); else navigate('/products') }
+    else if (msg.type === 'product:deleted') onClose?.()
   })
 
   const loadAchats = useMemo(() => () =>
@@ -429,10 +403,7 @@ export default function ProductDetail({ recordId, embedded = true, onClose }) {
     setImageBusy(false)
   }
 
-  function leaveRecord() {
-    if (embedded) onClose?.()
-    else navigate('/products')
-  }
+  const leaveRecord = () => onClose?.()
 
   async function handleDelete() {
     setDeleting(true)
@@ -483,98 +454,8 @@ export default function ProductDetail({ recordId, embedded = true, onClose }) {
     }
   }
 
-  // ── Sections empilées + scroll-spy ──────────────────────────────────────────
   const sections = useMemo(() => ['info', 'mouvements', 'achats', 'bom', 'docs'], [])
-  const sectionEls = useRef(new Map())
-  const spyMutedUntil = useRef(0)
-  // Callbacks de ref mémoïsés par section : sinon React les rejouerait
-  // (null puis el) à chaque rendu.
-  const sectionRefCbs = useRef(new Map())
-  const registerSection = (key) => {
-    if (!sectionRefCbs.current.has(key)) {
-      sectionRefCbs.current.set(key, (el) => {
-        if (el) sectionEls.current.set(key, el)
-        else sectionEls.current.delete(key)
-      })
-    }
-    return sectionRefCbs.current.get(key)
-  }
-
-  // Le conteneur de défilement diffère selon le contexte : <main> en pleine page,
-  // le panneau du side-peek en mode embedded. On le retrouve en remontant le DOM.
-  function scrollParentOf(el) {
-    let p = el?.parentElement
-    while (p) {
-      if (/(auto|scroll|overlay)/.test(getComputedStyle(p).overflowY)) return p
-      p = p.parentElement
-    }
-    return document.scrollingElement
-  }
-
-  // Hauteur visible du conteneur de défilement (l'écran en pleine page).
-  function viewportHeightOf(root) {
-    if (!root || root === document.scrollingElement) return window.innerHeight
-    return root.clientHeight || window.innerHeight
-  }
-
-  useEffect(() => {
-    if (loading || !product) return
-    const first = sectionEls.current.get(sections[0])
-    const root = scrollParentOf(first)
-    if (!root) return
-    const target = root === document.scrollingElement ? window : root
-    let raf = 0
-    const compute = () => {
-      raf = 0
-      if (Date.now() < spyMutedUntil.current) return
-      const rootTop = root === document.scrollingElement ? 0 : root.getBoundingClientRect().top
-      // Sonde à mi-hauteur : même repère que goToSection(), qui centre la section
-      // visée. Sinon le surlignage retomberait sur la section précédente juste
-      // après le clic.
-      const probe = rootTop + viewportHeightOf(root) / 2
-      let current = sections[0]
-      for (const key of sections) {
-        const el = sectionEls.current.get(key)
-        if (!el) continue
-        if (el.getBoundingClientRect().top <= probe) current = key
-      }
-      // Bas de page : la dernière section est forcément « celle où on est rendu »,
-      // même si son haut n'a pas franchi la ligne de sonde.
-      if (root.scrollHeight - root.scrollTop - root.clientHeight < 6) current = sections[sections.length - 1]
-      setActiveSection(prev => (prev === current ? prev : current))
-    }
-    const onScroll = () => { if (!raf) raf = requestAnimationFrame(compute) }
-    target.addEventListener('scroll', onScroll, { passive: true })
-    compute()
-    return () => {
-      target.removeEventListener('scroll', onScroll)
-      if (raf) cancelAnimationFrame(raf)
-    }
-  }, [loading, product, sections])
-
-  function goToSection(key) {
-    setActiveSection(key)
-    const el = sectionEls.current.get(key)
-    if (!el) return
-    // On coupe le scroll-spy pendant l'animation, sinon les sections traversées
-    // feraient sauter le surlignage.
-    spyMutedUntil.current = Date.now() + 900
-    const root = scrollParentOf(el)
-    const height = el.getBoundingClientRect().height
-    if (!root || root === document.scrollingElement) {
-      // Une section plus haute que l'écran est calée en haut : la centrer
-      // pousserait son titre hors du champ.
-      const fits = height < window.innerHeight
-      el.scrollIntoView({ behavior: 'smooth', block: fits ? 'center' : 'start' })
-      return
-    }
-    const viewport = viewportHeightOf(root)
-    // Marge haute qui centre la section dans la zone visible (8 px si elle est
-    // trop haute pour tenir).
-    const offset = height < viewport ? Math.max(SECTION_NAV_INSET, (viewport - height) / 2) : SECTION_NAV_INSET
-    const delta = el.getBoundingClientRect().top - root.getBoundingClientRect().top
-    root.scrollTo({ top: Math.max(0, root.scrollTop + delta - offset), behavior: 'smooth' })
-  }
+  const { activeSection, goToSection, registerSection } = useSectionNav(sections, { ready: !loading && !!product })
 
   const change = (key, val) => {
     const next = { ...form, [key]: val }
@@ -601,91 +482,48 @@ export default function ProductDetail({ recordId, embedded = true, onClose }) {
 
   const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
-
-  if (loading) return shell(<Spinner center />)
-  if (loadError && !product) return shell(<DetailLoadError message={loadError} onRetry={load} />)
-  if (!product) return shell(<div className="p-6 text-slate-500">Produit introuvable.</div>)
-
   const sectionCounts = {
-    mouvements: product.movements?.length || undefined,
+    mouvements: product?.movements?.length || undefined,
     achats: achats.length || undefined,
     bom: bom.length || undefined,
   }
 
-  return shell(
-    <>
-      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-5xl mx-auto'}>
+  const pending = detailPending({ loading, loadError, onRetry: load, record: product, notFound: 'Produit introuvable.' })
+  if (pending) return pending
 
-        {/* Header */}
-        <div className="flex items-start gap-4 mb-6">
-          {!embedded && (
-            <button onClick={() => navigate('/products')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-              <ArrowLeft size={18} />
-            </button>
-          )}
+  return (
+    <DetailShell
+      header={{
+        leading: (
           <ProductImageSlot
-            src={product.image_url}
+            src={product?.image_url}
             alt={form.name_fr}
-            size={embedded ? 'w-14 h-14' : 'w-20 h-20'}
+            size="w-14 h-14"
             busy={imageBusy}
             onPick={uploadImage}
             onRemove={removeImage}
           />
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-3 flex-wrap">
-              {!embedded && <PageTitle>{form.name_fr || <span className="text-slate-400 italic font-normal">Sans nom</span>}</PageTitle>}
-              <Badge color={stockStatusColor(product)} size="md">{stockStatusLabel(product)}</Badge>
-              {!form.active && <Badge color="red">Inactif</Badge>}
-              {form.is_sellable && <Badge color="indigo">Vendable</Badge>}
-              <SaveStatus status={saveState} />
-            </div>
-            <div className="text-sm text-slate-500 mt-1 flex gap-3 flex-wrap items-center">
-              {/* SKU et type sont déjà dans le sous-titre du drawer : on ne les
-                  répète pas en mode embarqué. */}
-              {!embedded && form.sku && <span className="font-mono bg-slate-100 px-2 py-0.5 rounded">{form.sku}</span>}
-              {!embedded && form.type && <span>{form.type}</span>}
-              <span>Stock: <strong>{product.stock_qty}</strong> / min: {form.min_stock || 0}</span>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {!embedded && (
-              /* Chemin inverse du panneau latéral : retourne à la
-                 liste avec ce produit ouvert en panneau latéral. */
-              <button
-                onClick={() => navigate('/products', { state: { peekId: id } })}
-                className="p-1.5 text-slate-400 hover:text-brand-600 hover:bg-slate-100 rounded-lg"
-                title="Revenir à la liste avec ce produit en panneau latéral"
-                aria-label="Ouvrir en panneau latéral"
-                data-testid="product-open-as-peek"
-              >
-                <PanelRight size={16} />
-              </button>
-            )}
-            {form.buy_via_po && form.supplier_company_id && (
-              <button
-                onClick={() => setShowPoModal(true)}
-                className="btn-primary flex items-center gap-1.5 text-sm"
-              >
-                <FileText size={14} /> Générer un PO
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Sélecteur de section (barre du haut, collante) + sections empilées */}
-        <SectionNav
-          sections={sections}
-          labels={SECTION_LABELS}
-          counts={sectionCounts}
-          active={activeSection}
-          onSelect={goToSection}
-          embedded={embedded}
-          testId="product-section-nav"
-        />
-
+        ),
+        badge: product && (
+          <>
+            <Badge color={stockStatusColor(product)} size="md">{stockStatusLabel(product)}</Badge>
+            {!form.active && <Badge color="red">Inactif</Badge>}
+            {form.is_sellable && <Badge color="indigo">Vendable</Badge>}
+          </>
+        ),
+        status: <SaveStatus status={saveState} />,
+        meta: <span>Stock: <strong>{product?.stock_qty}</strong> / min: {form.min_stock || 0}</span>,
+        actions: form.buy_via_po && form.supplier_company_id && (
+          <button
+            onClick={() => setShowPoModal(true)}
+            className="btn-primary flex items-center gap-1.5 text-sm"
+          >
+            <FileText size={14} /> Générer un PO
+          </button>
+        ),
+      }}
+      nav={{ sections, labels: SECTION_LABELS, counts: sectionCounts, active: activeSection, onSelect: goToSection, testId: 'product-section-nav' }}
+    >
         {/* Sections */}
         <div className="min-w-0">
 
@@ -942,7 +780,6 @@ export default function ProductDetail({ recordId, embedded = true, onClose }) {
             <div className="mt-1 text-xs text-slate-400">{deleteCheck.reason}</div>
           )}
         </div>
-      </div>
 
       <PurchaseOrderModal
         productId={id}
@@ -1060,6 +897,6 @@ export default function ProductDetail({ recordId, embedded = true, onClose }) {
           </Modal>
         )
       })()}
-    </>
+    </DetailShell>
   )
 }

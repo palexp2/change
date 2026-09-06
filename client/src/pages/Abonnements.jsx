@@ -1,16 +1,14 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { ExternalLink, RefreshCw, CreditCard, SlidersHorizontal } from 'lucide-react'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import { StripeSubscriptionFieldMapModal } from '../components/StripeFieldMapModal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtCad } from '../utils/formatters.js'
@@ -105,8 +103,10 @@ const RENDERS = {
 
 
 export default function Abonnements() {
-  const [abonnements, setAbonnements] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { rows: abonnements, setRows: setAbonnements, loading, reload: load } = useListData({
+    fetch: (page, limit) => api.abonnements.list({ limit, page }),
+    realtime: 'subscription',
+  })
   const [stripeConfigured, setStripeConfigured] = useState(false)
   const [stripeMapOpen, setStripeMapOpen] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -122,17 +122,9 @@ export default function Abonnements() {
       : RENDERS[meta.id],
   }))
 
-  const load = useCallback(async () => {
+  useEffect(() => {
     api.stripe.info().catch(() => ({ configured: false })).then(info => setStripeConfigured(!!info.configured))
-    await loadProgressive(
-      (page, limit) => api.abonnements.list({ limit, page }),
-      setAbonnements, setLoading
-    )
   }, [])
-
-  useEffect(() => { load() }, [load])
-
-  useEntityListRealtime('subscription', setAbonnements)
 
   // Sync manuelle (bouton « Synchroniser maintenant » de la modale Sync
   // Stripe) : lance l'import puis attend la fin côté serveur (max 90 s) avant
@@ -149,47 +141,38 @@ export default function Abonnements() {
   }
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Abonnements</PageTitle>
-          </div>
-          <div className="flex items-center gap-2">
-            {stripeConfigured && (
-              <button
-                onClick={() => setStripeMapOpen(true)}
-                className="btn-secondary btn-sm flex items-center gap-1.5"
-                title="Choisir quels champs Stripe alimentent les abonnements et lancer une synchronisation"
-                data-testid="abonnements-stripe-map-open"
-              >
-                <SlidersHorizontal size={13} /> Sync Stripe
-              </button>
-            )}
-          </div>
+    <ListPage
+      title="Abonnements"
+      actions={stripeConfigured && (
+        <button
+          onClick={() => setStripeMapOpen(true)}
+          className="btn-secondary btn-sm flex items-center gap-1.5"
+          title="Choisir quels champs Stripe alimentent les abonnements et lancer une synchronisation"
+          data-testid="abonnements-stripe-map-open"
+        >
+          <SlidersHorizontal size={13} /> Sync Stripe
+        </button>
+      )}
+      banner={!loading && !stripeConfigured && (
+        <div className="mb-4 flex items-center gap-3 px-4 py-3 bg-purple-50 border border-purple-200 rounded-xl text-sm text-purple-800">
+          <CreditCard size={16} className="text-purple-500 flex-shrink-0" />
+          <span>Configurez le connecteur Stripe pour synchroniser les abonnements en temps réel.</span>
+          <Link to="/connectors" className="ml-auto text-xs font-semibold text-purple-700 hover:underline whitespace-nowrap">
+            Configurer →
+          </Link>
         </div>
-
-        {!loading && !stripeConfigured && (
-          <div className="mb-4 flex items-center gap-3 px-4 py-3 bg-purple-50 border border-purple-200 rounded-xl text-sm text-purple-800">
-            <CreditCard size={16} className="text-purple-500 flex-shrink-0" />
-            <span>Configurez le connecteur Stripe pour synchroniser les abonnements en temps réel.</span>
-            <Link to="/connectors" className="ml-auto text-xs font-semibold text-purple-700 hover:underline whitespace-nowrap">
-              Configurer →
-            </Link>
-          </div>
-        )}
-
-        <DataTable
-          table="abonnements"
-          manageViews
-          columns={COLUMNS}
-          data={abonnements}
-          loading={loading}
-          searchFields={['company_name', 'rachat', 'amount_cad']}
-          onRowClick={setSelected}
-          emptyState={{ icon: RefreshCw, title: 'Aucun abonnement', description: "Aucun abonnement Stripe actif ou passé. Les abonnements se synchronisent automatiquement depuis Stripe." }}
-        />
-      </div>
+      )}
+    >
+      <DataTable
+        table="abonnements"
+        manageViews
+        columns={COLUMNS}
+        data={abonnements}
+        loading={loading}
+        searchFields={['company_name', 'rachat', 'amount_cad']}
+        onRowClick={setSelected}
+        emptyState={{ icon: RefreshCw, title: 'Aucun abonnement', description: "Aucun abonnement Stripe actif ou passé. Les abonnements se synchronisent automatiquement depuis Stripe." }}
+      />
 
       <StripeSubscriptionFieldMapModal
         isOpen={stripeMapOpen}
@@ -199,6 +182,6 @@ export default function Abonnements() {
       />
 
       <AbonnementDetailModal abonnement={selected} onClose={() => setSelected(null)} />
-    </Layout>
+    </ListPage>
   )
 }

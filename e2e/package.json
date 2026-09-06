@@ -1,0 +1,11 @@
+{
+  "name": "erp-e2e",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test tests/"
+  },
+  "dependencies": {
+    "playwright": "^1.59.1"
+  }
+}

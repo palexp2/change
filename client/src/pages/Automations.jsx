@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
 import { Zap, Plus, Lock, Webhook } from 'lucide-react'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { api } from '../lib/api.js'
@@ -112,7 +111,7 @@ const RENDERS = {
 
 const COLUMNS = TABLE_COLUMN_META.automations.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
-export function AutomationsContent() {
+export default function Automations() {
   const [automations, setAutomations] = useState([])
   const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
@@ -121,6 +120,7 @@ export function AutomationsContent() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [])
 
+  // Pas `useListData` : la route renvoie un tableau nu et l'échec doit remonter en toast.
   async function load() {
     setLoading(true)
     try {
@@ -134,25 +134,23 @@ export function AutomationsContent() {
   }
 
   return (
-    <>
-      <div className="flex items-center justify-between mb-6">
-        <PageTitle>Automations</PageTitle>
-        <div className="flex items-center gap-2">
-          <button onClick={() => navigate('/automations/new?kind=field_rule')}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-white border border-brand-200 text-brand-700 rounded-lg hover:bg-brand-50">
-            <Zap size={14} /> Nouvelle règle de champ
-          </button>
-          <button onClick={() => navigate('/automations/new?kind=webhook')}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-white border border-brand-200 text-brand-700 rounded-lg hover:bg-brand-50">
-            <Webhook size={14} /> Nouveau webhook
-          </button>
-          <button onClick={() => navigate('/automations/new')}
-            className="flex items-center gap-1.5 px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700">
-            <Plus size={14} /> Nouvelle automation
-          </button>
-        </div>
-      </div>
-
+    <ListPage
+      title="Automations"
+      actions={<>
+        <button onClick={() => navigate('/automations/new?kind=field_rule')}
+          className="flex items-center gap-1.5 px-4 py-2 text-sm bg-white border border-brand-200 text-brand-700 rounded-lg hover:bg-brand-50">
+          <Zap size={14} /> Nouvelle règle de champ
+        </button>
+        <button onClick={() => navigate('/automations/new?kind=webhook')}
+          className="flex items-center gap-1.5 px-4 py-2 text-sm bg-white border border-brand-200 text-brand-700 rounded-lg hover:bg-brand-50">
+          <Webhook size={14} /> Nouveau webhook
+        </button>
+        <button onClick={() => navigate('/automations/new')}
+          className="flex items-center gap-1.5 px-4 py-2 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700">
+          <Plus size={14} /> Nouvelle automation
+        </button>
+      </>}
+    >
       <DataTable
         table="automations"
         manageViews
@@ -162,10 +160,6 @@ export function AutomationsContent() {
         onRowClick={row => navigate(`/automations/${row.id}`)}
         searchFields={['name', 'description']}
       />
-    </>
+    </ListPage>
   )
-}
-
-export default function Automations() {
-  return <Layout><div className="p-6"><AutomationsContent /></div></Layout>
 }

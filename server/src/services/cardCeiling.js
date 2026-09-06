@@ -369,6 +369,16 @@ export async function buildCardOutlook(card, { today = null, refresh = false, lo
     qbError = e.message || 'QuickBooks indisponible'
   }
   const pend = pendingChargesFor(card.bank_account_id, { today: dayIso, lookbackDays })
+  // Le solde que la BANQUE annonce pour cette carte, quand elle est connectée.
+  // C'est la réponse directe à « reste-t-il de la place ? », là où
+  // « comptabilisé + en attente » est une reconstitution. On l'affiche À CÔTÉ
+  // sans toucher au calcul : QuickBooks reste la source comptable, et un écart
+  // entre les deux est justement ce qu'il faut voir.
+  let bank = null
+  try {
+    const { plaidBalanceFor } = await import('./plaidSync.js')
+    bank = plaidBalanceFor(card.bank_account_id)
+  } catch { /* la carte s'affiche sans, comme avant */ }
   const numbers = computeCardCeiling({
     posted: qb?.owed ?? 0,
     pending: pend.pending,
@@ -395,6 +405,10 @@ export async function buildCardOutlook(card, { today = null, refresh = false, lo
     pending_since: pend.since,
     pending_stale_count: pend.stale_count,
     pending_stale_amount: pend.stale_amount,
+    // Solde réel à la banque (carte connectée) : dû, place restante, fraîcheur.
+    bank_owed: bank?.current ?? null,
+    bank_available: bank?.available ?? null,
+    bank_read_at: bank?.read_at || null,
     today: dayIso,
     ...numbers,
   }

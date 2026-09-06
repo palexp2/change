@@ -3,7 +3,7 @@
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
 import {
@@ -13,6 +13,7 @@ import {
 import { listQbBankAccounts, linkAccountToQb, storedQbUrl } from '../services/bankQbLink.js'
 import { summarizeAccount, compareWithQb } from '../services/bankReconcileSummary.js'
 import { auditPlaidAccountVsQb } from '../services/plaidQbAudit.js'
+import { planRepair, applyRepair } from '../services/bankImportRepair.js'
 import { mergeSheetDuplicates, countSheetDuplicates } from '../services/plaidSync.js'
 import {
   BankActionError, suggestAddDefaults, addExpenseFromTxn,
@@ -255,6 +256,31 @@ router.post('/accounts/:id/qb-audit', async (req, res) => {
   const sinceDays = req.body?.sinceDays != null ? Number(req.body.sinceDays) : null
   try {
     res.json(await auditPlaidAccountVsQb(account.id, { sinceDays, trigger: 'manual' }))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Réparation ponctuelle des montants de l'import historique (voir
+// services/bankImportRepair.js). `apply` absent = simulation : on renvoie le
+// plan sans rien écrire.
+router.post('/accounts/:id/repair-import', requireAdmin, async (req, res) => {
+  const account = getAccount(req.params.id)
+  if (!account) return res.status(404).json({ error: 'Not found' })
+  const iso = (v) => (/^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : undefined)
+  try {
+    const plan = await planRepair(account.id, { from: iso(req.body?.from), to: iso(req.body?.to) })
+    if (!req.body?.apply) return res.json({ ...plan, applied: false })
+    const applied = applyRepair(plan)
+    // Les lignes réparées par le libellé n'ont pas encore leur écriture QB :
+    // la recherche approfondie sait maintenant les retrouver, le montant étant
+    // enfin celui du grand livre.
+    let qb = null
+    let qbError = null
+    if (account.qb_account_id) {
+      try { qb = await auditPlaidAccountVsQb(account.id, { trigger: 'reparation' }) } catch (e) { qbError = e.message }
+    }
+    res.json({ ...plan, applied: true, ...applied, qb, qbError, summary: summarizeAccount(account.id) })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

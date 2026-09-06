@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Printer, Package, Mail, FileText, Trash2, RefreshCw, AlertTriangle, Truck, ExternalLink } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Printer, Package, Mail, FileText, Trash2, RefreshCw, AlertTriangle, Truck, ExternalLink } from 'lucide-react'
 import api from '../lib/api.js'
-import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { Modal } from '../components/Modal.jsx'
 import EmailComposerModal from '../components/EmailComposerModal.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -21,10 +20,8 @@ import AttachmentPreview from '../components/AttachmentPreview.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { fmtAddress as fmtAdresse } from '../utils/formatters.js'
 import { trackingUrl } from '../lib/trackingUrl.js'
-import { shipmentTitle } from '../lib/shipmentLabel.js'
 
 
 const FULFILLMENT_COLORS = {
@@ -101,16 +98,9 @@ function InlineTextarea({ value, saving, onSave, testId }) {
   )
 }
 
-// `recordId` + `embedded` : monte la fiche dans un RecordPeekDrawer (side-peek)
-// sans le chrome de page (Layout, bouton retour). `onClose` ferme le panneau
-// après suppression du record.
-export default function EnvoisDetail({ recordId, embedded = true, onClose }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const navigate = useNavigate()
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
+// `onClose` ferme le panneau après suppression du record.
+export default function EnvoisDetail({ recordId, onClose }) {
+  const id = recordId
   const { record: envoi, setRecord: setEnvoi, loading, loadError, reload: load } =
     useDetailRecord(() => api.shipments.get(id), [id], { clearOnError: true })
   const [adresses, setAdresses] = useState([])
@@ -142,7 +132,7 @@ export default function EnvoisDetail({ recordId, embedded = true, onClose }) {
 
   useRealtimeChannel(id ? `shipment:${id}` : null, (msg) => {
     if (msg.type === 'shipment:updated') setEnvoi(e => e ? { ...e, ...msg.payload } : e)
-    else if (msg.type === 'shipment:deleted') { if (embedded) onClose?.(); else navigate('/envois') }
+    else if (msg.type === 'shipment:deleted') onClose?.()
   })
 
   // Retourne true si le ramassage a bien été annulé, pour que l'appelant
@@ -189,8 +179,7 @@ export default function EnvoisDetail({ recordId, embedded = true, onClose }) {
     if (!ok) return
     await api.shipments.delete(id)
     addToast({ message: 'Envoi supprimé', type: 'success' })
-    if (embedded) onClose?.()
-    else navigate('/envois')
+    onClose?.()
   }
 
   // Re-télécharge le PDF d'une étiquette déjà achetée (achat OK mais PDF non
@@ -219,9 +208,8 @@ export default function EnvoisDetail({ recordId, embedded = true, onClose }) {
     finally { setGeneratingPdf(false) }
   }
 
-  if (loading) return shell(<Spinner center />)
-  if (loadError && !envoi) return shell(<DetailLoadError message={loadError} onRetry={load} />)
-  if (!envoi) return shell(<div className="p-6 text-slate-500">Envoi introuvable.</div>)
+  const pending = detailPending({ loading, loadError, onRetry: load, record: envoi, notFound: 'Envoi introuvable.' })
+  if (pending) return pending
 
   // Étiquette achetée chez Novoxpress mais PDF pas récupéré (403 du CDN) ou
   // fichier disparu du serveur : dans les deux cas, il est re-téléchargeable.
@@ -239,40 +227,24 @@ export default function EnvoisDetail({ recordId, embedded = true, onClose }) {
   }))
   const totalWeight = itemRows.reduce((sum, item) => sum + item.line_weight_lbs, 0)
 
-  return shell(
+  return (
     <>
-      <div className={embedded ? 'p-6' : 'p-6 max-w-5xl mx-auto'}>
-        {/* Header */}
-        <div className="flex items-start gap-4 mb-6">
-          {!embedded && (
-            <button
-              onClick={() => navigate('/envois')}
-              className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg"
-            >
-              <ArrowLeft size={18} />
-            </button>
-          )}
-          <div className="flex-1">
-            <div className="flex items-center gap-3 flex-wrap">
-              {/* En panneau, l'en-tête du drawer porte déjà le titre : on ne le
-                  répète pas. Hors panneau, l'envoi se nomme par son # d'envoi. */}
-              {!embedded && <PageTitle>{shipmentTitle(envoi)}</PageTitle>}
-              <SaveStatus status={saveState} />
-            </div>
-            {envoi.company_name && envoi.company_id && (
-              <div className="text-sm text-slate-500 mt-1">
-                <LinkedRecordField
-                  name="company_id"
-                  value={envoi.company_id}
-                  options={[{ id: envoi.company_id, name: envoi.company_name }]}
-                  getHref={c => `/companies/${c.id}`}
-                  disabled
-                  allowClear={false}
-                />
-              </div>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
+      <DetailShell
+        className="p-6"
+        header={{
+          status: <SaveStatus status={saveState} />,
+          meta: envoi.company_name && envoi.company_id && (
+            <LinkedRecordField
+              name="company_id"
+              value={envoi.company_id}
+              options={[{ id: envoi.company_id, name: envoi.company_name }]}
+              getHref={c => `/companies/${c.id}`}
+              disabled
+              allowClear={false}
+            />
+          ),
+          actions: (
+            <>
             {/* Suivi chez le transporteur : seulement si on sait construire
                 l'URL à partir du libellé du transporteur (sinon le numéro
                 reste consultable dans la carte « Informations »). */}
@@ -334,9 +306,10 @@ export default function EnvoisDetail({ recordId, embedded = true, onClose }) {
             >
               <Trash2 size={16} />
             </button>
-          </div>
-        </div>
-
+            </>
+          ),
+        }}
+      >
         {/* Informations — édition en ligne (autosave au blur). L'ordre des
             champs et ceux qu'on garde se règlent dans la fiche elle-même
             (« Personnaliser les champs » : en-tête du panneau latéral, ou au
@@ -571,8 +544,7 @@ export default function EnvoisDetail({ recordId, embedded = true, onClose }) {
             }}
           />
         </div>
-
-      </div>
+      </DetailShell>
 
       <Modal isOpen={showLabel} onClose={() => setShowLabel(false)} title="Créer une étiquette postale">
         <NovoxpressLabelModal

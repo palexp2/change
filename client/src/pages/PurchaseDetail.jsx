@@ -1,9 +1,6 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ShoppingBag, Trash2 } from 'lucide-react'
+import { ShoppingBag, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
 import { Badge, PURCHASE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -12,7 +9,7 @@ import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtCad } from '../utils/formatters.js'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { Field } from '../components/Field.jsx'
 import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
 
@@ -143,17 +140,9 @@ function EditableTextarea({ value, saving, onCommit }) {
   )
 }
 
-// `recordId` + `embedded` : monte la fiche dans un RecordPeekDrawer (side-peek)
-// sans le chrome de page (Layout, bouton retour). `onClose` ferme le panneau
-// après suppression du record.
-export default function PurchaseDetail({ recordId, embedded = true, onClose }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const navigate = useNavigate()
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
-  const leaveRecord = () => { if (embedded) onClose?.(); else navigate('/purchases') }
+// `onClose` ferme le panneau après suppression du record.
+export default function PurchaseDetail({ recordId: id, onClose }) {
+  const leaveRecord = () => onClose?.()
   const { record: purchase, setRecord: setPurchase, loading, loadError, reload: load } =
     useDetailRecord(() => api.purchases.get(id), [id], { clearOnError: true })
   const [companies, setCompanies] = useState([])
@@ -197,50 +186,31 @@ export default function PurchaseDetail({ recordId, embedded = true, onClose }) {
     }
   }
 
-  if (loading) {
-    return shell(<Spinner center />)
-  }
-  if (loadError && !purchase) {
-    return shell(<DetailLoadError message={loadError} onRetry={load} />)
-  }
-  if (!purchase) {
-    return shell(<div className="p-6 text-slate-500">Achat introuvable.</div>)
-  }
+  const pending = detailPending({ loading, loadError, onRetry: load, record: purchase, notFound: 'Achat introuvable.' })
+  if (pending) return pending
 
   const subtotal = (Number(purchase.qty_ordered) || 0) * (Number(purchase.unit_cost) || 0)
 
-  return shell(
-      <div className={embedded ? 'p-6' : 'p-6 max-w-2xl mx-auto'}>
-        <div className="flex items-start gap-4 mb-6">
-          {!embedded && (
-            <button onClick={() => navigate(-1)} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-              <ArrowLeft size={18} />
-            </button>
-          )}
-          <div className="flex-1">
-            <div className="flex items-center gap-3 flex-wrap">
-              <ShoppingBag size={20} className="text-slate-400" />
-              <PageTitle>
-                {purchase.reference || <span className="text-slate-400 font-normal">Sans référence</span>}
-              </PageTitle>
-              {purchase.status && <Badge color={STATUS_COLORS[purchase.status] || 'gray'}>{purchase.status}</Badge>}
-            </div>
-            {purchase.product_name && (
-              <div className="text-sm text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
-                <LinkedRecordField
-                  name="product_id"
-                  value={purchase.product_id || purchase.product_name}
-                  options={[{ id: purchase.product_id || purchase.product_name, name: purchase.product_name }]}
-                  getHref={purchase.product_id ? p => `/products/${p.id}` : undefined}
-                  disabled
-                  allowClear={false}
-                />
-                {purchase.sku && <span className="font-mono text-slate-400">({purchase.sku})</span>}
-              </div>
-            )}
-          </div>
-        </div>
-
+  return (
+      <DetailShell
+        header={{
+          leading: <ShoppingBag size={20} className="text-slate-400 mt-0.5" />,
+          badge: purchase.status && <Badge color={STATUS_COLORS[purchase.status] || 'gray'}>{purchase.status}</Badge>,
+          meta: purchase.product_name && (
+            <>
+              <LinkedRecordField
+                name="product_id"
+                value={purchase.product_id || purchase.product_name}
+                options={[{ id: purchase.product_id || purchase.product_name, name: purchase.product_name }]}
+                getHref={purchase.product_id ? p => `/products/${p.id}` : undefined}
+                disabled
+                allowClear={false}
+              />
+              {purchase.sku && <span className="font-mono text-slate-400">({purchase.sku})</span>}
+            </>
+          ),
+        }}
+      >
         <div className="card p-5 space-y-5">
           <div className="grid grid-cols-2 gap-5">
             <FieldShell id="reference" label="Référence PO" saving={fieldSaving.reference}>
@@ -311,6 +281,6 @@ export default function PurchaseDetail({ recordId, embedded = true, onClose }) {
             {deleting ? 'Suppression…' : 'Supprimer cet achat'}
           </button>
         </div>
-      </div>
+      </DetailShell>
   )
 }

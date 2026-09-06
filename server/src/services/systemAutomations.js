@@ -137,6 +137,25 @@ export const MANUAL_RUNNERS = {
     const out = await linkKnownDebits()
     return { ...out, summary: summarizeLinks(out) }
   },
+  // Banque silencieuse : dry-run = état de chaque connexion sans notifier ;
+  // run-now = vérifie et notifie tout de suite, sans attendre l'anti-spam.
+  sys_plaid_silence_alert: async ({ dryRun }) => {
+    const { checkPlaidSilence, getSilenceConfig, silenceVerdict, humanDuration } = await import('./plaidSilenceAlert.js')
+    if (!dryRun) return await checkPlaidSilence({ force: true, trigger: 'manuel' })
+    const { listItems, itemHealth } = await import('../connectors/plaid.js')
+    const cfg = getSilenceConfig()
+    const silenceHours = Number(cfg.silence_hours) || 36
+    const rows = []
+    for (const item of listItems()) {
+      let health
+      try { health = await itemHealth(item.itemId) } catch (e) { health = { institution_name: item.institution_name, health_error: e.message } }
+      const v = silenceVerdict(health, { silenceHours })
+      rows.push({ institution: health.institution_name, last_successful_update: health.last_successful_update || null,
+        would_alert: !!v.alert, kind: v.kind || null, silence: v.hours != null ? humanDuration(v.hours) : null })
+    }
+    return { config: cfg, connections: rows,
+      summary: rows.map((r) => `${r.institution} : ${r.would_alert ? `ALERTE (${r.kind === 'reauth' ? 'à réautoriser' : r.silence})` : `à jour${r.silence ? ` (${r.silence})` : ''}`}`).join(' · ') || 'aucune connexion' }
+  },
   // Sync bancaire Plaid : dry-run = état de la connexion compte par compte
   // (fraîcheur, nombre de transactions, comptes mappés mais vides) ;
   // run-now = passage immédiat sur tous les items.
@@ -802,6 +821,31 @@ export const SYSTEM_AUTOMATIONS = [
       summary: "À chaque arrivée de transactions bancaires, quelle qu'en soit la source",
     },
     action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_plaid_silence_alert',
+    name: 'Alerte : une banque ne livre plus rien',
+    description:
+      "Vérifie trois fois par jour depuis quand chaque banque connectée a livré des transactions pour la dernière fois, et prévient dans Boréal (cloche de notification, plus Slack si un canal est configuré) quand une connexion se tait depuis plus longtemps que le seuil. " +
+      "POURQUOI : une connexion bancaire ne tombe pas en panne bruyamment, elle se tait. Du 2 au 6 septembre 2026, la BNC n'a plus rien livré pendant quatre jours sans la moindre erreur — le rapprochement, le solde de la projection de trésorerie et la recherche du débit de la paie travaillaient sur des données figées sans que rien ne le signale. " +
+      "Le chiffre surveillé est celui de Plaid (« dernière livraison réussie »), pas notre propre dernière tentative : demander sans rien recevoir n'est pas une connexion en santé. " +
+      "Une autorisation expirée (la banque redemande de se connecter) est signalée à part et en priorité : elle ne se répare jamais toute seule. " +
+      "Le seuil par défaut est de 36 heures, ce qui laisse passer une fin de semaine creuse. Une même connexion n'est pas re-signalée avant 24 heures. " +
+      "Le journal reste silencieux quand tout va bien. « Simuler » montre l'état de chaque connexion sans notifier ; « Exécuter » vérifie et notifie immédiatement.",
+    trigger_config: {
+      kind: 'schedule',
+      source: "cron '0 11,17,23 * * *' UTC (index.js) → services/plaidSilenceAlert.js",
+      cron: '0 11,17,23 * * * UTC (7 h, 13 h et 19 h à Montréal)',
+      summary: 'Trois vérifications par jour ; alerte au-delà du seuil de silence',
+    },
+    action_config: {
+      silence_hours: '36',
+      repeat_hours: '24',
+      notify_roles: 'admin',
+      slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+    },
     configurable: true,
     default_active: 1,
   },

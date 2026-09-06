@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import { Plus, ExternalLink, Copy, Check } from 'lucide-react'
 import { api } from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -61,23 +61,14 @@ const RENDERS = {
 const COLUMNS = TABLE_COLUMN_META.discovery_forms.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
 export default function DiscoveryForms() {
-  const [forms, setForms] = useState([])
   const [companies, setCompanies] = useState([])
-  const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const { addToast } = useToast()
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const data = await api.discoveryForms.list({ limit: 'all' })
-      setForms(data.rows || [])
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => { load() }, [load])
+  // La route renvoie `{ rows }` et non `{ data }`.
+  const { rows: forms, loading, reload: load } = useListData({
+    fetch: async (page, limit) => ({ data: (await api.discoveryForms.list({ limit, page })).rows || [] }),
+  })
 
   useEffect(() => {
     api.companies.lookup().then(setCompanies).catch(() => {})
@@ -97,48 +88,44 @@ export default function DiscoveryForms() {
   }
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>System builder</PageTitle>
-            <p className="text-sm text-slate-500 mt-0.5">
-              {forms.length} système{forms.length !== 1 ? 's' : ''}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowModal(true)} className="btn-primary">
-              <Plus size={16} /> Nouveau système
-            </button>
-          </div>
-        </div>
-
-        <DataTable
-          table="discovery_forms"
-          manageViews
-          columns={COLUMNS}
-          data={forms}
-          loading={loading}
-          peek={{
-            title: row => row.company_name || 'System builder',
-            subtitle: row => (row.status === 'submitted' ? 'Soumis' : 'En cours'),
-            to: row => `/discovery-forms/${row.id}`,
-            render: (row, { close }) => <DiscoveryFormDetail recordId={row.id} embedded onClose={close} onDeleted={load} />,
-          }}
-          searchFields={['company_name', 'status']}
-          onBulkDelete={async (ids) => {
-            // Suppression définitive (la table n'est pas soft-delete) : pas de toast « Annuler ».
-            await Promise.all(ids.map(id => api.discoveryForms.delete(id)))
-            await load()
-            addToast({ message: `${ids.length} système${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`, type: 'success' })
-          }}
-        />
-      </div>
+    <ListPage
+      title="System builder"
+      subtitle={
+        <p className="text-sm text-slate-500 mt-0.5">
+          {forms.length} système{forms.length !== 1 ? 's' : ''}
+        </p>
+      }
+      actions={
+        <button onClick={() => setShowModal(true)} className="btn-primary">
+          <Plus size={16} /> Nouveau système
+        </button>
+      }
+    >
+      <DataTable
+        table="discovery_forms"
+        manageViews
+        columns={COLUMNS}
+        data={forms}
+        loading={loading}
+        peek={{
+          title: row => row.company_name || 'System builder',
+          subtitle: row => (row.status === 'submitted' ? 'Soumis' : 'En cours'),
+          to: row => `/discovery-forms/${row.id}`,
+          render: (row, { close }) => <DiscoveryFormDetail recordId={row.id} embedded onClose={close} onDeleted={load} />,
+        }}
+        searchFields={['company_name', 'status']}
+        onBulkDelete={async (ids) => {
+          // Suppression définitive (la table n'est pas soft-delete) : pas de toast « Annuler ».
+          await Promise.all(ids.map(id => api.discoveryForms.delete(id)))
+          await load()
+          addToast({ message: `${ids.length} système${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`, type: 'success' })
+        }}
+      />
 
       <Modal isOpen={showModal} title="Nouveau système" onClose={() => setShowModal(false)}>
         <CreateForm companies={companies} onSave={handleCreate} onClose={() => setShowModal(false)} />
       </Modal>
-    </Layout>
+    </ListPage>
   )
 }
 

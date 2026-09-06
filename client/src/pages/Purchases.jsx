@@ -1,15 +1,12 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { ShoppingCart, Plus } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import api from '../lib/api.js'
-import { useTable, isTableHydrated } from '../lib/dataStore.js'
-import { sync as syncStore } from '../lib/dataSync.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useTable } from '../lib/dataStore.js'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { Badge, PURCHASE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { Modal } from '../components/Modal.jsx'
-import { RecordForm } from '../components/RecordForm.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import TableThumb from '../components/TableThumb.jsx'
 import PurchaseDetail from './PurchaseDetail.jsx'
@@ -98,12 +95,10 @@ function purchaseFormFields({ products, companies }) {
 export default function Purchases() {
   const navigate = useNavigate()
   const { peekOpenId, consumePeekOpen } = usePeekOpenId()
-  const [showModal, setShowModal] = useState(false)
 
-  const purchasesRaw = useTable('purchases')
+  const { rows: purchasesRaw, loading, reload } = useListData({ table: 'purchases' })
   const products = useTable('products')
   const companies = useTable('companies')
-  const loading = !isTableHydrated('purchases')
 
   const purchases = useMemo(() => {
     const pById = new Map(products.map(p => [p.id, p]))
@@ -124,24 +119,19 @@ export default function Purchases() {
 
   async function handleCreate(form) {
     const created = await api.purchases.create(form)
-    await syncStore()
+    await reload()
     if (created?.id) navigate(`/purchases/${created.id}`)
   }
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Achats</PageTitle>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowModal(true)} className="btn-primary">
-              <Plus size={16} /> Nouvel achat
-            </button>
-          </div>
-        </div>
-
+    <ListPage
+      title="Achats"
+      create={{
+        label: 'Nouvel achat', table: 'purchases', fields: formFields, columns: 2, size: 'lg',
+        onSubmit: handleCreate,
+      }}
+    >
+      {({ openCreate }) => (
         <DataTable
           table="purchases"
           manageViews
@@ -157,19 +147,9 @@ export default function Purchases() {
             onOpenConsumed: consumePeekOpen,
             render: (row, { close }) => <PurchaseDetail recordId={row.id} embedded onClose={close} /> }}
           searchFields={['product_name', 'supplier', 'supplier_company_name', 'reference']}
-          emptyState={{ icon: ShoppingCart, title: 'Aucun achat', description: "Aucune ligne d'achat n'est enregistrée. Les achats de produits apparaissent ici une fois saisis.", cta: { label: 'Nouvel achat', icon: Plus, onClick: () => setShowModal(true) } }}
+          emptyState={{ icon: ShoppingCart, title: 'Aucun achat', description: "Aucune ligne d'achat n'est enregistrée. Les achats de produits apparaissent ici une fois saisis.", cta: { label: 'Nouvel achat', icon: Plus, onClick: openCreate } }}
         />
-      </div>
-
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouvel achat" size="lg">
-        <RecordForm
-          table="purchases"
-          fields={formFields}
-          columns={2}
-          onSubmit={handleCreate}
-          onClose={() => setShowModal(false)}
-        />
-      </Modal>
-    </Layout>
+      )}
+    </ListPage>
   )
 }

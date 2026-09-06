@@ -1,19 +1,15 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, RefreshCw, Database, ChevronDown, ChevronRight, Users } from 'lucide-react'
+import { RefreshCw, Database, ChevronDown, ChevronRight, Users, Plus } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { RecordForm } from '../components/RecordForm.jsx'
 import EmployeeDetail from './EmployeeDetail.jsx'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
-import { Modal } from '../components/Modal.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
-import { useToast } from '../contexts/ToastContext.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import Spinner from '../components/Spinner.jsx'
 
 function bool(row, key) {
@@ -214,79 +210,51 @@ function SyncPanel({ onSynced }) {
 export default function Employees() {
   const navigate = useNavigate()
   const { peekOpenId, consumePeekOpen } = usePeekOpenId()
-  const { addToast } = useToast()
-  const [employees, setEmployees] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [showNew, setShowNew] = useState(false)
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const { data } = await api.employees.list({ limit: 500 })
-      setEmployees(data || [])
-    } catch (err) {
-      addToast({ message: err.message, type: 'error' })
-    } finally { setLoading(false) }
-  }, [addToast])
-
-  useEffect(() => { load() }, [load])
-  useEntityListRealtime('employee', setEmployees)
-
-  function handleCreated(emp) {
-    setShowNew(false)
-    navigate(`/employees/${emp.id}`)
-  }
+  const { rows: employees, loading, reload: load } = useListData({
+    fetch: (page, limit) => api.employees.list({ limit, page }),
+    realtime: 'employee',
+  })
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <PageTitle>Employés</PageTitle>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowNew(true)} className="btn-primary flex items-center gap-2">
-              <Plus size={15} /> Nouvel employé
-            </button>
-          </div>
-        </div>
+    <ListPage
+      title="Employés"
+      create={{
+        label: 'Nouvel employé', table: 'employees', fields: EMPLOYEE_FORM_FIELDS, columns: 2,
+        onSubmit: async form => { const emp = await api.employees.create(form); navigate(`/employees/${emp.id}`) },
+        submitLabel: 'Créer et ouvrir',
+        savingLabel: 'Création…',
+        extra: (
+          <p className="text-xs text-slate-500">
+            Les autres informations s'éditent directement sur la fiche de l'employé (autosave).
+          </p>
+        ),
+      }}
+    >
+      {({ openCreate }) => (
+        <>
+          <SyncPanel onSynced={load} />
 
-        <SyncPanel onSynced={load} />
-
-        <DataTable
-          table="employees"
-          manageViews
-          columns={COLUMNS}
-          data={employees}
-          loading={loading}
-          peek={{
-            title: row => `${row.first_name || ''} ${row.last_name || ''}`.trim() || `Employé #${row.id}`,
-            subtitle: row => row.job_title || row.email_work || '',
-            to: row => `/employees/${row.id}`,
-            width: 760,
-            openId: peekOpenId,
-            onOpenConsumed: consumePeekOpen,
-            render: (row, { close }) => <EmployeeDetail recordId={row.id} embedded onClose={close} />,
-          }}
-          searchFields={['first_name', 'last_name', 'matricule', 'email_work', 'email_personal']}
-          emptyState={{ icon: Users, title: 'Aucun employé', description: "Aucun employé n'est encore enregistré. Ajoute un employé pour gérer la paie et les feuilles de temps.", cta: { label: 'Nouvel employé', icon: Plus, onClick: () => setShowNew(true) } }}
-        />
-      </div>
-
-      <Modal isOpen={showNew} title="Nouvel employé" onClose={() => setShowNew(false)}>
-        <RecordForm
-          table="employees"
-          fields={EMPLOYEE_FORM_FIELDS}
-          columns={2}
-          onSubmit={async form => handleCreated(await api.employees.create(form))}
-          onClose={() => setShowNew(false)}
-          submitLabel="Créer et ouvrir"
-          savingLabel="Création…"
-          extra={
-            <p className="text-xs text-slate-500">
-              Les autres informations s'éditent directement sur la fiche de l'employé (autosave).
-            </p>
-          }
-        />
-      </Modal>
-    </Layout>
+          <DataTable
+            table="employees"
+            manageViews
+            columns={COLUMNS}
+            data={employees}
+            loading={loading}
+            peek={{
+              title: row => `${row.first_name || ''} ${row.last_name || ''}`.trim() || `Employé #${row.id}`,
+              subtitle: row => row.job_title || row.email_work || '',
+              to: row => `/employees/${row.id}`,
+              width: 760,
+              openId: peekOpenId,
+              onOpenConsumed: consumePeekOpen,
+              render: (row, { close }) => <EmployeeDetail recordId={row.id} embedded onClose={close} />,
+            }}
+            searchFields={['first_name', 'last_name', 'matricule', 'email_work', 'email_personal']}
+            emptyState={{ icon: Users, title: 'Aucun employé', description: "Aucun employé n'est encore enregistré. Ajoute un employé pour gérer la paie et les feuilles de temps.", cta: { label: 'Nouvel employé', icon: Plus, onClick: openCreate } }}
+          />
+        </>
+      )}
+    </ListPage>
   )
 }

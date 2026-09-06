@@ -3,16 +3,14 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import { X, FileText, SlidersHorizontal, RefreshCw } from 'lucide-react'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
+import { useListData } from '../lib/useListData.js'
 import { Badge, FACTURE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { CustomFieldModal } from '../components/CustomFieldModal.jsx'
 import { FieldAirtableMapping } from '../components/FieldAirtableMapping.jsx'
 import { StripeFieldMapModal } from '../components/StripeFieldMapModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -200,8 +198,10 @@ export default function Factures() {
   const month = searchParams.get('month')
   const typeFilter = searchParams.get('type') // 'service' | 'achat' | null
 
-  const [factures, setFactures] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { rows: factures, loading, reload: load } = useListData({
+    fetch: (page, limit) => api.factures.list({ limit, page }),
+    realtime: 'facture',
+  })
   const { fields: customFields, loaded: customFieldsLoaded, reload: reloadCustomFields } = useCustomFields('factures')
   const [customFieldModal, setCustomFieldModal] = useState(null) // { editing: field|null }
   const [stripeMapOpen, setStripeMapOpen] = useState(false)
@@ -215,17 +215,6 @@ export default function Factures() {
     for (const f of customFields) m.set(f.column_name, f)
     return m
   }, [customFields])
-
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.factures.list({ limit, page }),
-      setFactures, setLoading
-    )
-  }, [])
-
-  useEffect(() => { load() }, [load])
-
-  useEntityListRealtime('facture', setFactures)
 
   // Indicateur de ré-import (signalement /factures) : pill visible tant qu'un
   // batch Stripe ou une resync Airtable tourne ; à la fin, recharge la liste
@@ -331,68 +320,61 @@ export default function Factures() {
   })()
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-3">
-            <PageTitle>Factures clients</PageTitle>
-            <ReimportIndicator stripeBatch={stripeBatch} airtableSync={airtableSync} />
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setStripeMapOpen(true)}
-              className="btn-secondary btn-sm flex items-center gap-1.5"
-              title="Choisir quels champs Stripe alimentent les colonnes des factures"
-              data-testid="factures-stripe-map-open"
-            >
-              <SlidersHorizontal size={13} /> Sync Stripe
-            </button>
-          </div>
+    <ListPage
+      title="Factures clients"
+      titleExtra={<ReimportIndicator stripeBatch={stripeBatch} airtableSync={airtableSync} />}
+      actions={(
+        <button
+          onClick={() => setStripeMapOpen(true)}
+          className="btn-secondary btn-sm flex items-center gap-1.5"
+          title="Choisir quels champs Stripe alimentent les colonnes des factures"
+          data-testid="factures-stripe-map-open"
+        >
+          <SlidersHorizontal size={13} /> Sync Stripe
+        </button>
+      )}
+      banner={filterLabel && (
+        <div className="flex items-center gap-2 mb-4 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg w-fit">
+          <span className="text-sm text-brand-700 font-medium">Ventes &amp; abonnements — {filterLabel}</span>
+          <span className="text-xs text-brand-400">{displayedFactures.length} facture{displayedFactures.length !== 1 ? 's' : ''}</span>
+          <button
+            onClick={() => setSearchParams({})}
+            className="text-brand-400 hover:text-brand-700 ml-1"
+            title="Effacer le filtre"
+            aria-label="Effacer le filtre"
+          >
+            <X size={14} />
+          </button>
         </div>
-
-        {filterLabel && (
-          <div className="flex items-center gap-2 mb-4 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg w-fit">
-            <span className="text-sm text-brand-700 font-medium">Ventes &amp; abonnements — {filterLabel}</span>
-            <span className="text-xs text-brand-400">{displayedFactures.length} facture{displayedFactures.length !== 1 ? 's' : ''}</span>
-            <button
-              onClick={() => setSearchParams({})}
-              className="text-brand-400 hover:text-brand-700 ml-1"
-              title="Effacer le filtre"
-              aria-label="Effacer le filtre"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
-
-        <DataTable
-          table="factures"
-          manageViews
-          columns={COLUMNS_WITH_CUSTOM}
-          data={displayedFactures}
-          searchFields={['document_number', 'company_name', 'project_name', 'order_number', 'total_amount', 'amount_before_tax_cad', 'balance_due', 'notes']}
-          loading={loading}
-          peek={{
-            title: row => row.document_number || `Facture #${row.id}`,
-            subtitle: row => row.company_name || '',
-            to: row => `/factures/${row.id}`,
-            width: 720,
-            openId: peekOpenId,
-            onOpenConsumed: consumePeekOpen,
-            render: (row, { close }) => <FactureDetail recordId={row.id} embedded onClose={close} />,
-          }}
-          customFieldsByColumn={customFieldsByColumn}
-          customFieldsLoaded={customFieldsLoaded}
-          // Le menu d'en-tête (duplication, masquage global) crée ou masque des
-          // champs sans passer par les gestionnaires de cette page : sans ce
-          // rappel, sa liste de champs resterait périmée jusqu'au rechargement.
-          onFieldsChanged={async () => { await reloadCustomFields(); load() }}
-          onAddCustomField={() => setCustomFieldModal({ editing: null })}
-          onEditCustomField={(field) => setCustomFieldModal({ editing: field })}
-          onDeleteCustomField={handleDeleteCustomField}
-          emptyState={{ icon: FileText, title: 'Aucune facture', description: "Aucune facture n'a encore été émise. Les factures apparaissent ici une fois créées ou synchronisées." }}
-        />
-      </div>
+      )}
+    >
+      <DataTable
+        table="factures"
+        manageViews
+        columns={COLUMNS_WITH_CUSTOM}
+        data={displayedFactures}
+        searchFields={['document_number', 'company_name', 'project_name', 'order_number', 'total_amount', 'amount_before_tax_cad', 'balance_due', 'notes']}
+        loading={loading}
+        peek={{
+          title: row => row.document_number || `Facture #${row.id}`,
+          subtitle: row => row.company_name || '',
+          to: row => `/factures/${row.id}`,
+          width: 720,
+          openId: peekOpenId,
+          onOpenConsumed: consumePeekOpen,
+          render: (row, { close }) => <FactureDetail recordId={row.id} embedded onClose={close} />,
+        }}
+        customFieldsByColumn={customFieldsByColumn}
+        customFieldsLoaded={customFieldsLoaded}
+        // Le menu d'en-tête (duplication, masquage global) crée ou masque des
+        // champs sans passer par les gestionnaires de cette page : sans ce
+        // rappel, sa liste de champs resterait périmée jusqu'au rechargement.
+        onFieldsChanged={async () => { await reloadCustomFields(); load() }}
+        onAddCustomField={() => setCustomFieldModal({ editing: null })}
+        onEditCustomField={(field) => setCustomFieldModal({ editing: field })}
+        onDeleteCustomField={handleDeleteCustomField}
+        emptyState={{ icon: FileText, title: 'Aucune facture', description: "Aucune facture n'a encore été émise. Les factures apparaissent ici une fois créées ou synchronisées." }}
+      />
 
       <StripeFieldMapModal
         isOpen={stripeMapOpen}
@@ -435,6 +417,6 @@ export default function Factures() {
         onSaved={async () => { await reloadCustomFields(); load() }}
         onDeleted={async () => { await reloadCustomFields(); load() }}
       />
-    </Layout>
+    </ListPage>
   )
 }

@@ -1,11 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { ExternalLink, CheckCircle2, AlertCircle, Eye, Send, RefreshCw } from 'lucide-react'
 import api from '../lib/api.js'
-import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { METHOD_LABELS, MANUAL_METHODS, PaymentConfirmModal } from '../components/FacturePaymentsSection.jsx'
@@ -31,12 +29,8 @@ function InfoField({ label, value }) {
 //     crée la ligne payments et poste le Deposit via le flux existant).
 //   - deposit   : ligne payments existante → lien vers le Deposit QB, ou Retry
 //     si la pose a échoué.
-// Fiche d'un dépôt direct. Rendue exclusivement dans un panneau latéral :
-// `recordId` vient du panneau, `useParams` sert au montage depuis l'URL.
-export default function DirectDepositDetail({ recordId }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-
+// Fiche d'un dépôt direct.
+export default function DirectDepositDetail({ recordId: id }) {
   const [data, setData] = useState(null) // { kind, deposit?, candidate? }
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -178,9 +172,9 @@ export default function DirectDepositDetail({ recordId }) {
     }
   }
 
-  if (loading && !data) return <Spinner center label="Chargement…" />
-  if (error && !data) return <DetailLoadError message={error} onRetry={() => load()} retrying={loading} />
-  if (!data) return null
+  // Un rechargement après action garde la fiche affichée (loading && !data).
+  const pending = detailPending({ loading: loading && !data, loadError: error, onRetry: () => load(), record: data, notFound: 'Dépôt introuvable.' })
+  if (pending) return pending
 
   const isCandidate = data.kind === 'candidate'
   const c = data.candidate
@@ -197,15 +191,13 @@ export default function DirectDepositDetail({ recordId }) {
   const qbLabel = !isCandidate ? (p.qb_deposit_id ? 'Deposit' : (p.qb_journal_entry_id ? 'JE' : 'SR')) : null
 
   return (
-    <>
-      <div className="p-6">
-
+    <DetailShell>
         {/* Header — miroir du détail payout */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 mb-4" data-testid="direct-deposit-header">
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div>
               <div className="flex items-center gap-3 flex-wrap">
-                <PageTitle titleClassName="text-2xl font-bold text-slate-900 tabular-nums">{fmtMoney(displayAmount, cur)}</PageTitle>
+                <div className="text-2xl font-bold text-slate-900 tabular-nums">{fmtMoney(displayAmount, cur)}</div>
                 {isCandidate ? (
                   <Badge color="yellow">À comptabiliser</Badge>
                 ) : qbId ? (
@@ -376,7 +368,6 @@ export default function DirectDepositDetail({ recordId }) {
             </>
           )}
         </div>
-      </div>
 
       <PaymentConfirmModal
         isOpen={confirmOpen}
@@ -389,7 +380,7 @@ export default function DirectDepositDetail({ recordId }) {
         onCancel={() => setConfirmOpen(false)}
         onConfirm={push}
       />
-    </>
+    </DetailShell>
   )
 }
 

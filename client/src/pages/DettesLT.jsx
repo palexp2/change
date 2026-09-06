@@ -75,6 +75,20 @@ function DebtModal({ debt, onClose, onSaved, onDeleted }) {
             « VILLE DE QUEBEC ») : sans lui, aucun versement n'est reconnu au
             compte et la colonne « passé à la banque » reste muette. */}
         {field('bank_label_pattern', 'Libellé au relevé bancaire')}
+        {/* Frais que le prêteur ajoute au débit une fois par an sans les
+            inscrire à la cédule. Sans eux, le versement de ce mois-là paraît
+            introuvable au relevé et la dépense publiée est trop basse. */}
+        {field('annual_fee_amount', 'Frais annuels', { type: 'number', step: '0.01' })}
+        <div>
+          <label className={labelCls}>Mois des frais</label>
+          <select className={inputCls} value={form.annual_fee_month ?? ''}
+            onChange={e => { const v = e.target.value ? Number(e.target.value) : null; set('annual_fee_month', v); save('annual_fee_month', v) }}>
+            <option value="">Aucun</option>
+            {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+          </select>
+        </div>
+        {field('annual_fee_acctnum', 'No de compte QB des frais')}
+        {field('annual_fee_label', 'Libellé des frais')}
         {!isNew && (
           <div>
             <label className={labelCls}>Statut</label>
@@ -439,13 +453,34 @@ function PublishModal({ debt, payment, onClose, onPublished }) {
 // « Passé à la banque », lu au relevé. Muet tant que le versement n'est pas dû
 // (rien à signaler d'avance) ; ambre quand la date est passée depuis plus de
 // trois jours sans que rien ne paraisse au compte.
-function BankSeen({ payment: p }) {
+function BankSeen({ payment: p, debt }) {
   if (p.bank_txn_date) {
+    // Le prêteur ajoute parfois des frais au débit sans les mettre à la
+    // cédule. Quand l'écart correspond aux frais annuels connus de la dette,
+    // on le dit ; sinon on le montre comme un écart à comprendre, jamais avalé.
+    const extra = Number(p.bank_extra_amount) || 0
+    const fee = Number(debt?.annual_fee_amount) || 0
+    const feeMonth = Number(debt?.annual_fee_month) || 0
+    const isFee = fee > 0 && Math.abs(extra - fee) < 0.01
+      && Number(String(p.payment_date).slice(5, 7)) === feeMonth
     return (
-      <Link to="/rapprochement" className="block text-[11px] text-slate-500 hover:text-slate-700 underline underline-offset-2"
-        title="Débit vu au relevé bancaire">
-        Passé le {fmtDate(p.bank_txn_date)}
-      </Link>
+      <>
+        <Link to="/rapprochement" className="block text-[11px] text-slate-500 hover:text-slate-700 underline underline-offset-2"
+          title="Débit vu au relevé bancaire">
+          Passé le {fmtDate(p.bank_txn_date)}
+        </Link>
+        {isFee ? (
+          <span className="block text-[11px] text-slate-500"
+            title={`Frais prélevés une fois par an avec ce versement, hors cédule du prêteur${debt.annual_fee_acctnum ? ` — compte ${debt.annual_fee_acctnum}` : ''}`}>
+            dont {fmtMoney(fee, debt.currency)} · {debt.annual_fee_label || 'frais annuels'}
+          </span>
+        ) : Math.abs(extra) >= 0.01 ? (
+          <span className="block text-[11px] text-amber-700"
+            title="Écart entre le débit réel et la cédule, sans explication connue">
+            {extra > 0 ? '+' : ''}{fmtMoney(extra, debt?.currency)} vs cédule
+          </span>
+        ) : null}
+      </>
     )
   }
   // Fenêtre de recherche du serveur (120 jours) : au-delà, l'absence ne prouve
@@ -456,6 +491,9 @@ function BankSeen({ payment: p }) {
   if (!d || d > iso(3 * 864e5) || d < iso(120 * 864e5)) return null
   return <span className="block text-[11px] text-amber-700">Pas encore vu à la banque</span>
 }
+
+const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+  'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre']
 
 function paymentStatus(p, qbMissing) {
   const txnLabel = `${p.qb_txn_type === 'purchase' ? 'Dépense' : 'JE'} #${p.qb_txn_id}`
@@ -662,7 +700,7 @@ export default function DettesLT() {
                               « l'écriture existe dans QuickBooks » : un
                               versement peut être comptabilisé des jours avant
                               que la banque ne le montre. */}
-                          <BankSeen payment={p} />
+                          <BankSeen payment={p} debt={debt} />
                           {p.qb_txn_url && !st.missing ? (
                             <a href={p.qb_txn_url} target="_blank" rel="noreferrer" title="Ouvrir dans QuickBooks"
                               className="inline-flex items-center gap-1 group">

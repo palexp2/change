@@ -1,9 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { Wallet, Plus, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
+import { useListData } from '../lib/useListData.js'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -25,21 +25,10 @@ function fmtHours(h) {
 export default function BanqueHeures() {
   const { user } = useAuth()
   const isHR = ['admin', 'rh'].includes(user?.role)
-  const [rows, setRows] = useState([])
-  const [loading, setLoading] = useState(true)
+  const { rows, loading, reload: load } = useListData({ fetch: () => api.hourBank.list() })
   const [details, setDetails] = useState({}) // employeeId → { entries, balance_hours }
   const [addFor, setAddFor] = useState(null) // employeeId being added
   const confirm = useConfirm()
-
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const r = await api.hourBank.list()
-      setRows(r.data || [])
-    } finally { setLoading(false) }
-  }, [])
-
-  useEffect(() => { load() }, [load])
 
   // Aggregated balances — recharger sur tout changement d'entrée pour mettre à jour les soldes.
   useRealtimeChannel('hour_bank_entry:list', () => { load() })
@@ -138,27 +127,23 @@ export default function BanqueHeures() {
   }, [loadEmployee])
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center gap-3 mb-6">
-          <Wallet size={20} className="text-slate-400" />
-          <PageTitle>Banque d'heures</PageTitle>
-          <span className="text-sm text-slate-400">— excédent / déficit par employé</span>
-        </div>
-
-        <DataTable
-          table="hour_bank"
-          columns={columns}
-          data={data}
-          loading={loading}
-          rowKey="employee_id"
-          renderExpanded={renderExpanded}
-          onToggleExpand={onToggleExpand}
-          searchFields={['employee_name', 'matricule']}
-          emptyState={{ icon: Wallet, title: 'Aucun employé', description: "Aucun solde d'heures à afficher." }}
-        />
-      </div>
-    </Layout>
+    <ListPage
+      title="Banque d'heures"
+      icon={Wallet}
+      titleExtra={<span className="text-sm text-slate-400">— excédent / déficit par employé</span>}
+    >
+      <DataTable
+        table="hour_bank"
+        columns={columns}
+        data={data}
+        loading={loading}
+        rowKey="employee_id"
+        renderExpanded={renderExpanded}
+        onToggleExpand={onToggleExpand}
+        searchFields={['employee_name', 'matricule']}
+        emptyState={{ icon: Wallet, title: 'Aucun employé', description: "Aucun solde d'heures à afficher." }}
+      />
+    </ListPage>
   )
 }
 

@@ -1007,6 +1007,16 @@ const server = app.listen(PORT, () => {
   setTimeout(runTrxSheetSync, 240_000)
   setInterval(runTrxSheetSync, 20 * 60 * 1000)
 
+  // Une banque qui se tait ne fait aucun bruit : ni erreur, ni écran rouge,
+  // juste plus de transactions. Trois passages par jour suffisent à s'en
+  // apercevoir sans harceler l'API. Coupe-circuit dans le service.
+  cron.schedule('0 11,17,23 * * *', () => {
+    if (!isSystemAutomationActive('sys_plaid_silence_alert')) return
+    import('./services/plaidSilenceAlert.js')
+      .then(({ checkPlaidSilence }) => checkPlaidSilence({ trigger: 'cron' }))
+      .catch(e => console.error('plaid silence alert:', e.message))
+  })
+
   // Lecture Plaid planifiée — FILET derrière le webhook, qui était jusqu'ici le
   // seul déclencheur : une signature refusée ou un webhook perdu et plus rien
   // n'arrivait, en silence. Coupe-circuit si sys_plaid_sync est désactivée.

@@ -1,10 +1,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2, AlertTriangle } from 'lucide-react'
+import { Plus, Trash2, AlertTriangle } from 'lucide-react'
 import api from '../lib/api.js'
 import { localISODate } from '../lib/formatDate.js'
 import { vacationBalance } from '../lib/vacationBalance.js'
-import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -12,7 +10,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useRealtimeChannel, useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { useFieldGate } from '../lib/fieldGate.js'
 import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
 
@@ -84,10 +82,8 @@ function normalize(raw) {
 
 const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
-// `recordId` + `embedded` : monte la fiche dans un RecordPeekDrawer (side-peek)
-// sans le chrome de page (Layout, bouton retour). `onClose` ferme le panneau
-// après suppression du record.
-export default function EmployeeDetail({ recordId, embedded = true, onClose }) {
+// `onClose` ferme le panneau après suppression du record.
+export default function EmployeeDetail({ recordId: id, onClose }) {
   // Portier des champs supprimés : un champ retiré dans /champs/employees sort
   // aussi de cette fiche (et un renommage s'y voit).
   const fieldGate = useFieldGate('employees')
@@ -101,13 +97,7 @@ export default function EmployeeDetail({ recordId, embedded = true, onClose }) {
     [fieldGate],
   )
 
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const navigate = useNavigate()
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
-  const leaveRecord = () => { if (embedded) onClose?.(); else navigate('/employees') }
+  const leaveRecord = () => onClose?.()
   const confirm = useConfirm()
   const { addToast } = useToast()
   const [form, setForm] = useState(null)
@@ -178,49 +168,43 @@ export default function EmployeeDetail({ recordId, embedded = true, onClose }) {
     }
   }
 
-  if (loadError && !employee) {
-    return shell(<DetailLoadError message={loadError} onRetry={load} />)
-  }
-  if (loading || !form) {
-    return shell(<Spinner center />)
-  }
-  if (!employee) {
-    return shell(<div className="p-6 text-slate-500">Employé introuvable.</div>)
-  }
+  // `form` est dérivé du record au chargement : tant qu'il n'existe pas, on est
+  // encore en chargement (sauf si c'est le chargement lui-même qui a échoué).
+  const pending = detailPending({
+    loading: !loadError && (loading || !form),
+    loadError, onRetry: load, record: employee, notFound: 'Employé introuvable.',
+  })
+  if (pending) return pending
 
   const initials = (form.first_name?.[0] || '') + (form.last_name?.[0] || '')
 
-  return shell(
-      <div className={embedded ? 'p-6' : 'p-6 max-w-4xl mx-auto'}>
-        <div className="flex items-start gap-4 mb-6">
-          {!embedded && (
-            <button onClick={() => navigate('/employees')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-              <ArrowLeft size={18} />
-            </button>
-          )}
-          <div className="w-14 h-14 rounded-full bg-brand-100 text-brand-600 flex items-center justify-center font-semibold text-lg flex-shrink-0">
-            {initials || '—'}
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-3 flex-wrap">
-              <PageTitle>
-                {(form.first_name || form.last_name) ? `${form.first_name || ''} ${form.last_name || ''}`.trim() : <span className="text-slate-400 italic font-normal">Sans nom</span>}
-              </PageTitle>
+  return (
+      <DetailShell
+        header={{
+          leading: (
+            <div className="w-14 h-14 rounded-full bg-brand-100 text-brand-600 flex items-center justify-center font-semibold text-lg flex-shrink-0">
+              {initials || '—'}
+            </div>
+          ),
+          badge: (
+            <>
               {!form.active && <Badge color="red">Inactif</Badge>}
               {!!form.is_salesperson && <Badge color="indigo">Vendeur</Badge>}
               {!!form.is_consultant && <Badge color="purple">Consultant</Badge>}
-            </div>
-            <div className="text-sm text-slate-500 mt-1 flex gap-3 flex-wrap">
+            </>
+          ),
+          meta: (
+            <>
               {form.matricule && <span className="font-mono bg-slate-100 px-2 py-0.5 rounded">{form.matricule}</span>}
               {form.accounting_department && <span>{form.accounting_department}</span>}
               {form.email_work && <a href={`mailto:${form.email_work}`} className="text-brand-600 hover:underline">{form.email_work}</a>}
-            </div>
-          </div>
-          <div className="flex items-center gap-3 pt-1">
+            </>
+          ),
+          actions: (
             <span className={`text-xs transition-opacity ${saving ? 'opacity-100 text-slate-400' : 'opacity-0'}`}>Sauvegarde…</span>
-          </div>
-        </div>
-
+          ),
+        }}
+      >
         <div className="space-y-6">
           <VacationsSection
             employeeId={id}
@@ -315,7 +299,7 @@ export default function EmployeeDetail({ recordId, embedded = true, onClose }) {
             </button>
           </div>
         </div>
-      </div>
+      </DetailShell>
   )
 }
 

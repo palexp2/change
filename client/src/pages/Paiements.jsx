@@ -1,10 +1,9 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { Banknote, ArrowDownCircle, ArrowUpCircle } from 'lucide-react'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -69,17 +68,9 @@ const COLUMNS = TABLE_COLUMN_META.payments.map(meta => ({ ...meta, render: RENDE
 
 export default function Paiements() {
   const { addToast } = useToast()
-  const [payments, setPayments] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.payments.list({ limit, page }),
-      setPayments, setLoading
-    )
-  }, [])
-
-  useEffect(() => { load() }, [load])
+  const { rows: payments, setRows: setPayments, loading } = useListData({
+    fetch: (page, limit) => api.payments.list({ limit, page }),
+  })
 
   // Édition inline (mode tableur) d'une valeur de champ personnalisé. Seules les
   // colonnes custom sont éditables (les colonnes natives n'ont pas de flag
@@ -98,7 +89,7 @@ export default function Paiements() {
     } catch (e) {
       addToast({ message: e.message, type: 'error' })
     }
-  }, [addToast])
+  }, [addToast, setPayments])
 
   // Total encaissé net (CAD) sur les lignes chargées, pour un repère rapide en
   // en-tête. Encaissements comptés positifs, remboursements négatifs. On ignore
@@ -112,30 +103,28 @@ export default function Paiements() {
   )
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <PageTitle>Paiements</PageTitle>
-          <div className="text-sm text-slate-500" data-testid="paiements-net-cad">
-            Net saisi (CAD) : <span className="font-medium text-slate-800">{fmtCad(netCad)}</span>
-          </div>
+    <ListPage
+      title="Paiements"
+      actions={
+        <div className="text-sm text-slate-500" data-testid="paiements-net-cad">
+          Net saisi (CAD) : <span className="font-medium text-slate-800">{fmtCad(netCad)}</span>
         </div>
-
-        <DataTable
-          table="payments"
-          manageViews
-          columns={COLUMNS}
-          data={payments}
-          searchFields={['company_name', 'document_number', 'method', 'notes', 'amount']}
-          loading={loading}
-          onCellEdit={updateCustomField}
-          emptyState={{
-            icon: Banknote,
-            title: 'Aucun paiement',
-            description: 'Les encaissements et remboursements apparaissent ici : paiements Stripe, chèques, virements, Interac et remboursements enregistrés sur les factures.',
-          }}
-        />
-      </div>
-    </Layout>
+      }
+    >
+      <DataTable
+        table="payments"
+        manageViews
+        columns={COLUMNS}
+        data={payments}
+        searchFields={['company_name', 'document_number', 'method', 'notes', 'amount']}
+        loading={loading}
+        onCellEdit={updateCustomField}
+        emptyState={{
+          icon: Banknote,
+          title: 'Aucun paiement',
+          description: 'Les encaissements et remboursements apparaissent ici : paiements Stripe, chèques, virements, Interac et remboursements enregistrés sur les factures.',
+        }}
+      />
+    </ListPage>
   )
 }

@@ -1,17 +1,15 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Phone, Mail, MessageSquare, Users, FileText, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { Badge, INTERACTION_TYPE_LABELS as TYPE_LABELS } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import ContactDetail from './ContactDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
@@ -235,8 +233,6 @@ function InteractionDetail({ item: stub, onNavigate, onPeekContact, onDelete }) 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function Interactions() {
-  const [items, setItems] = useState([])
-  const [loading, setLoading] = useState(true)
   const [selected, setSelected] = useState(null)
   // Contact ouvert dans le side-peek (clic sur un nom de contact) :
   // { id, name, company } — la fiche ContactDetail est montée en mode embedded.
@@ -245,18 +241,12 @@ export default function Interactions() {
   const confirm = useConfirm()
   const undoableDelete = useUndoableDelete()
 
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.interactions.list({ limit, offset: limit === 'all' ? 0 : (page - 1) * limit })
-        .then(r => ({ data: r.interactions || [], total: r.total || 0 })),
-      setItems, setLoading,
-      { cacheKey: 'interactions' }
-    )
-  }, [])
-
-  useEffect(() => { load() }, [load])
-
-  useEntityListRealtime('interaction', setItems)
+  const { rows: items, loading, reload: load } = useListData({
+    fetch: (page, limit) => api.interactions.list({ limit, offset: limit === 'all' ? 0 : (page - 1) * limit })
+      .then(r => ({ data: r.interactions || [], total: r.total || 0 })),
+    cacheKey: 'interactions',
+    realtime: 'interaction',
+  })
 
   async function handleDelete(item) {
     if (!(await confirm('Supprimer cette interaction ?'))) return
@@ -308,33 +298,25 @@ export default function Interactions() {
   })), [])
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Interactions</PageTitle>
-          </div>
-        </div>
-
-        <DataTable
-          table="interactions"
-          manageViews
-          columns={COLUMNS}
-          data={items}
-          loading={loading}
-          onRowClick={setSelected}
-          searchFields={['contact_name', 'company_name', 'subject', 'callee_number', 'meeting_title']}
-          onBulkDelete={async (ids) => {
-            await undoableDelete({
-              table: 'interactions',
-              ids,
-              deleteFn: () => Promise.all(ids.map(id => api.interactions.delete(id))),
-              label: `${ids.length} interaction${ids.length > 1 ? 's' : ''} supprimée${ids.length > 1 ? 's' : ''}`,
-              onChange: load,
-            })
-          }}
-        />
-      </div>
+    <ListPage title="Interactions">
+      <DataTable
+        table="interactions"
+        manageViews
+        columns={COLUMNS}
+        data={items}
+        loading={loading}
+        onRowClick={setSelected}
+        searchFields={['contact_name', 'company_name', 'subject', 'callee_number', 'meeting_title']}
+        onBulkDelete={async (ids) => {
+          await undoableDelete({
+            table: 'interactions',
+            ids,
+            deleteFn: () => Promise.all(ids.map(id => api.interactions.delete(id))),
+            label: `${ids.length} interaction${ids.length > 1 ? 's' : ''} supprimée${ids.length > 1 ? 's' : ''}`,
+            onChange: load,
+          })
+        }}
+      />
 
       <Modal
         isOpen={!!selected}
@@ -364,6 +346,6 @@ export default function Interactions() {
       >
         {peekContact && <ContactDetail recordId={peekContact.id} embedded onClose={() => setPeekContact(null)} />}
       </RecordPeekDrawer>
-    </Layout>
+    </ListPage>
   )
 }

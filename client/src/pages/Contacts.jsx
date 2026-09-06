@@ -1,16 +1,13 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useTable, isTableHydrated } from '../lib/dataStore.js'
-import { sync as syncStore } from '../lib/dataSync.js'
+import { useTable } from '../lib/dataStore.js'
+import { useListData } from '../lib/useListData.js'
 import { Link } from 'react-router-dom'
-import { Plus, Send } from 'lucide-react'
+import { Send } from 'lucide-react'
 import api from '../lib/api.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { ListPage } from '../components/ListPage.jsx'
 import { Badge } from '../components/Badge.jsx'
-import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { RecordForm } from '../components/RecordForm.jsx'
 import ContactDetail from './ContactDetail.jsx'
 import { HubSpotExportModal } from '../components/HubSpotExportModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
@@ -60,16 +57,14 @@ function contactFormFields(companies) {
 
 export default function Contacts() {
   const [companies, setCompanies] = useState([])
-  const [showModal, setShowModal] = useState(false)
   const [showHubspotExport, setShowHubspotExport] = useState(false)
   const [filteredContacts, setFilteredContacts] = useState([])
   const undoableDelete = useUndoableDelete()
 
   // Cache global : hydraté au login par /api/bootstrap, rafraîchi par delta
   // polling toutes les 10s + sync() manuel après une mutation locale.
-  const contactsRaw = useTable('contacts')
+  const { rows: contactsRaw, loading, reload } = useListData({ table: 'contacts' })
   const companiesRaw = useTable('companies')
-  const loading = !isTableHydrated('contacts')
 
   // Le bootstrap envoie les colonnes brutes — on joint company_name côté client
   // depuis le cache companies pour que la colonne "Entreprise" s'affiche.
@@ -87,72 +82,57 @@ export default function Contacts() {
 
   async function handleCreate(form) {
     await api.contacts.create(form)
-    await syncStore()
+    await reload()
   }
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Contacts</PageTitle>
-          </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => setShowHubspotExport(true)}
-              className="btn-secondary"
-              title="Créer une liste statique HubSpot avec la vue filtrée"
-            >
-              <Send size={16} /> Exporter vers HubSpot
-            </button>
-            <button onClick={() => setShowModal(true)} className="btn-primary">
-              <Plus size={16} /> Nouveau contact
-            </button>
-          </div>
-        </div>
-
-        <DataTable
-          table="contacts"
-          manageViews
-          columns={COLUMNS}
-          data={contacts}
-          loading={loading}
-          peek={{
-            title: row => `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'Contact',
-            subtitle: row => row.company_name || row.email || '',
-            to: row => `/contacts/${row.id}`,
-            render: (row, { close }) => <ContactDetail recordId={row.id} embedded onClose={close} />,
-          }}
-          searchFields={['first_name', 'last_name', 'email', 'phone', 'mobile', 'company_name']}
-          onFilteredDataChange={setFilteredContacts}
-          onBulkDelete={async (ids) => {
-            await undoableDelete({
-              table: 'contacts',
-              ids,
-              deleteFn: () => Promise.all(ids.map(id => api.contacts.delete(id))),
-              label: `${ids.length} contact${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`,
-              onChange: syncStore,
-            })
-          }}
-        />
-      </div>
-
-      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau contact">
-        <RecordForm
-          table="contacts"
-          fields={contactFormFields(companies)}
-          columns={2}
-          onSubmit={handleCreate}
-          onClose={() => setShowModal(false)}
-          extra={values => <DuplicateWarning kind="contact" values={values} />}
-        />
-      </Modal>
+    <ListPage
+      title="Contacts"
+      actions={
+        <button
+          onClick={() => setShowHubspotExport(true)}
+          className="btn-secondary"
+          title="Créer une liste statique HubSpot avec la vue filtrée"
+        >
+          <Send size={16} /> Exporter vers HubSpot
+        </button>
+      }
+      create={{
+        label: 'Nouveau contact', table: 'contacts', fields: contactFormFields(companies), columns: 2,
+        onSubmit: handleCreate,
+        extra: values => <DuplicateWarning kind="contact" values={values} />,
+      }}
+    >
+      <DataTable
+        table="contacts"
+        manageViews
+        columns={COLUMNS}
+        data={contacts}
+        loading={loading}
+        peek={{
+          title: row => `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'Contact',
+          subtitle: row => row.company_name || row.email || '',
+          to: row => `/contacts/${row.id}`,
+          render: (row, { close }) => <ContactDetail recordId={row.id} embedded onClose={close} />,
+        }}
+        searchFields={['first_name', 'last_name', 'email', 'phone', 'mobile', 'company_name']}
+        onFilteredDataChange={setFilteredContacts}
+        onBulkDelete={async (ids) => {
+          await undoableDelete({
+            table: 'contacts',
+            ids,
+            deleteFn: () => Promise.all(ids.map(id => api.contacts.delete(id))),
+            label: `${ids.length} contact${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`,
+            onChange: reload,
+          })
+        }}
+      />
 
       <HubSpotExportModal
         isOpen={showHubspotExport}
         onClose={() => setShowHubspotExport(false)}
         filteredContacts={filteredContacts}
       />
-    </Layout>
+    </ListPage>
   )
 }

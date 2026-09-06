@@ -1,9 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
-import { loadProgressive } from '../lib/loadAll.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -21,36 +19,20 @@ const RENDERS = {
 const COLUMNS = TABLE_COLUMN_META.assemblages.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
 export default function Assemblages() {
-  const [assemblages, setAssemblages] = useState([])
-  const [loading, setLoading] = useState(true)
-
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.assemblages.list({ limit, page }),
-      setAssemblages, setLoading
-    )
-  }, [])
-
-  useEffect(() => { load() }, [load])
+  const { rows: assemblages, loading } = useListData({
+    fetch: (page, limit) => api.assemblages.list({ limit, page }),
+  })
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Assemblages</PageTitle>
-          </div>
-        </div>
-
-        <DataTable
-          table="assemblages"
-          manageViews
-          columns={COLUMNS}
-          data={assemblages}
-          loading={loading}
-          searchFields={['product_name', 'sku']}
-        />
-      </div>
-    </Layout>
+    <ListPage title="Assemblages">
+      <DataTable
+        table="assemblages"
+        manageViews
+        columns={COLUMNS}
+        data={assemblages}
+        loading={loading}
+        searchFields={['product_name', 'sku']}
+      />
+    </ListPage>
   )
 }

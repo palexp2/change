@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Link, useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, ExternalLink, Send, Hourglass, ChevronLeft, ChevronRight, Trash2, PanelRight } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ExternalLink, Send, Hourglass, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { Badge, FACTURE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
@@ -18,8 +17,6 @@ import { useAuth } from '../lib/auth.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { invalidate } from '../lib/prefetch.js'
-import { useRecordKeyNav } from '../lib/useRecordKeyNav.js'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import AttachmentPreview from '../components/AttachmentPreview.jsx'
 
 // Champs disponibles pour le builder de règles de visibilité. Le picker
@@ -107,14 +104,9 @@ function FactureNotesField({ value, onSave }) {
   )
 }
 
-// `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
-// (RecordPeekDrawer) sans le chrome de page (Layout, bouton retour, nav
-// clavier prev/next). En mode route normale, l'`id` vient de l'URL.
 // `onClose` ferme le drawer (utilisé après suppression du record).
-export default function FactureDetail({ recordId, embedded = true, onClose }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const navigate = useNavigate()
+export default function FactureDetail({ recordId, onClose }) {
+  const id = recordId
   const { user } = useAuth()
   const [facture, setFacture] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -129,7 +121,6 @@ export default function FactureDetail({ recordId, embedded = true, onClose }) {
   const [subscriptionModal, setSubscriptionModal] = useState(null)
   const [loadingSubscription, setLoadingSubscription] = useState(false)
   const [sendModalOpen, setSendModalOpen] = useState(false)
-  const [neighbors, setNeighbors] = useState({ prev: null, next: null })
   const [deleteModalOpen, setDeleteModalOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState(null)
@@ -141,8 +132,8 @@ export default function FactureDetail({ recordId, embedded = true, onClose }) {
     setDeleteError(null)
     try {
       await api.factures.delete(id)
-      if (embedded) { setDeleteModalOpen(false); onClose?.() }
-      else navigate('/factures')
+      setDeleteModalOpen(false)
+      onClose?.()
     } catch (e) {
       setDeleteError(e?.message || 'Erreur lors de la suppression')
       setDeleting(false)
@@ -238,29 +229,13 @@ export default function FactureDetail({ recordId, embedded = true, onClose }) {
 
   useRealtimeChannel(id ? `facture:${id}` : null, (msg) => {
     if (msg.type === 'facture:updated') setFacture(f => f ? { ...f, ...msg.payload } : f)
-    else if (msg.type === 'facture:deleted') { if (embedded) onClose?.(); else navigate('/factures') }
+    else if (msg.type === 'facture:deleted') onClose?.()
   })
 
   useEffect(() => {
     api.companies.lookup().then(setCompanies).catch(() => setCompanies([]))
   }, [])
 
-  useEffect(() => {
-    setNeighbors({ prev: null, next: null })
-    api.factures.neighbors(id)
-      .then(r => setNeighbors({ prev: r.prev || null, next: r.next || null }))
-      .catch(() => {})
-  }, [id])
-
-  const prevId = neighbors.prev
-  const nextId = neighbors.next
-
-  // Navigation clavier entre factures (j/↓ suivante · k/↑ précédente).
-  // Désactivée en mode embarqué : naviguer quitterait le drawer.
-  useRecordKeyNav({
-    prev: !embedded && prevId ? `/factures/${prevId}` : null,
-    next: !embedded && nextId ? `/factures/${nextId}` : null,
-  })
 
   async function handleProjectChange(newProjectId) {
     setSelectedProjectId(newProjectId || '')
@@ -305,30 +280,15 @@ export default function FactureDetail({ recordId, embedded = true, onClose }) {
     }
   }
 
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
+  const pending = detailPending({ loading, loadError, onRetry: load, record: facture, notFound: 'Facture introuvable.' })
+  if (pending) return pending
 
-  if (loading) {
-    return shell(<Spinner center />)
-  }
-  if (loadError && !facture) return shell(<DetailLoadError message={loadError} onRetry={load} />)
-  if (!facture) return shell(<div className="p-6 text-slate-500">Facture introuvable.</div>)
-
-  return shell(
+  return (
     <FieldGuardProvider context="facture" record={facture} fields={FACTURE_RULE_FIELDS}>
-      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-4xl mx-auto'}>
-        {/* Header */}
-        <div className="flex items-start gap-4 mb-6">
-          {!embedded && (
-            <button onClick={() => navigate('/factures')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-              <ArrowLeft size={18} />
-            </button>
-          )}
-          <div className="flex-1">
-            <div className="flex items-center gap-3 flex-wrap">
-              {/* En embarqué, le titre est déjà dans le header du drawer — on ne garde que les badges/actions. */}
-              {!embedded && <PageTitle>{facture.document_number || `Facture #${id}`}</PageTitle>}
+      <DetailShell
+        header={{
+          badge: (
+            <>
               {facture.status && (
                 <Badge color={STATUS_COLORS[facture.status] || 'gray'} size="md">
                   {facture.status}
@@ -394,8 +354,9 @@ export default function FactureDetail({ recordId, embedded = true, onClose }) {
                   </span>
                 )
               )}
-            </div>
-            {facture.deferred_revenue_at && !facture.revenue_recognized_at && (
+            </>
+          ),
+          meta: facture.deferred_revenue_at && !facture.revenue_recognized_at && (
               <div className="mt-2 text-xs text-slate-500">
                 Cette facture est comptabilisée dans le compte <strong>23900 Revenus perçus d'avance</strong>
                 {facture.deferred_revenue_amount_cad
@@ -408,43 +369,9 @@ export default function FactureDetail({ recordId, embedded = true, onClose }) {
                   ? " Un envoi a été enregistré — autoriser l'écriture de journal pour constater la vente."
                   : " La vente sera constatable lorsqu'un envoi sera fait sur une commande liée."}
               </div>
-            )}
-          </div>
-          {!embedded && (
-          <div className="flex items-center gap-1">
-            {/* Chemin inverse du panneau latéral : retourne à la
-                liste avec cette facture ouverte en panneau latéral. */}
-            <button
-              onClick={() => navigate('/factures', { state: { peekId: id } })}
-              className="p-1.5 text-slate-400 hover:text-brand-600 hover:bg-slate-100 rounded-lg"
-              title="Revenir à la liste avec cette facture en panneau latéral"
-              aria-label="Ouvrir en panneau latéral"
-              data-testid="facture-open-as-peek"
-            >
-              <PanelRight size={16} />
-            </button>
-            <button
-              onClick={() => prevId && navigate(`/factures/${prevId}`)}
-              disabled={!prevId}
-              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-              title="Facture précédente (k / ↑)"
-              aria-label="Facture précédente"
-            >
-              <ChevronLeft size={16} />
-            </button>
-            <button
-              onClick={() => nextId && navigate(`/factures/${nextId}`)}
-              disabled={!nextId}
-              className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-              title="Facture suivante (j / ↓)"
-              aria-label="Facture suivante"
-            >
-              <ChevronRight size={16} />
-            </button>
-          </div>
-          )}
-        </div>
-
+          ),
+        }}
+      >
         <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
           {/* Entreprise */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-5">
@@ -728,7 +655,7 @@ export default function FactureDetail({ recordId, embedded = true, onClose }) {
             </div>
           </div>
         )}
-      </div>
+      </DetailShell>
 
       {subscriptionModal && (
         <AbonnementDetailModal abonnement={subscriptionModal} onClose={() => setSubscriptionModal(null)} />

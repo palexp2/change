@@ -222,6 +222,21 @@ export async function plaidSyncStatus({ checkHealth = true } = {}) {
   return { items: itemRows, accounts: out }
 }
 
+// Solde connu de la banque pour un compte ERP, tel que lu au dernier sync.
+// Sur une carte de crédit, `current` EST le montant dû et `available` la place
+// qui reste — les deux répondent directement à « la carte a-t-elle encore de
+// la place ? », sans passer par une estimation.
+export function plaidBalanceFor(bankAccountId) {
+  const acc = db.prepare('SELECT plaid_account_id FROM bank_accounts WHERE id=? AND deleted_at IS NULL').get(bankAccountId)
+  if (!acc?.plaid_account_id) return null
+  for (const item of listItems()) {
+    const hit = (item.accounts || []).find(a => a.plaid_account_id === acc.plaid_account_id)
+    if (!hit || hit.balance == null) continue
+    return { current: hit.balance, available: hit.balance_available ?? null, read_at: hit.balance_at || null }
+  }
+  return null
+}
+
 // ── Doublons Plaid × TRX_Orisha ──────────────────────────────────────────────
 // Avant que TRX_Orisha ne soit coupé pour les comptes Plaid (bankTrxSheet.js),
 // les deux sources ont alimenté les mêmes comptes avec des clés de dédup

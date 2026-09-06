@@ -1,10 +1,9 @@
 import { useState, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
-import { useTable, isTableHydrated } from '../lib/dataStore.js'
-import { sync as syncStore } from '../lib/dataSync.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useTable } from '../lib/dataStore.js'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -18,10 +17,9 @@ export default function ItemsVendus() {
   const { addToast } = useToast()
   const [savingId, setSavingId] = useState(null)
 
-  const itemsRaw = useTable('stripe_invoice_items')
+  const { rows: itemsRaw, loading, reload } = useListData({ table: 'stripe_invoice_items' })
   const factures = useTable('factures')
   const productsAll = useTable('products')
-  const loading = !isTableHydrated('stripe_invoice_items')
 
   const products = useMemo(() => productsAll.filter(p => p.active), [productsAll])
 
@@ -41,13 +39,13 @@ export default function ItemsVendus() {
     setSavingId(itemId)
     try {
       await api.stripeInvoiceItems.update(itemId, { product_id: productId || null })
-      await syncStore()
+      await reload()
     } catch (err) {
       addToast({ message: 'Échec de la mise à jour : ' + (err.message || 'erreur inconnue'), type: 'error' })
     } finally {
       setSavingId(null)
     }
-  }, [addToast])
+  }, [addToast, reload])
 
   const COLUMNS = useMemo(() => {
     const RENDERS = {
@@ -84,24 +82,18 @@ export default function ItemsVendus() {
   }, [products, savingId, handleProductChange])
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <PageTitle>Items vendus</PageTitle>
-            <p className="text-sm text-slate-500 mt-1">Lignes des factures Stripe — lie chaque item à un produit ERP.</p>
-          </div>
-        </div>
-
-        <DataTable
-          table="stripe_invoice_items"
-          manageViews
-          columns={COLUMNS}
-          data={items}
-          searchFields={['description', 'stripe_price_id', 'stripe_product_id', 'facture_document_number', 'amount', 'unit_amount']}
-          loading={loading}
-        />
-      </div>
-    </Layout>
+    <ListPage
+      title="Items vendus"
+      subtitle={<p className="text-sm text-slate-500 mt-1">Lignes des factures Stripe — lie chaque item à un produit ERP.</p>}
+    >
+      <DataTable
+        table="stripe_invoice_items"
+        manageViews
+        columns={COLUMNS}
+        data={items}
+        searchFields={['description', 'stripe_price_id', 'stripe_product_id', 'facture_document_number', 'amount', 'unit_amount']}
+        loading={loading}
+      />
+    </ListPage>
   )
 }

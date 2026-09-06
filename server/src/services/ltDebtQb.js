@@ -52,6 +52,17 @@ export async function publishDebtPaymentExpense(debt, payment) {
   if (payment.principal > 0) await addLine(debt.qb_debt_acctnum, payment.principal, `Remboursement capital — ${ref}`)
   if (payment.interest > 0) await addLine(debt.qb_interest_acctnum, payment.interest, `Intérêts — ${ref}`)
 
+  // Frais annuels du prêteur : ils sortent du compte AVEC le versement mais ne
+  // figurent pas dans la cédule. Sans cette ligne, la dépense publiée serait
+  // inférieure au débit réel — c'est ce qu'un humain corrigeait à la main
+  // (dépense QB 17923 du 2026-08-23 : 6 806 + 1 863,12 + 350).
+  const { expectedFeeFor } = await import('./bankDebitLink.js')
+  const fee = expectedFeeFor(debt, payment.payment_date)
+  const feeLabel = debt.annual_fee_label || 'Frais annuels'
+  if (fee > 0 && debt.annual_fee_acctnum) {
+    await addLine(debt.annual_fee_acctnum, fee, `${feeLabel} (${fee} $)`)
+  }
+
   const entityRef = (await resolvePreviousEntityRef(debt.id))
     || { value: await findOrCreateVendor(debt.lender || debt.label), type: 'Vendor' }
   const purchase = {
@@ -59,7 +70,9 @@ export async function publishDebtPaymentExpense(debt, payment) {
     AccountRef: { value: bankId },
     EntityRef: entityRef,
     TxnDate: payment.payment_date,
-    PrivateNote: `Versement — ${ref}`,
+    PrivateNote: fee > 0 && debt.annual_fee_acctnum
+      ? `Versement — ${ref} + ${feeLabel} (${fee} $)`
+      : `Versement — ${ref}`,
     Line: lines,
   }
   const result = await qbPost('/purchase', purchase)

@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Truck } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Truck } from 'lucide-react'
 import api from '../lib/api.js'
-import { PageTitle } from '../components/PageTitle.jsx'
-import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
@@ -12,13 +10,12 @@ import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { AddressCheckBadge, AddressCheckIssues, parseCheckIssues } from '../components/AddressCheckIssues.jsx'
 import { US_STATES, CA_PROVINCES } from '../components/AdresseModal.jsx'
-import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import EnvoisDetail from './EnvoisDetail.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
-import { fmtAddress } from '../utils/formatters.js'
 import { shipmentTitle, shipmentSubtitle } from '../lib/shipmentLabel.js'
 
 const ADDRESS_TYPES = ['Ferme', 'Livraison', 'Facturation']
@@ -62,17 +59,9 @@ function InlineText({ value, saving, onSave, testId }) {
   )
 }
 
-// Fiche d'une adresse. `recordId` + `embedded` : montée dans un
-// RecordPeekDrawer (side-peek) sans le chrome de page — c'est ce qui s'ouvre
-// quand on clique l'adresse de livraison depuis la fiche d'un envoi.
-export default function AdresseDetail({ recordId, embedded = true }) {
-  const { id: paramId } = useParams()
-  const id = recordId ?? paramId
-  const navigate = useNavigate()
-  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
-  // en pleine page (voir components/RecordRoutePanel.jsx).
-  const shell = (content) => content
-
+// C'est ce qui s'ouvre quand on clique l'adresse de livraison depuis la fiche
+// d'un envoi.
+export default function AdresseDetail({ recordId: id }) {
   const { record: adresse, setRecord: setAdresse, loading, loadError, reload: load } =
     useDetailRecord(() => api.adresses.get(id), [id], { clearOnError: true })
   const [contacts, setContacts] = useState([])
@@ -118,65 +107,34 @@ export default function AdresseDetail({ recordId, embedded = true }) {
     }
   }
 
-  if (loading) return shell(<Spinner center />)
-  if (loadError && !adresse) return shell(<DetailLoadError message={loadError} onRetry={load} />)
-  if (!adresse) return shell(<div className="p-6 text-slate-500">Adresse introuvable.</div>)
+  const pending = detailPending({ loading, loadError, onRetry: load, record: adresse, notFound: 'Adresse introuvable.' })
+  if (pending) return pending
 
   const checkIssues = parseCheckIssues(adresse.check_issues)
   const provinceOptions = adresse.country === 'US' ? US_STATES : CA_PROVINCES
 
-  return shell(
-    <div className={embedded ? 'p-6' : 'p-6 max-w-5xl mx-auto'}>
-      {/* En panneau latéral, l'en-tête du drawer porte déjà l'adresse : on ne
-          répète pas le titre, seulement les pastilles et le lien entreprise. */}
-      {embedded ? (
-        <div className="flex items-center gap-3 flex-wrap mb-4">
-          {adresse.address_type && <Badge color="slate">{adresse.address_type}</Badge>}
-          <AddressCheckBadge status={adresse.check_status} />
-          <SaveStatus status={saveState} />
-          {adresse.company_id && (
-            <LinkedRecordField
-              name="company_id"
-              value={adresse.company_id}
-              options={[{ id: adresse.company_id, name: adresse.company_name || 'Entreprise' }]}
-              getHref={c => `/companies/${c.id}`}
-              disabled
-              allowClear={false}
-            />
-          )}
-        </div>
-      ) : (
-        <div className="flex items-start gap-4 mb-6">
-          <button
-            onClick={() => navigate(-1)}
-            className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg"
-            aria-label="Retour"
-          >
-            <ArrowLeft size={18} />
-          </button>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-3 flex-wrap">
-              <PageTitle>{fmtAddress(adresse) || 'Adresse'}</PageTitle>
-              {adresse.address_type && <Badge color="slate">{adresse.address_type}</Badge>}
-              <AddressCheckBadge status={adresse.check_status} />
-              <SaveStatus status={saveState} />
-            </div>
-            {adresse.company_name && (
-              <div className="text-sm text-slate-500 mt-1">
-                <LinkedRecordField
-                  name="company_id"
-                  value={adresse.company_id || adresse.company_name}
-                  options={[{ id: adresse.company_id || adresse.company_name, name: adresse.company_name }]}
-                  getHref={adresse.company_id ? c => `/companies/${c.id}` : undefined}
-                  disabled
-                  allowClear={false}
-                />
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
+  return (
+    <DetailShell
+      header={{
+        badge: (
+          <>
+            {adresse.address_type && <Badge color="slate">{adresse.address_type}</Badge>}
+            <AddressCheckBadge status={adresse.check_status} />
+          </>
+        ),
+        status: <SaveStatus status={saveState} />,
+        meta: adresse.company_id && (
+          <LinkedRecordField
+            name="company_id"
+            value={adresse.company_id}
+            options={[{ id: adresse.company_id, name: adresse.company_name || 'Entreprise' }]}
+            getHref={c => `/companies/${c.id}`}
+            disabled
+            allowClear={false}
+          />
+        ),
+      }}
+    >
       {checkIssues.length > 0 && (
         <div
           className={`mb-4 rounded-lg border px-3 py-2.5 ${adresse.check_status === 'error' ? 'border-red-200 bg-red-50' : 'border-orange-200 bg-orange-50'}`}
@@ -307,6 +265,6 @@ export default function AdresseDetail({ recordId, embedded = true }) {
           }}
         />
       </div>
-    </div>,
+    </DetailShell>
   )
 }

@@ -176,6 +176,30 @@ function seedRecurring(def) {
 // sur une dette qui n'en a pas : l'utilisateur peut ensuite les corriger.
 const BANK_LABELS = { BDC: 'BDC', 'Ville de Québec': 'VILLE DE QUEBEC' }
 
+// Frais annuels observés au relevé ET dans les dépenses QuickBooks publiées à
+// la main : BDC 350 $ « Administration annuelle » avec le versement d'août
+// (compte 79000, vérifié sur la dépense QB 17923 du 2026-08-23) ; Ville de
+// Québec 1 250 $ avec celui de février (débit du 2026-02-11 : 5 914,11 $ au
+// lieu de 4 664,11 $). Ils ne sont PAS dans les cédules du prêteur.
+const ANNUAL_FEES = {
+  BDC: { amount: 350, month: 8, acctnum: '79000', label: 'Administration annuelle' },
+  'Ville de Québec': { amount: 1250, month: 2, acctnum: '79000', label: 'Frais annuels' },
+}
+
+function seedAnnualFees() {
+  const rows = db.prepare('SELECT id, label, lender FROM lt_debts WHERE annual_fee_amount IS NULL AND deleted_at IS NULL').all()
+  const done = []
+  for (const r of rows) {
+    const hit = Object.entries(ANNUAL_FEES).find(([k]) => `${r.label} ${r.lender || ''}`.toLowerCase().includes(k.toLowerCase()))
+    if (!hit) continue
+    const f = hit[1]
+    db.prepare('UPDATE lt_debts SET annual_fee_amount=?, annual_fee_month=?, annual_fee_acctnum=?, annual_fee_label=? WHERE id=?')
+      .run(f.amount, f.month, f.acctnum, f.label, r.id)
+    done.push(`${r.label} ${f.amount} $`)
+  }
+  return done
+}
+
 function seedBankLabels() {
   const rows = db.prepare("SELECT id, label, lender FROM lt_debts WHERE bank_label_pattern IS NULL AND deleted_at IS NULL").all()
   const done = []
@@ -199,6 +223,8 @@ export function seedLtDebts() {
   }
   const labelled = seedBankLabels()
   if (labelled.length) created.push(`libellés bancaires (${labelled.join(', ')})`)
+  const fees = seedAnnualFees()
+  if (fees.length) created.push(`frais annuels (${fees.join(', ')})`)
   if (created.length) console.log(`[lt-debts] seed : ${created.join(', ')}`)
   return created
 }

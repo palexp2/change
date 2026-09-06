@@ -1,16 +1,14 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useCallback } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { X, Truck } from 'lucide-react'
 import api from '../lib/api.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
-import { loadProgressive } from '../lib/loadAll.js'
-import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
+import { useListData } from '../lib/useListData.js'
+import { ListPage } from '../components/ListPage.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import EnvoisDetail from './EnvoisDetail.jsx'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { weekStartOf, fmtWeekStart } from '../lib/isoWeek.js'
 import { LinkedRecordsValue } from '../lib/customFieldDisplay.jsx'
@@ -59,20 +57,11 @@ export default function Envois() {
   const [searchParams, setSearchParams] = useSearchParams()
   const weekFilter = searchParams.get('week') // 'YYYY-MM-DD' (lundi) ou null
 
-  const [envois, setEnvois] = useState([])
-  const [loading, setLoading] = useState(true)
   const undoableDelete = useUndoableDelete()
-
-  const load = useCallback(async () => {
-    await loadProgressive(
-      (page, limit) => api.shipments.list({ limit, page }),
-      setEnvois, setLoading
-    )
-  }, [])
-
-  useEffect(() => { load() }, [load])
-
-  useEntityListRealtime('shipment', setEnvois)
+  const { rows: envois, setRows: setEnvois, loading, reload: load } = useListData({
+    fetch: (page, limit) => api.shipments.list({ limit, page }),
+    realtime: 'shipment',
+  })
 
   // Suppression d'un envoi depuis la liste. Pas de modale de confirmation :
   // le soft delete est réversible (toast « Annuler » 8 s + corbeille), donc la
@@ -87,7 +76,7 @@ export default function Envois() {
       label: `${ids.length} envoi${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`,
       onChange: load,
     })
-  }, [undoableDelete, load])
+  }, [undoableDelete, load, setEnvois])
 
   // Filtre « semaine du … » posé par un clic sur une barre du graphique
   // « Livraisons » (dashboard). Le graphique compte les envois par semaine de
@@ -100,48 +89,43 @@ export default function Envois() {
   const weekLabel = weekFilter ? fmtWeekStart(weekFilter) : null
 
   return (
-    <Layout>
-      <div className="p-6">
-        <div className="mb-6">
-          <PageTitle>Envois</PageTitle>
-          <p className="text-sm text-slate-500 mt-0.5">{displayedEnvois.length} envoi{displayedEnvois.length !== 1 ? 's' : ''}</p>
+    <ListPage
+      title="Envois"
+      subtitle={<p className="text-sm text-slate-500 mt-0.5">{displayedEnvois.length} envoi{displayedEnvois.length !== 1 ? 's' : ''}</p>}
+      banner={weekLabel && (
+        <div className="flex items-center gap-2 mb-4 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg w-fit" data-testid="envois-week-filter">
+          <span className="text-sm text-brand-700 font-medium">Envois expédiés — semaine du {weekLabel}</span>
+          <button
+            onClick={() => setSearchParams({})}
+            className="text-brand-400 hover:text-brand-700 ml-1"
+            title="Effacer le filtre"
+            data-testid="envois-week-clear"
+          >
+            <X size={14} />
+          </button>
         </div>
-
-        {weekLabel && (
-          <div className="flex items-center gap-2 mb-4 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg w-fit" data-testid="envois-week-filter">
-            <span className="text-sm text-brand-700 font-medium">Envois expédiés — semaine du {weekLabel}</span>
-            <button
-              onClick={() => setSearchParams({})}
-              className="text-brand-400 hover:text-brand-700 ml-1"
-              title="Effacer le filtre"
-              data-testid="envois-week-clear"
-            >
-              <X size={14} />
-            </button>
-          </div>
-        )}
-
-        <DataTable
-          table="shipments"
-          manageViews
-          columns={COLUMNS}
-          data={displayedEnvois}
-          loading={loading}
-          forceAllView={!!weekFilter}
-          onBulkDelete={deleteEnvois}
-          peek={{
-            title: shipmentTitle,
-            subtitle: shipmentSubtitle,
-            to: row => `/envois/${row.id}`,
-            width: 860,
-            openId: peekOpenId,
-            onOpenConsumed: consumePeekOpen,
-            render: (row, { close }) => <EnvoisDetail recordId={row.id} embedded onClose={close} />,
-          }}
-          searchFields={['d_envoi', 'order_number', 'tracking_number', 'company_name', 'carrier', 'pays']}
-          emptyState={{ icon: Truck, title: 'Aucun envoi', description: "Aucune expédition n'a encore été créée. Un envoi se crée depuis la fiche de la commande à expédier." }}
-        />
-      </div>
-    </Layout>
+      )}
+    >
+      <DataTable
+        table="shipments"
+        manageViews
+        columns={COLUMNS}
+        data={displayedEnvois}
+        loading={loading}
+        forceAllView={!!weekFilter}
+        onBulkDelete={deleteEnvois}
+        peek={{
+          title: shipmentTitle,
+          subtitle: shipmentSubtitle,
+          to: row => `/envois/${row.id}`,
+          width: 860,
+          openId: peekOpenId,
+          onOpenConsumed: consumePeekOpen,
+          render: (row, { close }) => <EnvoisDetail recordId={row.id} embedded onClose={close} />,
+        }}
+        searchFields={['d_envoi', 'order_number', 'tracking_number', 'company_name', 'carrier', 'pays']}
+        emptyState={{ icon: Truck, title: 'Aucun envoi', description: "Aucune expédition n'a encore été créée. Un envoi se crée depuis la fiche de la commande à expédier." }}
+      />
+    </ListPage>
   )
 }
